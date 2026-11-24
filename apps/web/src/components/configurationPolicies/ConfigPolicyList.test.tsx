@@ -45,6 +45,21 @@ const orgTarget = (id: string, name: string) => ({
   osFilter: null,
 });
 
+describe('ConfigPolicyList Copy (#12309, plan W05b K3)', () => {
+  it('each row offers Copy for that policy', async () => {
+    const onCopy = vi.fn();
+    render(<ConfigPolicyList policies={[partnerWide, { ...orgOwned, name: 'Servers' }]} onCopy={onCopy} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy: Servers' }));
+    expect(onCopy).toHaveBeenCalledWith(expect.objectContaining({ id: orgOwned.id }));
+  });
+
+  it('no handler, no Copy control', () => {
+    render(<ConfigPolicyList policies={[orgOwned]} />);
+    expect(screen.queryByTestId('config-policy-copy-button')).toBeNull();
+  });
+});
+
 describe('ConfigPolicyList Applies to column (#12306)', () => {
   it('sits between Name and Status', () => {
     render(<ConfigPolicyList policies={[orgOwned]} />);
@@ -283,7 +298,7 @@ describe('ConfigPolicyList action buttons (#2950)', () => {
       id: `policy-${i}`,
       name: `Policy ${i}`,
     }));
-    render(<ConfigPolicyList policies={many} pageSize={2} />);
+    render(<ConfigPolicyList policies={many} total={3} pageSize={2} />);
 
     // Pager controls, not navigation verbs — "Back" would be the wrong thing
     // to announce here.
@@ -291,26 +306,20 @@ describe('ConfigPolicyList action buttons (#2950)', () => {
     expect(screen.getByTestId('config-policy-next-page')).toHaveAccessibleName('Next page');
   });
 
-  it('pages through rows and disables the controls at both boundaries', async () => {
-    const user = userEvent.setup();
-    const many: ConfigPolicy[] = Array.from({ length: 3 }, (_, i) => ({
+  it('disables the pager controls at both boundaries of the server total', () => {
+    const rowsOnPage: ConfigPolicy[] = Array.from({ length: 2 }, (_, i) => ({
       ...orgOwned,
       id: `policy-${i}`,
       name: `Policy ${i}`,
     }));
-    render(<ConfigPolicyList policies={many} pageSize={2} />);
+    const { rerender } = render(
+      <ConfigPolicyList policies={rowsOnPage} total={3} page={1} pageSize={2} />,
+    );
+    expect(screen.getByTestId('config-policy-prev-page')).toBeDisabled();
+    expect(screen.getByTestId('config-policy-next-page')).toBeEnabled();
 
-    const prev = screen.getByTestId('config-policy-prev-page');
-    const next = screen.getByTestId('config-policy-next-page');
-    expect(prev).toBeDisabled();
-    expect(screen.getAllByTestId('config-policy-row')).toHaveLength(2);
-
-    await user.click(next);
-
-    // Page 2 holds the single remaining row, and Next is now the boundary.
-    expect(screen.getAllByTestId('config-policy-row')).toHaveLength(1);
-    expect(screen.getByTestId('config-policy-row')).toHaveAttribute('data-policy-id', 'policy-2');
-    expect(next).toBeDisabled();
-    expect(prev).toBeEnabled();
+    rerender(<ConfigPolicyList policies={[rowsOnPage[0]!]} total={3} page={2} pageSize={2} />);
+    expect(screen.getByTestId('config-policy-next-page')).toBeDisabled();
+    expect(screen.getByTestId('config-policy-prev-page')).toBeEnabled();
   });
 });

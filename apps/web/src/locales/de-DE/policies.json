@@ -39,78 +39,38 @@
       "notCollectedProbeLimit": "Nicht erfasst (Abfragelimit)",
       "notCollectedProbeLimitHint": "Die Compliance-Abfrageliste dieser Organisation ist voll, daher wird mindestens eine Prüfung hier nicht erfasst. Sie wird erst ausgewertet, gemeldet oder behoben, wenn die Liste wieder Platz hat."
     },
-    "configPolicyCreatePage": {
-      "selectAnOrganizationForThisPolicy": "Wählen Sie eine Organisation für diese Richtlinie aus.",
-      "failedToCreatePolicy": "Richtlinie konnte nicht erstellt werden",
-      "configurationPolicies": "Konfigurationsrichtlinien",
-      "newPolicy": "Neue Richtlinie",
-      "newConfigurationPolicy": "Neue Konfigurationsrichtlinie",
-      "howWouldYouLikeToConfigureThis": "Wie möchten Sie diese Richtlinie konfigurieren?",
-      "configureNew": "Neu konfigurieren",
-      "startFreshWithCustomSettingsForEach": "Beginnen Sie neu mit benutzerdefinierten Einstellungen für jede Funktion",
-      "linkToExisting": "Basierend auf einer übergeordneten Richtlinie",
-      "useAnotherPolicyAsTheMasterBaseline": "Einstellungen einer anderen Richtlinie übernehmen und nur Abweichungen ändern",
-      "newConfigurationPolicy2": "Neue Konfigurationsrichtlinie",
-      "masterPolicy": "Übergeordnete Richtlinie",
-      "selectTheConfigurationPolicyToUseAs": "Wählen Sie die übergeordnete Richtlinie aus. Sie können einzelne Funktionen für diese Richtlinie ändern.",
-      "policyDetails": "Richtliniendetails",
-      "eGStandardWorkstationPolicy": "z.B. Standard-Arbeitsplatzrichtlinie",
-      "optionalDescriptionOfWhatThisPolicyConfigures": "Optionale Beschreibung dessen, was diese Richtlinie konfiguriert",
-      "scope": "Verwaltet von",
-      "partnerLibrary": "Ihr MSP",
-      "assignToOrganizationsAfterCreating": "(als Nächstes festlegen, wo sie gilt)",
-      "aSpecificOrganization": "Eine Organisation",
-      "selectAnOrganization": "Wählen Sie eine Organisation aus",
-      "createAReusablePolicyOwnedByYour": "Verwaltet von Ihrem MSP. Sie gilt für nichts, bis Sie unter „Gilt für“ festlegen, wo sie gilt.",
-      "new": "neu",
-      "linked": "verlinkt",
-      "createAPolicyLinkedToAnExisting": "Erstellen Sie eine Richtlinie, die auf einer übergeordneten Richtlinie basiert.",
-      "createANewConfigurationPolicyToBundle": "Erstellen Sie eine neue Konfigurationsrichtlinie, um Funktionseinstellungen zu bündeln.",
-      "name": "Namen",
-      "description": "Beschreibung",
-      "status": "Status",
-      "partner": "Partner",
-      "organization": "Organisation",
-      "policyOwnerOrgSelect": "policy-owner-org-select",
-      "creating": "Erstellen...",
-      "createPolicy": "Richtlinie erstellen",
-      "policyCreated": "Richtlinie erstellt"
-    },
     "configPolicyDetailPage": {
       "archived": "Archiviert",
       "failedToFetchPolicy": "Die Richtlinie konnte nicht abgerufen werden",
       "failedToFetchFeatures": "Funktionen konnten nicht abgerufen werden",
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
-      "overview": "Übersicht",
       "complianceStatus": "Compliance-Status",
       "loadingPolicy": "Richtlinie wird geladen...",
       "backToList": "Zurück zur Liste",
       "configurationPolicies": "Konfigurationsrichtlinien",
       "policyDetails": "Richtliniendetails",
-      "archived2": "Archiviert",
       "inheritingFrom": "Basiert auf",
-      "overrideIndividualTabsToCustomizeSettings": "Ändern Sie eine Funktion, um sie nur für diese Richtlinie festzulegen.",
-      "isnTAvailableOnPartnerWidePolicies": " ist für MSP-verwaltete Richtlinien nicht verfügbar",
-      "configureThisFeatureOnAnOrganizationScoped": "Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
       "policy": "Richtlinie",
-      "overview2": "Übersicht",
       "saving": "Speichern...",
       "saveChanges": "Änderungen speichern",
-      "parentPolicy": "Elternrichtlinie",
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "Aufgaben",
       "managedByYourMsp": "Verwaltet von Ihrem MSP",
       "inheritedByPolicies_one": "Übergeordnet für {{count}} Richtlinie",
       "inheritedByPolicies_other": "Übergeordnet für {{count}} Richtlinien",
-      "gatedFeatureTitle": "Für MSP-verwaltete Richtlinien nicht verfügbar. Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "appliesToDrawerTitle": "Gilt für",
       "detailsSaved": "Richtliniendetails gespeichert",
       "refreshAppliesToFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie."
+      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie.",
+      "gatedFeatureUnavailable": "{{feature}} ist für diese Richtlinie nicht verfügbar",
+      "gatedFeatureReason": "{{feature}} arbeitet mit den eigenen Konten und Diensten einer Organisation, daher kann nur eine von dieser Organisation verwaltete Richtlinie die Funktion festlegen. Diese Richtlinie wird von Ihrem MSP verwaltet.",
+      "unsavedLeaveConfirm": "Sie haben ungespeicherte Änderungen an dieser Richtlinie. Seite verlassen und Änderungen verwerfen?",
+      "discardChangesTitle": "Ungespeicherte Änderungen verwerfen?",
+      "discardChangesMessage": "Ihre Änderungen an {{feature}} sind nicht gespeichert. Verwerfen Sie sie, oder bleiben Sie und speichern Sie sie zuerst.",
+      "discardChanges": "Verwerfen",
+      "stayOnFeature": "Bleiben"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -126,7 +86,10 @@
       "page": "Seite",
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
-      "summary": "{{filtered}} von {{total}} Richtlinien",
+      "rangeSummary": "{{from}}-{{to}} von {{total}} Richtlinien",
+      "organizationFilterLabel": "Organisation",
+      "allOrganizations": "Alle Organisationen",
+      "notAppliedFilterLabel": "Nicht angewendet",
       "inheritsBadge": "Erbt",
       "statusFilterLabel": "Status",
       "appliesToHeader": "Gilt für",
@@ -138,6 +101,7 @@
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
       "failedToDeletePolicy": "Die Richtlinie konnte nicht gelöscht werden",
+      "orgFilterForbidden": "Sie können diese Organisation nicht als Filter verwenden. Wählen Sie eine andere Organisation.",
       "loadingConfigurationPolicies": "Konfigurationsrichtlinien werden geladen...",
       "tryAgain": "Versuchen Sie es erneut",
       "configurationPolicies": "Konfigurationsrichtlinien",
@@ -638,19 +602,25 @@
         "providerLimit": "{{total}} von {{max}} zusätzlichen Anbietern"
       },
       "featureTabShell": {
-        "override": "Überschreiben",
-        "revertToParent": "Zurück zum übergeordneten Element",
+        "unlockAction": "Für diese Richtlinie ändern",
+        "unlockedHint": "Änderung für diese Richtlinie. Nichts wird gespeichert, bis Sie auf Speichern klicken.",
+        "revertToParent": "Auf übergeordnete Richtlinie zurücksetzen",
         "saving": "Speichern...",
         "notSaved": "Nicht gespeichert: {{reason}}",
         "saveBlocked": "Nicht gespeichert. Beheben Sie das markierte Problem und versuchen Sie es erneut.",
-        "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
-        "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
+        "revertConfirmTitle": "Auf die übergeordnete Richtlinie zurücksetzen?",
+        "revertConfirmMessage": "Dadurch werden die eigenen Einstellungen dieser Richtlinie für {{feature}} gelöscht, und stattdessen gelten die Einstellungen der übergeordneten Richtlinie. Das kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
-        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden.",
-        "badgeInherited": "Konfiguriert (geerbt)",
+        "removeConfirmMessage": "Dadurch werden die Einstellungen für {{feature}} aus dieser Richtlinie gelöscht, und die Funktion wechselt zu Nicht festgelegt. Das kann nicht rückgängig gemacht werden.",
         "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)",
-        "badgeConfigured": "Konfiguriert",
-        "badgeNotConfigured": "Nicht konfiguriert"
+        "saveWithReach": "Speichern · {{reach}}",
+        "removeImpactReaches": "Diese Richtlinie erreicht {{devices}}: {{feature}} wird dort nicht mehr von dieser Richtlinie festgelegt.",
+        "removeImpactInUse": "Richtlinien, die auf dieser basieren, erben {{feature}} nicht mehr von ihr, sofern sie keine eigenen Einstellungen festlegen: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Diese Richtlinie erreicht {{devices}}: Dort gelten stattdessen die Einstellungen der übergeordneten Richtlinie für {{feature}}.",
+        "resetImpactInUse": "Richtlinien, die auf dieser basieren, erhalten stattdessen über sie die Einstellungen der übergeordneten Richtlinie für {{feature}}, sofern sie keine eigenen festlegen: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Derzeit ändert sich auf keinem Gerät etwas: Diese Richtlinie ist nicht aktiv, und keine Richtlinie basiert auf ihr.",
+        "fromParentPolicy": "Von {{policy}}",
+        "openParent": "Öffnen"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -815,7 +785,6 @@
         "failedToLoadUpdateRings": "Aktualisierungsringe konnten nicht geladen werden",
         "patchSettingsSaved": "Patch-Einstellungen gespeichert",
         "patchSettingsRemoved": "Patch-Einstellungen entfernt",
-        "patchSettingsOverridden": "Patch-Einstellungen wurden überschrieben",
         "revertedToInheritedPatchSettings": "Auf die übernommenen Patch-Einstellungen zurückgesetzt",
         "approvalRing": "Genehmigungsring",
         "selectWhichUpdateRingGovernsPatchApprovals": "Wählen Sie aus, welcher Update-Ring die Patch-Genehmigungen für diese Richtlinie regelt. Bei rein manuellen Genehmigungen leer lassen.",
@@ -861,6 +830,7 @@
         "manageWindowsUpdateExclusivelyThroughBreeze": "Verwalten Sie Windows Update ausschließlich über Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Unterdrückt den nativen automatischen Windows Update-Installationskanal des Endpunkts, sodass Updates nur über die Genehmigungsringe von Breeze fließen und so unerwartete Neustarts und Patches außerhalb Ihres Zeitplans verhindert werden. Nur Windows; Der eigene Scan/approve/install-Pfad von Breeze bleibt davon unberührt. Wird bei Deaktivierung sauber wiederhergestellt (eine bereits vorhandene Administrator-Gruppenrichtlinie bleibt unberührt).",
         "times": "×",
+        "discardRingChangesConfirm": "Dieser Update-Ring hat nicht gespeicherte Änderungen. Schließen und Änderungen verwerfen?",
         "os": "os",
         "thirdParty": "third_party",
         "apps": "Apps",
@@ -1555,6 +1525,180 @@
       "atLeastDevices_one": "Mindestens {{count}} Gerät",
       "atLeastDevices_other": "Mindestens {{count}} Geräte",
       "noneVisible": "Keine Geräte, die Sie sehen können"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Hier festgelegt"
+      },
+      "from_parent": {
+        "label": "Aus übergeordneter Richtlinie"
+      },
+      "changed_from_parent": {
+        "label": "Hier geändert"
+      },
+      "not_set": {
+        "label": "Nicht festgelegt"
+      },
+      "unavailable": {
+        "label": "Für diese Richtlinie nicht verfügbar"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Richtlinienfunktionen",
+      "selectLabel": "Richtlinienfunktion",
+      "groups": {
+        "updates_software": {
+          "label": "Updates & Software"
+        },
+        "monitoring": {
+          "label": "Überwachung"
+        },
+        "security": {
+          "label": "Sicherheit"
+        },
+        "backup": {
+          "label": "Sicherung"
+        },
+        "access_end_user": {
+          "label": "Zugriff & Endbenutzer"
+        },
+        "lifecycle": {
+          "label": "Lebenszyklus"
+        },
+        "results": {
+          "label": "Ergebnisse"
+        }
+      },
+      "statusOutranked_one": "{{state}} · Auf {{count}} Gerät übersteuert",
+      "statusOutranked_other": "{{state}} · Auf {{count}} Geräten übersteuert"
+    },
+    "policyHeader": {
+      "editDetails": "Details bearbeiten",
+      "managedByOrganization": "Verwaltet von {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Nur Ansicht. Ihr MSP verwaltet diese Richtlinie, daher kann nur Ihr MSP sie ändern."
+        },
+        "msp_managed_limited_access": {
+          "message": "Nur Ansicht. Ihr MSP verwaltet diese Richtlinie, und Ihr Zugriff umfasst nur einige Organisationen."
+        },
+        "site_restricted": {
+          "message": "Nur Ansicht. Ihr Zugriff ist auf einige Standorte beschränkt, und diese Richtlinie reicht darüber hinaus."
+        },
+        "no_write_permission": {
+          "message": "Nur Ansicht. Ihre Rolle kann Konfigurationsrichtlinien anzeigen, aber nicht ändern."
+        },
+        "not_editable": {
+          "message": "Nur Ansicht. Sie können diese Richtlinie anzeigen, aber nicht ändern."
+        },
+        "unexplained": {
+          "message": "Nur Ansicht."
+        }
+      }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} Gerät",
+      "deviceCount_other": "{{count}} Geräte",
+      "atLeastDeviceCount_one": "mindestens {{count}} Gerät",
+      "atLeastDeviceCount_other": "mindestens {{count}} Geräte",
+      "noVisibleDevices": "keine Geräte, die Sie sehen können",
+      "policyCount_one": "{{count}} Richtlinie",
+      "policyCount_other": "{{count}} Richtlinien",
+      "reaches": "erreicht {{devices}}",
+      "inUseThrough": "in Verwendung über {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Aktivieren",
+      "activateWithReach": "Aktivieren · {{reach}}",
+      "deactivateAction": "Deaktivieren",
+      "archiveAction": "Archivieren",
+      "restoreAction": "Wiederherstellen",
+      "restoreHint": "Stellt die Richtlinie als Inaktiv wieder her.",
+      "deactivateConfirmTitle": "Diese Richtlinie deaktivieren?",
+      "deactivateConfirmMessage": "Sie wendet ihre Einstellungen nicht mehr auf die Geräte an, die sie direkt anvisiert. Sie können sie später wieder aktivieren.",
+      "deactivateImpactDirect": "Sie gilt direkt für {{devices}}: Diese erhalten ihre Einstellungen nicht mehr.",
+      "deactivateImpactNoneVisible": "Sie richtet sich direkt an keine Geräte, die Sie sehen können.",
+      "deactivateImpactChildren": "Richtlinien, die auf ihr basieren, behalten ihre Einstellungen: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "Das Aktivieren dieser Richtlinie schaltet Herstellerupdates auf den Geräten ein, für die sie gilt. Dafür sind die Berechtigung devices.execute und MFA erforderlich. Bitten Sie jemanden mit dieser Berechtigung, diese Richtlinie zu aktivieren.",
+      "changeFailed": "Der Richtlinienstatus wurde nicht geändert.",
+      "activatedToast": "Richtlinie aktiviert",
+      "deactivatedToast": "Richtlinie deaktiviert",
+      "archivedToast": "Richtlinie archiviert",
+      "restoredToast": "Richtlinie als Inaktiv wiederhergestellt"
+    },
+    "policyCreate": {
+      "title": "Neue Konfigurationsrichtlinie",
+      "startsInactive": "Eine neue Richtlinie startet inaktiv und erreicht kein Gerät, bis Sie sie aktivieren. Sie können alle Funktionen einstellen, bevor etwas gespeichert wird.",
+      "namePlaceholder": "z. B. Standard-Arbeitsplätze",
+      "descriptionPlaceholder": "Optional: Wofür diese Richtlinie gedacht ist",
+      "nameRequired": "Geben Sie der Richtlinie vor dem Speichern einen Namen.",
+      "organizationRequired": "Wählen Sie die Organisation, die diese Richtlinie verwaltet.",
+      "createFailed": "Die Richtlinie konnte nicht erstellt werden.",
+      "invalidParent": "Diese Richtlinie kann nicht die übergeordnete Richtlinie dieser Richtlinie sein.",
+      "managedByLabel": "Verwaltet von",
+      "managedByMspOption": "Ihr MSP (kann für jede Ihrer Organisationen gelten)",
+      "chooseOrganizationOption": "Organisation auswählen",
+      "managedByOrganization": "Verwaltet von {{organization}}",
+      "managedByOwnOrgFallback": "Verwaltet von Ihrer Organisation",
+      "mspTrade": "Eine vom MSP verwaltete Richtlinie kann keine eigenen Software-, Sicherheits- oder Backup-Elemente eines Kunden und kein bestimmtes Backup-Ziel verknüpfen und kann OneDrive Helper nicht enthalten.",
+      "mspTradePicker": "Diese Richtlinie wird vom MSP verwaltet: Sie kann nur Elemente verknüpfen, die für Ihre Organisationen gemeinsam gelten, nicht die eigenen Elemente eines Kunden.",
+      "orgManagedHint": "Von einer Organisation verwaltet: Sie gilt nur für die Geräte dieser Organisation und kann deren eigene Elemente verknüpfen.",
+      "startFromLegend": "Ausgangspunkt",
+      "startFromBlank": "Leer",
+      "startFromParent": "Basierend auf einer übergeordneten Richtlinie",
+      "parentNeedsOrganization": "Wählen Sie zuerst die Organisation. Die verwendbaren übergeordneten Richtlinien werden für sie aufgelistet.",
+      "parentHint": "Funktionen, die diese Richtlinie nicht festlegt, stammen von der übergeordneten Richtlinie.",
+      "parentReadFailed": "Die Funktionen der übergeordneten Richtlinie konnten nicht gelesen werden, daher zeigt die Funktionsliste nicht, was sie festlegt. Beim Speichern basiert diese Richtlinie trotzdem darauf.",
+      "fixedAtFirstSave": "„Verwaltet von“ und „Basiert auf“ werden beim ersten Speichern der Richtlinie festgelegt.",
+      "fixedNote": "„Verwaltet von“ und „Basiert auf“ wurden beim ersten Speichern dieser Richtlinie festgelegt.",
+      "firstSaveFailed": "Die Richtlinie wurde als Inaktiv gespeichert und gilt für kein Gerät, aber {{feature}} wurde nicht gespeichert. Beheben Sie das Problem unten und speichern Sie erneut.",
+      "savedInactiveToast": "Als Inaktiv gespeichert. Sie gilt noch für kein Gerät."
+    },
+    "activation": {
+      "drawerTitle": "Diese Richtlinie aktivieren",
+      "activateWithReach": "Aktivieren · {{reach}}",
+      "needsDecision": "Zum Aktivieren ist mindestens ein Ziel erforderlich. Oder wählen Sie „Noch nicht anwenden“, dann bleibt die Richtlinie inaktiv.",
+      "dontApplyYet": "Noch nicht anwenden",
+      "dontApplyHint": "Hält die Richtlinie inaktiv und wendet sie nirgends an.",
+      "applyFailedStaysInactive": "Die Ziele wurden nicht angewendet, daher wurde nichts aktiviert. Die Richtlinie bleibt inaktiv.",
+      "activateFailedAfterApply": "Die Ziele wurden angewendet, aber die Richtlinie ist weiterhin inaktiv: {{reason}}"
+    },
+    "outranked": {
+      "line_one": "Auf {{count}} Gerät übersteuert",
+      "line_other": "Auf {{count}} Geräten übersteuert",
+      "detail": "Dort setzt sich eine spezifischere oder höher priorisierte Richtlinie für diese Funktion durch. Von den Geräten, die Sie sehen können, erreicht diese Richtlinie {{reached}}.",
+      "capped": "Zu viele Geräte, um zu zählen, wo sich eine andere Richtlinie für diese Funktion durchsetzt.",
+      "openDevice": "Öffnen Sie auf einem Gerät den Tab „Konfiguration“, um zu sehen, welche Richtlinie dort gilt."
+    },
+    "copyPolicy": {
+      "action": "Kopieren",
+      "title": "Richtlinie kopieren",
+      "defaultName": "{{name}} (Kopie)",
+      "startsInactive": "Die Kopie startet inaktiv und gilt für kein Gerät, bis Sie sie anwenden und aktivieren. Verknüpfte Elemente wie Update-Ringe und Monitore werden mit dem Original geteilt, nicht dupliziert.",
+      "checking": "Es wird geprüft, was kopiert werden kann…",
+      "carriedHeading": "Kopiert",
+      "carriedNone": "Diese Richtlinie legt keine eigenen Funktionen fest.",
+      "droppedHeading": "Nicht kopiert",
+      "reasons": {
+        "org_only_feature": "nur eine von einer einzelnen Organisation verwaltete Richtlinie kann diese Funktion festlegen.",
+        "linked_item_unavailable": "sie verwendet ein Element, das der neue Eigentümer nicht nutzen kann.",
+        "settings_not_valid": "die gespeicherten Einstellungen bestehen die heutigen Prüfungen nicht mehr."
+      },
+      "noticesHeading": "Mit Änderung kopiert",
+      "notices": {
+        "consent_required": "„HP-Garantiedaten auf dem Gerät erfassen“ wird ausgeschaltet kopiert: Eine Kopie akzeptiert die HP-Lizenz nie im Namen anderer. Aktivieren Sie es in der Kopie, um die Lizenz erneut zu akzeptieren."
+      },
+      "confirm": "Richtlinie kopieren",
+      "copying": "Wird kopiert…",
+      "copiedToast": "Richtlinie kopiert. Sie ist inaktiv, bis Sie sie aktivieren.",
+      "failed": "Die Richtlinie konnte nicht kopiert werden.",
+      "previewFailed": "Die Prüfung, was kopiert werden kann, ist fehlgeschlagen. Versuchen Sie es erneut.",
+      "invalidParent": "Diese übergeordnete Richtlinie kann für den gewählten Eigentümer nicht verwendet werden. Wählen Sie eine andere übergeordnete Richtlinie oder keine.",
+      "executeRequired": "Diese Richtlinie aktiviert Funktionen, die Software installieren oder Dateien auf Geräten verschieben. Zum Kopieren ist daher die Berechtigung devices:execute erforderlich.",
+      "mfaRequired": "Bestätigen Sie Ihre Identität mit MFA, um diese Richtlinie zu kopieren.",
+      "copyToOrganization": "In eine Organisation kopieren",
+      "changeWithCopy": "Mit anderem Eigentümer oder anderer übergeordneter Richtlinie kopieren",
+      "droppedSincePreview": "Kopiert, aber diese Funktionen wurden nicht übernommen, weil sich seit der Prüfung etwas geändert hat: {{features}}."
     }
   },
   "software": {

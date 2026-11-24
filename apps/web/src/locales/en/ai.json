@@ -537,6 +537,8 @@
     "createTicket": "Create ticket"
   },
   "scriptProposal": {
+    "unavailable": "This proposal is no longer available. It may have been decided, expired or belong to another organization.",
+    "loadFailed": "This proposal could not be loaded. Try again in a moment.",
     "title": "AI-authored script",
     "goal": "Goal",
     "expectedEffect": "Expected effect",

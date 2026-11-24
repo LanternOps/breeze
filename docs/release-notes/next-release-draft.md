@@ -66,6 +66,17 @@ Lab checks owed before the next tag:
 - **Devices → Groups → Apply policy** applies the policy to every selected group in one change.
 - New routes: `POST /configuration-policies/:id/assignments/apply` (staged add, update and remove, with `dryRun`), `GET /configuration-policies/:id/reach` and `GET /configuration-policies/reach?ids=…`. `GET /orgs/sites` accepts `search`.
 
+- **"Outranked on N devices" on each feature of a configuration policy** (#12472) shows where a more specific policy wins that feature. The open feature and its entry in the feature list show the count; it covers only devices you can see. On a very large fleet the page says there are too many devices to count instead of showing a number. New route: `GET /configuration-policies/:id/precedence`.
+
+- **New configuration policies start inactive** and are switched on with **Activate**, which states how many devices it reaches (#12462, #12468, #12469, #12470, #12471). A policy is created on the policy page itself: every feature can be set before anything is saved, and the first Save creates the policy, inactive. Activating a policy that applies nowhere asks where it applies first, or **Don't apply yet**.
+- A grouped feature rail replaces the tab strip; the Overview tab is gone. Each feature reads **Set here**, **From parent** or **Not set**, with one rule for **Remove** and **Reset to parent**, and leaving a feature with unsaved changes asks first.
+- New policies default to MSP-managed for partner users with access to every organization. Managed by and Based on are fixed at the first save, and the page says so.
+- Customer admins see, read-only, the MSP-managed policies that apply to their organization. Users limited to some organizations no longer see MSP-managed policies that apply only to other organizations.
+- With one organization selected, the policy list shows the policies that apply to it, plus inactive ones that apply nowhere yet. The list filters by state, not applied and organization, and pages and searches on the server.
+- `GET /configuration-policies` accepts `appliesToOrgId` and `notApplied`; `GET /configuration-policies/:id` returns `access`.
+
+- **Copy a configuration policy** (#12309, #11776), to the same owner or to another organization or your MSP. The copy starts inactive and unapplied, and before it is made the dialog lists any feature the new owner cannot carry, with the reason. Copy is in the policy header and on each list row, and it is how to change a policy's Managed by or Based on, or to set OneDrive Helper from an MSP-managed policy. A customer's own admin can copy an MSP-managed policy that applies to them into their organization. New route: `POST /configuration-policies/:id/copy`.
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.

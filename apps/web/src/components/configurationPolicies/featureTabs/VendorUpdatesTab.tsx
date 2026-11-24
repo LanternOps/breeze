@@ -18,6 +18,8 @@ import { fetchWithAuth } from '../../../stores/auth';
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
 // Inline settings for the `oem_updates` feature (Vendor updates, #11070): when
@@ -128,7 +130,6 @@ export default function VendorUpdatesTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
   orgId,
 }: FeatureTabProps) {
@@ -192,6 +193,7 @@ export default function VendorUpdatesTab({
   }, [gates, isNew]);
 
   const inherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(inherited);
   const partnerWide = orgId === null;
   // What the resolver will make of the stored link: one that no longer parses resolves as disabled.
   const storedInvalid = source != null && !oemUpdatesInlineSettingsSchema.safeParse(source).success;
@@ -260,13 +262,12 @@ export default function VendorUpdatesTab({
       saving={saving}
       saveTestId="vendor-updates-save"
       // No save until the gates are known: the form could not tell a stored category from a closed one.
-      saveDisabled={!gates || (inherited && !parsed.success)}
+      saveDisabled={!gates}
       error={handledError ? undefined : error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
-      onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
+      {...change.shellProps}
     >
       {partnerWide && (
         <span
@@ -296,7 +297,7 @@ export default function VendorUpdatesTab({
           <p>{k('storedInvalid')}</p>
         </div>
       )}
-      {attempted && !parsed.success && !inherited && (
+      {attempted && !parsed.success && !change.locked && (
         <div role="alert" data-testid="vendor-updates-invalid" className="mb-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>{k('invalid')}</p>
@@ -315,7 +316,7 @@ export default function VendorUpdatesTab({
         </div>
       )}
 
-      <fieldset disabled={inherited || saving} className="space-y-6">
+      <fieldset disabled={change.locked || saving} className="space-y-6">
         <label className="flex items-start gap-2 text-sm font-medium">
           <input
             data-testid="vendor-updates-enabled"

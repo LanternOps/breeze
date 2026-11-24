@@ -984,6 +984,41 @@ describe('viewer reconnect hold (#10542)', () => {
   });
 });
 
+describe('POST /:id/viewer/offer: the audit records where the viewer token was exchanged (#9557 W4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeHappyPath();
+  });
+
+  // Real mint and verify, so the claim travels the whole way to the audit row.
+  it.each([
+    ['a browser exchange', 'browser', 'browser'],
+    ['a native viewer exchange', 'viewer', 'viewer'],
+    ['a token minted without the claim', undefined, 'unknown'],
+  ] as const)('writes exchangeOrigin next to via for %s', async (_label, minted, recorded) => {
+    const actualJwt = await vi.importActual<typeof import('../services/jwt')>('../services/jwt');
+    const token = await actualJwt.createViewerAccessToken({
+      sub: USER_ID,
+      email: USER_EMAIL,
+      sessionId: SESSION_ID,
+      mfaSatisfied: true,
+      exchangeOrigin: minted,
+    });
+    vi.mocked(verifyViewerAccessToken).mockImplementation(actualJwt.verifyViewerAccessToken);
+
+    const res = await offerRequest(token);
+
+    expect(res.status).toBe(200);
+    expect(logSessionAudit).toHaveBeenCalledWith(
+      'session_offer_submitted',
+      USER_ID,
+      'org-1',
+      expect.objectContaining({ via: 'viewer_token', exchangeOrigin: recorded }),
+      expect.anything(),
+    );
+  });
+});
+
 // #8947: one viewer window posted two offers ~250 ms apart; both were accepted
 // and dispatched, and the first peer was orphaned. The real start-intent and
 // in-flight-marker code runs here against an in-memory Redis.

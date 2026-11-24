@@ -619,6 +619,18 @@ const TARGET_GLOBS = [
   'src/components/peripherals/PeripheralPolicyForm.tsx',
   // #12306: the policy details save (name, description, status) toasts its outcome.
   'src/components/configurationPolicies/ConfigPolicyDetailPage.tsx',
+  // #12469: the details save moved off the page into the details form.
+  'src/components/configurationPolicies/page/PolicyDetailsForm.tsx',
+  // #12470: Activate / Deactivate / Archive / Restore (the status PATCH) toast their outcome.
+  'src/components/configurationPolicies/page/PolicyStateActions.tsx',
+  // #12471: the status PATCH moved into a module Activate shares; the
+  // create POST of the one-page create; Activate's apply-then-activate.
+  'src/components/configurationPolicies/page/policyStatusApi.ts',
+  'src/components/configurationPolicies/page/usePolicyDraft.ts',
+  'src/components/configurationPolicies/page/usePolicyActivation.ts',
+  // #12309: Copy's POST (its dry run carries the exempt marker) and the dialog.
+  'src/components/configurationPolicies/page/copyPolicyApi.ts',
+  'src/components/configurationPolicies/page/CopyPolicyDialog.tsx',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.

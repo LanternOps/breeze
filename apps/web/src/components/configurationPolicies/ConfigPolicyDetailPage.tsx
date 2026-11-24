@@ -1,48 +1,19 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import {
-  ArrowLeft,
-  Layers,
-  Wrench,
-  ClipboardCheck,
-  PackageCheck,
-  Zap,
-  Link2,
-  HardDrive,
-  Clock,
-  Container,
-  Shield,
-  ShieldCheck,
-  ShieldAlert,
-  KeyRound,
-  ScrollText,
-  ScanSearch,
-  Usb,
-  LifeBuoy,
-  Monitor,
-  Radar,
-  ListChecks,
-  Cloud,
-  Info,
-  Trash2,
-  History,
-  ShieldBan,
-  Cpu,
-  Power,
-} from "lucide-react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
+import { ArrowLeft } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
-import { cn } from "@/lib/utils";
 import { useJwtClaims } from "@/lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useHashTab } from "@/lib/useHashState";
-import { OverflowTabs, overflowPanelId, overflowTabId } from "../shared/OverflowTabs";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
+import { useOrgStore } from "../../stores/orgStore";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-import { ActionError, runAction } from "@/lib/runAction";
 import { showToast } from "../shared/Toast";
 import { Drawer } from "../shared/Drawer";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { useUnsavedGuard } from "../settings/partnerSettings/useUnsavedGuard";
 import AppliesToStrip from "./AppliesToStrip";
-import { parseAppliesTo } from "./appliesToSummary";
+import { appliesToState, parseAppliesTo, type ConfigPolicyAppliesToSummary } from "./appliesToSummary";
 // The web layer only aliases the bare `@breeze/shared` root and the
 // `/reportPdf` subpath (see apps/web/vitest.config.ts + tsconfig.json) — the
 // `/constants` subpath isn't wired up here, so import from the root, which
@@ -51,39 +22,33 @@ import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
 import type { FeatureType, FeatureLink, ParentPolicySummary } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
 import { useFeatureLink } from './featureTabs/useFeatureLink';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureTabs/featureEditing';
 import AppliesToPanel from './appliesTo/AppliesToPanel';
 import { fetchPolicyReach, type ConfigPolicyReach } from './appliesTo/appliesToApi';
 import type { PickerOwner } from './appliesTo/TargetPicker';
-import PatchTab from './featureTabs/PatchTab';
-import MonitorsTab from './featureTabs/MonitorsTab';
-import BackupTab from './featureTabs/BackupTab';
-import SecurityTab from './featureTabs/SecurityTab';
-import MaintenanceTab from './featureTabs/MaintenanceTab';
-import ComplianceTab from './featureTabs/ComplianceTab';
-import AutomationTab from './featureTabs/AutomationTab';
-import EventLogTab from './featureTabs/EventLogTab';
-import SoftwarePolicyTab from './featureTabs/SoftwarePolicyTab';
-import SensitiveDataTab from './featureTabs/SensitiveDataTab';
-import PeripheralControlTab from './featureTabs/PeripheralControlTab';
-import WarrantyTab from './featureTabs/WarrantyTab';
-import HelperTab from './featureTabs/HelperTab';
-import RemoteAccessTab from './featureTabs/RemoteAccessTab';
-import PamTab from './featureTabs/PamTab';
-import VulnerabilityTab from './featureTabs/VulnerabilityTab';
-import DeviceLifecycleTab from './featureTabs/DeviceLifecycleTab';
-import OneDriveHelperTab from './featureTabs/OneDriveHelperTab';
-import HardwareMonitoringTab from './featureTabs/HardwareMonitoringTab';
-import TimeSyncTab from './featureTabs/TimeSyncTab';
-import WorkloadInventoryTab from './featureTabs/WorkloadInventoryTab';
-import SecurityAgentsTab from './featureTabs/SecurityAgentsTab';
-import SystemProtectionTab from './featureTabs/SystemProtectionTab';
-import ContainmentTab from './featureTabs/ContainmentTab';
-import VendorUpdatesTab from './featureTabs/VendorUpdatesTab';
-import WakeOnLanTab from './featureTabs/WakeOnLanTab';
+import FeatureRail, { type RailKey } from './page/FeatureRail';
+import { FIRST_RAIL_FEATURE, featureState } from './page/featureState';
+import OutrankedLine from './page/OutrankedLine';
+import { usePolicyPrecedence } from './page/usePolicyPrecedence';
+import PolicyHeader from './page/PolicyHeader';
+import PolicyDetailsForm, { type PolicyDetails } from './page/PolicyDetailsForm';
+import PolicyStateActions from './page/PolicyStateActions';
+import type { PolicyStatus } from './page/PolicyHeader';
+import { FeaturePolicyContext, type FeaturePolicyInfo } from './featureTabs/featurePolicyContext';
+import { resolveViewerAccess } from './page/viewerAccess';
+import { configFeatureLabel } from './configPolicyLabels';
+import UnavailableFeaturePanel from './page/UnavailableFeaturePanel';
+import CopyPolicyDialog from './page/CopyPolicyDialog';
+import { creatorKind } from './page/policyOwner';
+import PolicyFeatureEditor from './page/PolicyFeatureEditor';
 import ComplianceStatusTab from './ComplianceStatusTab';
+import PolicyCreateHeader from './page/PolicyCreateHeader';
+import { usePolicyDraft, type CreatedPolicy } from './page/usePolicyDraft';
+import { useDraftParent } from './page/useDraftParent';
+import { usePolicyActivation } from './page/usePolicyActivation';
+import { PolicyCreateContext, type PolicyCreateApi } from './featureTabs/policyCreateContext';
 import { usePageItemName } from '../layout/usePageItemName';
 
-type Tab = 'overview' | FeatureType | 'compliance_status';
 type PolicyDetail = {
   id: string;
   name: string;
@@ -102,75 +67,17 @@ type PolicyDetail = {
   // Where the policy applies (#12306). Absent when the API is a release
   // behind; parsed with parseAppliesTo, which turns that into "unknown".
   appliesTo?: unknown;
+  // What the caller may do with this policy (W03a). Absent when the API is a
+  // release behind; parsed with parsePolicyAccess.
+  access?: unknown;
 };
-const createStatusConfig = (): Record<
-  string,
-  {
-    label: string;
-    color: string;
-  }
-> => ({
-  active: {
-    label: i18n.t("common:states.active"),
-    color: "bg-success/15 text-success border-success/30",
-  },
-  inactive: {
-    label: i18n.t("common:states.inactive"),
-    color: "bg-warning/15 text-warning border-warning/30",
-  },
-  archived: {
-    label: i18n.t(
-      "policies:configurationPolicies.configPolicyDetailPage.archived",
-    ),
-    color: "bg-muted text-muted-foreground border-border",
-  },
-});
-// Exhaustive over FeatureType (full Record, not Partial) so a new canonical
-// feature type fails to compile until it gets a tab-bar icon. (#2004)
-const featureTabIcons: Record<FeatureType, React.ReactNode> = {
-  patch: <PackageCheck className="h-4 w-4" />,
-  monitors: <Radar className="h-4 w-4" />,
-  backup: <HardDrive className="h-4 w-4" />,
-  security: <Shield className="h-4 w-4" />,
-  maintenance: <Wrench className="h-4 w-4" />,
-  compliance: <ClipboardCheck className="h-4 w-4" />,
-  automation: <Zap className="h-4 w-4" />,
-  event_log: <ScrollText className="h-4 w-4" />,
-  software_policy: <PackageCheck className="h-4 w-4" />,
-  sensitive_data: <ScanSearch className="h-4 w-4" />,
-  peripheral_control: <Usb className="h-4 w-4" />,
-  warranty: <ShieldCheck className="h-4 w-4" />,
-  helper: <LifeBuoy className="h-4 w-4" />,
-  remote_access: <Monitor className="h-4 w-4" />,
-  pam: <KeyRound className="h-4 w-4" />,
-  vulnerability: <ShieldAlert className="h-4 w-4" />,
-  device_lifecycle: <Trash2 className="h-4 w-4" />,
-  onedrive_helper: <Cloud className="h-4 w-4" />,
-  hardware_monitoring: <HardDrive className="h-4 w-4" />,
-  time_sync: <Clock className="h-4 w-4" />,
-  workload_inventory: <Container className="h-4 w-4" />,
-  security_agents: <ShieldCheck className="h-4 w-4" />,
-  system_protection: <History className="h-4 w-4" />,
-  containment: <ShieldBan className="h-4 w-4" />,
-  oem_updates: <Cpu className="h-4 w-4" />,
-  wake_on_lan: <Power className="h-4 w-4" />,
-};
-// Which feature tabs the editor renders, in display order. Derived from
-// FEATURE_META keys (not a hand-listed subset) so it stays in lockstep with the
-// canonical registry and can't silently omit a tab — previously this was a hand
-// list that had drifted, dropping `security` so SecurityTab was unreachable even
-// though it's imported, wired into renderFeatureTab, and has a baseline. (#2004)
-// featureTypeParity.test.ts asserts this equals canonical minus the exclusions.
+
+// Which features the page offers. Derived from FEATURE_META keys (not a
+// hand-listed subset) so it stays in lockstep with the canonical registry
+// (#2004); featureTypeParity.test.ts asserts it. The rail orders them.
 export const FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
 
-// Every tab id that may appear in the URL hash, so a deep link / the contextual
-// help button can select the right tab. The feature-tab id is the raw
-// FeatureType key (e.g. `monitors`).
-const VALID_TABS: Tab[] = [
-  "overview",
-  ...FEATURE_TYPES,
-  "compliance_status",
-];
+const SECTIONS: RailKey[] = [...FEATURE_TYPES, "compliance_status"];
 
 // Preserve saved links to the retired tabs and canonicalize their hashes.
 export const LEGACY_TAB_ALIASES: Record<'alert_rule' | 'monitoring', 'monitors'> = {
@@ -180,8 +87,39 @@ export const LEGACY_TAB_ALIASES: Record<'alert_rule' | 'monitoring', 'monitors'>
 
 // The Assignments tab became the always-visible Applies-to strip (#12306).
 // Old `#assignments` links keep working: they open the strip's drawer over
-// whichever tab was showing.
+// whichever feature was showing.
 const APPLIES_TO_HASH_ALIAS = 'assignments';
+// The Overview tab became the header and its details form (#12469). Old
+// `#overview` links land on the first feature with the details form open.
+const OVERVIEW_HASH_ALIAS = 'overview';
+
+// A policy that does not exist yet applies nowhere and has no children.
+const NOT_APPLIED: ConfigPolicyAppliesToSummary = {
+  assignmentCount: 0,
+  allOrganizations: false,
+  targets: [],
+  childPolicyCount: 0,
+};
+
+type HashRequest = RailKey | keyof typeof LEGACY_TAB_ALIASES | typeof APPLIES_TO_HASH_ALIAS | typeof OVERVIEW_HASH_ALIAS;
+const HASH_REQUESTS: HashRequest[] = [
+  ...SECTIONS,
+  ...(Object.keys(LEGACY_TAB_ALIASES) as (keyof typeof LEGACY_TAB_ALIASES)[]),
+  APPLIES_TO_HASH_ALIAS,
+  OVERVIEW_HASH_ALIAS,
+];
+
+// Adopt the hash before paint on the client, as useHashTab does; useEffect on
+// the server, where layout effects warn.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+const replaceHash = (section: RailKey) => {
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${window.location.pathname}${window.location.search}#${section}`,
+  );
+};
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -190,90 +128,180 @@ export default function ConfigPolicyDetailPage({
   policyId,
 }: ConfigPolicyDetailPageProps) {
   useTranslation("policies");
-  const statusConfig = createStatusConfig();
-  // The hash is not available during SSR, so the tab starts at the
-  // server-rendered default and adopts the hash post-mount (pre-paint) —
-  // reading it in the useState initializer caused a hydration mismatch on
-  // deep links to a non-default tab (#2421).
-  const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, "overview");
+  // One page for create and edit (plan W03d C1). Without a policyId this is
+  // /configuration-policies/new: every feature is browsable, and the first
+  // feature Save, Activate or Don't apply yet creates the policy, inactive.
+  // The page then switches to edit mode in place (no reload).
+  const isCreatePage = !policyId;
+  const onCreatedRef = useRef<(row: CreatedPolicy) => void>(() => {});
+  const draftApi = usePolicyDraft({ enabled: isCreatePage, onCreated: (row) => onCreatedRef.current(row) });
+  const id = policyId ?? draftApi.createdId ?? undefined;
+  const createMode = !id;
+  const organizations = useOrgStore((s) => s.organizations);
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  // The hash is a request; `shown` is the feature on screen. Keeping them
+  // apart lets an alias (`#assignments`, `#overview`, a retired tab id) be
+  // resolved without mounting the wrong feature first. The hash is not
+  // available during SSR, so both start at the server-rendered default
+  // (#2421).
+  const [requested, setRequested] = useHashTab<HashRequest>(HASH_REQUESTS, FIRST_RAIL_FEATURE);
+  const [shown, setShown] = useState<RailKey>(FIRST_RAIL_FEATURE);
+  const shownRef = useRef<RailKey>(shown);
+  shownRef.current = shown;
   // The Applies-to drawer is an overlay, not a navigable view, so its open
   // state is local; only the legacy `#assignments` alias opens it from a URL.
   const [appliesToOpen, setAppliesToOpen] = useState(false);
+  // 'activate': the drawer asks for the applies-to decision Activate needs
+  // (W03d C3) on a policy that applies nowhere yet. The panel's policy id is
+  // fixed when it opens, so a create during Activate does not reload it.
+  const [appliesToMode, setAppliesToMode] = useState<{ kind: 'edit' } | { kind: 'activate'; policyId: string | null }>({ kind: 'edit' });
+  // The first feature Save created the policy but the feature itself failed.
+  const [firstSaveFailed, setFirstSaveFailed] = useState<FeatureType | null>(null);
   // The panel holds a staged draft; while it is dirty the drawer will not close
   // (Apply or Discard first).
   const [appliesToDirty, setAppliesToDirty] = useState(false);
+  // The details form (name, description, status) under the header.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // Copy (#12309): null = closed; 'organization' starts the copy at one
+  // organization (OneDrive Helper on an MSP-managed policy, plan D17).
+  const [copyOpen, setCopyOpen] = useState<null | "source" | "organization">(null);
+  const [detailsDirty, setDetailsDirty] = useState(false);
+  // Unsaved changes on the open feature (plan D16): FeatureTabShell reports
+  // them. The ref is what the hash handler and the rail read synchronously.
+  const [featureDirty, setFeatureDirtyState] = useState(false);
+  const featureDirtyRef = useRef(false);
+  const setFeatureDirty = useCallback((dirty: boolean) => {
+    featureDirtyRef.current = dirty;
+    setFeatureDirtyState(dirty);
+  }, []);
+  // A switch away from a dirty feature, waiting on Discard or Stay.
+  const [pendingSwitch, setPendingSwitch] = useState<{ target: RailKey; openDetails: boolean } | null>(null);
   // The policy's device count (#12467). null = unknown (not loaded, or the read
   // failed): the counts are left out and the page stays usable.
   const [reach, setReach] = useState<ConfigPolicyReach | null>(null);
-  // The tab showing before a hash change. useHashTab resets an unrecognized
-  // hash to Overview before this page's listener runs, so `#assignments`
-  // restores the tab from here.
-  const shownTabRef = useRef<Tab>(activeTab);
-  shownTabRef.current = activeTab;
+  // Where another policy wins each feature (#12472). null = unknown: no line.
+  const { precedence, reload: reloadPrecedenceNow } = usePolicyPrecedence(id);
+  // A save or Activate that created the policy runs in a closure from before
+  // the create, where the id was still unknown: always reload the current one.
+  const reloadPrecedenceRef = useRef(reloadPrecedenceNow);
+  reloadPrecedenceRef.current = reloadPrecedenceNow;
+  const reloadPrecedence = useCallback(() => reloadPrecedenceRef.current(), []);
 
-  useEffect(() => {
-    const redirectLegacyHash = () => {
-      const raw = window.location.hash.replace(/^#/, '');
-      if (raw === APPLIES_TO_HASH_ALIAS) {
-        const keep = shownTabRef.current;
-        const hash = keep === "overview" ? "" : `#${keep}`;
-        window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${hash}`);
-        setActiveTab(keep);
-        setAppliesToOpen(true);
+  useIsomorphicLayoutEffect(() => {
+    const current = shownRef.current;
+    let target: RailKey;
+    const openDetails = requested === OVERVIEW_HASH_ALIAS;
+    if (requested === APPLIES_TO_HASH_ALIAS) {
+      target = current;
+      setAppliesToOpen(true);
+    } else if (requested === OVERVIEW_HASH_ALIAS) {
+      target = FIRST_RAIL_FEATURE;
+    } else if (Object.prototype.hasOwnProperty.call(LEGACY_TAB_ALIASES, requested)) {
+      target = LEGACY_TAB_ALIASES[requested as keyof typeof LEGACY_TAB_ALIASES];
+    } else {
+      target = requested as RailKey;
+    }
+    if (target !== current && featureDirtyRef.current) {
+      // The hash moved off a feature with unsaved changes (back button, a
+      // link, a typed hash). Keep the feature on screen and its URL, and ask.
+      replaceHash(current);
+      setRequested(current);
+      setPendingSwitch({ target, openDetails });
+      return;
+    }
+    if (openDetails) setDetailsOpen(true);
+    if (requested !== target) {
+      // Canonicalize the alias, and reset the request so the same alias
+      // arriving again still registers as a change.
+      replaceHash(target);
+      setRequested(target);
+    }
+    setShown(target);
+  }, [requested, setRequested]);
+
+  // Reflect the selected feature in the URL hash so it is deep-linkable and
+  // the contextual help button resolves to the right per-feature doc.
+  const goToSection = useCallback(
+    (id: RailKey) => {
+      if (typeof window !== "undefined") window.location.hash = id;
+      setRequested(id);
+      setShown(id);
+    },
+    [setRequested],
+  );
+  const selectSection = useCallback(
+    (id: RailKey) => {
+      if (id === shownRef.current) return;
+      if (featureDirtyRef.current) {
+        setPendingSwitch({ target: id, openDetails: false });
         return;
       }
-      if (!Object.prototype.hasOwnProperty.call(LEGACY_TAB_ALIASES, raw)) return;
-      const alias = LEGACY_TAB_ALIASES[raw as keyof typeof LEGACY_TAB_ALIASES];
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${alias}`);
-      setActiveTab(alias);
-    };
-    redirectLegacyHash();
-    window.addEventListener('hashchange', redirectLegacyHash);
-    return () => window.removeEventListener('hashchange', redirectLegacyHash);
-  }, [setActiveTab]);
-
-  // Reflect the active tab in the URL hash so tabs are deep-linkable and the
-  // contextual help button resolves to the right per-feature doc.
-  const selectTab = useCallback(
-    (id: Tab) => {
-      if (typeof window !== "undefined") window.location.hash = id;
-      setActiveTab(id);
+      goToSection(id);
     },
-    [setActiveTab],
+    [goToSection],
+  );
+  const discardAndSwitch = useCallback(() => {
+    const pending = pendingSwitch;
+    setPendingSwitch(null);
+    if (!pending) return;
+    setFeatureDirty(false);
+    goToSection(pending.target);
+    if (pending.openDetails) setDetailsOpen(true);
+  }, [pendingSwitch, goToSection, setFeatureDirty]);
+  // Browser unload, Astro soft navigation and keyboard chords (#12469).
+  useUnsavedGuard(
+    featureDirty || detailsDirty,
+    i18n.t("policies:configurationPolicies.configPolicyDetailPage.unsavedLeaveConfirm"),
   );
   const [policy, setPolicy] = useState<PolicyDetail | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!!policyId);
   const [error, setError] = useState<string>();
-  // Overview edit state
-  const [editName, setEditName] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editStatus, setEditStatus] = useState("active");
-  const [saving, setSaving] = useState(false);
-  // Feature links state (fetched on mount, not gated by active tab)
+  // Feature links state (fetched on mount, not gated by the open feature)
   const [featureLinks, setFeatureLinks] = useState<FeatureLink[]>([]);
-  // Removal affordance for a leftover feature link on a gated (org-only) tab —
-  // see the gated hint panel below. Partner-wide policies can't author these
-  // features, but a link may pre-date the restriction (or arrive via backfill);
-  // the editor is never rendered for gated tabs, so without this the link
-  // would be stuck with no way to view or remove it.
+  // Before the create, the page renders the draft as an inactive policy that
+  // applies nowhere, owned as the Managed-by line says.
+  const { summary: draftParent, failed: draftParentFailed } = useDraftParent(
+    isCreatePage && !policy ? draftApi.draft.parent : null,
+  );
+  const draftPolicy = useMemo<PolicyDetail | null>(() => {
+    if (!createMode) return null;
+    const d = draftApi.draft;
+    return {
+      id: "",
+      name: d.name,
+      description: d.description,
+      status: "inactive",
+      orgId: d.owner.kind === "org" ? d.owner.orgId : null,
+      partnerId: draftApi.partnerId,
+      featureLinks: [],
+      parentPolicyId: d.parent?.id ?? null,
+      parentPolicy: draftParent,
+      childPolicies: [],
+      appliesTo: NOT_APPLIED,
+    };
+  }, [createMode, draftApi.draft, draftApi.partnerId, draftParent]);
+  const current = policy ?? draftPolicy;
+  // MSP-managed: decided by the Managed-by line before the create.
+  const mspManaged = createMode ? draftApi.draft.owner.kind === "msp" : current?.orgId === null;
+  // Removal affordance for a leftover feature link on a gated (org-only)
+  // feature — see the gated panel below. MSP-managed policies can't author
+  // these features, but a link may pre-date the restriction (or arrive via
+  // backfill); the editor is never rendered for gated features, so without
+  // this the link would be stuck with no way to view or remove it.
   const {
     remove: removeGatedLink,
     saving: removingGatedLink,
     error: gatedRemoveError,
-  } = useFeatureLink(policyId ?? "");
-  // Policy-level parent (#5080). `parent_policy_id` is now a persisted,
-  // validated column returned by the API — derived from `policy`, not read
-  // from a `?linked=` query param (a reload, bookmark, or the list page used
-  // to lose it entirely — #5023). No second fetch of the parent either: the
-  // API embeds its assembled feature links directly on `policy.parentPolicy`.
-  const linkedPolicyId = policy?.parentPolicyId ?? null;
-  const linkedPolicyName = policy?.parentPolicy?.name ?? null;
-  const parentFeatureLinks = policy?.parentPolicy?.featureLinks ?? [];
-  const childPolicies = policy?.childPolicies ?? [];
+  } = useFeatureLink(id ?? "");
+  // Policy-level parent (#5080). `parent_policy_id` is a persisted, validated
+  // column returned by the API, and the API embeds the parent's assembled
+  // feature links on `policy.parentPolicy` (no second fetch, no `?linked=`).
+  const linkedPolicyId = current?.parentPolicyId ?? null;
+  const parentFeatureLinks = current?.parentPolicy?.featureLinks ?? [];
   // The parent embed is fetched server-side without the org-scoped
-  // `policyAccessCondition` filter (see spec "API"), so a partner-wide parent
+  // `policyAccessCondition` filter (see spec "API"), so an MSP-managed parent
   // is always present in `policy.parentPolicy` — but an org-scoped caller
-  // still can't OPEN that policy's own detail page (it 404s under
+  // still can't OPEN that policy's own page (it 404s under
   // `policyAccessCondition`). Only link when the caller is partner-scoped or
   // the parent is owned by the same org as this policy. `useJwtClaims` (not
   // the one-shot `getJwtClaims()`) because this is a rendered decision that
@@ -285,7 +313,60 @@ export default function ConfigPolicyDetailPage({
     jwtClaims.claims.scope === "partner" &&
     !!jwtClaims.claims.partnerId;
   const canOpenParent =
-    isPartnerScope || (policy?.parentPolicy != null && policy.parentPolicy.orgId === policy.orgId);
+    isPartnerScope || (current?.parentPolicy != null && current.parentPolicy.orgId === current.orgId);
+  // What this viewer may change (spec "States", Viewer). UX only: every write
+  // route re-checks on the server.
+  const permissions = useAuthStore((s) => s.user?.permissions);
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
+  const viewer = useMemo(
+    () =>
+      resolveViewerAccess({
+        access: policy?.access,
+        policyOrgId: mspManaged ? null : (current?.orgId ?? "draft"),
+        claims: jwtClaims,
+        permissions,
+        canManagePartnerWide,
+      }),
+    [policy?.access, mspManaged, current?.orgId, jwtClaims, permissions, canManagePartnerWide],
+  );
+  const readOnly = !viewer.canEdit;
+  // Copy creates a policy the caller owns, so it is offered to a read-only
+  // viewer of an MSP-managed policy too (#11776). A role without
+  // devices.write and a site-restricted user cannot create one. UX only:
+  // the copy route re-checks the source, the owner and every gate.
+  const canCopy =
+    !createMode && viewer.reason !== "no_write_permission" && viewer.reason !== "site_restricted";
+  onCreatedRef.current = (row: CreatedPolicy) => {
+    setPolicy({
+      id: row.id,
+      name: row.name,
+      description: row.description ?? undefined,
+      status: row.status,
+      orgId: row.orgId,
+      partnerId: row.partnerId,
+      orgName: row.orgId ? (organizations.find((o) => o.id === row.orgId)?.name ?? null) : null,
+      featureLinks: [],
+      parentPolicyId: row.parentPolicyId,
+      parentPolicy: draftParent,
+      childPolicies: [],
+      appliesTo: NOT_APPLIED,
+    });
+    // The page is the new policy's page now; a reload must open it, not /new.
+    window.history.replaceState(window.history.state, "", `/configuration-policies/${row.id}#${shownRef.current}`);
+  };
+  const createApi = useMemo<PolicyCreateApi | null>(
+    () =>
+      isCreatePage
+        ? {
+            ensurePolicy: () => draftApi.ensurePolicy(),
+            reportFirstFeatureSave: ({ featureType, ok }) => {
+              setFirstSaveFailed(ok ? null : featureType);
+              void refreshPolicyRef.current();
+            },
+          }
+        : null,
+    [isCreatePage, draftApi.ensurePolicy],
+  );
   const fetchPolicy = useCallback(async () => {
     if (!policyId) return;
     try {
@@ -307,9 +388,6 @@ export default function ConfigPolicyDetailPage({
       }
       const data = await response.json();
       setPolicy(data);
-      setEditName(data.name);
-      setEditDescription(data.description ?? "");
-      setEditStatus(data.status);
       setFeatureLinks(data.featureLinks ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -317,22 +395,22 @@ export default function ConfigPolicyDetailPage({
       setLoading(false);
     }
   }, [policyId]);
-  // Re-read the policy without the loading swap, so the open feature tab stays
-  // mounted and the Overview fields keep what the user typed. Used after the
-  // Applies-to drawer closes (its editors commit each change at once) and after
-  // a details save (the PATCH answers with a bare row that lacks parentPolicy,
-  // childPolicies and appliesTo).
-  const refreshPolicy = useCallback(async () => {
-    if (!policyId) return;
+  // Re-read the policy without the loading swap, so the open feature stays
+  // mounted. Used after the Applies-to drawer closes and after a details save
+  // (the PATCH answers with a bare row that lacks parentPolicy, childPolicies
+  // and appliesTo).
+  const refreshPolicy = useCallback(async (forId?: string) => {
+    const target = forId ?? id;
+    if (!target) return;
     try {
-      const response = await fetchWithAuth(`/configuration-policies/${policyId}`);
+      const response = await fetchWithAuth(`/configuration-policies/${target}`);
       if (!response.ok) throw new Error(`${response.status}`);
       const data = await response.json();
       setPolicy(data);
     } catch {
-      // The editors may have changed where the policy applies, so the summary
-      // on screen can no longer be trusted: show it as unknown rather than
-      // keep a claim (e.g. "Not applied") that may now be false, and say so.
+      // Where the policy applies may have changed, so the summary on screen
+      // can no longer be trusted: show it as unknown rather than keep a claim
+      // (e.g. "Not applied") that may now be false, and say so.
       setPolicy((prev) => (prev ? { ...prev, appliesTo: undefined } : prev));
       showToast({
         type: "warning",
@@ -341,7 +419,9 @@ export default function ConfigPolicyDetailPage({
         ),
       });
     }
-  }, [policyId]);
+  }, [id]);
+  const refreshPolicyRef = useRef(refreshPolicy);
+  refreshPolicyRef.current = refreshPolicy;
   const closeAppliesTo = useCallback(() => {
     setAppliesToOpen(false);
     void refreshPolicy();
@@ -349,17 +429,18 @@ export default function ConfigPolicyDetailPage({
   // Only the newest read may set the count: a slow first read must not land
   // over the one taken after an Apply.
   const reachReq = useRef(0);
-  const loadReach = useCallback(async () => {
-    if (!policyId) return;
+  const loadReach = useCallback(async (forId?: string) => {
+    const target = forId ?? id;
+    if (!target) return;
     const req = ++reachReq.current;
     try {
-      const next = await fetchPolicyReach(policyId);
+      const next = await fetchPolicyReach(target);
       if (req === reachReq.current) setReach(next);
     } catch (err) {
       console.warn("[configuration policies] reach read failed", err);
       if (req === reachReq.current) setReach(null);
     }
-  }, [policyId]);
+  }, [id]);
   useEffect(() => {
     void loadReach();
   }, [loadReach]);
@@ -371,12 +452,19 @@ export default function ConfigPolicyDetailPage({
     setReach(null);
     void refreshPolicy();
     void loadReach();
-  }, [refreshPolicy, loadReach]);
-  const policyOrgId = policy?.orgId ?? null;
-  const policyOrgName = policy?.orgName ?? null;
+    reloadPrecedence();
+  }, [refreshPolicy, loadReach, reloadPrecedence]);
+  const policyOrgId = current?.orgId ?? null;
+  const policyOrgName =
+    current?.orgName ?? (policyOrgId ? (organizations.find((o) => o.id === policyOrgId)?.name ?? null) : null);
   const appliesToOwner = useMemo<PickerOwner>(
-    () => (policyOrgId ? { kind: "org", orgId: policyOrgId, orgName: policyOrgName } : { kind: "msp" }),
-    [policyOrgId, policyOrgName],
+    () => (!mspManaged && policyOrgId ? { kind: "org", orgId: policyOrgId, orgName: policyOrgName } : { kind: "msp" }),
+    [mspManaged, policyOrgId, policyOrgName],
+  );
+  // The switcher's organization, offered first (never pre-selected) in the picker.
+  const suggestedOrg = useMemo(
+    () => (currentOrgId ? { id: currentOrgId, name: organizations.find((o) => o.id === currentOrgId)?.name ?? currentOrgId } : null),
+    [currentOrgId, organizations],
   );
   const fetchFeatureLinks = useCallback(async () => {
     if (!policyId) return;
@@ -408,130 +496,132 @@ export default function ConfigPolicyDetailPage({
   useEffect(() => {
     fetchFeatureLinks();
   }, [fetchFeatureLinks]);
-  const handleSaveOverview = async () => {
-    if (!policyId) return;
-    setSaving(true);
-    try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/configuration-policies/${policyId}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              name: editName,
-              description: editDescription || undefined,
-              status: editStatus,
-            }),
-          }),
-        errorFallback: i18n.t(
-          "policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy",
-        ),
-        successMessage: i18n.t(
-          "policies:configurationPolicies.configPolicyDetailPage.detailsSaved",
-        ),
-      });
+  const handleDetailsSaved = useCallback(
+    (next: PolicyDetails) => {
       // The save succeeded: show it now, even if the re-read below fails.
       setPolicy((prev) =>
-        prev
-          ? {
-              ...prev,
-              name: editName,
-              description: editDescription || undefined,
-              status: editStatus as PolicyDetail["status"],
-            }
-          : prev,
+        prev ? { ...prev, name: next.name, description: next.description || undefined } : prev,
       );
-      await refreshPolicy();
-    } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
-      if (!(err instanceof ActionError)) {
-        showToast({
-          type: "error",
-          message: i18n.t(
-            "policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy",
-          ),
-        });
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
+      setDetailsOpen(false);
+      setDetailsDirty(false);
+      void refreshPolicy();
+    },
+    [refreshPolicy],
+  );
+  // Activate / Deactivate / Archive / Restore committed (#12470). The PATCH
+  // answers with a bare row, so show the new status now and re-read the rest.
+  const handleStatusChanged = useCallback(
+    (next: PolicyStatus) => {
+      setPolicy((prev) => (prev ? { ...prev, status: next } : prev));
+      void refreshPolicy();
+      // An inactive policy wins no feature: re-count who it outranks.
+      reloadPrecedence();
+    },
+    [refreshPolicy, reloadPrecedence],
+  );
+  // What every feature's Save, Remove and Reset state (#12470): the reach,
+  // and the parent an inherited feature comes from.
+  const policyStatus = current?.status;
+  const childPolicyCount = current?.childPolicies?.length ?? 0;
+  const parentSummary = current?.parentPolicy ?? null;
+  const featurePolicyInfo = useMemo<FeaturePolicyInfo | null>(
+    () =>
+      policyStatus
+        ? {
+            reach: { status: policyStatus, reach, childPolicyCount },
+            mspManaged,
+            parent: parentSummary
+              ? {
+                  name: parentSummary.name,
+                  href: canOpenParent ? `/configuration-policies/${parentSummary.id}` : null,
+                }
+              : null,
+          }
+        : null,
+    [policyStatus, reach, childPolicyCount, parentSummary, canOpenParent, mspManaged],
+  );
   const handleLinkChanged = useCallback(
     (link: FeatureLink | null, featureType: FeatureType) => {
       setFeatureLinks((prev) => {
         if (link === null) {
-          // Remove
           return prev.filter((l) => l.featureType !== featureType);
         }
         const idx = prev.findIndex((l) => l.featureType === featureType);
         if (idx >= 0) {
-          // Update
           const next = [...prev];
           next[idx] = link;
           return next;
         }
-        // Add
         return [...prev, link];
       });
+      // A feature that failed on the first save is saved now.
+      if (link) setFirstSaveFailed((prev) => (prev === featureType ? null : prev));
+      // The features in effect may have changed: re-count who wins them.
+      reloadPrecedence();
     },
-    [],
+    [reloadPrecedence],
   );
+  // Activate needs an applies-to decision while the policy applies nowhere
+  // (W03d C3). An unknown summary is not "applies nowhere".
+  const summaryNow = current ? parseAppliesTo(current.appliesTo) : null;
+  const needsDecision =
+    createMode ||
+    (!!current && current.status !== "active" && summaryNow !== null && appliesToState(summaryNow) === "not_applied");
+  const openActivation = useCallback(() => {
+    if (createMode && !draftApi.checkOwner()) return;
+    setAppliesToMode({ kind: "activate", policyId: id ?? null });
+    setAppliesToOpen(true);
+  }, [createMode, draftApi.checkOwner, id]);
+  const openEdit = useCallback(() => {
+    setAppliesToMode({ kind: "edit" });
+    setAppliesToOpen(true);
+  }, []);
+  const ensureForActivation = useCallback(
+    (opts?: { successMessage?: string }) =>
+      id ? Promise.resolve({ ok: true as const, id, created: false }) : draftApi.ensurePolicy(opts),
+    [id, draftApi.ensurePolicy],
+  );
+  const activation = usePolicyActivation({
+    ensurePolicy: ensureForActivation,
+    onActivated: (pid) => {
+      setAppliesToOpen(false);
+      setAppliesToDirty(false);
+      setPolicy((prev) => (prev ? { ...prev, status: "active" } : prev));
+      setReach(null);
+      void refreshPolicy(pid);
+      void loadReach(pid);
+      reloadPrecedence();
+    },
+    onAppliedOnly: (pid) => {
+      void refreshPolicy(pid);
+      void loadReach(pid);
+    },
+    onLeftInactive: (pid, created) => {
+      setAppliesToOpen(false);
+      setAppliesToDirty(false);
+      if (created) void refreshPolicy(pid);
+    },
+  });
+  // Breeze Defaults links here with `?feature=<type>` (W03d C1).
+  useEffect(() => {
+    if (!isCreatePage || typeof window === "undefined" || window.location.hash) return;
+    const feature = new URLSearchParams(window.location.search).get("feature");
+    if (feature && (FEATURE_TYPES as string[]).includes(feature)) goToSection(feature as FeatureType);
+    // Mount only: the parameter is how the page was opened.
+  }, []);
   const linkFor = (t: FeatureType) =>
     featureLinks.find((l) => l.featureType === t);
-  const parentLinkFor = (t: FeatureType) =>
-    parentFeatureLinks.find((l) => l.featureType === t);
-  // Closest-wins advisory links. Monitor detection also receives the parent's
-  // attachments for cumulative resolution; existingLink still governs saves.
-  const effectiveLinks = [
-    ...featureLinks,
-    ...parentFeatureLinks.filter((link) => !linkFor(link.featureType)),
-  ];
-  // Partner-wide ("all organizations") policies carry orgId === null (#1724).
-  // A fixed, small set of feature types are fundamentally org-scoped (backup
-  // storage credentials carry an org_id FK) and are rejected with a 400 by the
-  // API if saved on a partner-wide policy — see ORG_SCOPED_ONLY_FEATURE_TYPES
-  // in @breeze/shared/constants, the single source of truth shared with
-  // apps/api/src/routes/configurationPolicies/featureLinks.ts. Gate those tabs
-  // here so the UI never offers an edit that can't be saved (#2101).
-  // `tabs` (and this gating) is computed before the `if (!policy) return null`
-  // guard below, so `policy` may still be null while the initial fetch is in
-  // flight — optional-chain rather than assume non-null.
-  const isPartnerWide = policy?.orgId === null;
-  const isOrgOnlyFeature = (ft: FeatureType) =>
-    ORG_SCOPED_ONLY_FEATURE_TYPES.has(ft);
+  // MSP-managed ("all organizations") policies carry orgId === null (#1724).
+  // A fixed, small set of feature types are fundamentally org-scoped and the
+  // API rejects them with a 400 on an MSP-managed policy — see
+  // ORG_SCOPED_ONLY_FEATURE_TYPES in @breeze/shared, shared with
+  // apps/api/src/routes/configurationPolicies/featureLinks.ts. Gate them here
+  // so the page never offers an edit that can't be saved (#2101). `policy`
+  // may still be null while the first read is in flight.
+  const isPartnerWide = mspManaged;
   const isGatedFeature = (ft: FeatureType) =>
-    isPartnerWide && isOrgOnlyFeature(ft);
-  const tabs: {
-    id: Tab;
-    label: string;
-    icon: React.ReactNode;
-    dot?: boolean;
-    title?: string;
-  }[] = [
-    {
-      id: "overview",
-      label: i18n.t(
-        "policies:configurationPolicies.configPolicyDetailPage.overview",
-      ),
-      icon: <Layers className="h-4 w-4" />,
-    },
-    ...FEATURE_TYPES.map((ft) => ({
-      id: ft as Tab,
-      label: FEATURE_META[ft].label,
-      icon: featureTabIcons[ft],
-      dot: !!linkFor(ft) || !!parentLinkFor(ft),
-      title: isGatedFeature(ft)
-        ? i18n.t("policies:configurationPolicies.configPolicyDetailPage.gatedFeatureTitle")
-        : undefined,
-    })),
-    {
-      id: "compliance_status",
-      label: i18n.t(
-        "policies:configurationPolicies.configPolicyDetailPage.complianceStatus",
-      ),
-      icon: <ListChecks className="h-4 w-4" />,
-    },
-  ];
-  usePageItemName(policy?.name);
+    isPartnerWide && ORG_SCOPED_ONLY_FEATURE_TYPES.has(ft);
+  usePageItemName(current?.name);
 
   if (loading) {
     return (
@@ -562,49 +652,27 @@ export default function ConfigPolicyDetailPage({
       </div>
     );
   }
-  if (!policy) return null;
-  const renderFeatureTab = (ft: FeatureType) => {
-    const props = {
-      policyId: policyId!,
-      existingLink: linkFor(ft),
-      allLinks: effectiveLinks,
-      inheritedMonitorsLink: parentLinkFor('monitors'),
-      onLinkChanged: handleLinkChanged,
-      linkedPolicyId,
-      parentLink: parentLinkFor(ft),
-      siblingLinks: featureLinks,
-      orgId: policy?.orgId ?? null,
-      partnerId: policy?.partnerId ?? null,
-    };
-    switch (ft) {
-      case 'patch': return <PatchTab {...props} />;
-      case 'monitors': return <MonitorsTab {...props} />;
-      case 'backup': return <BackupTab {...props} />;
-      case 'security': return <SecurityTab {...props} />;
-      case 'maintenance': return <MaintenanceTab {...props} />;
-      case 'compliance': return <ComplianceTab {...props} />;
-      case 'automation': return <AutomationTab {...props} />;
-      case 'event_log': return <EventLogTab {...props} />;
-      case 'software_policy': return <SoftwarePolicyTab {...props} />;
-      case 'sensitive_data': return <SensitiveDataTab {...props} />;
-      case 'peripheral_control': return <PeripheralControlTab {...props} />;
-      case 'warranty': return <WarrantyTab {...props} />;
-      case 'helper': return <HelperTab {...props} />;
-      case 'remote_access': return <RemoteAccessTab {...props} />;
-      case 'pam': return <PamTab {...props} />;
-      case 'vulnerability': return <VulnerabilityTab {...props} />;
-      case 'device_lifecycle': return <DeviceLifecycleTab {...props} />;
-      case 'onedrive_helper': return <OneDriveHelperTab {...props} />;
-      case 'hardware_monitoring': return <HardwareMonitoringTab {...props} />;
-      case 'time_sync': return <TimeSyncTab {...props} />;
-      case 'workload_inventory': return <WorkloadInventoryTab {...props} />;
-      case 'security_agents': return <SecurityAgentsTab {...props} />;
-      case 'system_protection': return <SystemProtectionTab {...props} />;
-      case 'containment': return <ContainmentTab {...props} />;
-      case 'oem_updates': return <VendorUpdatesTab {...props} />;
-      case 'wake_on_lan': return <WakeOnLanTab {...props} />;
-    }
-  };
+  if (!current) return null;
+  const shownFeature = shown === "compliance_status" ? null : shown;
+  const sectionLabel = shownFeature
+    ? configFeatureLabel(shownFeature)
+    : i18n.t("policies:configurationPolicies.configPolicyDetailPage.complianceStatus");
+  const renderGatedFeature = (ft: FeatureType) => (
+    <UnavailableFeaturePanel
+      featureType={ft}
+      hasLink={!!linkFor(ft)}
+      readOnly={readOnly}
+      removing={removingGatedLink}
+      removeError={gatedRemoveError ?? null}
+      onRemove={async () => {
+        const link = linkFor(ft);
+        if (!link) return;
+        const ok = await removeGatedLink(link.id);
+        if (ok) handleLinkChanged(null, ft);
+      }}
+      onCopyToOrganization={canCopy ? () => setCopyOpen("organization") : undefined}
+    />
+  );
   return (
     <div className="space-y-6">
       <Breadcrumbs
@@ -617,47 +685,101 @@ export default function ConfigPolicyDetailPage({
           },
           {
             label:
-              policy.name ||
+              current.name ||
               i18n.t(
                 "policies:configurationPolicies.configPolicyDetailPage.policy",
               ),
           },
         ]}
       />
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <a
-            href="/configuration-policies"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-            aria-label={i18n.t(
-              "policies:configurationPolicies.configPolicyDetailPage.backToList",
-            )}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </a>
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold tracking-tight">
-                {policy.name}
-              </h1>
-              <span
-                className={cn(
-                  "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
-                  statusConfig[policy.status]?.color,
-                )}
-              >
-                {statusConfig[policy.status]?.label}
-              </span>
-            </div>
-            {policy.description && (
-              <p className="mt-1 text-sm text-muted-foreground">
-                {policy.description}
-              </p>
-            )}
-          </div>
-        </div>
+      {/* Header: name, state and the facts the Overview tab used to hold. */}
+      <div className="flex items-start gap-4">
+        <a
+          href="/configuration-policies"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border hover:bg-muted"
+          aria-label={i18n.t(
+            "policies:configurationPolicies.configPolicyDetailPage.backToList",
+          )}
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </a>
+        {createMode ? (
+          <PolicyCreateHeader draft={draftApi} organizations={organizations} onActivate={openActivation} />
+        ) : (
+        <PolicyHeader
+          name={current.name}
+          description={current.description}
+          status={current.status}
+          orgId={current.orgId}
+          orgName={current.orgName}
+          parentPolicy={current.parentPolicy}
+          childPolicies={current.childPolicies ?? []}
+          canOpenParent={canOpenParent}
+          readOnly={readOnly}
+          readOnlyReason={viewer.reason}
+          onEditDetails={readOnly ? undefined : () => setDetailsOpen(true)}
+          showFixedNote={!readOnly}
+          onCopy={canCopy ? () => setCopyOpen("source") : undefined}
+          actions={
+            id && (
+              <PolicyStateActions
+                policyId={id}
+                status={current.status}
+                reach={reach}
+                childPolicyCount={current.childPolicies?.length ?? 0}
+                readOnly={readOnly}
+                onChanged={handleStatusChanged}
+                onActivateRequest={needsDecision ? openActivation : undefined}
+              />
+            )
+          }
+        />
+        )}
       </div>
+
+      {createMode && draftParentFailed && (
+        <p
+          role="alert"
+          data-testid="config-policy-parent-read-failed"
+          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+        >
+          {i18n.t("policies:configurationPolicies.policyCreate.parentReadFailed")}
+        </p>
+      )}
+
+      {firstSaveFailed && (
+        <p
+          role="alert"
+          data-testid="config-policy-first-save-failed"
+          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+        >
+          {i18n.t("policies:configurationPolicies.policyCreate.firstSaveFailed", {
+            feature: configFeatureLabel(firstSaveFailed),
+          })}
+        </p>
+      )}
+
+      {copyOpen && id && (
+        <CopyPolicyDialog
+          open
+          onClose={() => setCopyOpen(null)}
+          source={{ id, name: current.name, orgId: current.orgId, parentPolicyId: current.parentPolicyId ?? null }}
+          organizations={organizations}
+          currentOrgId={currentOrgId}
+          creator={creatorKind(jwtClaims, canManagePartnerWide)}
+          initialOwner={copyOpen === "organization" ? "organization" : undefined}
+        />
+      )}
+
+      {detailsOpen && !readOnly && id && (
+        <PolicyDetailsForm
+          policyId={id}
+          initial={{ name: current.name, description: current.description ?? "" }}
+          onSaved={handleDetailsSaved}
+          onCancel={() => setDetailsOpen(false)}
+          onDirtyChange={setDetailsDirty}
+        />
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -665,268 +787,127 @@ export default function ConfigPolicyDetailPage({
         </div>
       )}
 
-      {/* Where the policy applies: above the tabs, visible on every tab (#12306). */}
+      {/* Where the policy applies: visible while any feature is open (#12306). */}
       <AppliesToStrip
-        summary={parseAppliesTo(policy.appliesTo)}
-        status={policy.status}
-        onEdit={() => setAppliesToOpen(true)}
+        summary={parseAppliesTo(current.appliesTo)}
+        status={current.status}
+        onEdit={readOnly ? undefined : createMode ? openActivation : openEdit}
         reach={reach}
       />
 
-      {/* Tabs */}
-      <OverflowTabs
-        tabs={tabs}
-        activeTab={activeTab}
-        onTabChange={(id) => selectTab(id as Tab)}
-      />
-
-      {/* Tab panel: exactly one of the activeTab-gated blocks below renders
-          at a time, so this single wrapper always matches whichever tab
-          button's aria-controls is currently pointing at it (axe:
-          aria-valid-attr-value / aria-required-children — #7179). */}
-      <div
-        role="tabpanel"
-        id={overflowPanelId(activeTab)}
-        aria-labelledby={overflowTabId(activeTab)}
-        tabIndex={-1}
-        className="space-y-6"
-      >
-      {/* Overview Tab */}
-      {activeTab === "overview" && (
-        <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h2 className="text-lg font-semibold">
-            {i18n.t(
-              "policies:configurationPolicies.configPolicyDetailPage.policyDetails",
-            )}
-          </h2>
-          <div className="mt-4 grid gap-4">
-            <div>
-              <label htmlFor="config-policy-name" className="text-sm font-medium">
-                {i18n.t("common:labels.name")}
-              </label>
-              <input
-                id="config-policy-name"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
-            </div>
-            <div>
-              <label htmlFor="config-policy-description" className="text-sm font-medium">
-                {i18n.t("common:labels.description")}
-              </label>
-              <textarea
-                id="config-policy-description"
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-                className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
-            </div>
-            <div>
-              <label htmlFor="config-policy-status" className="text-sm font-medium">
-                {i18n.t("common:labels.status")}
-              </label>
-              <select
-                id="config-policy-status"
-                value={editStatus}
-                onChange={(e) => setEditStatus(e.target.value)}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
-              >
-                <option value="active">{i18n.t("common:states.active")}</option>
-                <option value="inactive">
-                  {i18n.t("common:states.inactive")}
-                </option>
-                <option value="archived">
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyDetailPage.archived2",
+      {/* The feature rail replaces the tab strip; the open feature sits beside it. */}
+      <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <FeatureRail
+          activeKey={shown}
+          ownLinks={featureLinks}
+          parentLinks={parentFeatureLinks}
+          isGated={isGatedFeature}
+          dirtyKey={featureDirty ? shown : null}
+          onNavigate={selectSection}
+          precedence={precedence}
+        />
+        <section
+          aria-label={sectionLabel}
+          data-testid="config-policy-feature-panel"
+          className="min-w-0 space-y-6"
+        >
+          <PolicyCreateContext.Provider value={createApi}>
+          <FeatureDirtyReporterContext.Provider value={setFeatureDirty}>
+          <FeatureReadOnlyContext.Provider value={readOnly}>
+          <FeaturePolicyContext.Provider value={featurePolicyInfo}>
+            {shownFeature &&
+              (isGatedFeature(shownFeature) ? (
+                renderGatedFeature(shownFeature)
+              ) : (
+                <>
+                <OutrankedLine
+                  featureType={shownFeature}
+                  state={featureState(
+                    linkFor(shownFeature),
+                    parentFeatureLinks.find((l) => l.featureType === shownFeature),
+                    false,
                   )}
-                </option>
-              </select>
-            </div>
-          </div>
-          <div className="mt-6 flex justify-end">
-            <button
-              type="button"
-              onClick={handleSaveOverview}
-              disabled={saving}
-              className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-            >
-              {saving
-                ? i18n.t(
-                    "policies:configurationPolicies.configPolicyDetailPage.saving",
-                  )
-                : i18n.t(
-                    "policies:configurationPolicies.configPolicyDetailPage.saveChanges",
-                  )}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Blast radius of this baseline (#5080): who inherits from it. */}
-      {activeTab === "overview" && childPolicies.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="config-policy-inherited-by">
-          <h2 className="text-lg font-semibold">
-            {i18n.t(
-              "policies:configurationPolicies.configPolicyDetailPage.inheritedByPolicies",
-              { count: childPolicies.length },
-            )}
-          </h2>
-          <ul className="mt-3 space-y-1 text-sm">
-            {childPolicies.map((child) => (
-              <li key={child.id}>
-                <a
-                  href={`/configuration-policies/${child.id}`}
-                  className="text-primary underline underline-offset-2 hover:text-primary/80"
-                >
-                  {child.name}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Parent policy banner — shown on feature tabs when inheriting from another policy */}
-      {FEATURE_TYPES.includes(activeTab as FeatureType) &&
-        linkedPolicyId &&
-        !isGatedFeature(activeTab as FeatureType) && (
-          <div className="flex items-center rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-3">
-            <div className="flex items-center gap-2 text-sm">
-              <Link2 className="h-4 w-4 text-blue-600" />
-              <span className="font-medium text-blue-700">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyDetailPage.inheritingFrom",
-                )}{" "}
-                {canOpenParent ? (
-                  <a
-                    href={`/configuration-policies/${linkedPolicyId}`}
-                    className="underline underline-offset-2 hover:text-blue-900"
-                  >
-                    {linkedPolicyName ||
-                      i18n.t(
-                        "policies:configurationPolicies.configPolicyDetailPage.parentPolicy",
-                      )}
-                  </a>
-                ) : (
-                  <span>
-                    {linkedPolicyName ||
-                      i18n.t(
-                        "policies:configurationPolicies.configPolicyDetailPage.parentPolicy",
-                      )}
-                  </span>
-                )}
-              </span>
-              {!canOpenParent && (
-                <span className="text-xs text-blue-600/70">
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyDetailPage.managedByYourMsp",
-                  )}
-                </span>
-              )}
-              <span className="text-xs text-blue-600/70">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyDetailPage.overrideIndividualTabsToCustomizeSettings",
-                )}
-              </span>
-            </div>
-          </div>
-        )}
-
-      {/* Feature Tabs — org-only features (e.g. Backup) are rendered read-only
-              with an inline hint on partner-wide policies instead of the editor,
-              since the API rejects that save with a 400 (#2101). */}
-      {FEATURE_TYPES.includes(activeTab as FeatureType) &&
-        (isGatedFeature(activeTab as FeatureType) ? (
-          <div className="flex items-start gap-3 rounded-lg border border-dashed bg-muted/30 p-6 text-sm text-muted-foreground">
-            <Info className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>
-              <p className="font-medium text-foreground">
-                {FEATURE_META[activeTab as FeatureType].label}
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyDetailPage.isnTAvailableOnPartnerWidePolicies",
-                )}
-              </p>
-              <p className="mt-1">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyDetailPage.configureThisFeatureOnAnOrganizationScoped",
-                )}
-              </p>
-              {/* A gated tab never renders its editor, so a leftover link
-                  (pre-dating the restriction) needs a removal path here or it
-                  would be permanently stuck. */}
-              {linkFor(activeTab as FeatureType) && (
-                <div className="mt-4">
-                  <p className="text-warning">
-                    {i18n.t(
-                      "policies:configurationPolicies.configPolicyDetailPage.thisPolicyStillCarriesAnExisting",
-                    )}{" "}
-                    {FEATURE_META[activeTab as FeatureType].label.toLowerCase()}
-                    {i18n.t(
-                      "policies:configurationPolicies.configPolicyDetailPage.configurationThatWillNeverBeApplied",
-                    )}
-                  </p>
-                  {gatedRemoveError && (
-                    <p className="mt-2 text-destructive">{gatedRemoveError}</p>
-                  )}
-                  <button
-                    type="button"
-                    disabled={removingGatedLink}
-                    onClick={async () => {
-                      const ft = activeTab as FeatureType;
-                      const link = linkFor(ft);
-                      if (!link) return;
-                      const ok = await removeGatedLink(link.id);
-                      if (ok) handleLinkChanged(null, ft);
-                    }}
-                    className="mt-2 h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
-                  >
-                    {removingGatedLink
-                      ? i18n.t(
-                          "policies:configurationPolicies.configPolicyDetailPage.removing",
-                        )
-                      : i18n.t(
-                          "policies:configurationPolicies.configPolicyDetailPage.removeConfiguration",
-                        )}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          renderFeatureTab(activeTab as FeatureType)
-        ))}
-
-      {/* Compliance Status Tab (read-only results; the `compliance` feature tab is the rule editor) */}
-      {activeTab === "compliance_status" &&
-        policyId && <ComplianceStatusTab policyId={policyId} />}
-
+                  precedence={precedence}
+                />
+                <PolicyFeatureEditor
+                  featureType={shownFeature}
+                  policyId={id ?? ""}
+                  featureLinks={featureLinks}
+                  parentFeatureLinks={parentFeatureLinks}
+                  linkedPolicyId={linkedPolicyId}
+                  orgId={current.orgId}
+                  partnerId={current.partnerId}
+                  onLinkChanged={handleLinkChanged}
+                />
+                </>
+              ))}
+          </FeaturePolicyContext.Provider>
+          </FeatureReadOnlyContext.Provider>
+          </FeatureDirtyReporterContext.Provider>
+          </PolicyCreateContext.Provider>
+          {/* Compliance Status: read-only results; the `compliance` feature is the rule editor. */}
+          {shown === "compliance_status" && id && <ComplianceStatusTab policyId={id} />}
+        </section>
       </div>
+
+      {/* Leaving a feature with unsaved changes asks first (#12469). */}
+      <ConfirmDialog
+        open={pendingSwitch !== null}
+        onClose={() => setPendingSwitch(null)}
+        onConfirm={discardAndSwitch}
+        title={i18n.t("policies:configurationPolicies.configPolicyDetailPage.discardChangesTitle")}
+        message={i18n.t("policies:configurationPolicies.configPolicyDetailPage.discardChangesMessage", {
+          feature: sectionLabel,
+        })}
+        confirmLabel={i18n.t("policies:configurationPolicies.configPolicyDetailPage.discardChanges")}
+        cancelLabel={i18n.t("policies:configurationPolicies.configPolicyDetailPage.stayOnFeature")}
+        variant="warning"
+        confirmTestId="config-policy-discard-confirm"
+      />
 
       {/* The one applies-to editor, in a drawer so the feature stays in view
           (#12467). It stages changes and commits them with one Apply; while
-          the draft is dirty the drawer will not close. */}
+          the draft is dirty the drawer will not close. A read-only viewer has
+          no Edit, and `#assignments` does not open it for them. */}
       <Drawer
-        open={appliesToOpen}
+        open={appliesToOpen && !readOnly}
         onClose={closeAppliesTo}
-        title={i18n.t(
-          "policies:configurationPolicies.configPolicyDetailPage.appliesToDrawerTitle",
-        )}
+        title={
+          appliesToMode.kind === "activate"
+            ? i18n.t("policies:configurationPolicies.activation.drawerTitle")
+            : i18n.t("policies:configurationPolicies.configPolicyDetailPage.appliesToDrawerTitle")
+        }
         width="max-w-2xl"
         dataTestId="config-policy-applies-to-drawer"
-        closeDisabled={appliesToDirty}
+        // Closing the activation drawer writes nothing: it is Cancel.
+        closeDisabled={appliesToDirty && appliesToMode.kind === "edit"}
         closeDisabledReason={i18n.t(
           "policies:configurationPolicies.configPolicyDetailPage.appliesToCloseBlocked",
         )}
       >
-        {policyId && (
+        {!readOnly && appliesToMode.kind === "activate" && (
           <AppliesToPanel
-            policyId={policyId}
+            key="activate"
+            policyId={appliesToMode.policyId}
             owner={appliesToOwner}
-            summary={parseAppliesTo(policy.appliesTo)}
+            summary={parseAppliesTo(current.appliesTo)}
             reach={reach}
             onDirtyChange={setAppliesToDirty}
             onApplied={handleApplied}
+            activation={activation}
+            suggestedOrg={suggestedOrg}
+          />
+        )}
+        {id && !readOnly && appliesToMode.kind === "edit" && (
+          <AppliesToPanel
+            key="edit"
+            policyId={id}
+            owner={appliesToOwner}
+            summary={parseAppliesTo(current.appliesTo)}
+            reach={reach}
+            onDirtyChange={setAppliesToDirty}
+            onApplied={handleApplied}
+            suggestedOrg={suggestedOrg}
           />
         )}
       </Drawer>

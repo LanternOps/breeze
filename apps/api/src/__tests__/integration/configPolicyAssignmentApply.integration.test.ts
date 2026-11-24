@@ -17,7 +17,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { asc, eq } from 'drizzle-orm';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
-import { configPolicyAssignments, configurationPolicies, organizationUsers } from '../../db/schema';
+import { configPolicyAssignments, configurationPolicies, organizationUsers, partnerUsers } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
 import { shutdownPeripheralJobs } from '../../jobs/peripheralJobs';
 import { shutdownPolicyEvaluationWorker } from '../../jobs/policyEvaluationWorker';
@@ -83,11 +83,14 @@ async function orgToken(
   });
 }
 
-async function partnerToken(partnerId: string, orgAccess: 'all' | 'selected' = 'all') {
+async function partnerToken(partnerId: string, orgAccess: 'all' | 'selected' = 'all', selectedOrgIds: string[] = []) {
   const user = await createUser({ partnerId, orgId: null, email: `apply-p-${randomUUID().slice(0, 8)}@example.test` });
   const role = await createRole({ scope: 'partner', partnerId });
   await grantRolePermissions(role.id, READ_WRITE);
   await assignUserToPartner(user.id, partnerId, role.id, orgAccess);
+  if (selectedOrgIds.length > 0) {
+    await (getTestDb() as any).update(partnerUsers).set({ orgIds: selectedOrgIds }).where(eq(partnerUsers.userId, user.id));
+  }
   return createAccessToken({
     sub: user.id, email: user.email, roleId: role.id, scope: 'partner',
     orgId: null, partnerId, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
@@ -253,7 +256,9 @@ describe('POST /configuration-policies/:id/assignments/apply on real Postgres (#
       .values({ orgId: null, partnerId: partner.id, name: `MSP ${randomUUID().slice(0, 8)}`, status: 'active' })
       .returning({ id: configurationPolicies.id });
     const mspRow = await insertRow(mspPolicy.id, 'site', siteA.id);
-    const selected = await partnerToken(partner.id, 'selected');
+    // Selected access to the org the policy applies to, so the caller can read
+    // it (#12462 W03a) and the partner-wide capability is what refuses.
+    const selected = await partnerToken(partner.id, 'selected', [org.id]);
     const partial = await call(app, selected, 'POST', `/configuration-policies/${mspPolicy.id}/assignments/apply`, { remove: [mspRow.id] });
     expect(partial.status).toBe(403);
 

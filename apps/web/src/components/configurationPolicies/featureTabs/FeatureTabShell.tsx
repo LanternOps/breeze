@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Loader2, Trash2, RotateCcw, PenLine } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { FeatureDirtyContext, FeatureDirtyReporterContext, useFeatureReadOnly } from "./featureEditing";
+import { featureStateLabel } from "../page/featureState";
+import { deviceCountPhrase, policyCountPhrase, reachPhrase, saveReach } from "../page/ReachLine";
+import { useFeaturePolicy } from "./featurePolicyContext";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -17,7 +21,7 @@ type FeatureTabShellProps = {
   configuredButInactive?: boolean;
   saving: boolean;
   /**
-   * When true, the Save (and Override) button is disabled independent of the
+   * When true, the Save button is disabled independent of the
    * saving state — used by tabs with client-side validation (e.g. an invalid
    * library targeting row) to block a save the server would 400 on anyway.
    */
@@ -30,9 +34,15 @@ type FeatureTabShellProps = {
   onRemove?: () => void;
   /** True when this tab is showing inherited settings from a parent policy */
   isInherited?: boolean;
-  /** Called when user clicks "Override" on an inherited tab */
-  onOverride?: () => void;
-  /** Called when user clicks "Revert to Parent" on an overridden tab */
+  /**
+   * An inherited tab the user unlocked with Change for this policy
+   * (useChangeForPolicy): the form is live and Save creates this policy's own
+   * link. Nothing is written until Save.
+   */
+  unlocked?: boolean;
+  /** Change for this policy. Writes nothing; offered only with this. */
+  onUnlock?: () => void;
+  /** Called when user clicks "Reset to parent" on an overridden tab */
   onRevert?: () => void;
   children: ReactNode;
 };
@@ -49,12 +59,46 @@ export default function FeatureTabShell({
   onSave,
   onRemove,
   isInherited,
-  onOverride,
+  unlocked,
+  onUnlock,
   onRevert,
   children,
 }: FeatureTabShellProps) {
   useTranslation("policies");
-  // #5314: Revert to Parent and Remove both fire an irreversible
+  // A read-only viewer (#12469) gets the form disabled and no footer action:
+  // Save, Remove, Reset and Change for this policy are not rendered at all.
+  const readOnly = useFeatureReadOnly();
+  // An inherited feature shows the parent's values, locked, until Change for
+  // this policy unlocks it (#12470).
+  const locked = !!isInherited && !unlocked;
+  // What a save, a Remove or a Reset changes on devices (#12470). Without the
+  // page's facts (or before the reach read answers) no count is claimed.
+  const policyInfo = useFeaturePolicy();
+  const reachValue = saveReach(policyInfo?.reach ?? null);
+  const reachKnown = !!policyInfo?.reach?.reach;
+  const deviceImpact = (action: "remove" | "revert"): string | null => {
+    if (!reachKnown) return null;
+    if (!reachValue) return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.impactNoDeviceNow");
+    const devices = deviceCountPhrase(reachValue.devices, reachValue.partial);
+    if (reachValue.kind === "reaches") {
+      if (action === "remove") return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.removeImpactReaches", { devices, feature: title });
+      return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.resetImpactReaches", { devices, feature: title });
+    }
+    const policies = policyCountPhrase(reachValue.policies);
+    if (action === "remove") return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.removeImpactInUse", { policies, devices, feature: title });
+    return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.resetImpactInUse", { policies, devices, feature: title });
+  };
+  const confirmMessage = (base: string, action: "remove" | "revert"): ReactNode => {
+    const impact = deviceImpact(action);
+    return impact ? (
+      <>
+        {base} <span data-testid="feature-tab-confirm-impact">{impact}</span>
+      </>
+    ) : (
+      base
+    );
+  };
+  // #5314: Reset to parent and Remove both fire an irreversible
   // DELETE .../features/:id that destroys this policy's override. The shell
   // renders the footer for every feature tab, so guarding here covers all of
   // them at once rather than per-tab.
@@ -73,8 +117,60 @@ export default function FeatureTabShell({
   const [thrownMessage, setThrownMessage] = useState<string | null>(null);
   const awaitingSettle = useRef(false);
 
+  // D16 (#12469): unsaved changes. The feature is dirty after any of:
+  // - a bubbling native input/change event in the body;
+  // - a click on a button in the body (a toggle, an Add/Remove row, a
+  //   segmented choice), unless it is a disclosure (aria-expanded), opens a
+  //   popup (aria-haspopup), or sits inside [data-feature-dirty-ignore] (a
+  //   status panel, a Test or Refresh action);
+  // - useFeatureDirty().markDirty(), for a picker or drag that emits neither.
+  // Native listeners (not React's onChange) so a portaled sub-form that saves
+  // on its own (a ring or destination editor dialog) does not count.
+  // Only a Save that really sent a request (`saving` went true), settled with
+  // no field error, banner or throw, and saw no edit after the click clears it.
+  const reportDirty = useContext(FeatureDirtyReporterContext);
+  const [dirty, setDirty] = useState(false);
+  const editSeq = useRef(0);
+  const noteEdit = useCallback(() => {
+    editSeq.current += 1;
+    setDirty(true);
+  }, []);
+  const saveRun = useRef({ editSeqAtClick: 0, sentRequest: false, threw: false });
+  const markDirty = noteEdit;
+  const dirtyApi = useMemo(() => ({ markDirty }), [markDirty]);
+  useEffect(() => {
+    reportDirty(dirty);
+  }, [dirty, reportDirty]);
+  useEffect(() => () => reportDirty(false), [reportDirty]);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const onEdit = (e: Event) => {
+      if ((e.target as Element | null)?.closest?.("[data-feature-dirty-ignore]")) return;
+      noteEdit();
+    };
+    const onClick = (e: MouseEvent) => {
+      const control = (e.target as Element | null)?.closest?.(
+        'button, [role="switch"], [role="checkbox"], [role="radio"], [role="option"], [aria-pressed]',
+      );
+      if (!control || !body.contains(control)) return;
+      if (control.matches(":disabled, [aria-expanded], [aria-haspopup]")) return;
+      if (control.closest("[data-feature-dirty-ignore]")) return;
+      noteEdit();
+    };
+    body.addEventListener("input", onEdit);
+    body.addEventListener("change", onEdit);
+    body.addEventListener("click", onClick);
+    return () => {
+      body.removeEventListener("input", onEdit);
+      body.removeEventListener("change", onEdit);
+      body.removeEventListener("click", onClick);
+    };
+  }, [noteEdit]);
+
   const handleSaveClick = async () => {
     awaitingSettle.current = true;
+    saveRun.current = { editSeqAtClick: editSeq.current, sentRequest: false, threw: false };
     setBlockedHint(null);
     setThrownMessage(null);
     try {
@@ -90,6 +186,7 @@ export default function FeatureTabShell({
     } catch (err) {
       // A throwing tab save must not be a mute click either.
       console.error("[FeatureTabShell] save failed", err);
+      saveRun.current.threw = true;
       setThrownMessage(err instanceof Error ? err.message : "");
     } finally {
       setRevealTick((t) => t + 1);
@@ -100,6 +197,7 @@ export default function FeatureTabShell({
   useEffect(() => {
     if (saving) {
       setBlockedHint(null);
+      if (awaitingSettle.current) saveRun.current.sentRequest = true;
     } else if (awaitingSettle.current) {
       setRevealTick((t) => t + 1);
     }
@@ -121,6 +219,15 @@ export default function FeatureTabShell({
     const target = fieldError ?? banner;
     if (!target) {
       setBlockedHint(null);
+      // A save that sent a request and settled with nothing wrong: the form
+      // matches what is saved. Not while it is still in flight (a
+      // void-returning tab reveals once before `saving` settles), not after a
+      // throw, not when the tab refused before sending (a validation return
+      // with no marked error), and not when an edit arrived after the click.
+      const run = saveRun.current;
+      if (!saving && run.sentRequest && !run.threw && editSeq.current === run.editSeqAtClick) {
+        setDirty(false);
+      }
       return;
     }
     setBlockedHint(
@@ -152,13 +259,14 @@ export default function FeatureTabShell({
   }, [revealTick]);
 
   const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
+  // The rail's words (plan D7, #12469): Set here, From parent, Not set.
   const badgeText = isInherited
-    ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeInherited")
+    ? featureStateLabel("from_parent")
     : savedInactive
       ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeSavedNotDeployed")
       : isConfigured
-        ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeConfigured")
-        : i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeNotConfigured");
+        ? featureStateLabel("set_here")
+        : featureStateLabel("not_set");
   const badgeClass = isInherited
     ? "border-blue-500/40 bg-blue-500/20 text-blue-700"
     : savedInactive
@@ -178,10 +286,29 @@ export default function FeatureTabShell({
             <div>
               <h2 className="text-lg font-semibold">{title}</h2>
               <p className="text-sm text-muted-foreground">{description}</p>
+              {isInherited && policyInfo?.parent && (
+                <p data-testid="feature-tab-from-parent" className="mt-1 text-sm text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.featureTabShell.fromParentPolicy",
+                    { policy: policyInfo.parent.name },
+                  )}
+                  {policyInfo.parent.href && (
+                    <>
+                      {" · "}
+                      <a
+                        href={policyInfo.parent.href}
+                        className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+                      >
+                        {i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.openParent")}
+                      </a>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <span
-            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badgeClass}`}
+            className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium ${badgeClass}`}
           >
             {badgeText}
           </span>
@@ -203,26 +330,39 @@ export default function FeatureTabShell({
         {/* Inline settings form */}
         <div
           ref={bodyRef}
-          className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
+          className={`mt-6 ${locked ? "opacity-60 pointer-events-none" : ""}`}
         >
-          {children}
+          <fieldset disabled={readOnly || locked} className="min-w-0">
+            <FeatureDirtyContext.Provider value={dirtyApi}>{children}</FeatureDirtyContext.Provider>
+          </fieldset>
         </div>
 
         {/* Footer */}
-        <div className="mt-6 flex items-center justify-between border-t pt-4">
+        {!readOnly && (
+        <div data-testid="feature-tab-footer" className="mt-6 flex items-center justify-between border-t pt-4">
           <div>
-            {isInherited && onOverride && (
+            {locked && onUnlock && (
               <button
                 type="button"
-                onClick={onOverride}
-                disabled={saving || saveDisabled}
+                data-testid="feature-tab-change-for-policy"
+                onClick={onUnlock}
                 className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
               >
                 <PenLine className="h-4 w-4" />
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.featureTabShell.override",
+                  "policies:configurationPolicies.featureTabs.featureTabShell.unlockAction",
                 )}
               </button>
+            )}
+            {isInherited && !locked && (
+              <p
+                data-testid="feature-tab-changing-hint"
+                className="max-w-xs text-sm text-muted-foreground"
+              >
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.featureTabShell.unlockedHint",
+                )}
+              </p>
             )}
             {!isInherited && onRevert && (
               <button
@@ -249,7 +389,7 @@ export default function FeatureTabShell({
               </button>
             )}
           </div>
-          {!isInherited && (
+          {!locked && (
             <div className="flex items-center gap-3">
             {(blockedHint ?? thrownMessage) !== null && !saving && (
               <p
@@ -279,11 +419,17 @@ export default function FeatureTabShell({
                 ? i18n.t(
                     "policies:configurationPolicies.featureTabs.featureTabShell.saving",
                   )
-                : i18n.t("common:actions.save")}
+                : reachValue
+                  ? i18n.t(
+                      "policies:configurationPolicies.featureTabs.featureTabShell.saveWithReach",
+                      { reach: reachPhrase(reachValue) },
+                    )
+                  : i18n.t("common:actions.save")}
             </button>
             </div>
           )}
         </div>
+        )}
       </div>
 
       <ConfirmDialog
@@ -291,14 +437,19 @@ export default function FeatureTabShell({
         onClose={() => setPendingAction(null)}
         onConfirm={() => {
           setPendingAction(null);
+          // Reverting discards this feature's edits on purpose.
+          setDirty(false);
           onRevert?.();
         }}
         title={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmTitle",
         )}
-        message={i18n.t(
-          "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
-          { feature: title },
+        message={confirmMessage(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
+            { feature: title },
+          ),
+          "revert",
         )}
         confirmLabel={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.revertToParent",
@@ -311,14 +462,19 @@ export default function FeatureTabShell({
         onClose={() => setPendingAction(null)}
         onConfirm={() => {
           setPendingAction(null);
+          // Removing discards this feature's edits on purpose.
+          setDirty(false);
           onRemove?.();
         }}
         title={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmTitle",
         )}
-        message={i18n.t(
-          "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
-          { feature: title },
+        message={confirmMessage(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
+            { feature: title },
+          ),
+          "remove",
         )}
         confirmLabel={i18n.t("common:actions.remove")}
         confirmTestId="feature-tab-remove-confirm"

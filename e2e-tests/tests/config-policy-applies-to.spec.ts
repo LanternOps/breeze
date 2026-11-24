@@ -29,16 +29,17 @@ test.describe('config policy applies-to', () => {
       /\/configuration-policies\/new(\?|$|#)/,
     );
 
-    // 1. Create an MSP-managed policy, so the drawer shows the organization
-    // checklist whatever the admin's org selection. It lands with the drawer open.
-    await policies.createModeNew().click();
+    // 1. Create an MSP-managed policy (the admin's default owner, #12471),
+    // saved inactive and applied nowhere with Don't apply yet.
+    await expect(policies.createHeader()).toBeVisible();
+    // The owner default is set after hydration; typing before it is lost.
+    await expect(policies.managedBySelect()).toHaveValue('__msp__');
     await policies.createName().fill(`E2E applies-to ${Date.now()}`);
-    await policies.ownerPartner().check();
-    await policies.createSubmit().click();
-    await cleanPage.waitForURL(/\/configuration-policies\/[0-9a-f-]{36}/);
+    await policies.activate().click();
+    await policies.activationDontApply().click();
+    // The page becomes the policy's own page in place (replaceState, no load).
+    await expect(cleanPage).toHaveURL(/\/configuration-policies\/[0-9a-f-]{36}/, { timeout: 30_000 });
     const policyId = /\/configuration-policies\/([0-9a-f-]{36})/.exec(cleanPage.url())![1];
-    await expect(policies.drawer()).toBeVisible();
-    await policies.drawerClose().click();
     await expect(policies.drawer()).toBeHidden();
 
     // 2. A new policy applies to nothing, and the strip says so.

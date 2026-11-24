@@ -30,7 +30,26 @@ type TargetPickerProps = {
   offerOrganization?: boolean;
   /** No pick is accepted (e.g. while an Apply runs). */
   disabled?: boolean;
+  /**
+   * The org switcher's organization (W03d C3): listed first among the
+   * organizations an MSP policy can choose from. A suggestion only: nothing
+   * is picked until the user picks it.
+   */
+  suggestedOrg?: { id: string; name: string } | null;
 };
+
+/** `orgs` with the suggested organization first; added when an unsearched page lacks it. */
+export function withSuggestedFirst(
+  orgs: readonly Option[],
+  suggested: { id: string; name: string } | null,
+  searching: boolean,
+): Option[] {
+  if (!suggested) return [...orgs];
+  const found = orgs.find((o) => o.id === suggested.id);
+  const rest = orgs.filter((o) => o.id !== suggested.id);
+  if (found) return [found, ...rest];
+  return searching ? [...orgs] : [{ id: suggested.id, name: suggested.name }, ...rest];
+}
 
 type Option = { id: string; name: string; extra?: string };
 
@@ -60,7 +79,14 @@ async function load(url: string, init: { skipOrgIdInjection?: boolean } | undefi
   return rows(body).map((r) => toOption(r, withSite)).filter((o): o is Option => o !== null);
 }
 
-export default function TargetPicker({ owner, onPick, isListed, offerOrganization = true, disabled = false }: TargetPickerProps) {
+export default function TargetPicker({
+  owner,
+  onPick,
+  isListed,
+  offerOrganization = true,
+  disabled = false,
+  suggestedOrg = null,
+}: TargetPickerProps) {
   const { t } = useTranslation('policies');
   const levels = useMemo(
     () => (offerOrganization ? LEVELS : LEVELS.filter((l) => l !== 'organization')),
@@ -134,6 +160,9 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
       });
     // `org` is derived from owner and mspOrg, both listed.
   }, [owner.kind, owner.kind === 'org' ? owner.orgId : null, mspOrg?.id, level, debounced, choosingOrg, t]);
+
+  // The switcher's organization first, when the list is organizations to choose from.
+  const shownOptions = choosingOrg ? withSuggestedFirst(options, suggestedOrg, debounced !== '') : options;
 
   const clearResults = () => {
     setOptions([]);
@@ -257,11 +286,11 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
               </ul>
             </div>
           )}
-          {options.length === 0 ? (
+          {shownOptions.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('configurationPolicies.targetPicker.noResults')}</p>
           ) : (
             <ul className="max-h-64 divide-y overflow-y-auto rounded-md border">
-              {options.map((o) =>
+              {shownOptions.map((o) =>
                 choosingOrg && level !== 'organization'
                   ? optionButton('organization', o, `target-picker-org-${o.id}`, () => chooseOrg(o), true)
                   : optionButton(level, o, `target-picker-option-${o.id}`, () => pick(level, o)),

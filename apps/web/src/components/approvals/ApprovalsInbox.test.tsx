@@ -1806,6 +1806,19 @@ describe('ApprovalsInbox — #intent-<id> deep link (sweep G2-4)', () => {
     expect(screen.queryByTestId('approval-intent-gone-notice')).not.toBeInTheDocument();
   });
 
+  it('dismissing the notice clears the hash, like the proposal deep link (#12557)', async () => {
+    const intentId = '66666666-6666-4666-8666-666666666667';
+    routeFetch([pendingApproval]);
+    window.location.hash = `#intent-${intentId}`;
+
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+    fireEvent.click(await screen.findByTestId('approval-intent-gone-dismiss'));
+
+    expect(screen.queryByTestId('approval-intent-gone-notice')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe('');
+  });
+
   const statusFetch = (approvals: unknown[], status: { code: number; payload: unknown }) => {
     fetchMock.mockImplementation((async (url: string) => {
       if (typeof url === 'string' && url.includes('/action-intents/')) {

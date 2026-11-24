@@ -77,3 +77,43 @@ describe('NotificationChannelForm — email recipients (#12148)', () => {
     expect(screen.queryByText(/at least one email recipient is required/i)).not.toBeInTheDocument();
   });
 });
+
+// #12549: the SMS error is filed on the array, which react-hook-form keeps under
+// `.root`, so the form used to block the save without saying why.
+describe('NotificationChannelForm: SMS phone numbers (#12549)', () => {
+  function renderSms(onSubmit = vi.fn()) {
+    render(<NotificationChannelForm onSubmit={onSubmit} submitLabel="Save" defaultValues={{ type: 'sms' }} />);
+    return onSubmit;
+  }
+
+  it('shows an error and does not submit when the only phone number row is blank', async () => {
+    const user = userEvent.setup();
+    const onSubmit = renderSms();
+
+    await fillNameAndSubmit(user, 'On-call SMS');
+
+    expect(await screen.findByText(/at least one phone number is required/i)).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('shows an error and does not submit when a phone number is not E.164', async () => {
+    const user = userEvent.setup();
+    const onSubmit = renderSms();
+
+    await user.type(screen.getAllByPlaceholderText('+1234567890')[0], '12345');
+    await fillNameAndSubmit(user, 'On-call SMS');
+
+    expect(await screen.findByText(/all sms phone numbers must use e\.164 format/i)).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('submits when the phone number is valid', async () => {
+    const user = userEvent.setup();
+    const onSubmit = renderSms();
+
+    await user.type(screen.getAllByPlaceholderText('+1234567890')[0], '+15555550100');
+    await fillNameAndSubmit(user, 'On-call SMS');
+
+    await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  });
+});

@@ -8,6 +8,9 @@ import type { FeatureLink, FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
+import { useFeatureReadOnly } from "./featureEditing";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -75,13 +78,13 @@ export default function MonitorsTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
   allLinks = [],
   orgId,
 }: FeatureTabProps) {
   // Explicit null = partner-owned policy (#1724); undefined = unknown, so no filtering.
   const isPartnerPolicy = orgId === null;
+  const readOnly = useFeatureReadOnly();
   const { t } = useTranslation("policies");
   const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
   const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
@@ -92,6 +95,8 @@ export default function MonitorsTab({
   // converted monitor renders as "Monitor deleted" until reload (#6888).
   const [catalogRevision, setCatalogRevision] = useState(0);
   const refreshLinks = async () => {
+    // A policy that does not exist yet (the create page) has nothing to re-read.
+    if (!policyId) return;
     setLedgerRevision((n) => n + 1);
     setCatalogRevision((n) => n + 1);
     const res = await fetchWithAuth(`/configuration-policies/${policyId}/features`);
@@ -105,6 +110,7 @@ export default function MonitorsTab({
 
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
 
   const [items, setItems] = useState<MonitorAttachmentItem[]>(() =>
     seedItems(existingLink ?? parentLink),
@@ -250,7 +256,9 @@ export default function MonitorsTab({
     }));
 
   const saveAttachments = async (): Promise<boolean> => {
-    if (!existingLink && items.length === 0 && !checkIntervalEdited && inheritance === "cumulative") return true;
+    // Nothing chosen on a feature that is Not set: no link to write. An
+    // inherited feature unlocked with Change for this policy always writes.
+    if (!existingLink && !parentLink && items.length === 0 && !checkIntervalEdited && inheritance === "cumulative") return true;
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitors",
       featurePolicyId: null,
@@ -301,24 +309,6 @@ export default function MonitorsTab({
     }
   };
 
-  // Creates this policy's own link, seeded with a copy of whatever is
-  // currently displayed (the parent's items) — the same one-shot pattern
-  // every other inheritance-capable tab uses (see VulnerabilityTab). Once the
-  // own link exists, FeatureTabShell stops disabling the editor and the
-  // attach/detach/toggle/override controls below become live.
-  const handleOverride = async () => {
-    clearError();
-    if (!validateCheckInterval()) return;
-    const result = await save(null, {
-      featureType: "monitors",
-      featurePolicyId: null,
-      inlineSettings: { items: buildPayloadItems(), inheritance, ...intervalPayload() },
-    });
-    if (result) {
-      setCheckIntervalEdited(false);
-      onLinkChanged(result, "monitors");
-    }
-  };
 
   const handleRevert = async () => {
     if (!existingLink) return;
@@ -337,12 +327,9 @@ export default function MonitorsTab({
       saving={saving}
       error={error ?? catalogError}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined
-      }
+      {...change.shellProps}
     >
       <DuplicateConditionNotice hits={findDuplicateConditions({ attached: items, catalog, inlineRules, watches })} />
       <div className="space-y-6">
@@ -355,11 +342,14 @@ export default function MonitorsTab({
               "policies:configurationPolicies.featureTabs.monitorsTab.attachMonitor",
             )}
           </label>
-          <a data-testid="monitors-tab-create"
-            href={`/alerts/monitors/new#policy=${encodeURIComponent(policyId)}`}
-            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted">
-            {t('configurationPolicies.featureTabs.monitorsTab.createMonitor')}
-          </a>
+          {/* Attaching a new monitor needs the policy's id: not offered on the create page. */}
+          {policyId && (
+            <a data-testid="monitors-tab-create"
+              href={`/alerts/monitors/new#policy=${encodeURIComponent(policyId)}`}
+              className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted">
+              {t('configurationPolicies.featureTabs.monitorsTab.createMonitor')}
+            </a>
+          )}
           <select
             id="monitors-tab-attach-select"
             data-testid="monitors-tab-attach-select"
@@ -420,7 +410,7 @@ export default function MonitorsTab({
             max={CHECK_INTERVAL_MAX}
             step={1}
             value={checkInterval}
-            disabled={isInherited}
+            disabled={change.locked}
             onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalEdited(true); setCheckIntervalError(undefined); }}
             className="mt-1 h-9 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
@@ -446,7 +436,7 @@ export default function MonitorsTab({
                 name="monitors-tab-inheritance"
                 data-testid={`monitors-tab-inheritance-${mode}`}
                 checked={inheritance === mode}
-                disabled={isInherited}
+                disabled={change.locked}
                 onChange={() => setInheritance(mode)}
               />
               <span>
@@ -596,8 +586,14 @@ export default function MonitorsTab({
           </ul>
         )}
         {/* Retired links are hidden by the policy API; conversion checks its own sources and hides empty previews. */}
-        <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
-        <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+        {/* Conversion writes its own records and is not part of this form's
+            Save (#12469); a read-only viewer gets none of its controls. */}
+        {!readOnly && policyId && (
+          <div data-feature-dirty-ignore>
+            <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
+            <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+          </div>
+        )}
       </div>
     </FeatureTabShell>
   );

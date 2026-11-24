@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PatchTab from './PatchTab';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureEditing';
 import { fetchWithAuth } from '../../../stores/auth';
 import { useUiStore } from '../../../stores/uiStore';
 
@@ -161,14 +162,16 @@ describe('PatchTab', () => {
     expect(payload.inlineSettings.sources).toEqual(['third_party']);
   });
 
-  it('Override does not copy approval or application-rule keys from the parent', async () => {
+  it('Change for this policy does not copy approval or application-rule keys from the parent', async () => {
     render(
       <PatchTab
         {...baseProps}
         parentLink={{ id: 'parent-link', featureType: 'patch', featurePolicyId: null, inlineSettings: STORED_LEGACY_INLINE }}
       />
     );
-    fireEvent.click(await screen.findByRole('button', { name: /override/i }));
+    fireEvent.click(await screen.findByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: /^Save$/i }));
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     const [linkId, payload] = saveMock.mock.calls[0];
     expect(linkId).toBeNull();
@@ -823,6 +826,79 @@ describe('PatchTab', () => {
 
       fireEvent.click(screen.getByTestId('patch-reboot-allow-deferral-toggle'));
       expect(screen.getByTestId('reboot-preview-postpone')).toHaveTextContent(/^Postpone until /);
+    });
+  });
+
+  it('a read-only viewer gets no ring edit or create controls (#12469)', async () => {
+    const ring = { id: 'ring-1', name: 'Pilot', enabled: true, ringOrder: 1, deferralDays: 0, gracePeriodHours: 4 };
+    fetchMock.mockResolvedValue({
+      ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: [ring] }),
+    } as unknown as Response);
+    const link = { id: 'link-1', featureType: 'patch', featurePolicyId: 'ring-1', inlineSettings: { sources: ['os'] } };
+
+    const editable = render(<PatchTab {...baseProps} existingLink={link} />);
+    expect(await screen.findByTestId('patch-edit-ring')).toBeInTheDocument();
+    expect(screen.getByTestId('patch-new-ring')).toBeInTheDocument();
+    editable.unmount();
+
+    render(
+      <FeatureReadOnlyContext.Provider value={true}>
+        <PatchTab {...baseProps} existingLink={link} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    await screen.findByTestId('approval-ring-details');
+    expect(screen.queryByTestId('patch-edit-ring')).toBeNull();
+    expect(screen.queryByTestId('patch-new-ring')).toBeNull();
+  });
+
+  describe('ring editor and unsaved changes (#12469)', () => {
+    const ring = { id: 'ring-1', name: 'Pilot', enabled: true, ringOrder: 1, deferralDays: 0, gracePeriodHours: 4 };
+    const link = { id: 'link-1', featureType: 'patch', featurePolicyId: 'ring-1', inlineSettings: { sources: ['os'] } };
+
+    it('opening the ring editor does not mark the feature dirty (#12469)', async () => {
+      const reporter = vi.fn();
+      fetchMock.mockResolvedValue({
+        ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: [ring] }),
+      } as unknown as Response);
+      render(
+        <FeatureDirtyReporterContext.Provider value={reporter}>
+          <PatchTab {...baseProps} existingLink={link} />
+        </FeatureDirtyReporterContext.Provider>,
+      );
+      fireEvent.click(await screen.findByTestId('patch-edit-ring'));
+      fireEvent.click(await screen.findByRole('button', { name: /close/i }));
+      fireEvent.click(screen.getByTestId('patch-new-ring'));
+      expect(reporter).not.toHaveBeenCalledWith(true);
+      // A real edit on the page still reports dirty.
+      fireEvent.click(screen.getByTestId('patch-third-party-sources-toggle'));
+      expect(reporter).toHaveBeenCalledWith(true);
+    });
+
+    it('selecting a just-created ring marks the feature dirty (#12469)', async () => {
+      const reporter = vi.fn();
+      fetchMock.mockImplementation((_url: any, opts: any) => {
+        if (opts?.method === 'POST') {
+          return Promise.resolve({
+            ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: { id: 'ring-9' } }),
+          } as unknown as Response);
+        }
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: vi.fn().mockResolvedValue({
+            data: [{ id: 'ring-9', name: 'Broad', enabled: true, ringOrder: 0, deferralDays: 0, gracePeriodHours: 4 }],
+          }),
+        } as unknown as Response);
+      });
+      render(
+        <FeatureDirtyReporterContext.Provider value={reporter}>
+          <PatchTab {...baseProps} />
+        </FeatureDirtyReporterContext.Provider>,
+      );
+      fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
+      fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Broad' } });
+      fireEvent.click(screen.getByRole('button', { name: /create ring/i }));
+      await waitFor(() => expect(screen.getByTestId('approval-ring-select')).toHaveValue('ring-9'));
+      expect(reporter).toHaveBeenCalledWith(true);
     });
   });
 });

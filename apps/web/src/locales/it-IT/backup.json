@@ -488,6 +488,8 @@
     "failedToLoadToken": "Impossibile caricare il token",
     "failedToRefreshToken": "Impossibile aggiornare il token",
     "failedToPreviewBootstrap": "Impossibile visualizzare l'anteprima bootstrap",
+    "previewUnavailableSessionActive": "Anteprima non disponibile: questo token ha già una sessione di ripristino. Un'anteprima accede con il token e non può leggere una sessione detenuta dall'assistente di ripristino. Usa Aggiorna per seguire il ripristino.",
+    "previewUnavailableNeedsRecoveryHelper": "Anteprima non disponibile: questo snapshot fa riferimento a file archiviati con snapshot precedenti, che solo l'assistente di ripristino può leggere. Esegui il comando di ripristino sul computer di destinazione.",
     "failedToRevokeToken": "Impossibile revocare il token",
     "failedToCopyToClipboard": "Impossibile copiare negli appunti.",
     "failedToCreateRecoveryBundle": "Impossibile creare il bundle di ripristino",

@@ -9,6 +9,17 @@ import { i18n } from '@/lib/i18n';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+/** A failed proposal read; `status` lets callers show copy instead of the API code. */
+export class ScriptProposalLoadError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ScriptProposalLoadError';
+  }
+}
+
 export async function fetchScriptProposal(
   id: string,
   signal?: AbortSignal,
@@ -16,7 +27,7 @@ export async function fetchScriptProposal(
   const res = await fetchWithAuth(`/ai/script-proposals/${id}`, { signal });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `Failed to load proposal (${res.status})`);
+    throw new ScriptProposalLoadError(body?.error ?? `Failed to load proposal (${res.status})`, res.status);
   }
   return (await res.json()) as ScriptProposalDetailDto;
 }

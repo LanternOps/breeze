@@ -488,6 +488,8 @@
     "failedToLoadToken": "Belirteç yüklenemedi",
     "failedToRefreshToken": "Belirteç yenilenemedi",
     "failedToPreviewBootstrap": "Önyükleme önizlemesi başarısız oldu",
+    "previewUnavailableSessionActive": "Önizleme kullanılamıyor: bu belirtecin zaten bir kurtarma oturumu var. Önizleme belirteçle oturum açar ve kurtarma yardımcısının tuttuğu bir oturumu okuyamaz. Geri yüklemeyi izlemek için Yenile'yi kullanın.",
+    "previewUnavailableNeedsRecoveryHelper": "Önizleme kullanılamıyor: bu anlık görüntü, önceki anlık görüntülerle depolanan ve yalnızca kurtarma yardımcısının okuyabildiği dosyalara başvuruyor. Kurtarma komutunu hedef makinede çalıştırın.",
     "failedToRevokeToken": "Belirteç iptal edilemedi",
     "failedToCopyToClipboard": "Panoya kopyalanamadı.",
     "failedToCreateRecoveryBundle": "Kurtarma paketi oluşturulamadı",

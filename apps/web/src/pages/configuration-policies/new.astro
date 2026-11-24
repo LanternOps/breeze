@@ -1,8 +1,9 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import ConfigPolicyCreatePage from '../../components/configurationPolicies/ConfigPolicyCreatePage';
+import ConfigPolicyDetailPage from '../../components/configurationPolicies/ConfigPolicyDetailPage';
 ---
 
 <DashboardLayout titleKey="titles.configurationPoliciesNew">
-  <ConfigPolicyCreatePage client:load />
+  {/* One page for create and edit (#12471): no policy id = create mode. */}
+  <ConfigPolicyDetailPage client:load />
 </DashboardLayout>

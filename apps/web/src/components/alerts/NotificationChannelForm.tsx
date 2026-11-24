@@ -758,8 +758,8 @@ export default function NotificationChannelForm({
               </p>
             </div>
           </div>
-          {errors.smsPhoneNumbers?.message && (
-            <p className="mt-2 text-sm text-destructive">{errors.smsPhoneNumbers.message}</p>
+          {errors.smsPhoneNumbers?.root?.message && (
+            <p className="mt-2 text-sm text-destructive">{errors.smsPhoneNumbers.root.message}</p>
           )}
         </div>
       )}

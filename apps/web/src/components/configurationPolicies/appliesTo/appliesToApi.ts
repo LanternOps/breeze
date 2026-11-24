@@ -131,6 +131,11 @@ export interface ApplyOptions {
   friendly?: (code: string, message: string, body?: unknown) => string | undefined;
   /** Toast a 409 `assignment_conflict` too. Off by default: the panel shows it inline with Reload. */
   toastConflict?: boolean;
+  /**
+   * No success toast. Activate (W03d C3) applies then activates, and toasts
+   * once, for the activation.
+   */
+  silentSuccess?: boolean;
 }
 
 /** Commit a staged change. Throws the ActionError runAction raised (already toasted, except a conflict). */
@@ -147,7 +152,7 @@ export async function applyAssignments(
         body: JSON.stringify(payload),
       }),
     errorFallback,
-    successMessage: i18n.t('policies:configurationPolicies.appliesToPanel.applied'),
+    ...(options.silentSuccess ? {} : { successMessage: i18n.t('policies:configurationPolicies.appliesToPanel.applied') }),
     parseSuccess: (data) => parseApplyResult(data) ?? { added: 0, updated: 0, removed: 0 },
     ...(options.friendly ? { friendly: options.friendly } : {}),
     suppressErrorToast: (status, _code, body) =>

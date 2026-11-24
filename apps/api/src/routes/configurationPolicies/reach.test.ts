@@ -116,7 +116,7 @@ describe('GET /:id/reach', () => {
     computeMock.mockResolvedValue(new Map([[POLICY_A, { direct: 12, throughChildren: 30, organizations: 3 }]]));
     const res = await makeApp().request(`/${POLICY_A}/reach`);
     expect(res.status).toBe(200);
-    expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_A, AUTH);
+    expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_A, AUTH, { access: 'read' });
     expect(computeMock).toHaveBeenCalledWith(AUTH, [POLICY_A]);
     expect(await res.json()).toEqual({ direct: 12, throughChildren: 30, organizations: 3 });
   });

@@ -154,8 +154,25 @@ type RecoveryTokenRecord = {
   restoreResult?: Record<string, unknown> | null;
   linkedRestoreJob?: LinkedRestoreJob | null;
   bootstrapPreview?: RecoveryBootstrapPreview | null;
+  // #12566: the snapshot references files from earlier snapshots, so only
+  // the recovery helper (which reports the file-membership capability) can
+  // sign in with this token. A browser Preview is always refused.
+  requiresRecoveryHelper?: boolean | null;
   notes?: string | null;
 };
+
+// #12566: a Preview is a real sign-in with the token. It is not sent when it
+// is known to be refused or to compete with a running restore: the token
+// already has a recovery session (a helper signed in, or the restore
+// finished), or the snapshot needs the helper.
+type PreviewBlockReason = 'sessionActive' | 'needsRecoveryHelper';
+
+function previewBlockReason(token: RecoveryTokenRecord): PreviewBlockReason | null {
+  const session = token.sessionStatus ?? null;
+  if (token.authenticatedAt || session === 'authenticated' || session === 'completed') return 'sessionActive';
+  if (token.requiresRecoveryHelper) return 'needsRecoveryHelper';
+  return null;
+}
 
 type TokenStatusFilter = RecoveryTokenStatus | 'all';
 type RestoreTypeFilter = RecoveryTokenRestoreType | 'all';
@@ -358,6 +375,9 @@ function toTokenRecord(raw: Record<string, unknown>, fallback?: Partial<Recovery
     restoreResult: linkedRestoreJob?.result ?? toMaybeRecord(raw.restoreResult) ?? fallback?.restoreResult ?? null,
     linkedRestoreJob,
     bootstrapPreview,
+    requiresRecoveryHelper: typeof raw.requiresRecoveryHelper === 'boolean'
+      ? raw.requiresRecoveryHelper
+      : fallback?.requiresRecoveryHelper ?? null,
     notes: raw.notes == null ? fallback?.notes ?? null : toText(raw.notes),
   };
 }
@@ -493,6 +513,9 @@ export default function RecoveryBootstrapTab() {
   const [loadingSnapshots, setLoadingSnapshots] = useState(true);
   const [refreshingTokenId, setRefreshingTokenId] = useState<string | null>(null);
   const [previewingTokenId, setPreviewingTokenId] = useState<string | null>(null);
+  // Tokens this page previewed successfully: their session is the Preview's
+  // own, so the "Preview is unavailable" note is not shown beside the bundle.
+  const [previewedTokenIds, setPreviewedTokenIds] = useState<string[]>([]);
   const [copyStatusId, setCopyStatusId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [errorReasons, setErrorReasons] = useState<string[]>([]);
@@ -877,6 +900,14 @@ export default function RecoveryBootstrapTab() {
     [updateToken]
   );
 
+  const previewBlockMessage = useCallback(
+    (reason: PreviewBlockReason) =>
+      reason === 'sessionActive'
+        ? t('recoveryBootstrapTab.previewUnavailableSessionActive')
+        : t('recoveryBootstrapTab.previewUnavailableNeedsRecoveryHelper'),
+    [t]
+  );
+
   const handlePreviewBootstrap = useCallback(
     async (tokenId: string) => {
       const token = catalog.find((item) => item.id === tokenId);
@@ -884,10 +915,31 @@ export default function RecoveryBootstrapTab() {
         setError('The plaintext token is only available immediately after creation in this browser session.');
         return;
       }
+      // A blocked Preview selects the token instead: its detail pane shows the
+      // reason next to the disabled Preview button.
+      if (previewBlockReason(token)) {
+        setSelectedTokenId(tokenId);
+        return;
+      }
 
       try {
         setPreviewingTokenId(tokenId);
         setError(undefined);
+        // #12566: re-check the token first. A helper may have signed in since
+        // this page last loaded it, and a Preview then only spends one of the
+        // token's sign-ins without any chance of success.
+        const latestResponse = await fetchWithAuth(`/backup/bmr/tokens/${encodeURIComponent(tokenId)}`);
+        if (!latestResponse.ok) {
+          const body = await latestResponse.json().catch(() => null);
+          throw new Error(body?.error ?? t('recoveryBootstrapTab.failedToRefreshToken'));
+        }
+        const latestPayload = normalizeApiResponse(await latestResponse.json());
+        updateToken(tokenId, (current) => toTokenRecord(latestPayload, current));
+        if (previewBlockReason(toTokenRecord(latestPayload, token))) {
+          setSelectedTokenId(tokenId);
+          return;
+        }
+
         // runaction-exempt: inline-feedback handler. Failures land in the
         // `error` banner and success in `tokenMessage` below (see catch/finally).
         const response = await fetchWithAuth('/backup/bmr/recover/authenticate', {
@@ -916,6 +968,7 @@ export default function RecoveryBootstrapTab() {
           targetConfig: toMaybeRecord(payload.targetConfig) ?? current.targetConfig ?? null,
         }));
         setSelectedTokenId(tokenId);
+        setPreviewedTokenIds((prev) => (prev.includes(tokenId) ? prev : [...prev, tokenId]));
         setTokenMessage('Bootstrap preview loaded. The token has been authenticated for the recovery session.');
       } catch (err) {
         setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToPreviewBootstrap'));
@@ -1069,6 +1122,7 @@ export default function RecoveryBootstrapTab() {
     ? `breeze-backup bmr-recover --token ${selectedToken.token} --server ${selectedToken.bootstrapPreview?.serverUrl ?? getRecoveryServerBase()}`
     : selectedToken?.bootstrapPreview?.commandTemplate ?? null;
   const selectedBootstrap = selectedToken?.bootstrapPreview ?? null;
+  const selectedPreviewBlock = selectedToken ? previewBlockReason(selectedToken) : null;
 
   if (loadingSnapshots && catalog.length === 0) {
     return (
@@ -1272,7 +1326,8 @@ export default function RecoveryBootstrapTab() {
                         <button
                           type="button"
                           onClick={() => void handlePreviewBootstrap(selectedToken.id)}
-                          disabled={previewingTokenId === selectedToken.id}
+                          disabled={previewingTokenId === selectedToken.id || selectedPreviewBlock !== null}
+                          title={selectedPreviewBlock ? previewBlockMessage(selectedPreviewBlock) : undefined}
                           className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
                         >
                           {previewingTokenId === selectedToken.id ? (
@@ -1284,6 +1339,12 @@ export default function RecoveryBootstrapTab() {
                       ) : null}
                     </div>
                   </div>
+                  {/* Not beside a bundle this page's own Preview just loaded. */}
+                  {selectedToken.token && selectedPreviewBlock && !previewedTokenIds.includes(selectedToken.id) ? (
+                    <p data-testid="preview-unavailable-reason" className="mt-2 text-xs text-muted-foreground">
+                      {previewBlockMessage(selectedPreviewBlock)}
+                    </p>
+                  ) : null}
 
                   {selectedCommand ? (
                     <pre className="mt-3 overflow-x-auto rounded-md border bg-background p-3 font-mono text-xs text-foreground">
@@ -1700,7 +1761,8 @@ export default function RecoveryBootstrapTab() {
                   <tbody>
                     {filteredTokens.map((token) => {
                       const active = token.id === selectedTokenId;
-                      const canPreview = Boolean(token.token);
+                      const previewBlock = previewBlockReason(token);
+                      const canPreview = Boolean(token.token) && previewBlock === null;
                       return (
                         <tr
                           key={token.id}
@@ -1771,7 +1833,9 @@ export default function RecoveryBootstrapTab() {
                                 }}
                                 disabled={!canPreview || previewingTokenId === token.id}
                                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
-                                title={canPreview ? 'Preview bootstrap bundle' : 'Plaintext token unavailable'}
+                                title={previewBlock
+                                  ? previewBlockMessage(previewBlock)
+                                  : token.token ? 'Preview bootstrap bundle' : 'Plaintext token unavailable'}
                               >
                                 {previewingTokenId === token.id ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
