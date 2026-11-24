@@ -179,6 +179,8 @@ Breeze CI runs an S3-compatibility suite against **RustFS 1.0.6** (single node, 
 - Multipart uploads, both server-side (8 MiB parts) and presigned per part, with a completion that refuses to overwrite, abort, and listing of unfinished uploads
 - Paginated listing, and batch deletes of more than 1,000 keys
 
+A RustFS backup destination must be served over HTTPS, for example behind a reverse proxy. Breeze refuses to back up to an `http://` endpoint, although **Test connection** still passes on one.
+
 Not verified against RustFS, so test them yourself before relying on them:
 
 - **Server-side encryption.** RustFS accepts SSE-S3 only when it is started with `RUSTFS_SSE_S3_MASTER_KEY` (or a KMS). See [Encryption](/backup/encryption/).
