@@ -95,11 +95,26 @@ async function takeCircuitLock(orgId: string, agentId: string): Promise<void> {
  * threshold — a missed increment is far cheaper than a circuit that opens on
  * an infrastructure hiccup nobody enumerated.
  *
- * `stalled` (runService.ts's `reapStalledAgentRuns`) and `enqueue_failed`
- * (runService.ts's `failRunAfterEnqueueFailure`) are deliberately EXCLUDED —
- * both are the platform failing the agent (a SIGKILLed worker, a BullMQ
- * enqueue that never landed), not the agent doing anything wrong, and neither
- * should erode an org's failure budget.
+ * Deliberately EXCLUDED, because each is the platform failing the agent, not
+ * the agent doing anything wrong, and none should erode an org's failure
+ * budget:
+ * - `stalled` (runService.ts's `reapStalledAgentRuns`): a SIGKILLed worker.
+ * - `enqueue_failed` (runService.ts's `failRunAfterEnqueueFailure`): a BullMQ
+ *   enqueue that never landed.
+ * - `llm_unavailable` (#12347, owner decision 2026-11-24): runLoop.ts throws
+ *   it when the agent's model egress cannot be prepared (`prepareSdkChild`),
+ *   and sets it when a classified provider failure (down, overloaded,
+ *   rate-limiting) found no usable backup model to fail over to (or the
+ *   backup lookup itself failed). Either way
+ *   the model provider or our egress to it was unavailable — nothing the
+ *   agent did.
+ *
+ * Still counted although the cause can sit with the platform, because the
+ * code alone cannot tell it apart from the agent's own behaviour:
+ * `sdk_error` (it also carries a provider error that ended the run when no
+ * failover was attempted), `run_failed` (any uncaught throw),
+ * `wall_clock_exceeded` (a slow provider or a looping agent) and
+ * `ownership_mismatch`.
  */
 const INCREMENT_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   // RESULT_DISPOSITIONS failure dispositions (SDK result-subtype mapping).
@@ -110,8 +125,6 @@ const INCREMENT_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   'wall_clock_exceeded',
   'budget_exceeded',
   'max_turns_exceeded',
-  // AgentRunError thrown inside driveSdkLoop.
-  'llm_unavailable',
   // The loop's catch-all fallback codes for an uncaught throw.
   'ownership_mismatch',
   'run_failed',
@@ -171,10 +184,11 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  *   circuit-breaker purposes, per the wave-6 quorum).
  * - `reset`: a clean `completed` (no `needs_attention`), or `awaiting_approval`
  *   (the agent did real, unflagged work and handed a decision to a human).
- * - `neutral`: `cancelled`, `expired`, `skipped` — and a `failed` whose error
- *   code is not on the increment allowlist (`stalled`, `enqueue_failed`, or
- *   anything unrecognized). Also the safe default for a non-terminal status
- *   (`queued`/`running`), which callers must never actually pass here.
+ * - `neutral`: `cancelled`, `expired`, `skipped`, `blocked` — and a `failed`
+ *   whose error code is not on the increment allowlist (`stalled`,
+ *   `enqueue_failed`, `llm_unavailable`, or anything unrecognized). Also the
+ *   safe default for a non-terminal status (`queued`/`running`), which
+ *   callers must never actually pass here.
  *
  * `profile` (phase 2 wave P2-1, default `'full'` so every pre-existing
  * 3-arg call site keeps its old behavior unchanged): a `verdict`-profile run
@@ -202,7 +216,7 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  * whether the org's remediation is working. It must therefore never reset a
  * streak the fleet's real remediation runs earned, nor increment one on a
  * `needs_attention` verdict about last week's prose. `failed` stays
- * profile-independent: a narrative run can hit `llm_unavailable` or blow the
+ * profile-independent: a narrative run can crash in the SDK or blow the
  * turn/budget ceiling exactly like any other, and that is a real signal.
  *
  * Phase 2 wave P2-4 (ticket triage, #4191): a `triage`-profile run gets the
@@ -221,9 +235,8 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  * remediation attempt, so its outcome carries no information whatsoever
  * about whether the org's remediation is working. It must never reset (or
  * increment) the streak either way. `failed` stays profile-independent: a
- * design run can genuinely blow the turn/budget ceiling or hit
- * `llm_unavailable` exactly like any other profile, and that is a real
- * signal.
+ * design run can genuinely blow the turn/budget ceiling or crash in the SDK
+ * exactly like any other profile, and that is a real signal.
  *
  * NOTE for whoever adds the next profile: this function compares `profile`
  * as a plain string and has NO exhaustive `never` guard (unlike
