@@ -598,10 +598,12 @@ describe('ScriptForm sourced parameters', () => {
     const hint = await screen.findByTestId('script-parameter-secret-hint');
     expect(hint).toHaveTextContent('BREEZE_VAR_API_TOKEN');
     expect(screen.getByPlaceholderText('e.g. vendor_token')).toBeInTheDocument();
-    // A secret parameter is always required, always a string, and can carry no
-    // default — the API rejects any of those, so the form must not offer them.
+    // A secret parameter is always a string and can carry no default — the API
+    // rejects either, so the form must not offer them. It CAN be optional
+    // (#12613), so the Required checkbox is offered, checked by default.
     expect(screen.queryByPlaceholderText('Default')).toBeNull();
-    expect(screen.queryByText('Required')).toBeNull();
+    expect(screen.getByTestId('script-parameter-secret-required')).toBeChecked();
+    expect(screen.getByTestId('script-parameter-secret-required-help')).toBeInTheDocument();
     // The plain-mode "this is a secret, the save will be rejected" warning must
     // NOT fire here — a secret is exactly what this arm wants.
     expect(screen.queryByTestId('script-parameter-secret-warning')).toBeNull();
@@ -740,6 +742,69 @@ describe('ScriptForm sourced parameters', () => {
       type: 'string',
       required: true,
     });
+  });
+
+  // #12613 — the Required checkbox on a secret parameter round-trips.
+  it('submits required:false when the Required box is cleared on a secret row', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        isNew
+        onSubmit={onSubmit}
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'api_password', required: true }],
+        }}
+      />
+    );
+
+    const box = await screen.findByTestId('script-parameter-secret-required');
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    expect(box).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].parameters[0]).toEqual({
+      name: 'api_token',
+      source: 'tenantSecret',
+      variableKey: 'api_password',
+      type: 'string',
+      required: false,
+    });
+  });
+
+  it('loads a stored optional secret with the Required box cleared, and keeps it on save', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        isNew
+        onSubmit={onSubmit}
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'api_password', required: false }],
+        }}
+      />
+    );
+
+    expect(await screen.findByTestId('script-parameter-secret-required')).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].parameters[0].required).toBe(false);
+  });
+
+  it('shows a secret row with no stored required flag as required (the default)', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'api_password' }],
+        }}
+      />
+    );
+
+    expect(await screen.findByTestId('script-parameter-secret-required')).toBeChecked();
   });
 
   it('shows a help affordance explaining how scripts read/write a bound device custom field', async () => {

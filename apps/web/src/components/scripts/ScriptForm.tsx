@@ -27,6 +27,7 @@ import {
   scriptSchema, languageOptions, categoryOptions,
   runAsOptions, parameterTypeOptions, severityOptions,
   rowsToMapping, parameterBindingKey, parameterSource, stripSecretParameterValueFields,
+  secretParameterRequired,
   type ScriptFormDefaults, type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -537,12 +538,14 @@ export default function ScriptForm({
     set('fieldKey', '');
     set('builtinKey', next === 'builtin' ? SCRIPT_BUILTIN_PARAMETER_KEYS[0] : '');
     if (next === 'tenantSecret') {
-      // The secret arm is `{type:'string', required:true}` with NO defaultValue
-      // and NO options — the inputs are cleared here so switching back does not
+      // The secret arm is `{type:'string'}` with NO defaultValue and NO
+      // options — the inputs are cleared here so switching back does not
       // resurrect an abandoned value; `stripSecretParameterValueFields` is what
-      // keeps the resulting `''` out of the schema and off the wire. `required` is not reset when switching away: `true`
-      // is a legitimate value on every other arm, and clobbering it would throw
-      // away an intentional choice.
+      // keeps the resulting `''` out of the schema and off the wire. `required`
+      // starts ON (#12613: the author may clear it for an optional secret).
+      // It is not reset when switching away: `true` is a legitimate value on
+      // every other arm, and clobbering it would throw away an intentional
+      // choice.
       set('type', 'string');
       set('required', true);
       set('defaultValue', '');
@@ -892,10 +895,11 @@ export default function ScriptForm({
             const row = watchParameters?.[index];
             const source = row ? parameterSource(row) : 'runtime';
             const isBound = source !== 'runtime';
-            // A secret parameter's type/required/default are fixed by the
-            // schema, so the inputs that would edit them are not rendered —
-            // offering a control whose every non-default value is a 400 is
-            // worse than not offering it.
+            // A secret parameter's type and default are fixed by the schema,
+            // so the inputs that would edit them are not rendered — offering a
+            // control whose every non-default value is a 400 is worse than not
+            // offering it. `required` IS editable (#12613), through its own
+            // checkbox below.
             const isSecretParam = source === 'tenantSecret';
             return (
             <div key={field.id} className="rounded-md border bg-muted/20 p-4">
@@ -987,6 +991,40 @@ export default function ScriptForm({
                       {isBound ? t('scriptForm.fields.fallbackValue') : t('scriptForm.fields.defaultValue')}
                     </label>
                     <input placeholder={t('scriptForm.placeholders.defaultValue')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
+                  </div>
+                  )}
+                  {/* #12613: an optional secret. Controlled (not `register`ed) so
+                      the box shows the same rule `stripSecretParameterValueFields`
+                      saves — a row with no stored flag is required — whatever
+                      path the row arrived by (load, source switch, AI edit). */}
+                  {isSecretParam && (
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="text-xs font-medium text-muted-foreground" htmlFor={`parameter-${index}-secret-required`}>{t('common:labels.required')}</label>
+                    <div className="flex items-center h-9">
+                      <input
+                        id={`parameter-${index}-secret-required`}
+                        type="checkbox"
+                        data-testid="script-parameter-secret-required"
+                        aria-describedby={`parameter-${index}-secret-required-help`}
+                        className="h-4 w-4 rounded border-border"
+                        checked={secretParameterRequired(row)}
+                        onChange={e => setValue(
+                          `parameters.${index}.required` as unknown as keyof ScriptFormValues,
+                          e.target.checked as never,
+                          { shouldDirty: true }
+                        )}
+                      />
+                      <span className="ml-2 text-sm">{t('common:labels.yes')}</span>
+                    </div>
+                    <p
+                      id={`parameter-${index}-secret-required-help`}
+                      data-testid="script-parameter-secret-required-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {t('scriptForm.parameterBinding.secretRequiredHelp', {
+                        env: scriptSecretEnvName(row?.name || 'name'),
+                      })}
+                    </p>
                   </div>
                   )}
                   {!isSecretParam && (

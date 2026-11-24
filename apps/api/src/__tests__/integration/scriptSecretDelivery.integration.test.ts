@@ -24,6 +24,11 @@
  *   3-4. The two enqueue refusals that must leave NO orphan rows behind
  *      (an incapable agent, and a user-context run) — "no orphan" is a
  *      statement about the database, so it is asserted by counting rows.
+ *   5. OPTIONAL SECRET (#12613), through the real fan-out launcher
+ *      (`executeScriptOnDevices`) for the manual and scheduled triggers, with
+ *      the real scope loader: no row -> the command carries no secret field at
+ *      all; an UNDECRYPTABLE row -> the device fails, never "absent". Only a
+ *      real decrypt failure proves the second half.
  *
  * Fixture note: the `tenant_variables` row is sealed through the service's own
  * `encryptTenantVariableValue` (as `tenantVariableResolution.integration.
@@ -48,10 +53,20 @@ import type { ScriptParameterDefinition } from '@breeze/shared';
 import { withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import { deviceCommands, devices, scriptExecutions, scripts, tenantVariables } from '../../db/schema';
-import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
+import {
+  assignUserToOrganization,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+  deviceAgentId,
+  grantRolePermissions,
+} from './db-utils';
 import { encryptTenantVariableValue } from '../../services/tenantVariables';
 import { loadTenantVariableScope } from '../../services/tenantVariableResolution';
 import { dispatchScriptToDevice, type DispatchScriptInput } from '../../services/scriptDispatch';
+import { executeScriptOnDevices } from '../../services/scriptExecution';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { openSecretEnv } from '../../services/scriptSecretEnvelope';
@@ -68,6 +83,7 @@ const SECRET_PARAMETERS: ScriptParameterDefinition[] = [
 ];
 
 interface Scenario {
+  partnerId: string;
   orgId: string;
   deviceId: string;
   variableId: string;
@@ -131,6 +147,7 @@ async function seedScenario(): Promise<Scenario> {
     .returning();
 
   return {
+    partnerId: partner.id,
     orgId: org.id,
     deviceId: device!.id,
     variableId: variable!.id,
@@ -287,5 +304,111 @@ describe('script secret delivery (integration)', () => {
 
     expect(await commandsForDevice(scn.deviceId)).toHaveLength(0);
     expect(await executionsForDevice(scn.deviceId)).toHaveLength(0);
+  });
+
+  // #12613 — optional secrets. `required: false` covers "not defined" ONLY.
+  describe.each(['manual', 'scheduled'] as const)('5. optional secret, triggerType %s', (triggerType) => {
+    async function setRequired(required: boolean): Promise<void> {
+      await getTestDb()
+        .update(scripts)
+        .set({ parameters: [{ ...SECRET_PARAMETERS[0]!, required }] })
+        .where(eq(scripts.id, scn.script.id));
+    }
+
+    async function launch() {
+      const user = await createUser({ partnerId: scn.partnerId, orgId: scn.orgId, email: `secret-${randomUUID()}@example.test` });
+      // A requester who really may run scripts: the immediate-send path claims
+      // the command and re-checks the launcher's authority, and an unassigned
+      // user would have it CANCELLED (`scope_changed`) with its payload erased,
+      // making every payload assertion below vacuous.
+      const role = await createRole({
+        scope: 'organization',
+        partnerId: scn.partnerId,
+        orgId: scn.orgId,
+        name: `secret-${randomUUID()}`,
+      });
+      await grantRolePermissions(role!.id, [{ resource: 'scripts', action: 'execute' }]);
+      await assignUserToOrganization(user!.id, scn.orgId, role!.id);
+      return withSystemDbAccessContext(() =>
+        executeScriptOnDevices({
+          scriptId: scn.script.id,
+          deviceIds: [scn.deviceId],
+          triggerType,
+          auth: { user: { id: user!.id }, orgId: scn.orgId, canAccessOrg: (id) => id === scn.orgId },
+        }),
+      );
+    }
+
+    async function deleteSecret(): Promise<void> {
+      await getTestDb().delete(tenantVariables).where(eq(tenantVariables.id, scn.variableId));
+    }
+
+    async function corruptSecret(): Promise<void> {
+      // Sealed under ANOTHER row's id, so the AAD binding makes the stored
+      // ciphertext undecryptable — a real decrypt failure, not a mock.
+      await getTestDb()
+        .update(tenantVariables)
+        .set({ value: encryptTenantVariableValue(randomUUID(), SECRET_VALUE) })
+        .where(eq(tenantVariables.id, scn.variableId));
+    }
+
+    it('optional + not defined: queues the script with no secret field of any kind', async () => {
+      await setRequired(false);
+      await deleteSecret();
+      // Agent capability is irrelevant when there is nothing to deliver.
+      await setSecretEnvVersion(scn.deviceId, 0);
+
+      const result = await launch();
+      expect(result.ok).toBe(true);
+
+      const commands = await commandsForDevice(scn.deviceId);
+      expect(commands).toHaveLength(1);
+      expect(commands[0]!.status).not.toBe('cancelled');
+      const payload = commands[0]!.payload as Record<string, unknown>;
+      expect(Object.keys(payload)).not.toContain('secretEnv');
+      expect(Object.keys(payload)).not.toContain('secretEnvEnvelope');
+      expect(payload.parameters).toEqual({});
+
+      const [execution] = await executionsForDevice(scn.deviceId);
+      expect(execution!.status).not.toBe('failed');
+      // Nothing records that a secret was looked for.
+      expect(JSON.stringify(execution!.parameters ?? {})).not.toContain(SECRET_KEY);
+    });
+
+    it('required + not defined: fails the device, queues nothing', async () => {
+      await setRequired(true);
+      await deleteSecret();
+
+      await launch();
+      expect(await commandsForDevice(scn.deviceId)).toHaveLength(0);
+      const [execution] = await executionsForDevice(scn.deviceId);
+      expect(execution!.status).toBe('failed');
+      expect(execution!.errorMessage).toContain(`no value for required parameter(s) "${PARAM_NAME}"`);
+    });
+
+    it.each([false, true])('required=%s + unreadable: fails the device, never treated as absent', async (required) => {
+      await setRequired(required);
+      await corruptSecret();
+
+      await launch();
+      expect(await commandsForDevice(scn.deviceId)).toHaveLength(0);
+      const [execution] = await executionsForDevice(scn.deviceId);
+      expect(execution!.status).toBe('failed');
+      expect(execution!.errorMessage).toContain('could not be read');
+      expect(JSON.stringify(execution)).not.toContain(SECRET_VALUE);
+    });
+
+    it('optional + defined: seals the secret exactly like a required one', async () => {
+      await setRequired(false);
+
+      const result = await launch();
+      expect(result.ok).toBe(true);
+      const [command] = await commandsForDevice(scn.deviceId);
+      expect(command!.status).not.toBe('cancelled');
+      const payload = command!.payload as Record<string, unknown>;
+      expect(
+        openSecretEnv(payload.secretEnvEnvelope as string, { commandId: command!.id, deviceId: scn.deviceId }),
+      ).toEqual({ [PARAM_NAME]: SECRET_VALUE });
+    });
   });
 });
