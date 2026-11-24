@@ -105,6 +105,14 @@ export interface ResolveMcpExecutionContextArgs {
   toolName: string;
   toolInput: Record<string, unknown>;
   /**
+   * The org of the reviewed proposal a `run_script { proposalId }` call names,
+   * already checked against the caller's reach. The proposal runs only in its
+   * own org, so a call that targets no device id (a groupId) is attributed to
+   * it rather than to the caller's first accessible org, and a device target
+   * in another org is refused here.
+   */
+  proposalOrgId?: string | null;
+  /**
    * Seams — default to the live tool registry + `verifyDeviceAccess` gate, but
    * injectable so the resolver stays a pure unit under test (no DB), matching
    * the style of `resolveMcpExecutionOrgId`.
@@ -194,7 +202,19 @@ export async function resolveMcpExecutionContext(
 
   // Non-device tool, or a device tool with no device id supplied: attribution
   // only — behavior is unchanged from the pre-MCP-OAUTH-05 resolver.
+  const proposalOrgId = args.proposalOrgId ?? null;
   if (deviceIds.length === 0) {
+    if (proposalOrgId) {
+      const inputOrgId = typeof toolInput.orgId === 'string' ? toolInput.orgId : null;
+      const pinnedOrgId = apiKey?.orgId ?? auth.orgId ?? null;
+      if (inputOrgId && inputOrgId !== proposalOrgId) {
+        throw new McpExecutionOrgError('Supplied orgId does not match the proposal organization');
+      }
+      if (pinnedOrgId && pinnedOrgId !== proposalOrgId) {
+        throw new McpExecutionOrgError('Proposal is outside the pinned organization');
+      }
+      return { orgId: proposalOrgId };
+    }
     return { orgId: resolveMcpExecutionOrgId(apiKey ?? undefined, auth, toolInput) };
   }
 
@@ -228,6 +248,9 @@ export async function resolveMcpExecutionContext(
   const pinnedOrgId = apiKey?.orgId ?? auth.orgId ?? null;
   if (pinnedOrgId && pinnedOrgId !== deviceOrgId) {
     throw new McpExecutionOrgError('Target device is outside the pinned organization');
+  }
+  if (proposalOrgId && proposalOrgId !== deviceOrgId) {
+    throw new McpExecutionOrgError('Target device is outside the proposal organization');
   }
 
   return { orgId: deviceOrgId };

@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiScriptLaneState } from '../../db/schema/aiScriptLaneState';
 import { devices } from '../../db/schema/devices';
+import { scriptExecutions } from '../../db/schema/scripts';
 
 /**
  * Unattended script lane (W04, #5612): the handful of reads and the one lock
@@ -51,6 +52,26 @@ export async function countRecentLaneIntents(tx: LaneExecutor, orgId: string): P
       eq(actionIntents.orgId, orgId),
       eq(actionIntents.decidedVia, 'script_reviewer'),
       gt(actionIntents.createdAt, sql`now() - interval '1 hour'`),
+    ))
+    .limit(1);
+  return row?.n ?? 0;
+}
+
+/**
+ * Unattended MCP proposal runs in this org in the last hour: the executions
+ * recorded with approval_method 'unattended_mcp_principal'. Each such run
+ * targets exactly one device (mcpUnattendedCeiling.ts refuses more), so this
+ * counts runs. Added to `countRecentLaneIntents` by the MCP path, so the
+ * org's `maxUnattendedPerHour` bounds both unattended roads together.
+ */
+export async function countRecentMcpUnattendedRuns(tx: LaneExecutor, orgId: string): Promise<number> {
+  const [row] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(scriptExecutions)
+    .where(and(
+      eq(scriptExecutions.orgId, orgId),
+      eq(scriptExecutions.approvalMethod, 'unattended_mcp_principal'),
+      gt(scriptExecutions.createdAt, sql`now() - interval '1 hour'`),
     ))
     .limit(1);
   return row?.n ?? 0;

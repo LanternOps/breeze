@@ -16,7 +16,21 @@
     "declineAll": "Rifiuta tutto ({{count}})",
     "groupTitle": "{{count}} richieste simili · {{tool}}",
     "moreHostnames": "+{{count}} altri",
-    "denyConfirmSummary": "Questo rifiuta {{count}} richieste per {{org}}."
+    "denyConfirmSummary": "Questo rifiuta {{count}} richieste per {{org}}.",
+    "crossOrg": {
+      "summary_one": "{{count}} richiesta {{tool}} in {{orgCount}} organizzazioni",
+      "summary_other": "{{count}} richieste {{tool}} in {{orgCount}} organizzazioni",
+      "reviewHint": "Una sola verifica decide tutte le richieste elencate qui sotto. Controlla ogni organizzazione prima di decidere.",
+      "review": "Esamina",
+      "hideReview": "Nascondi",
+      "orgRequestCount_one": "{{count}} richiesta",
+      "orgRequestCount_other": "{{count}} richieste",
+      "unknownDevice": "Dispositivo sconosciuto",
+      "changed": "Questo elenco è cambiato: esaminalo di nuovo",
+      "reReview": "Esamina di nuovo",
+      "denyConfirmSummary_one": "Questo rifiuta {{count}} richiesta in {{orgCount}} organizzazioni.",
+      "denyConfirmSummary_other": "Questo rifiuta {{count}} richieste in {{orgCount}} organizzazioni."
+    }
   },
   "filters": {
     "orgLabel": "Organizzazione",
@@ -76,6 +90,7 @@
     "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
     "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme.",
     "batchTooLarge": "Questo gruppo contiene troppe richieste per essere deciso insieme. Approvale in gruppi più piccoli.",
+    "batchScopeNotPermitted": "Solo un approvatore a livello di partner può decidere insieme richieste di più organizzazioni. Decidi separatamente le richieste di ciascuna organizzazione.",
     "driftedFromBatch": "Questa richiesta è cambiata e deve essere decisa singolarmente."
   },
   "registerDevice": "Registra dispositivo",

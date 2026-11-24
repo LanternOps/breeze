@@ -21,7 +21,7 @@ const partnerAuth = {
 } as never;
 const device = '11111111-1111-4111-8111-111111111111';
 const base = {
-  id: 'p1', orgId: 'org-1', status: 'reviewed', intentId: null,
+  id: 'p1', orgId: 'org-1', status: 'reviewed', intentId: null, mcpUnattendedClaimId: null,
   expiresAt: new Date(Date.now() + 3600_000), targetDeviceIds: [device],
   runAs: 'system', timeoutSeconds: 300,
 };
@@ -40,6 +40,7 @@ describe('assertProposalRunnable', () => {
     ['not_reviewed', { ...base, status: 'proposed' }, {}],
     ['superseded', { ...base, status: 'superseded' }, {}],
     ['consumed', { ...base, intentId: 'i1' }, {}],
+    ['consumed', { ...base, mcpUnattendedClaimId: 'ledger-1' }, {}],
     ['expired', { ...base, expiresAt: new Date(Date.now() - 1000) }, {}],
     ['device_not_targeted', { ...base }, { deviceIds: ['22222222-2222-4222-8222-222222222222'] }],
     ['run_as_mismatch', { ...base }, { runAs: 'user' }],
@@ -55,6 +56,11 @@ describe('assertProposalRunnable', () => {
     await expect(call({ releasingIntentId: 'i1' })).resolves.toEqual({ ok: true, proposal: stored });
     await expect(call({ releasingIntentId: 'i2' })).resolves.toEqual({ ok: false, reason: 'consumed' });
     await expect(call()).resolves.toEqual({ ok: false, reason: 'consumed' });
+  });
+
+  it('refuses an intent release once an unattended MCP run has claimed the proposal', async () => {
+    stored = { ...base, mcpUnattendedClaimId: 'ledger-1' };
+    await expect(call({ releasingIntentId: 'i1' })).resolves.toEqual({ ok: false, reason: 'consumed' });
   });
 
   it('lets a partner-scope actor run an approved proposal in an org they can reach (#5682)', async () => {

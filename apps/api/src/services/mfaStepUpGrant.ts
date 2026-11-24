@@ -94,6 +94,9 @@ export type StepUpOperation =
   // out to every org under the partner that has opted in, so it gets the
   // same fresh-MFA-plus-resource-binding treatment as the org-scope grant.
   | 'ai_partner_script_ceiling_grant'
+  // Raising the partner's MCP unattended proposal ceiling lets designated MCP
+  // principals run reviewed AI scripts up to that risk with no human approval.
+  | 'ai_partner_mcp_proposal_ceiling'
   // #5601: a "recent ceremony" credential for consecutive approval decides.
   // THE ONLY MULTI-USE OPERATION IN THIS MODULE — redeemed with the
   // non-consuming `readStepUpGrant`/`validateStepUpGrant` (GET), never
@@ -506,6 +509,21 @@ export function partnerScriptCeilingResourceDigest(input: {
     partnerId: canonicalId(input.partnerId),
     unattendedAllowed: input.unattendedAllowed,
     widening: canonicalWidening(input.widening),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Binds an `ai_partner_mcp_proposal_ceiling` grant to one partner and the exact
+ * ceiling being saved.
+ */
+export function partnerMcpProposalCeilingResourceDigest(input: {
+  partnerId: string;
+  mcpUnattendedProposalMaxRisk: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    partnerId: canonicalId(input.partnerId),
+    mcpUnattendedProposalMaxRisk: input.mcpUnattendedProposalMaxRisk,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

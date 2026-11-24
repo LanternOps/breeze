@@ -17,7 +17,21 @@
     "declineAll": "Deny all ({{count}})",
     "groupTitle": "{{count}} similar requests · {{tool}}",
     "moreHostnames": "+{{count}} more",
-    "denyConfirmSummary": "This denies {{count}} requests for {{org}}."
+    "denyConfirmSummary": "This denies {{count}} requests for {{org}}.",
+    "crossOrg": {
+      "summary_one": "{{count}} {{tool}} request across {{orgCount}} organizations",
+      "summary_other": "{{count}} {{tool}} requests across {{orgCount}} organizations",
+      "reviewHint": "One verification decides every request listed below. Check each organization before you decide.",
+      "review": "Review",
+      "hideReview": "Hide",
+      "orgRequestCount_one": "{{count}} request",
+      "orgRequestCount_other": "{{count}} requests",
+      "unknownDevice": "Unknown device",
+      "changed": "This list changed — review it again",
+      "reReview": "Review again",
+      "denyConfirmSummary_one": "This denies {{count}} request across {{orgCount}} organizations.",
+      "denyConfirmSummary_other": "This denies {{count}} requests across {{orgCount}} organizations."
+    }
   },
   "filters": {
     "orgLabel": "Organization",
@@ -77,6 +91,7 @@
     "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
     "batchNotHomogeneous": "These requests can no longer be decided together.",
     "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups.",
+    "batchScopeNotPermitted": "Only a partner-level approver can decide requests from several organizations together. Decide each organization's requests separately.",
     "driftedFromBatch": "This request changed and must be decided on its own."
   },
   "registerDevice": "Register device",

@@ -6,7 +6,7 @@ import {
 } from '@simplewebauthn/browser';
 import { fetchWithAuth } from './auth';
 import { mintStepUpGrant, StepUpMintError } from '../lib/mfaStepUp';
-import type { AssertionProof } from '@breeze/shared';
+import type { ApprovalBatchScope, AssertionProof } from '@breeze/shared';
 
 /**
  * Browser-approver (Breeze Authenticator Phase 2) client helpers.
@@ -355,11 +355,18 @@ export async function getBatchApprovalAssertion(
   basePath: string,
   ids: string[],
   decision: 'approved' | 'denied',
+  /** `cross_org` must reach the server here AND on the decide call: the scope
+   *  is folded into the challenge key, so a proof minted under one scope never
+   *  verifies under the other. Sent only when cross-org, so every same-org
+   *  request body stays exactly what it was before scopes existed. */
+  scope?: ApprovalBatchScope,
 ): Promise<AssertionProof> {
+  const body: Record<string, unknown> = { approvalRequestIds: ids, decision };
+  if (scope === 'cross_org') body.scope = scope;
   return completeAssertionCeremony(
     await fetchWithAuth(`${basePath}/batch/assertion-challenge`, {
       method: 'POST',
-      body: JSON.stringify({ approvalRequestIds: ids, decision }),
+      body: JSON.stringify(body),
     }),
   );
 }

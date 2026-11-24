@@ -1,6 +1,6 @@
 import { boolean, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { AiAgentProtectedResources, RiskTier, TouchClass } from '@breeze/shared';
+import type { AiAgentProtectedResources, McpUnattendedProposalCeiling, RiskTier, TouchClass } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 
@@ -35,6 +35,15 @@ export const aiScriptPolicies = pgTable(
       .$type<AiAgentProtectedResources>()
       .notNull()
       .default(sql`'{"services":[],"paths":[],"registryKeys":[],"deviceTags":[]}'::jsonb`),
+    /**
+     * PARTNER ceiling only: the highest reviewed risk a principal on
+     * MCP_UNATTENDED_TIER3_PRINCIPALS may run as `run_script { proposalId }`
+     * over MCP without a human approval. 'none' keeps every such run gated.
+     */
+    mcpUnattendedProposalMaxRisk: text('mcp_unattended_proposal_max_risk')
+      .$type<McpUnattendedProposalCeiling>()
+      .notNull()
+      .default('none'),
     unattendedEnabledBy: uuid('unattended_enabled_by').references(() => users.id, { onDelete: 'set null' }),
     unattendedEnabledAt: timestamp('unattended_enabled_at', { withTimezone: true }),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),

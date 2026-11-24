@@ -16,7 +16,21 @@
     "declineAll": "Tout refuser ({{count}})",
     "groupTitle": "{{count}} demandes similaires · {{tool}}",
     "moreHostnames": "+{{count}} de plus",
-    "denyConfirmSummary": "Ceci refuse {{count}} demandes pour {{org}}."
+    "denyConfirmSummary": "Ceci refuse {{count}} demandes pour {{org}}.",
+    "crossOrg": {
+      "summary_one": "{{count}} demande {{tool}} dans {{orgCount}} organisations",
+      "summary_other": "{{count}} demandes {{tool}} dans {{orgCount}} organisations",
+      "reviewHint": "Une seule vérification traite toutes les demandes ci-dessous. Examinez chaque organisation avant de décider.",
+      "review": "Examiner",
+      "hideReview": "Masquer",
+      "orgRequestCount_one": "{{count}} demande",
+      "orgRequestCount_other": "{{count}} demandes",
+      "unknownDevice": "Appareil inconnu",
+      "changed": "Cette liste a changé : examinez-la à nouveau",
+      "reReview": "Examiner à nouveau",
+      "denyConfirmSummary_one": "Ceci refuse {{count}} demande dans {{orgCount}} organisations.",
+      "denyConfirmSummary_other": "Ceci refuse {{count}} demandes dans {{orgCount}} organisations."
+    }
   },
   "filters": {
     "orgLabel": "Organisation",
@@ -76,6 +90,7 @@
     "batchStepUp": "Ce lot nécessite une connexion plus forte. Approuvez les demandes une par une.",
     "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble.",
     "batchTooLarge": "Ce lot contient trop de demandes pour être traité ensemble. Approuvez-les par groupes plus petits.",
+    "batchScopeNotPermitted": "Seul un approbateur au niveau du partenaire peut traiter ensemble des demandes de plusieurs organisations. Traitez les demandes de chaque organisation séparément.",
     "driftedFromBatch": "Cette demande a changé et doit être décidée séparément."
   },
   "registerDevice": "Enregistrer l’appareil",
