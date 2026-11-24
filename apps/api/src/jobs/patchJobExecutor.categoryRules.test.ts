@@ -98,10 +98,17 @@ async function runJob(rule: Record<string, unknown>): Promise<string[] | null> {
       driver('unknown-in-hold', 'unknown', daysAgo(2)),
       driver('rated-in-allowlist', 'critical'),
       driver('rated-outside-allowlist', 'low'),
+      // No matching rule: falls through to the ring-level unrated opt-in.
+      { ...driver('security-unrated', null), category: 'security' },
     ],
     [], // manual decisions
+    [], // checkAndFinalizeJob, after the device is marked skipped
   ];
-  vi.mocked(db.select).mockImplementation((() => selectResult(results.shift() ?? [])) as never);
+  vi.mocked(db.select).mockImplementation((() => {
+    const next = results.shift();
+    if (!next) throw new Error('unexpected extra select: the executor query order changed');
+    return selectResult(next);
+  }) as never);
 
   const outcome = await __testOnly.processExecuteDevice({
     type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1',
@@ -127,20 +134,20 @@ describe('a category rule autoApproveUnrated in a patch job snapshot (#12626)', 
 
   it('true approves unknown and NULL severity past the hold, and nothing else extra', async () => {
     expect(await runJob({ ...rule, autoApproveUnrated: true }))
-      .toEqual(['unknown-past-hold', 'null-past-hold', 'rated-in-allowlist']);
+      .toEqual(['unknown-past-hold', 'null-past-hold', 'rated-in-allowlist', 'security-unrated']);
   });
 
   it.each([
     ['absent', {}],
     ['false', { autoApproveUnrated: false }],
-  ])('%s approves only the rated patch in the allowlist', async (_label, flag) => {
-    expect(await runJob({ ...rule, ...flag })).toEqual(['rated-in-allowlist']);
+  ])('%s approves only the rated driver in the allowlist', async (_label, flag) => {
+    expect(await runJob({ ...rule, ...flag })).toEqual(['rated-in-allowlist', 'security-unrated']);
   });
 
   it.each([['string', 'true'], ['number', 1], ['null', null]])(
     'a malformed flag (%s) coerces the rule to a logged deny',
     async (_label, autoApproveUnrated) => {
-      expect(await runJob({ ...rule, autoApproveUnrated })).toEqual([]);
+      expect(await runJob({ ...rule, autoApproveUnrated })).toEqual(['security-unrated']);
       expect(captured.configs[0].categoryRules).toEqual([{ category: 'driver', autoApprove: false }]);
       expect(console.warn).toHaveBeenCalledWith(
         expect.stringContaining('coercing malformed category rule to deny (fail-closed)'),
