@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The Applies-to strip and drawer on the policy page (#12306). Split from
 // ConfigPolicyDetailPage.test.tsx, which is already long; same mock setup.
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // The page reads the org store, which registers with auth on import.
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (selector: (s: unknown) => unknown) =>
+    selector({ user: { permissions: [{ resource: 'devices', action: 'write' }] } }),
+}));
 const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 vi.mock('../../lib/authScope', () => {
@@ -19,9 +25,21 @@ vi.mock('./featureTabs/PatchTab', () => ({
 vi.mock('./featureTabs/BackupTab', () => ({
   default: () => <div data-testid="backup-tab-editor">Backup editor</div>,
 }));
-vi.mock('./AssignmentsTab', () => ({ default: () => <div data-testid="assignments-tab" /> }));
+const { panelProps } = vi.hoisted(() => ({ panelProps: { current: null as null | Record<string, any> } }));
+vi.mock('./appliesTo/AppliesToPanel', () => ({
+  default: (props: Record<string, any>) => {
+    panelProps.current = props;
+    return (
+      <div data-testid="applies-to-panel">
+        <button type="button" data-testid="stub-make-dirty" onClick={() => props.onDirtyChange(true)} />
+        <button type="button" data-testid="stub-applied" onClick={() => props.onApplied()} />
+      </div>
+    );
+  },
+}));
 
 import ConfigPolicyDetailPage from './ConfigPolicyDetailPage';
+import { getJwtClaims } from '../../lib/authScope';
 import { fetchWithAuth } from '../../stores/auth';
 import { i18n } from '../../lib/i18n';
 
@@ -38,6 +56,8 @@ const appliesTo = {
   ],
   childPolicyCount: 0,
 };
+
+let reachResponse: () => Response = () => json({ direct: 12, throughChildren: 0, organizations: 1 });
 
 function mockPolicy(extra: Record<string, unknown> = {}) {
   fetchMock.mockImplementation(async (input, init) => {
@@ -59,6 +79,7 @@ function mockPolicy(extra: Record<string, unknown> = {}) {
       });
     }
     if (url === '/configuration-policies/pol-1/features' && method === 'GET') return json({ data: [] });
+    if (url === '/configuration-policies/pol-1/reach' && method === 'GET') return reachResponse();
     return json({ error: 'not found' }, false);
   });
 }
@@ -68,15 +89,18 @@ const policyGets = () =>
     (c) => c[0] === '/configuration-policies/pol-1' && ((c[1] as RequestInit | undefined)?.method ?? 'GET') === 'GET',
   ).length;
 
-// jsdom reports zero widths, so every tab past Overview sits in "More".
+// Select a feature the way a user does: its rail item.
+const FEATURE_KEYS: Record<string, string> = { Patches: 'patch', Backup: 'backup' };
 function openFeatureTab(label: string) {
-  fireEvent.click(screen.getByText('More'));
-  fireEvent.click(screen.getByText(label));
+  fireEvent.click(screen.getByTestId(`config-policy-rail-tab-${FEATURE_KEYS[label]}`));
 }
 
 describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    panelProps.current = null;
+    vi.mocked(getJwtClaims).mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null } as never);
+    reachResponse = () => json({ direct: 12, throughChildren: 0, organizations: 1 });
     await i18n.changeLanguage('en');
     window.location.hash = '';
   });
@@ -84,22 +108,21 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     window.location.hash = '';
   });
 
-  it('the tab strip no longer contains Assignments', async () => {
+  it('the rail has no Assignments entry', async () => {
     mockPolicy();
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     await screen.findByRole('heading', { name: 'Test Policy' });
-    fireEvent.click(screen.getByText('More'));
-    expect(screen.queryByRole('tab', { name: /Assignments/i })).toBeNull();
     expect(screen.queryByText('Assignments')).toBeNull();
+    expect(screen.queryByTestId('config-policy-rail-tab-assignments')).toBeNull();
   });
 
-  it('renders the strip from appliesTo above the tabs', async () => {
+  it('renders the strip from appliesTo above the feature rail', async () => {
     mockPolicy();
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     const strip = await screen.findByTestId('config-policy-applies-to-strip');
     expect(strip).toHaveTextContent('Acme');
-    const tablist = screen.getByRole('tablist');
-    expect(strip.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const rail = screen.getByRole('navigation', { name: 'Policy features' });
+    expect(strip.compareDocumentPosition(rail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('the strip stays visible on a feature tab', async () => {
@@ -117,10 +140,10 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     const drawer = await screen.findByTestId('config-policy-applies-to-drawer');
     expect(drawer).toHaveTextContent('Applies to');
-    expect(screen.getByTestId('assignments-tab')).toBeInTheDocument();
-    // The alias is canonicalized away and the page stays on Overview.
-    await waitFor(() => expect(window.location.hash).not.toBe('#assignments'));
-    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+    expect(screen.getByTestId('applies-to-panel')).toBeInTheDocument();
+    // The alias is canonicalized away and the page stays on the first feature.
+    await waitFor(() => expect(window.location.hash).toBe('#patch'));
+    expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
   });
 
   it('#assignments set while on a feature tab opens the drawer and keeps that tab', async () => {
@@ -147,6 +170,91 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     expect(screen.queryByTestId('config-policy-applies-to-in-use')).toBeNull();
   });
 
+  it('the drawer renders the applies-to panel', async () => {
+    mockPolicy({ orgName: 'Acme' });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    expect(await screen.findByTestId('applies-to-panel')).toBeInTheDocument();
+    expect(panelProps.current).toMatchObject({
+      policyId: 'pol-1',
+      owner: { kind: 'org', orgId: 'org-1', orgName: 'Acme' },
+      summary: { assignmentCount: 1 },
+    });
+    await waitFor(() => expect(panelProps.current?.reach).toEqual({ direct: 12, throughChildren: 0, organizations: 1 }));
+  });
+
+  it('an MSP-managed policy opens the panel as MSP-managed', async () => {
+    // A partner caller: an org caller would get the read-only view.
+    vi.mocked(getJwtClaims).mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' } as never);
+    mockPolicy({ orgId: null, partnerId: 'p-1' });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    await screen.findByTestId('applies-to-panel');
+    expect(panelProps.current?.owner).toEqual({ kind: 'msp' });
+  });
+
+  it('a dirty draft blocks closing the drawer', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    fireEvent.click(await screen.findByTestId('stub-make-dirty'));
+    expect(screen.getByTestId('config-policy-applies-to-drawer-close')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText('Apply or discard your changes first.')).toBeInTheDocument();
+  });
+
+  it('an Apply re-reads the policy and its reach', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    await screen.findByTestId('applies-to-panel');
+    const reachGets = () => fetchMock.mock.calls.filter((c) => c[0] === '/configuration-policies/pol-1/reach').length;
+    await waitFor(() => expect(reachGets()).toBe(1));
+    const before = policyGets();
+    fireEvent.click(screen.getByTestId('stub-applied'));
+    await waitFor(() => expect(policyGets()).toBe(before + 1));
+    await waitFor(() => expect(reachGets()).toBe(2));
+    // The drawer stays open after an Apply.
+    expect(screen.getByTestId('applies-to-panel')).toBeInTheDocument();
+  });
+
+  it('a slow first reach that answers after the post-Apply one does not overwrite it', async () => {
+    const pending: Array<(r: Response) => void> = [];
+    reachResponse = () => undefined as unknown as Response;
+    mockPolicy();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input) === '/configuration-policies/pol-1/reach'
+        ? new Promise<Response>((resolve) => { pending.push(resolve); })
+        : base(input, init));
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    await screen.findByTestId('applies-to-panel');
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fireEvent.click(screen.getByTestId('stub-applied'));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => pending[1]!(json({ direct: 7, throughChildren: 0, organizations: 1 })));
+    await act(async () => pending[0]!(json({ direct: 12, throughChildren: 0, organizations: 1 })));
+    expect(panelProps.current?.reach).toEqual({ direct: 7, throughChildren: 0, organizations: 1 });
+  });
+
+  it('the strip shows the reach count', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('config-policy-applies-to-reach')).toHaveTextContent('12 devices');
+  });
+
+  it('a reach failure leaves the counts out and the page usable', async () => {
+    reachResponse = () => json({ error: 'boom' }, false);
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByTestId('config-policy-applies-to-target');
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/pol-1/reach')).toBe(true));
+    expect(screen.queryByTestId('config-policy-applies-to-reach')).toBeNull();
+    fireEvent.click(screen.getByTestId('config-policy-applies-to-edit'));
+    expect(await screen.findByTestId('applies-to-panel')).toBeInTheDocument();
+    expect(panelProps.current?.reach).toBeNull();
+  });
+
   it('the Edit button opens the drawer', async () => {
     mockPolicy();
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
@@ -169,7 +277,7 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     await waitFor(() => expect(screen.queryByTestId('config-policy-applies-to-drawer')).toBeNull());
   });
 
-  it('saving details goes through runAction and keeps the parent banner', async () => {
+  it('saving details goes through runAction and keeps Based on and the strip', async () => {
     const parentPolicy = { id: 'parent-1', name: 'Baseline', status: 'active', orgId: 'org-1', featureLinks: [] };
     const full = {
       id: 'pol-1',
@@ -198,6 +306,7 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     });
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     await screen.findByRole('heading', { name: 'Test Policy' });
+    fireEvent.click(screen.getByTestId('config-policy-edit-details'));
 
     // A failed save toasts through runAction.
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
@@ -209,8 +318,10 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     const before = policyGets();
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     await waitFor(() => expect(policyGets()).toBe(before + 1));
+    // A saved form closes.
+    expect(screen.queryByTestId('config-policy-details-form')).toBeNull();
     openFeatureTab('Backup');
-    expect(screen.getByText('Baseline')).toBeInTheDocument();
+    expect(screen.getByTestId('config-policy-based-on')).toHaveTextContent('Baseline');
     expect(screen.getByTestId('config-policy-applies-to-strip')).toHaveTextContent('Acme');
   });
 
@@ -251,6 +362,7 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     });
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     await screen.findByRole('heading', { name: 'Test Policy' });
+    fireEvent.click(screen.getByTestId('config-policy-edit-details'));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     expect(await screen.findByRole('heading', { name: 'Renamed' })).toBeInTheDocument();

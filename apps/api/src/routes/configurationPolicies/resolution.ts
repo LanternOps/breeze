@@ -10,6 +10,7 @@ import { configurationPolicies, devices } from '../../db/schema';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
+  PolicyNotReadableError,
   type EffectiveConfiguration,
 } from '../../services/configurationPolicy';
 import { getPolicyBaselineDefaults } from '../../services/policyBaselineDefaults';
@@ -139,7 +140,15 @@ resolutionRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const result = await previewEffectiveConfig(deviceId, changes, auth);
+    let result;
+    try {
+      result = await previewEffectiveConfig(deviceId, changes, auth);
+    } catch (err) {
+      // An added policy the caller may not read (W03a): the same 404 as any
+      // other policy it cannot see.
+      if (err instanceof PolicyNotReadableError) return c.json({ error: 'Configuration policy not found' }, 404);
+      throw err;
+    }
     if (!result) return c.json({ error: 'Device not found or access denied' }, 404);
 
     return c.json(result);

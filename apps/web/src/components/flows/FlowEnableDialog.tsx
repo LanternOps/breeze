@@ -28,6 +28,7 @@ const SIMPLE_ERRORS: Record<string, string> = {
   slug_unavailable: 'enable.slugUnavailable',
   webhook_secret_missing: 'enable.webhookSecretMissing',
   ai_budget_unavailable: 'enable.aiBudgetUnavailable',
+  flow_conversion_not_switched: 'enable.conversionNotSwitched',
   flow_not_found: 'errors.notFound',
   MFA_REQUIRED: 'errors:MFA_REQUIRED',
 };

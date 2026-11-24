@@ -1,6 +1,6 @@
 ---
 title: Device-own settings (change one feature for one device, from the device page)
-status: draft
+status: approved (Gate A, Todd 2026-11-23)
 date: 2026-11-21
 origin: "#6670; wave W4 of the configuration policies UX reshape"
 related_issues: [6670, 12293, 9565, 9408, 10712]
@@ -96,10 +96,10 @@ its target derived at read time through a new targets view.
     rule among ordinary policies and gains one owned-first check ahead of it. No other reader
     changes.
   - The reservation is enforced in the database, not in the HTTP validator. The column is a
-    plain integer with no range check, and the AI tool passes a priority straight to
-    `assignPolicy`. Audit existing values, then add the range check for ordinary rows.
-  - Device delete removes device-level assignments before the device row (the #12293 fix, needed
-    regardless).
+    plain integer with no range check; only the HTTP validator and the AI tool's input
+    schema bound it. Audit existing values, then add the range check for ordinary rows.
+  - Device delete removes device-level assignments before the device row (#12293, shipped in
+    #12532).
 - **Switch criteria.** Wave D2 builds the parity fixture before any UI, as an extension of
   the #8142 parity suite: two devices, a partner
   parent policy, an ordinary filtered device-level assignment, one own feature. It must show the
@@ -111,16 +111,15 @@ its target derived at read time through a new targets view.
   the switch changes readers, not data.
 - **Release gates for A** (from the second round):
   - A database-owned transition that carries the protected assignment through an org merge
-    and validates the final owner and target together. Today a merge fails when
-    the losing organization owns a policy applied inside that organization at any level
-    (#12490, reproduced; see "Device lifecycle").
+    and validates the final owner and target together. For ordinary assignments #12514
+    fixed this (#12490): the owner check is deferred to commit inside a merge. The protected
+    row must pass the same path (see "Device lifecycle").
   - Tests for direct insert, retarget, filter change and delete of the protected row,
     concurrent writes, single and bulk permanent delete, and merge with ordinary and protected
     device-level assignments.
-  - An explicit empty automation or compliance setting must win. Today both resolvers
-    inner-join the child rows before choosing a winner, so an empty link vanishes and a
-    broader policy wins. Choose the winning link first, then return its children. This is a
-    defect today for any policy, under either storage option (#12488).
+  - An explicit empty automation or compliance setting must win. #12521 fixed this for any
+    policy (#12488): both resolvers now choose the winning link first, then load its rows.
+    The parity fixture still pins it for own settings.
   - Backup legal holds and immutability are combined across every applicable policy, not
     taken from one winner. A device's own backup setting must not weaken them.
 - **Switch to C** if A cannot pass the merge, delete and concurrent-write tests, or once
@@ -185,10 +184,10 @@ Device-owned rows must never surface where policies are listed, counted, picked 
 | Event | Behaviour |
 |---|---|
 | Decommission (soft delete) and restore | Own settings are kept, so a restored device comes back as it was (Decision 3). |
-| Permanent delete, single and bulk | Delete device-level assignments for the device, then the device-owned row, then the device. Without the first step the delete fails today with a 409 (#12293). |
+| Permanent delete, single and bulk | Delete device-level assignments for the device, then the device-owned row, then the device. The first step shipped in #12532 (#12293); the device-owned row is the new part. |
 | Site move within the org | Nothing stored changes; the fallback is recomputed. Site-bound execution authority is re-checked at dispatch, as today. |
-| Org move | Own settings are removed, and the move confirmation lists the affected features (Decision 1). Today a device with a device-level assignment of its own organization's policy cannot change organization: the database refuses the update, the move engine has no step that clears such assignments, and the route returns a 500 (#12491, reproduced through the route). An assignment of an MSP-managed policy does not block the move. |
-| Org merge | **A's main exposure. Fails today (#12490, reproduced).** The assignment re-check on a device or policy org change is an immediate statement trigger, and the validator has no merge exemption (newest definition: `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`, re-read on main). The merge itself repoints organization-level assignments only (`orgMerge.ts`). An org-owned policy applied inside the losing organization at organization, site or device level therefore blocks a merge today, with or without this feature. Under A every device with own settings carries one more such assignment; under C none does. The fix for #12490 is one of the switch criteria. |
+| Org move | Own settings are removed, and the move confirmation lists the affected features (Decision 1). On main today a device with a device-level assignment of its own organization's policy cannot change organization: the route returns a 500 (#12491, reproduced through the route). PR #12575, in review, has the move remove those assignments, which is the same rule as Decision 1. An assignment of an MSP-managed policy does not block the move. |
+| Org merge | **A's main exposure.** The assignment re-check on a device or policy org change is a statement trigger, so deferring constraints did not hold it back. Until #12514 an org-owned policy applied inside the losing organization at any level blocked a merge (#12490, reproduced). #12514 defers that check to commit inside a merge (migration `2027-01-29-120000-config-assignment-owner-check-deferred-in-org-merge.sql`). Under A every device with own settings carries one more such assignment; under C none does. A merge with a protected assignment present stays one of the switch criteria. |
 | Org cascade delete | Already covered: the table is registered and sorts before `devices`. |
 
 ### Features offered
@@ -238,15 +237,16 @@ the parity fixture.
 
 | Wave | Scope | Depends on |
 |---|---|---|
-| D0 | #12293 (device delete removes device-level assignments). Fix the empty automation and compliance override (#12488). Audit existing assignment priorities ahead of the database range check. Contract test pinning priority direction. Fix org move (#12491) and org merge (#12490) for an org-owned policy applied inside the organization. Independent of everything else. | none |
+| D0 | Done on main: device delete (#12293, #12532), the empty automation and compliance override (#12488, #12521), org merge (#12490, #12514). In review: org move (#12491, PR #12575). Still to do: audit existing assignment priorities ahead of the database range check; a contract test pinning priority direction. Independent of everything else. | none |
 | D1 | Column, constraints, guards; catalog definition; lister sweep; leak contract test | D0 |
 | D2 | Device configuration service and routes; source kind and fallback in resolution; parity fixture (acceptance gate, switch criteria above) | D1 |
-| D3 | Device Config tab actions, device list badge and filter, "Apply a policy to this device" | D2, reshape W1 |
+| D3 | Device Config tab actions, device list badge and filter, "Apply a policy to this device" | D2 (reshape W1 is on main) |
 | D4 | AI tool `configure_device` | D2 |
 
 ## Decisions (Todd, 2026-11-21)
 
-The four product calls, as decided. The spec stays `draft` until it is approved as a whole.
+The four product calls, as decided. Todd approved the spec as a whole on 2026-11-23. The plan
+comes next; the build waits for the plan and for #12491.
 
 1. **Org move: own settings are removed.** The move confirmation lists the affected features.
    The engine already does this for device-group memberships. Own settings are not carried or
@@ -260,6 +260,8 @@ The four product calls, as decided. The spec stays `draft` until it is approved 
      list rows this spec removes.
    - Settled with this decision: for a single-device target that route writes the device's
      own settings. For a group it keeps its minted policy.
+   - The #9408 plan was amended on 2026-11-23: its device-target tasks are on hold until
+     wave D2, and it reads a multi-device target the same way (one write per chosen device).
 3. **Decommissioned devices keep own settings**, so a restore is faithful.
 4. **The first release offers every feature that passes the parity fixture.** The
    per-feature cost is one fixture row.
@@ -271,7 +273,7 @@ The four product calls, as decided. The spec stays `draft` until it is approved 
 - **Re-read on current main:** the warranty ranking; `validateAssignmentTarget`; the newest
   database assignment-target validator (`2027-01-12-200200`); the org merge assignment
   fix-up; `devicePolicySet.ts` and `configPolicyAssignmentDevices.ts` (headers and exports,
-  not every caller); the assign validator's priority bounds; that #12293 is still open.
+  not every caller); the assign validator's priority bounds; that #12293 was still open (fixed since, #12532).
 - **Read at the drafting commit only:** the grep of the other resolver sorts; the 2026-09-06
   inheritance spec; `docs/agents/tenancy-rls.md`.
 - **From a fact-gathering pass at the drafting commit (not re-read on main):** table shapes,
@@ -293,3 +295,13 @@ The four product calls, as decided. The spec stays `draft` until it is approved 
   succeeds when the policy is MSP-managed (#12491).
 - **Not checked in those runs:** `device_group`-level assignments, policies with a parent or
   feature links, Postgres 18.
+- **State on 2026-11-23 (main at `180bb38099`):** #12488, #12490 and #12293 are closed by
+  #12521, #12514 and #12532. Their PR summaries were read; the diffs were not re-read for
+  this spec. #12491 is open, with PR #12575 in review.
+- **Not re-read since the reshape shipped:** all eleven waves of #12462 merged on 2026-11-22
+  and 2026-11-23, after this spec was written. The spec has not been checked against the
+  surfaces they changed (list filters, read scoping, the device Config tab, the shared
+  assignment gates). The plan must re-ground it first.
+- **Corrected on 2026-11-23:** an earlier draft said the AI tool passes any priority to
+  `assignPolicy`. Its input schema bounds priority to 0–1000 (`aiToolSchemas.ts`). The
+  Helper branding checks the AI tools do skip are #12594.

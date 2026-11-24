@@ -162,6 +162,14 @@ export interface MoveDeviceOrgResult {
    * the source org as its history.
    */
   expiredElevationRequests: number;
+  /** #12491: device-level assignments of policies that cannot follow the device. */
+  removedConfigPolicyAssignments: RemovedConfigPolicyAssignment[];
+}
+
+export interface RemovedConfigPolicyAssignment {
+  assignmentId: string;
+  policyId: string;
+  policyName: string;
 }
 
 export async function moveDeviceOrgInTransaction(
@@ -561,6 +569,24 @@ export async function moveDeviceOrgInTransaction(
   // Cross-partner moves must finish remote PSA work before dropping its ledger.
   // Site-owned alert mappings remain at the source site, like external refs.
   await detachPsaMappingsForDeviceMove(tx, deviceId, targetOrgId);
+
+  // #12491: the database refuses, on purpose, a device-level assignment of a
+  // policy that cannot own a device in the target org
+  // (config_policy_assignments_target_owner_fk; partnerApiRls.integration.test.ts
+  // pins the refusal for a raw org update). Its trigger on `devices` checks at
+  // the end of the flip below, so remove those rows BEFORE it: within one
+  // partner, the source org's policies (partner-owned ones stay); on a
+  // cross-partner move, the old partner's too. Returned for both move audits.
+  const removedConfigPolicyAssignments = (await tx.execute(
+    sql`DELETE FROM config_policy_assignments a
+        USING configuration_policies p
+        WHERE p.id = a.config_policy_id
+          AND a.level = 'device' AND a.target_id = ${deviceId}::uuid
+          AND (p.org_id <> ${targetOrgId}::uuid
+               OR p.org_id IS NULL AND p.partner_id IS DISTINCT FROM
+                 (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid))
+        RETURNING a.id AS "assignmentId", a.config_policy_id AS "policyId", p.name AS "policyName"`,
+  )) as unknown as RemovedConfigPolicyAssignment[];
 
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
@@ -1502,5 +1528,6 @@ export async function moveDeviceOrgInTransaction(
     customFieldRehome,
     removedTicketLinks,
     expiredElevationRequests,
+    removedConfigPolicyAssignments,
   };
 }

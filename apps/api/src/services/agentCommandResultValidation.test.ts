@@ -141,6 +141,39 @@ describe('agentCommandResultValidation — verification unchecked count and resu
   });
 });
 
+describe('agentCommandResultValidation — restore stopped by a lost storage session', () => {
+  // The helper answers an unfinished restore as a FAILED command whose stdout
+  // still carries the body (marshalRestoreResult); the counts must survive.
+  it('accepts filesNotAttempted and the storage_session_lost code on a failed backup_restore', () => {
+    const validated = validateCriticalCommandResult('backup_restore', {
+      commandId: 'cmd-restore-1',
+      status: 'failed',
+      stderr: 'restore completed partially',
+      stdout: JSON.stringify({
+        snapshotId: 'snap-1',
+        status: 'partial',
+        filesRestored: 3,
+        bytesRestored: 30,
+        filesFailed: 0,
+        filesNotAttempted: 47,
+        code: 'storage_session_lost',
+        error: 'restore stopped: the storage session ended after 3 of 50 files (3 restored, 0 failed); the remaining 47 were not attempted',
+      }),
+    });
+    expect(validated?.structuredResult).toMatchObject({
+      status: 'partial',
+      filesRestored: 3,
+      filesNotAttempted: 47,
+      code: 'storage_session_lost',
+    });
+  });
+
+  it('rejects a negative or fractional filesNotAttempted', () => {
+    expect(restoreStructuredResultSchema.safeParse({ status: 'partial', filesNotAttempted: -1 }).success).toBe(false);
+    expect(restoreStructuredResultSchema.safeParse({ status: 'partial', filesNotAttempted: 1.5 }).success).toBe(false);
+  });
+});
+
 describe('agentCommandResultValidation — bmr_recover command result shape', () => {
   it('accepts the recovery helper result, whose failedFiles is a count', () => {
     const validated = validateCriticalCommandResult('bmr_recover', {

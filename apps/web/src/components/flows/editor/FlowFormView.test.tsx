@@ -68,11 +68,11 @@ describe('FlowFormView', () => {
       trigger: { type: 'schedule', cron: '30 3 * * 1', timezone: 'UTC' },
       target: { kind: 'target', target: { type: 'groups', groupIds: ['44444444-4444-4444-8444-444444444444'] } },
       actions: [{ type: 'run_script', scriptId: SCRIPT, whenOffline: 'skip' }],
-      onFailure: { mode: 'notify', channelIds: [CHANNEL] },
+      onFailure: { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' },
     };
     expect(last).toEqual(expected);
     const doc = compileFlowForm(last);
-    expect(doc.steps.map((s) => s.id)).toEqual(['a0_run_script', 'a0_failed', 'a0_failnotice_0']);
+    expect(doc.steps.map((s) => s.id)).toEqual(['a0_run_script', 'a0_failsummary_0']);
     expect(doc.steps[0].input).toMatchObject({ scriptId: SCRIPT, whenOffline: 'skip', target: expected.target.kind === 'target' ? expected.target.target : null });
   });
 

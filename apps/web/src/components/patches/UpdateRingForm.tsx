@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useForm, useFieldArray, Controller, type UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,6 +7,7 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import RingAppRulesSection, { type RingAppRule } from './RingAppRulesSection';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import type { RingFeatureUpdates } from './UpdateRingList';
 
 /** A Windows release token like 25H2. Mirrors the API's ringFeatureUpdatesSchema. */
@@ -150,6 +151,8 @@ type UpdateRingFormProps = {
    * `defaultValues.ringOrder`) defaults to one past the highest (#9565).
    */
   existingRingOrders?: number[];
+  /** Called with whether the form differs from its starting values (#12305). */
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 /** max(existing order) + 1, clamped to the schema range; 0 with no rings. */
@@ -288,6 +291,24 @@ function HoldField({ field, testId, t }: { field: UseFormRegisterReturn; testId?
   );
 }
 
+/** Asks before a closing ring editor throws away unsaved input (#12305). A
+ *  warning, not destructive: nothing saved is removed. Render it beside the
+ *  editor's Dialog, not inside it, so its Escape does not also reach the editor. */
+export function DiscardRingChangesDialog(props: { open: boolean; onClose: () => void; onConfirm: () => void }) {
+  const { t } = useTranslation('patches');
+  return (
+    <ConfirmDialog
+      {...props}
+      variant="warning"
+      title={t('updateRingForm.discardChanges.title')}
+      message={t('updateRingForm.discardChanges.message')}
+      confirmLabel={t('updateRingForm.discardChanges.confirm')}
+      confirmTestId="discard-ring-changes-confirm"
+      dialogTestId="discard-ring-changes-dialog"
+    />
+  );
+}
+
 export default function UpdateRingForm({
   onSubmit,
   onCancel,
@@ -296,6 +317,7 @@ export default function UpdateRingForm({
   loading,
   usage,
   existingRingOrders,
+  onDirtyChange,
 }: UpdateRingFormProps) {
   const { t } = useTranslation('patches');
   const ringSchema = useMemo(() => makeRingSchema(t), [t]);
@@ -354,13 +376,17 @@ export default function UpdateRingForm({
     watch,
     setValue,
     control,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<z.input<RingSchema>, unknown, z.output<RingSchema>>({
     resolver: zodResolver(ringSchema),
     defaultValues: initialValues,
   });
 
   const { fields, append, remove } = useFieldArray({ control, name: 'categoryRules' });
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   const watchCategoryRules = watch('categoryRules') ?? [];
   const usedCategories = watchCategoryRules.map((r) => r.category);

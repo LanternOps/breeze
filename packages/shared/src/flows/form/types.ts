@@ -22,7 +22,19 @@ export type FlowFormAction =
   | { type: 'notify'; channelId: string; title: string; message: string; severity: 'info' | 'warning' | 'critical' }
   | { type: 'create_alert'; severity: (typeof ALERT_SEVERITIES)[number]; title: string; message: string };
 
-export type FlowFormOnFailure = { mode: 'stop' } | { mode: 'continue' } | { mode: 'notify'; channelIds: string[] };
+/**
+ * How the on-failure notice is shaped (#12596). `summary`: one notice per
+ * channel for each script step that had failures, with the succeeded and
+ * failed counts; what the editor creates. `perDevice`: one notice per channel
+ * for each failed device, the legacy-Job converter's shape; kept so a flow
+ * moved from a Job saves unchanged. Decoded from the document, never defaulted.
+ */
+export type FlowFormFailureNotice = 'summary' | 'perDevice';
+
+export type FlowFormOnFailure =
+  | { mode: 'stop' }
+  | { mode: 'continue' }
+  | { mode: 'notify'; channelIds: string[]; notice: FlowFormFailureNotice };
 
 export interface FlowFormValues {
   name: string;

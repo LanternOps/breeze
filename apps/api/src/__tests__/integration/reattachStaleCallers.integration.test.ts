@@ -732,6 +732,8 @@ describe('token-authenticated re-enroll (F3) under #8318 §6.4', () => {
         resolve(message);
       });
     });
+    const [before] = await getTestDb().select({ enrolledAt: devices.enrolledAt, installEnrolledAt: devices.installEnrolledAt })
+      .from(devices).where(eq(devices.id, device.deviceId));
     try {
       await subscriber.subscribe('agent-credential:revoked');
       const response = await enrollApp().request('/agents/enroll', {
@@ -743,6 +745,12 @@ describe('token-authenticated re-enroll (F3) under #8318 §6.4', () => {
       const body = await response.json() as { deviceId: string; agentId: string };
       expect(body.deviceId).toBe(device.deviceId); // the same row, rewritten in place
       expect(body.agentId).not.toBe(device.agentId);
+      // #8318 wave T2: the new install's start moves (TPM evidence counts only
+      // a key proof made after it); the row's first enrollment does not.
+      const [after] = await getTestDb().select({ enrolledAt: devices.enrolledAt, installEnrolledAt: devices.installEnrolledAt })
+        .from(devices).where(eq(devices.id, device.deviceId));
+      expect(after!.installEnrolledAt!.getTime()).toBeGreaterThan(before!.installEnrolledAt!.getTime());
+      expect(after!.enrolledAt.getTime()).toBe(before!.enrolledAt.getTime());
 
       const message = JSON.parse(await received) as { agentId: string; revokedTokenHashes: string[] };
       expect(message.agentId).toBe(device.agentId);

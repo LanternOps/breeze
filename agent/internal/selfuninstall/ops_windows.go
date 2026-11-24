@@ -230,6 +230,11 @@ func (windowsOps) UninstallProduct(ctx context.Context, productCode, logPath str
 	}
 }
 
+// ScheduledTaskExists is scheduledTaskExists for other packages: the agent's
+// user-helper task repair (internal/userhelpertask) reads the same
+// registration the teardown verifies.
+func ScheduledTaskExists(name string) (bool, error) { return scheduledTaskExists(name) }
+
 // scheduledTaskExists reads the Task Scheduler's own registration rather than
 // schtasks output, whose "not found" text is localized: absent is a missing
 // key, anything else unreadable is an error.

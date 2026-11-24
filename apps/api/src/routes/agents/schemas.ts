@@ -706,6 +706,10 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'isolation_stale_generation',
   'isolation_invalid_spec',
   'isolation_busy',
+  // A verification failed on the agent without being started: it waited on
+  // the verification lane past a useful run's budget (#11813). Persisted as
+  // the verification's reasonCode (routes/backup/verificationScheduled.ts).
+  'verification_queue_expired',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];

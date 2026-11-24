@@ -52,6 +52,19 @@ export function agentSupportsOemRebootHold(agentVersion: string | null | undefin
 export const OEM_LANES = ['dell', 'surface', 'hp', 'lenovo'] as const;
 export type OemLane = (typeof OEM_LANES)[number];
 
+/**
+ * Lanes whose vendor tool cannot honour a policy's blocked update IDs (#12265). Dell: DCU's
+ * `-localblockedswb` is valid only on `/configure`, and blocking a release that way makes DCU
+ * offer a different package for the same component, so the agent refuses any Dell run that
+ * carries a blocked ID (`blocked_ids_unsupported`). The policy validator rejects a blocklist for
+ * these lanes, and the scheduler sends no run for one already stored.
+ */
+export const OEM_LANES_WITHOUT_BLOCKED_UPDATE_IDS: readonly OemLane[] = Object.freeze(['dell']);
+
+export function oemLaneHonoursBlockedUpdateIds(lane: OemLane): boolean {
+  return !OEM_LANES_WITHOUT_BLOCKED_UPDATE_IDS.includes(lane);
+}
+
 /** What a device shows for vendor updates, in the order the fleet tab lists them. */
 export const OEM_DISPLAY_STATES = [
   'up_to_date',

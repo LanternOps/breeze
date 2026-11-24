@@ -8,6 +8,7 @@ import { buildAuditLogParams, writeAuditEvent } from '../../services/auditEvents
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { tpmAttestationEnabled } from './heartbeatSettingsDecision';
+import { detectAfterKeyBaseline } from '../../services/reinstallCandidates';
 import {
   CHALLENGES_PER_HOUR,
   challengeRateKey,
@@ -20,8 +21,9 @@ import {
  * TPM EK collection (#8318 wave T1; spec 2026-10-12 §12.2), device-token
  * authenticated through the parent router's `/:id/*` agentAuthMiddleware.
  * Both routes key off the token's device and agent, never the `:id` segment.
- * Main agent only: the watchdog and the helper never attest. Refused for a
- * parked device until wave T2 adds them to the parked allow-list.
+ * Main agent only: the watchdog and the helper never attest. A parked device
+ * attests too (wave T2, agentAuthParked PARKED_ALLOWED_TWO_SEGMENT_ACTIONS):
+ * it is the source a reattach most often starts from.
  *
  * Self-managed DB context (agentAuth SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS):
  * no request-long transaction is held, so the rate limit and the challenge's
@@ -117,5 +119,8 @@ attestationRoutes.post('/:id/attestation/complete', switchedOn, limit, zValidato
   }
   if (result === 'stale') throw staleAgentCredentialRejection();
   if (result === 'not_found') return c.json({ error: 'Device not found' }, 404);
+  // A first baseline may name a record this install is a reinstall of (wave
+  // T2): searched after the commit, off the response path, never failing it.
+  if (result.outcome === 'recorded') void detectAfterKeyBaseline(agent.deviceId);
   return c.json({ attested: true, baseline: result.outcome });
 });

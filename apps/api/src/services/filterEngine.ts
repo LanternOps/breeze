@@ -1087,6 +1087,39 @@ export async function evaluateFilter(
 }
 
 /**
+ * {@link evaluateFilter} over several orgs in ONE statement (#12324): the
+ * Alerts list applies the device filter on every page fetch, and a partner's
+ * All-organizations view would otherwise run one query per accessible org each
+ * time. Same scoping as evaluateFilter — `isEphemeral = false`, the site,
+ * device and decommissioned axes — with the org axis widened to `orgIds`. The
+ * caller must pass only orgs it has already authorized; RLS still applies. An
+ * empty list matches nothing and issues no query.
+ */
+export async function evaluateFilterInOrgs(
+  filter: FilterConditionGroup,
+  options: Omit<EvaluateFilterOptions, 'orgId' | 'limit' | 'offset'> & { orgIds: readonly string[] }
+): Promise<FilterEvaluationResult> {
+  if (options.orgIds.length === 0) {
+    return { deviceIds: [], totalCount: 0, evaluatedAt: new Date() };
+  }
+  const siteScope = siteScopeCondition(options.allowedSiteIds);
+  const deviceScope = deviceIdScopeCondition(options.allowedDeviceIds);
+  const statusScope = decommissionedScopeCondition(options.excludeDecommissioned);
+  const filterSQL = buildGroupSQL(filter);
+  const results = await withFilterStatementTimeout(async (tx) =>
+    tx
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(inArray(devices.orgId, [...options.orgIds]), eq(devices.isEphemeral, false), siteScope, deviceScope, statusScope, filterSQL))
+  );
+  return {
+    deviceIds: results.map(r => r.id),
+    totalCount: results.length,
+    evaluatedAt: new Date()
+  };
+}
+
+/**
  * Evaluate a filter and return preview results with device details
  */
 export async function evaluateFilterWithPreview(

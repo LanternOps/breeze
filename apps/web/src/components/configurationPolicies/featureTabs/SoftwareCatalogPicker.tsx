@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { useFeatureDirty } from "./featureEditing";
 export type SelectedSoftware = {
   catalogId: string;
   catalogName: string;
@@ -72,6 +73,7 @@ export default function SoftwareCatalogPicker({
   onSelect,
 }: SoftwareCatalogPickerProps) {
   useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -186,6 +188,7 @@ export default function SoftwareCatalogPicker({
     versionLabel: string | null,
   ) => {
     if (!selectedCatalogItem) return;
+    markDirty();
     onSelect({
       catalogId: selectedCatalogItem.id,
       catalogName: selectedCatalogItem.name,
@@ -202,7 +205,10 @@ export default function SoftwareCatalogPicker({
   };
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+    <div
+      data-feature-dirty-ignore
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8"
+    >
       <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">

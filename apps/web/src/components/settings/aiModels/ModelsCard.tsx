@@ -9,6 +9,7 @@ import { showToast } from '../../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import OfferingDrawer from './OfferingDrawer';
+import { jobFingerprint, useJobPoll } from './useJobPoll';
 import ManualModelForm from './ManualModelForm';
 import { ENABLE_BLOCKER_KEYS, SURFACE_LABEL_KEYS, registryFriendly } from './surfaceLabels';
 
@@ -75,11 +76,15 @@ function groupOfferings(snapshot: AiModelsSnapshotDto, fallbackName: string): Gr
 export default function ModelsCard({
   snapshot,
   onChanged,
+  onPoll,
 }: {
   snapshot: AiModelsSnapshotDto;
   onChanged: () => void | Promise<void>;
+  /** Quiet re-read used while a queued job is pending (never replaces the tab with an error). Defaults to onChanged. */
+  onPoll?: () => void | Promise<void>;
 }) {
   const { t } = useTranslation('settings');
+  const pollForJob = useJobPoll(jobFingerprint(snapshot), onPoll ?? onChanged);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ offering: AiOfferingDto; inUse: DefaultFor } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -227,7 +232,7 @@ export default function ModelsCard({
       {editing && (
         <OfferingDrawer key={editing.id} offering={editing} offerings={snapshot.offerings}
           envManaged={snapshot.connections.some((c) => c.id !== null && c.id === editing.connectionId && c.managedBy === 'env')}
-          onClose={() => setEditingId(null)} onSaved={onChanged} />
+          onClose={() => setEditingId(null)} onSaved={onChanged} onJobQueued={pollForJob} />
       )}
 
       {addingManualTo !== null && (

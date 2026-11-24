@@ -1492,6 +1492,37 @@ describe('agent commands routes', () => {
     expect(JSON.stringify(handlerArg)).not.toContain('BEGIN PRIVATE KEY');
   });
 
+  // #11813: a verification the agent failed without starting it carries why
+  // in errorCode; the verification row persists it as its reasonCode.
+  it('hands a failed verification result its errorCode', async () => {
+    const { processBackupVerificationResult } = await import('../backup/verificationService');
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        { id: commandId, deviceId: 'device-1', type: 'backup_verify', status: 'sent', targetRole: 'agent' },
+      ])
+    );
+    updateMock.mockReturnValueOnce(chainMock([{ id: 'cmd-1' }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'failed',
+        exitCode: 1,
+        error: 'verification was not started',
+        errorCode: 'verification_queue_expired',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(processBackupVerificationResult).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(processBackupVerificationResult).mock.calls[0]![1]).toMatchObject({
+      status: 'failed',
+      errorCode: 'verification_queue_expired',
+    });
+  });
+
   // BREEZE-X: the REST twin of the WS terminal compare-and-set used to return
   // {success:true} on 0 rows with no signal at all, so a cross-transport race
   // could not be confirmed from the WS side alone. It now reports with its own

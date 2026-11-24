@@ -50,7 +50,7 @@ import {
   sites,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import { assignmentTargetKey, authorizeAssignmentTargets, policyAccessCondition } from './configurationPolicy';
+import { assignmentTargetKey, authorizeAssignmentTargets, policyReadCondition } from './configurationPolicy';
 
 type NamedLevel = Exclude<ConfigPolicyTargetLevel, 'partner'>;
 
@@ -195,7 +195,7 @@ export async function loadAppliesToSummaries(
     .orderBy(asc(ranked.configPolicyId), asc(ranked.rn))) as WindowRow[];
 
   const childConditions: SQL[] = [inArray(configurationPolicies.parentPolicyId, ids)];
-  const accessCond = policyAccessCondition(auth);
+  const accessCond = policyReadCondition(auth);
   if (accessCond) childConditions.push(accessCond);
   const childRows = await db
     .select({

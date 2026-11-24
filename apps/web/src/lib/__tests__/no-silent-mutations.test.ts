@@ -35,8 +35,6 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // To guard a file, add its line here; there is no total to bump (#10030).
 // MIN_GUARDED_FILES below is a floor that additions never touch.
 const TARGET_GLOBS = [
-  // Partner-wide groups: policy assignment mutations surface outcomes.
-  'src/components/configurationPolicies/PartnerGroupAssignmentSection.tsx',
   // Tool Catalog W4 (#5219): flow enable/disable/run/cancel mutations go through runAction.
   'src/components/flows/api.ts',
   // Trust Center W1 (#8768): publish/unpublish/preview/partner-home are the public-exposure
@@ -490,10 +488,12 @@ const TARGET_GLOBS = [
   // Partner trust queue actions promote, restrict, or irreversibly suspend a
   // partner. Every POST must retain runAction feedback for the operator.
   'src/components/admin/TrustQueue.tsx',
-  // Configuration-policy assignments (pre-release sweep, paper cut): the
-  // assign/unassign mutations here were bare fetchWithAuth calls with no
-  // toast — a failed assign or unassign looked identical to a successful one.
-  'src/components/configurationPolicies/AssignmentsTab.tsx',
+  // Configuration-policy assignments: the old editors (AssignmentsTab,
+  // OrganizationScopePanel, PartnerGroupAssignmentSection) were replaced by
+  // the unified applies-to panel (#12467). Its client: Apply goes through
+  // runAction; the dry run carries a reasoned runaction-exempt marker.
+  'src/components/configurationPolicies/appliesTo/appliesToApi.ts',
+  'src/components/configurationPolicies/appliesTo/AppliesToPanel.tsx',
   // #4767 — Stop / Force-stop wires the long-dormant cancel endpoint to the UI
   // for the first time. A bare fetchWithAuth here would silently no-op a
   // Force-stop click, which is exactly the "did it work?" ambiguity runAction
@@ -617,9 +617,20 @@ const TARGET_GLOBS = [
   'src/components/devices/ReliabilityBaselineSection.tsx',
   // Sweep G4: peripheral policy save + config-policy partner-wide toggle toast their outcome.
   'src/components/peripherals/PeripheralPolicyForm.tsx',
-  'src/components/configurationPolicies/OrganizationScopePanel.tsx',
   // #12306: the policy details save (name, description, status) toasts its outcome.
   'src/components/configurationPolicies/ConfigPolicyDetailPage.tsx',
+  // #12469: the details save moved off the page into the details form.
+  'src/components/configurationPolicies/page/PolicyDetailsForm.tsx',
+  // #12470: Activate / Deactivate / Archive / Restore (the status PATCH) toast their outcome.
+  'src/components/configurationPolicies/page/PolicyStateActions.tsx',
+  // #12471: the status PATCH moved into a module Activate shares; the
+  // create POST of the one-page create; Activate's apply-then-activate.
+  'src/components/configurationPolicies/page/policyStatusApi.ts',
+  'src/components/configurationPolicies/page/usePolicyDraft.ts',
+  'src/components/configurationPolicies/page/usePolicyActivation.ts',
+  // #12309: Copy's POST (its dry run carries the exempt marker) and the dialog.
+  'src/components/configurationPolicies/page/copyPolicyApi.ts',
+  'src/components/configurationPolicies/page/CopyPolicyDialog.tsx',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.

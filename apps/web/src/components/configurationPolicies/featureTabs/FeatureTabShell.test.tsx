@@ -1,7 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext, useFeatureDirty } from './featureEditing';
+import { useChangeForPolicy } from './useChangeForPolicy';
 import { i18n, loadLocale } from '../../../lib/i18n';
 
 // FeatureTabShell renders the footer controls for EVERY configuration-policy
@@ -20,58 +23,92 @@ describe('FeatureTabShell footer controls', () => {
     await i18n.changeLanguage('en');
   });
 
-  const overrideButton = () => screen.getByRole('button', { name: /Override/i });
+  const changeButton = () => screen.getByTestId('feature-tab-change-for-policy');
+  const saveButton = () => screen.queryByRole('button', { name: /^save$/i });
 
-  it('disables Override while a save is in flight (#2336)', () => {
-    // Override POSTs a brand-new link (persist(null)). Only Save was gated on
-    // `saving`, so a double-click during the round-trip fired the create twice
-    // — the second one landing on a policy that already had the link.
-    const onOverride = vi.fn();
-    render(
+  // A tab as the tabs wire it: the inherited state comes from the links, the
+  // unlock from useChangeForPolicy.
+  function InheritedTab({ inherited = true, onSave, onOverride, saveDisabled }: {
+    inherited?: boolean;
+    onSave: () => void;
+    onOverride?: () => void;
+    saveDisabled?: boolean;
+  }) {
+    const change = useChangeForPolicy(inherited);
+    return (
       <FeatureTabShell
         {...baseProps}
-        saving
-        isInherited
-        onOverride={onOverride}
-        onSave={vi.fn()}
-      />,
+        isConfigured={inherited}
+        saving={false}
+        saveDisabled={saveDisabled}
+        isInherited={inherited}
+        onSave={onSave}
+        {...change.shellProps}
+        {...({ onOverride } as object)}
+      >
+        <input data-testid="field" />
+      </FeatureTabShell>
     );
+  }
 
-    expect(overrideButton()).toBeDisabled();
-    fireEvent.click(overrideButton());
+  it('Change for this policy unlocks without writing', () => {
+    const onSave = vi.fn();
+    render(<InheritedTab onSave={onSave} />);
+    // Locked: the form is disabled and there is no Save.
+    expect(screen.getByTestId('field')).toBeDisabled();
+    expect(saveButton()).toBeNull();
+    fireEvent.click(changeButton());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByTestId('field')).toBeEnabled();
+    expect(saveButton()).not.toBeNull();
+    // Nothing is saved yet: the feature still reads From parent.
+    expect(screen.getByText('From parent')).toBeInTheDocument();
+    expect(screen.queryByTestId('feature-tab-change-for-policy')).toBeNull();
+  });
+
+  it('Save after unlocking writes once', () => {
+    const onSave = vi.fn();
+    render(<InheritedTab onSave={onSave} />);
+    fireEvent.click(changeButton());
+    fireEvent.click(saveButton()!);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('onOverride is no longer called', () => {
+    const onOverride = vi.fn();
+    render(<InheritedTab onSave={vi.fn()} onOverride={onOverride} />);
+    expect(screen.queryByRole('button', { name: /override/i })).toBeNull();
+    fireEvent.click(changeButton());
     expect(onOverride).not.toHaveBeenCalled();
   });
 
-  it('still disables Override on client-side validation failure while idle', () => {
-    render(
-      <FeatureTabShell
-        {...baseProps}
-        saving={false}
-        saveDisabled
-        isInherited
-        onOverride={vi.fn()}
-        onSave={vi.fn()}
-      />,
-    );
-
-    expect(overrideButton()).toBeDisabled();
+  it('Change for this policy stays clickable when Save is disabled', () => {
+    // SecurityTab disables Save while unavailable rule sets block it; the
+    // unlock must still open the form so they can be removed.
+    render(<InheritedTab onSave={vi.fn()} saveDisabled />);
+    expect(changeButton()).toBeEnabled();
   });
 
-  it('enables Override when idle and valid', () => {
-    const onOverride = vi.fn();
+  it('unlocking does not mark the feature dirty', () => {
+    const report = vi.fn();
     render(
-      <FeatureTabShell
-        {...baseProps}
-        saving={false}
-        isInherited
-        onOverride={onOverride}
-        onSave={vi.fn()}
-      />,
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <InheritedTab onSave={vi.fn()} />
+      </FeatureDirtyReporterContext.Provider>,
     );
+    fireEvent.click(changeButton());
+    expect(report).not.toHaveBeenCalledWith(true);
+  });
 
-    expect(overrideButton()).toBeEnabled();
-    fireEvent.click(overrideButton());
-    expect(onOverride).toHaveBeenCalledTimes(1);
+  it('a feature that is inherited again locks again', () => {
+    const view = render(<InheritedTab onSave={vi.fn()} />);
+    fireEvent.click(changeButton());
+    // Saved: the policy has its own link now.
+    view.rerender(<InheritedTab inherited={false} onSave={vi.fn()} />);
+    // Reset to parent: inherited again, so the form is the parent's, locked.
+    view.rerender(<InheritedTab onSave={vi.fn()} />);
+    expect(screen.getByTestId('field')).toBeDisabled();
+    expect(changeButton()).toBeInTheDocument();
   });
 
   describe('blocked save feedback (#11554)', () => {
@@ -159,22 +196,314 @@ describe('FeatureTabShell footer controls', () => {
   });
 });
 
-describe('FeatureTabShell state badge (#12306)', () => {
+describe('FeatureTabShell state badge (#12306, #12469)', () => {
   afterEach(async () => {
     await i18n.changeLanguage('en');
+  });
+
+  const badge = (props: Partial<React.ComponentProps<typeof FeatureTabShell>>) => {
+    render(
+      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured={false} saving={false} onSave={vi.fn()} {...props}>
+        <div />
+      </FeatureTabShell>,
+    );
+  };
+
+  it('the badge reads Set here, From parent or Not set', async () => {
+    await i18n.changeLanguage('en');
+    badge({ isConfigured: true });
+    expect(screen.getByText('Set here')).toBeInTheDocument();
+    cleanup();
+    badge({ isInherited: true });
+    expect(screen.getByText('From parent')).toBeInTheDocument();
+    cleanup();
+    badge({});
+    expect(screen.getByText('Not set')).toBeInTheDocument();
+    cleanup();
+    // The amber saved-but-not-deployed state is unchanged.
+    badge({ isConfigured: true, configuredButInactive: true });
+    expect(screen.getByText('Saved (not deployed)')).toBeInTheDocument();
   });
 
   it('the state badge text comes from i18n', async () => {
     await loadLocale('pt-BR');
     await i18n.changeLanguage('pt-BR');
-    const expected = i18n.t('policies:configurationPolicies.featureTabs.featureTabShell.badgeConfigured');
-    expect(expected).not.toMatch(/badgeConfigured/);
-    expect(expected).not.toBe('Configured');
-    render(
-      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
-        <div />
-      </FeatureTabShell>,
-    );
+    const expected = i18n.t('policies:configurationPolicies.featureStates.set_here.label');
+    expect(expected).not.toMatch(/set_here/);
+    expect(expected).not.toBe('Set here');
+    badge({ isConfigured: true });
     expect(screen.getByText(expected)).toBeTruthy();
+  });
+});
+
+describe('FeatureTabShell for a read-only viewer (#12469)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  it('renders no footer action and a disabled form', () => {
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <FeatureTabShell
+          title="Patches"
+          description="d"
+          icon={<span />}
+          isConfigured
+          saving={false}
+          onSave={vi.fn()}
+          onRemove={vi.fn()}
+          onRevert={vi.fn()}
+        >
+          <input data-testid="field" />
+        </FeatureTabShell>
+      </FeatureReadOnlyContext.Provider>,
+    );
+    // Not rendered, not merely disabled.
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByTestId('field')).toBeDisabled();
+    // The state still shows.
+    expect(screen.getByText('Set here')).toBeInTheDocument();
+  });
+
+  it('offers no Change for this policy on an inherited feature', () => {
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured={false} isInherited unlocked={false} onUnlock={vi.fn()} saving={false} onSave={vi.fn()}>
+          <div />
+        </FeatureTabShell>
+      </FeatureReadOnlyContext.Provider>,
+    );
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});
+
+describe('FeatureTabShell unsaved changes (#12469)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  function Picker() {
+    const { markDirty } = useFeatureDirty();
+    return (
+      <button type="button" data-testid="pick" onClick={markDirty}>
+        pick
+      </button>
+    );
+  }
+
+  const renderShell = (props: Partial<React.ComponentProps<typeof FeatureTabShell>> = {}) => {
+    const report = vi.fn();
+    const utils = render(
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()} {...props}>
+          <input data-testid="field" />
+          <select data-testid="choice" defaultValue="a">
+            <option value="a">a</option>
+            <option value="b">b</option>
+          </select>
+          <Picker />
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    return { ...utils, report };
+  };
+
+  it('typing in a feature marks it dirty', () => {
+    const { report } = renderShell();
+    expect(report).not.toHaveBeenCalledWith(true);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a change event (select) marks it dirty', () => {
+    const { report } = renderShell();
+    fireEvent.change(screen.getByTestId('choice'), { target: { value: 'b' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a switch, checkbox, radio, option or pressed-button control marks it dirty', () => {
+    const variants: Record<string, string>[] = [
+      { role: 'switch', 'aria-checked': 'false' },
+      { role: 'checkbox', 'aria-checked': 'false' },
+      { role: 'radio', 'aria-checked': 'false' },
+      { role: 'option', 'aria-selected': 'false' },
+      { 'aria-pressed': 'false' },
+    ];
+    for (const attrs of variants) {
+      const report = vi.fn();
+      const { unmount } = render(
+        <FeatureDirtyReporterContext.Provider value={report}>
+          <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
+            <button type="button" data-testid="control" {...attrs}>
+              <span data-testid="inner">x</span>
+            </button>
+            <button type="button" data-testid="disclosure" aria-expanded="false">more</button>
+          </FeatureTabShell>
+        </FeatureDirtyReporterContext.Provider>,
+      );
+      fireEvent.click(screen.getByTestId('disclosure'));
+      expect(report).not.toHaveBeenCalledWith(true);
+      fireEvent.click(screen.getByTestId('inner'));
+      expect(report).toHaveBeenLastCalledWith(true);
+      unmount();
+    }
+  });
+
+  it('a picker selection marks it dirty', () => {
+    const { report } = renderShell();
+    fireEvent.click(screen.getByTestId('pick'));
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  // A tab as the real ones are: Save flips `saving` for the request.
+  function SavingTab({
+    report,
+    request,
+    children,
+  }: {
+    report: (dirty: boolean) => void;
+    request: () => Promise<{ error?: string } | void>;
+    children?: React.ReactNode;
+  }) {
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string>();
+    return (
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell
+          title="Patches"
+          description="d"
+          icon={<span />}
+          isConfigured
+          saving={saving}
+          error={error}
+          onSave={async () => {
+            setSaving(true);
+            const result = await request();
+            setError(result ? result.error : undefined);
+            setSaving(false);
+          }}
+        >
+          <input data-testid="field" />
+          {children}
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>
+    );
+  }
+
+  it('a successful save clears dirty', async () => {
+    const report = vi.fn();
+    render(<SavingTab report={report} request={() => Promise.resolve()} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(report).toHaveBeenLastCalledWith(false));
+  });
+
+  it('a save refused by the server keeps dirty', async () => {
+    const report = vi.fn();
+    render(<SavingTab report={report} request={() => Promise.resolve({ error: 'Server said no' })} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByTestId('feature-tab-error');
+    await screen.findByTestId('save-blocked-hint');
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a Save the tab refuses before sending (no marked error) keeps dirty', async () => {
+    // e.g. MonitorsTab returns early on an invalid interval and shows a plain <p>.
+    const { report } = renderShell({ onSave: async () => undefined });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('an edit made while the save is in flight keeps dirty', async () => {
+    const report = vi.fn();
+    let finish: () => void = () => undefined;
+    render(<SavingTab report={report} request={() => new Promise<void>((r) => (finish = r))} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Saving/ })).toBeInTheDocument());
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'xy' } });
+    report.mockClear();
+    await act(async () => finish());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument());
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a plain button in the body (Add or Remove a row) marks it dirty; a disclosure, popup opener or ignored panel does not', () => {
+    const report = vi.fn();
+    render(
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
+          <button type="button" data-testid="disclosure" aria-expanded="false">more</button>
+          <button type="button" data-testid="popup" aria-haspopup="dialog">new ring</button>
+          <div data-feature-dirty-ignore>
+            <button type="button" data-testid="page-next">Next</button>
+            <input data-testid="filter" />
+          </div>
+          <button type="button" data-testid="remove-row">
+            <span data-testid="remove-row-icon">x</span>
+          </button>
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(screen.getByTestId('disclosure'));
+    fireEvent.click(screen.getByTestId('popup'));
+    fireEvent.click(screen.getByTestId('page-next'));
+    fireEvent.input(screen.getByTestId('filter'), { target: { value: 'a' } });
+    expect(report).not.toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByTestId('remove-row-icon'));
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a confirmed Remove clears dirty', () => {
+    const { report } = renderShell({ onRemove: vi.fn() });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByTestId('feature-tab-remove-confirm'));
+    expect(report).toHaveBeenLastCalledWith(false);
+  });
+
+  it('a save that is still in flight, then fails, never clears dirty', async () => {
+    // A void-returning tab: the shell sees `saving` go true, then settle with
+    // an error banner. Dirty must survive the whole round trip.
+    const report = vi.fn();
+    const Host = ({ saving, error }: { saving: boolean; error?: string }) => (
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={saving} error={error} onSave={() => undefined}>
+          <input data-testid="field" />
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>
+    );
+    const { rerender } = render(<Host saving={false} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    rerender(<Host saving />);
+    await new Promise((r) => setTimeout(r, 5));
+    rerender(<Host saving={false} error="Server said no" />);
+    await screen.findByTestId('save-blocked-hint');
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a save that throws keeps dirty', async () => {
+    const { report } = renderShell({ onSave: () => Promise.reject(new Error('nope')) });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByTestId('save-blocked-hint');
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('reports clean when it unmounts', () => {
+    const { report, unmount } = renderShell();
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    unmount();
+    expect(report).toHaveBeenLastCalledWith(false);
   });
 });

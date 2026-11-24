@@ -13,7 +13,7 @@ import VendorUpdatesView from './VendorUpdatesView';
 import PatchJobsList from './PatchJobsList';
 import PatchJobDetail from './PatchJobDetail';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
-import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
+import UpdateRingForm, { DiscardRingChangesDialog, type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
 import SourceFilterChips from './SourceFilterChips';
 import type { LoadPatchDevices } from './PatchDevicesPopover';
@@ -26,6 +26,7 @@ import { extractApiError } from '@/lib/apiError';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
+import { useRegisterDirtyForm } from '@/lib/keyboard/useRegisterDirtyForm';
 import { runAction, ActionError } from '@/lib/runAction';
 import { asList } from '@/lib/asList';
 import { useHashState } from '@/lib/useHashState';
@@ -248,6 +249,12 @@ export default function PatchesPage() {
   const [pendingRingDelete, setPendingRingDelete] = useState<{ ring: UpdateRingItem; linked: LinkedPolicy[] } | null>(null);
   const [ringDeleting, setRingDeleting] = useState(false);
   const [editingRing, setEditingRing] = useState<UpdateRingItem | null>(null);
+  // #12305: an edited ring form ignores stray backdrop clicks; every other way out asks first.
+  const [ringFormDirty, setRingFormDirty] = useState(false);
+  const [confirmDiscardRing, setConfirmDiscardRing] = useState(false);
+  useRegisterDirtyForm(ringModalOpen && ringFormDirty);
+  const closeRingModal = () => { setRingModalOpen(false); setEditingRing(null); };
+  const requestCloseRingModal = () => (ringFormDirty ? setConfirmDiscardRing(true) : closeRingModal());
 
   // Data
   const [rings, setRings] = useState<UpdateRingItem[]>([]);
@@ -1158,7 +1165,8 @@ export default function PatchesPage() {
       {/* Create / Edit Ring modal */}
       <Dialog
         open={ringModalOpen}
-        onClose={() => { setRingModalOpen(false); setEditingRing(null); }}
+        onClose={requestCloseRingModal}
+        dismissOnBackdrop={!ringFormDirty}
         title={editingRing ? t('patchesPage.ringModal.editTitle') : t('patchesPage.ringModal.createTitle')}
         maxWidth="2xl"
         alignTop
@@ -1171,7 +1179,7 @@ export default function PatchesPage() {
           <button
             type="button"
             aria-label={t('patchesPage.actions.close')}
-            onClick={() => { setRingModalOpen(false); setEditingRing(null); }}
+            onClick={requestCloseRingModal}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             &times;
@@ -1182,7 +1190,8 @@ export default function PatchesPage() {
             key={editingRing?.id ?? 'new'}
             onSubmit={handleRingSubmit}
             existingRingOrders={rings.map((ring) => ring.ringOrder)}
-            onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
+            onCancel={requestCloseRingModal}
+            onDirtyChange={setRingFormDirty}
             submitLabel={
               ringSubmitting
                 ? (editingRing ? t('patchesPage.actions.saving') : t('patchesPage.actions.creating'))
@@ -1205,6 +1214,11 @@ export default function PatchesPage() {
           />
         </div>
       </Dialog>
+      <DiscardRingChangesDialog
+        open={confirmDiscardRing}
+        onClose={() => setConfirmDiscardRing(false)}
+        onConfirm={() => { setConfirmDiscardRing(false); closeRingModal(); }}
+      />
     </div>
   );
 }

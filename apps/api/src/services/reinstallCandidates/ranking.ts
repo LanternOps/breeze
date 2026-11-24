@@ -7,13 +7,18 @@ import type { PossibleReplacementReason } from '@breeze/shared';
 import { newestDbLivenessSignalAt } from '../deviceReattach/liveness';
 import { isHiddenOrgType } from '../unassignedPool/visibility';
 
-/** What matched, strongest first. */
-export type ReinstallEvidence = 'system_uuid' | 'serial' | 'hostname';
+/**
+ * What matched, strongest first. `tpm_ek`: the source proved the endorsement
+ * key the target's baseline holds, and no other device of the partner carries
+ * it (wave T2, deviceReattach/evidence.ts).
+ */
+export type ReinstallEvidence = 'tpm_ek' | 'system_uuid' | 'serial' | 'hostname';
 
-const EVIDENCE_RANK: Record<ReinstallEvidence, number> = { system_uuid: 0, serial: 1, hostname: 2 };
+const EVIDENCE_RANK: Record<ReinstallEvidence, number> = { tpm_ek: 0, system_uuid: 1, serial: 2, hostname: 3 };
 
-/** uuid and serial + manufacturer are hardware evidence; a hostname is only a name. */
+/** A proven key is `tpm`; uuid and serial + manufacturer are hardware evidence; a hostname is only a name. */
 export function evidenceReason(evidence: ReinstallEvidence): PossibleReplacementReason {
+  if (evidence === 'tpm_ek') return 'tpm';
   return evidence === 'hostname' ? 'hostname' : 'hardware';
 }
 
@@ -116,7 +121,7 @@ export interface RankedCandidate {
 }
 
 /**
- * Rank qualifying candidates: evidence level first (uuid > serial > hostname),
+ * Rank qualifying candidates: evidence level first (key > uuid > serial > hostname),
  * then the source's OS first, then the most recently seen; the id breaks ties
  * so the result is deterministic. A target matched on several kinds of
  * evidence is ranked by its strongest. Pure.

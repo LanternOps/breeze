@@ -1388,7 +1388,8 @@
     "noGroupsMatchFilter": "Aucun groupe ne correspond à ce filtre.",
     "managedByPartner": "Géré par votre fournisseur de services. Les règles d’appartenance ne sont pas affichées; vous voyez les appareils de votre organisation.",
     "partnerDynamicType": "Dynamique · Toutes les org.",
-    "partnerDeleteWarning": "Cette action supprime le groupe de toutes les organisations et supprime ses affectations de politiques."
+    "partnerDeleteWarning": "Cette action supprime le groupe de toutes les organisations et supprime ses affectations de politiques.",
+    "policyRefusedForGroup": "Rien n’a été appliqué. {{group}} : {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Impossible de récupérer l’inventaire matériel",
@@ -3256,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Déplacer vers une autre organisation",
-    "description": "Retire {{hostname}} de {{orgName}}. Son historique, ses billets et ses politiques suivent, et l'agent se reconnecte sous la nouvelle organisation.",
+    "description": "Retire {{hostname}} de {{orgName}}. Son historique et ses billets suivent, et l'agent se reconnecte sous la nouvelle organisation.",
     "targetOrgLabel": "Organisation cible",
     "targetOrgPlaceholder": "Choisir une organisation",
     "targetSiteLabel": "Site cible",
@@ -3268,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}} : {{timeEntries}} entrées de temps non facturées et {{parts}} pièces non facturées conservent leur devise d'origine après le déplacement.",
     "currencyMismatchAccept": "Je comprends – déplacer l'appareil et conserver ces lignes dans leur devise d'origine",
     "currencyMismatchNoPermission": "Cette acceptation exige la permission d'écriture des factures. Demandez à un administrateur de facturation de facturer ou de régler le travail en suspens d'abord.",
+    "policyAssignmentsHeading": "Politiques de configuration retirées de cet appareil",
+    "policyAssignmentsDetail": "Ces politiques sont attribuées directement à cet appareil et ne peuvent pas s'appliquer dans la nouvelle organisation. Le déplacement retire ces attributions. Les politiques elles-mêmes ne changent pas.",
     "stepUpHeading": "Confirmez votre identité",
     "stepUpIntro": "Déplacer un appareil entre organisations exige un second facteur.",
     "stepUpCodeLabel": "Code de l'authentificateur",

@@ -488,6 +488,8 @@
     "failedToLoadToken": "Falha ao carregar token",
     "failedToRefreshToken": "Falha ao atualizar token",
     "failedToPreviewBootstrap": "Falha ao pré-visualizar o bootstrap",
+    "previewUnavailableSessionActive": "A pré-visualização não está disponível: este token já tem uma sessão de recuperação. Uma pré-visualização entra com o token e não pode ler uma sessão mantida pelo assistente de recuperação. Use Atualizar para acompanhar a restauração.",
+    "previewUnavailableNeedsRecoveryHelper": "A pré-visualização não está disponível: este snapshot faz referência a arquivos armazenados com snapshots anteriores, que apenas o assistente de recuperação pode ler. Execute o comando de recuperação na máquina de destino.",
     "failedToRevokeToken": "Falha ao revogar token",
     "failedToCopyToClipboard": "Falha ao copiar para a área de transferência.",
     "failedToCreateRecoveryBundle": "Falha ao criar pacote de recuperação",

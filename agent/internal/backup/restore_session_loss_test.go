@@ -1,0 +1,361 @@
+package backup
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
+)
+
+// A brokered read session the server revoked answers every later request
+// with providers.ErrStorageSessionUnavailable. A file restore used to treat
+// that as a per-file failure and walk the rest of the manifest, failing every
+// remaining file with one WARN line each. These tests pin the restore ending
+// at the first session-lost answer instead: the files already written stay
+// (and are reported), the rest are not attempted, and a later run resumes.
+
+const restorePerFileWarn = "restored file failed its download or content check"
+
+// assertRestoredOnDisk checks that exactly the first FilesRestored manifest
+// files (f000.txt, f001.txt, …) are on disk under target/data, and no others:
+// the reported count is what the restore actually wrote.
+func assertRestoredOnDisk(t *testing.T, target string, result *RestoreResult) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(target, "data"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != result.FilesRestored {
+		t.Fatalf("%d files on disk, result says %d restored", len(entries), result.FilesRestored)
+	}
+	for i := range result.FilesRestored {
+		if _, statErr := os.Stat(filepath.Join(target, "data", fmt.Sprintf("f%03d.txt", i))); statErr != nil {
+			t.Fatalf("restored file %d is not on disk: %v", i, statErr)
+		}
+	}
+}
+
+func sessionLossRestoreConfig(t *testing.T, snapshotID string) RestoreConfig {
+	t.Helper()
+	return RestoreConfig{SnapshotID: snapshotID, TargetPath: t.TempDir(), WorkRoot: t.TempDir()}
+}
+
+func TestRestore_SessionLostMidRunStopsEarly(t *testing.T) {
+	defer setRestoreConcurrencyForTest(1)()
+	logged := captureBackupLogs(t)
+	const n = 50
+	p := newScriptedDownloadProvider(t, "restore-session-lost", n)
+	p.objectErr = sessionGoneFrom(3)
+	cfg := sessionLossRestoreConfig(t, "restore-session-lost")
+
+	var result *RestoreResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = RestoreFromSnapshotContext(context.Background(), p, cfg, nil)
+	})
+	if err != nil {
+		t.Fatalf("a lost session must not be an error (it discards the counts), got %v", err)
+	}
+	if got := p.startedObjects(); got != 4 {
+		t.Fatalf("started %d downloads, want 4 (the run ends at the first session-lost answer)", got)
+	}
+	if result.FilesRestored != 3 || result.FilesFailed != 0 || len(result.FailedFiles) != 0 {
+		t.Fatalf("restored=%d failed=%d failedFiles=%v, want 3/0/none (a lost session is not a file failure)",
+			result.FilesRestored, result.FilesFailed, result.FailedFiles)
+	}
+	if result.FilesNotAttempted != n-3 {
+		t.Fatalf("filesNotAttempted = %d, want %d", result.FilesNotAttempted, n-3)
+	}
+	if result.Status != "partial" || result.Code != ResultCodeStorageSessionLost {
+		t.Fatalf("status=%q code=%q, want partial/%s", result.Status, result.Code, ResultCodeStorageSessionLost)
+	}
+	for _, want := range []string{"restore stopped", "storage session ended", "after 3 of 50 files", "3 restored, 0 failed", "remaining 47 were not attempted", "session deadline has passed"} {
+		if !strings.Contains(result.Error, want) {
+			t.Fatalf("error = %q, want it to contain %q", result.Error, want)
+		}
+	}
+	if strings.Contains(result.Error, "cancelled") {
+		t.Fatalf("error = %q calls a lost session a cancel", result.Error)
+	}
+	// What was written stays written: a restore is never rolled back.
+	assertRestoredOnDisk(t, cfg.TargetPath, result)
+	if result.StagingDir == "" {
+		t.Fatal("staging dir was cleaned up; the resume state of an unfinished restore must be kept")
+	}
+	if got := warnLines(logged.String(), restorePerFileWarn); got != 0 {
+		t.Fatalf("logged %d per-file WARN lines for a lost session, want 0:\n%s", got, logged.String())
+	}
+	if got := warnLines(logged.String(), "storage session ended"); got != 1 {
+		t.Fatalf("logged %d abort WARN lines, want exactly 1:\n%s", got, logged.String())
+	}
+}
+
+func TestRestore_SessionLostBeforeAnythingRestoredIsFailed(t *testing.T) {
+	defer setRestoreConcurrencyForTest(1)()
+	p := newScriptedDownloadProvider(t, "restore-session-lost-zero", 20)
+	p.objectErr = sessionGoneFrom(0)
+
+	result, err := RestoreFromSnapshotContext(context.Background(), p, sessionLossRestoreConfig(t, "restore-session-lost-zero"), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := p.startedObjects(); got != 1 {
+		t.Fatalf("started %d downloads, want 1", got)
+	}
+	if result.Status != "failed" || result.Code != ResultCodeStorageSessionLost {
+		t.Fatalf("status=%q code=%q, want failed/%s", result.Status, result.Code, ResultCodeStorageSessionLost)
+	}
+	if result.FilesRestored != 0 || result.FilesFailed != 0 || result.FilesNotAttempted != 20 {
+		t.Fatalf("restored=%d failed=%d notAttempted=%d, want 0/0/20", result.FilesRestored, result.FilesFailed, result.FilesNotAttempted)
+	}
+}
+
+// With the real concurrency, the downloads already in flight when the
+// session ends come back session-lost too. None of them may be counted as a
+// failed file or logged one WARN each.
+func TestRestore_SessionLostAtDefaultConcurrencyFailsNoFile(t *testing.T) {
+	logged := captureBackupLogs(t)
+	const n = 200
+	p := newScriptedDownloadProvider(t, "restore-session-lost-concurrent", n)
+	p.objectErr = sessionGoneFrom(10)
+	// Successful downloads take a moment, so the files before the lost one
+	// are still in flight when the session-lost answer arrives.
+	p.delay = 20 * time.Millisecond
+	cfg := sessionLossRestoreConfig(t, "restore-session-lost-concurrent")
+
+	var result *RestoreResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = RestoreFromSnapshotContext(context.Background(), p, cfg, nil)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesFailed != 0 || len(result.FailedFiles) != 0 {
+		t.Fatalf("failed=%d failedFiles=%v, want none", result.FilesFailed, result.FailedFiles)
+	}
+	// Every file before the lost one had downloaded and verified (or was
+	// still downloading) when the session ended: installing it needs no
+	// further storage read, so it is restored, not thrown away.
+	if result.FilesRestored != 10 || result.FilesNotAttempted != n-10 {
+		t.Fatalf("restored=%d notAttempted=%d, want 10/%d", result.FilesRestored, result.FilesNotAttempted, n-10)
+	}
+	assertRestoredOnDisk(t, cfg.TargetPath, result)
+	if result.Code != ResultCodeStorageSessionLost {
+		t.Fatalf("code = %q, want %q", result.Code, ResultCodeStorageSessionLost)
+	}
+	if got := p.startedObjects(); got > 10+restoreDownloadConcurrency*restoreWindowPerWorker {
+		t.Fatalf("started %d downloads after the session ended at file 10; want the run to stop", got)
+	}
+	if got := warnLines(logged.String(), restorePerFileWarn); got != 0 {
+		t.Fatalf("logged %d per-file WARN lines for a lost session, want 0:\n%s", got, logged.String())
+	}
+}
+
+// A later run of the same restore picks up where the lost session left it.
+func TestRestore_SessionLostRunResumes(t *testing.T) {
+	defer setRestoreConcurrencyForTest(1)()
+	const n = 12
+	p := newScriptedDownloadProvider(t, "restore-session-lost-resume", n)
+	p.objectErr = sessionGoneFrom(5)
+	cfg := sessionLossRestoreConfig(t, "restore-session-lost-resume")
+
+	first, err := RestoreFromSnapshotContext(context.Background(), p, cfg, nil)
+	if err != nil || first.Code != ResultCodeStorageSessionLost || first.FilesRestored != 5 {
+		t.Fatalf("first run = %+v, %v; want 5 restored and a lost session", first, err)
+	}
+
+	p2 := newScriptedDownloadProvider(t, "restore-session-lost-resume", n)
+	second, err := RestoreFromSnapshotContext(context.Background(), p2, cfg, nil)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if second.Status != "completed" || second.FilesRestored != n || second.FilesNotAttempted != 0 || second.Code != "" {
+		t.Fatalf("second run = %+v, want completed with all %d files", second, n)
+	}
+	if got := p2.startedObjects(); got != n-5 {
+		t.Fatalf("second run downloaded %d files, want %d (the first run's files resume)", got, n-5)
+	}
+}
+
+func TestRestore_SessionLostDuringManifestDownload(t *testing.T) {
+	p := newScriptedDownloadProvider(t, "restore-session-lost-manifest", 5)
+	p.manifestErr = errTestSessionGone
+
+	result, err := RestoreFromSnapshotContext(context.Background(), p, sessionLossRestoreConfig(t, "restore-session-lost-manifest"), nil)
+	if err != nil {
+		t.Fatalf("a lost session must come back as a result body, got error %v", err)
+	}
+	if result.Status != "failed" || result.Code != ResultCodeStorageSessionLost {
+		t.Fatalf("status=%q code=%q, want failed/%s", result.Status, result.Code, ResultCodeStorageSessionLost)
+	}
+	if !strings.Contains(result.Error, "storage session ended") || !strings.Contains(result.Error, "manifest") {
+		t.Fatalf("error = %q, want a session-ended reason naming the manifest", result.Error)
+	}
+	if got := p.startedObjects(); got != 0 {
+		t.Fatalf("started %d object downloads, want 0", got)
+	}
+}
+
+// The session ends while downloads are still in flight, and the caller stops
+// the restore while the run waits for them. A caller stop installs nothing
+// further: the downloads that finish afterwards must not be written over the
+// target, and the run reports the cancel.
+func TestRestore_CallerCancelWhileSettlingInstallsNothing(t *testing.T) {
+	defer setRestoreConcurrencyForTest(4)()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gate := make(chan struct{})
+	settling := make(chan struct{})
+	origHook := restoreSettleStarting
+	var once sync.Once
+	restoreSettleStarting = func() { once.Do(func() { close(settling) }) }
+	t.Cleanup(func() { restoreSettleStarting = origHook })
+
+	p := newScriptedDownloadProvider(t, "restore-cancel-settling", 20)
+	gone := sessionGoneFrom(3)
+	p.objectErr = func(c context.Context, remotePath string) error {
+		if err := gone(c, remotePath); err != nil {
+			return err
+		}
+		<-gate // files 0-2 stay in flight until the test releases them
+		return nil
+	}
+	go func() {
+		<-settling
+		cancel()
+		close(gate)
+	}()
+	cfg := sessionLossRestoreConfig(t, "restore-cancel-settling")
+
+	var result *RestoreResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = RestoreFromSnapshotContext(ctx, p, cfg, nil)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesRestored != 0 {
+		t.Fatalf("restored %d files after the caller stopped the restore, want 0", result.FilesRestored)
+	}
+	assertRestoredOnDisk(t, cfg.TargetPath, result)
+	if result.Code == ResultCodeStorageSessionLost || !strings.Contains(result.Error, "operation cancelled") {
+		t.Fatalf("code=%q error=%q, want the caller's cancel reported", result.Code, result.Error)
+	}
+}
+
+// A caller stop also closes the session, so the in-flight read answers
+// session-lost; the run must still be reported as cancelled.
+func TestRestore_CallerCancelIsNotASessionLoss(t *testing.T) {
+	defer setRestoreConcurrencyForTest(1)()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := newScriptedDownloadProvider(t, "restore-cancel", 20)
+	gone := sessionGoneFrom(3)
+	p.objectErr = func(c context.Context, remotePath string) error {
+		if err := gone(c, remotePath); err != nil {
+			cancel()
+			return err
+		}
+		return nil
+	}
+
+	result, err := RestoreFromSnapshotContext(ctx, p, sessionLossRestoreConfig(t, "restore-cancel"), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Code == ResultCodeStorageSessionLost {
+		t.Fatalf("a caller cancel was reported as a lost session: %+v", result)
+	}
+	if !strings.Contains(result.Error, "operation cancelled") || result.Status != "partial" {
+		t.Fatalf("status=%q error=%q, want partial / operation cancelled", result.Status, result.Error)
+	}
+	if result.FilesFailed != 0 {
+		t.Fatalf("failed = %d, want 0 (the interrupted file has no verdict)", result.FilesFailed)
+	}
+}
+
+// Ordinary per-file errors, and a refused-destination answer (which only a
+// brokered WRITER uses), still fail one file and the run goes on.
+func TestRestore_OrdinaryFileErrorsDoNotEndTheRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"plain error", errors.New("connection reset by peer")},
+		{"destination refused", fmt.Errorf("%w: 403", providers.ErrDestinationRefused)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setRestoreConcurrencyForTest(1)()
+			const n = 10
+			p := newScriptedDownloadProvider(t, "restore-file-error", n)
+			p.objectErr = func(_ context.Context, remotePath string) error {
+				if strings.HasSuffix(remotePath, "f002.txt") {
+					return tc.err
+				}
+				return nil
+			}
+			result, err := RestoreFromSnapshotContext(context.Background(), p, sessionLossRestoreConfig(t, "restore-file-error"), nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.FilesRestored != n-1 || result.FilesFailed != 1 || result.FilesNotAttempted != 0 {
+				t.Fatalf("restored=%d failed=%d notAttempted=%d, want %d/1/0", result.FilesRestored, result.FilesFailed, result.FilesNotAttempted, n-1)
+			}
+			if result.Status != "partial" || result.Code != "" {
+				t.Fatalf("status=%q code=%q, want partial with no code", result.Status, result.Code)
+			}
+		})
+	}
+}
+
+// sessionLossAfterProvider serves the first `allow` content objects from
+// the wrapped provider and answers every later one with a lost session.
+// Concurrency 1 only (served is not synchronised).
+type sessionLossAfterProvider struct {
+	providers.BackupProvider
+	manifestKey string
+	allow       int
+	served      int
+}
+
+func (p *sessionLossAfterProvider) Download(key, dest string) error {
+	if key != p.manifestKey {
+		if p.served >= p.allow {
+			return errTestSessionGone
+		}
+		p.served++
+	}
+	return p.BackupProvider.Download(key, dest)
+}
+
+// With an integrity expectation the download goes through the attested
+// check; the lost session must still end the run, not fail each file.
+func TestRestore_SessionLostWithAttestedExpectation(t *testing.T) {
+	defer setRestoreConcurrencyForTest(1)()
+	files := make([]integrityFile, 10)
+	for i := range files {
+		files[i] = integrityFile{name: fmt.Sprintf("f%03d.txt", i), content: fmt.Sprintf("attested-%d", i)}
+	}
+	s := setupIntegritySnapshot(t, files)
+	p := &sessionLossAfterProvider{BackupProvider: s.provider, manifestKey: s.manifestKey(), allow: 4}
+
+	result, err := restoreWith(t, p, s.snapshotID, s.attested(t), t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Code != ResultCodeStorageSessionLost || result.Status != "partial" {
+		t.Fatalf("status=%q code=%q, want partial/%s", result.Status, result.Code, ResultCodeStorageSessionLost)
+	}
+	if result.FilesRestored != 4 || result.FilesFailed != 0 || result.FilesNotAttempted != 6 {
+		t.Fatalf("restored=%d failed=%d notAttempted=%d, want 4/0/6", result.FilesRestored, result.FilesFailed, result.FilesNotAttempted)
+	}
+}

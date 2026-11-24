@@ -72,6 +72,7 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'call:rewriteDeviceSiteDenormalizedTables': { moveOnly: 'site_id re-stamp of device children' },
   'sqlfn:breeze_rehome_device_custom_field_values': { moveOnly: 'custom-field values re-pointed to the target org (§5.1: they survive a reattach)' },
   'table:device_group_memberships': { moveOnly: 'groups are per org; membership survives a reattach (§5.1)' },
+  'table:config_policy_assignments': { moveOnly: 'an org-owned policy cannot apply in another org; a reattach keeps the org, so the assignment stays' },
 
   // Cross-tenant pointers severed because the device leaves the org.
   'table:manual_assets': { moveOnly: TENANT_POINTER },

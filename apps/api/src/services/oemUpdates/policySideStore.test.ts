@@ -135,6 +135,30 @@ describe('computeOemPolicySideRow', () => {
     });
   });
 
+  // #12265: a Dell blocklist stored before the validator refused it. The scheduler
+  // sends nothing, so the device must not turn Overdue and raise an alert per device.
+  it('a stored Dell blocklist → linkEnabled false, and the live rule reads it as paused', () => {
+    const blocked = { ...armedSettings, vendors: { dell: { ...armedSettings.vendors.dell, blockedUpdateIds: ['X1'] } } };
+    expect(row(facts(), [candidate({ inlineSettings: blocked })])).toMatchObject({
+      offeredLane: 'dell',
+      linkEnabled: false,
+      occurrenceKey: null,
+    });
+    const f = facts();
+    const resolved = pickOemLink([candidate({ inlineSettings: blocked })], { id: f.deviceId, orgId: f.orgId, siteId: f.siteId, deviceRole: f.deviceRole, osType: f.osType }, f.partnerId, []);
+    expect(resolved?.invalidStoredSettings).toBe(false);
+    const live = classifyOemDevice({
+      facts: { ...f, statusLane: null, applicability: null, lastOutcome: null, occurrenceKey: null, attempts: null, lastSuccessAt: null, rebootPendingSince: null },
+      lane: 'dell',
+      link: resolved,
+      timezone: 'UTC',
+      now: NOW,
+      occurrenceOf: oemOccurrenceMemo(NOW),
+    });
+    expect(live.side).toMatchObject({ linkEnabled: false, paused: true });
+    expect(live.state).toBe('not_managed');
+  });
+
   it('occurrence fields are null when the link is disabled', () => {
     const disabled = candidate({ inlineSettings: { ...armedSettings, enabled: false } });
     expect(row(facts(), [disabled])).toMatchObject({

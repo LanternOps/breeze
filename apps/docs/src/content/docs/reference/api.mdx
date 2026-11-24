@@ -112,7 +112,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/orgs/sites` | List sites |
+| `GET` | `/orgs/sites` | List sites (`?search=` filters by name) |
 | `POST` | `/orgs/sites` | Create site |
 | `GET` | `/orgs/sites/:id` | Get site details |
 | `PATCH` | `/orgs/sites/:id` | Update site. Also accepts `latitude`/`longitude` (both or neither) and `geofenceRadiusM`; requires `sites:write` and MFA |

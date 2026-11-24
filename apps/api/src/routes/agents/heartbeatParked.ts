@@ -21,6 +21,7 @@ import {
   type ManifestTrustKey,
 } from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
+import { tpmAttestationEnabled } from './heartbeatSettingsDecision';
 
 /** The heartbeat body fields the parked beat reads — nothing else is looked at. */
 export interface ParkedHeartbeatBody {
@@ -230,5 +231,9 @@ export async function respondParkedHeartbeat(
     manifestTrustKeys,
     manifestKeyDelegations,
     ...(rebind ? { rebind } : {}),
+    // #8318 wave T2: the TPM attestation switch only, so a parked source can
+    // prove its key before a reattach. Always true/false (the agent treats an
+    // absent key as "no change"); no other setting reaches a parked device.
+    configUpdate: { tpm_attestation_enabled: tpmAttestationEnabled() },
   });
 }

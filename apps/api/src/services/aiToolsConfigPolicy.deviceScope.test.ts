@@ -19,7 +19,9 @@ vi.mock('./configurationPolicy', async (orig) => ({
   createConfigPolicy: vi.fn(async () => ({ id: 'pol-new', name: 'New' })),
   addFeatureLink: vi.fn(async () => ({ id: 'link-new' })),
 }));
-vi.mock('../routes/policyManagement/helpers', () => ({
+vi.mock('../routes/policyManagement/helpers', async (orig) => ({
+  // The real site predicate, so the status read's WHERE carries it.
+  complianceSiteCondition: (await orig<Record<string, unknown>>()).complianceSiteCondition,
   getConfigPolicyComplianceRuleInfo: vi.fn(async () => ({})),
   getConfigPolicyComplianceStats: vi.fn(async () => ({ byFeatureLink: new Map() })),
   buildComplianceSummary: vi.fn(() => ({})),
@@ -101,6 +103,16 @@ describe('configuration_policy_compliance status — exact-device scope', () => 
   it('hides them from a device-LESS analysis run too', async () => {
     const out = JSON.parse(await handlerFor('configuration_policy_compliance')({ action: 'status', policyId: 'pol-1' }, auth(['dev-1'], undefined)));
     expect(out.devices.map((d: any) => d.deviceId)).toEqual(['dev-1']);
+  });
+
+  it("narrows a site-restricted caller to its sites' devices (Strix round two, PR #12552)", async () => {
+    let captured: unknown;
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({ where: (where: unknown) => { captured = where; return { limit: () => Promise.resolve([]) }; } }),
+    }));
+    await handlerFor('configuration_policy_compliance')({ action: 'status', policyId: 'pol-1' }, auth(undefined, ['site-1']));
+    // RLS stops at the organization; the site allowlist must be in the read.
+    expect(sqlValues(captured)).toContain('site-1');
   });
 
   it('unrestricted caller still sees every device', async () => {

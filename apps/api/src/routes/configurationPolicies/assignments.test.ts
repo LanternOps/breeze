@@ -11,8 +11,14 @@ const {
   authorizeAssignmentTargetMock,
   getAssignmentMock,
   canManagePartnerWideMock,
+  resolveTargetOwnerMock,
+  readablePolicyIdsMock,
+  filterLegibleMock,
   mfaState,
 } = vi.hoisted(() => ({
+  readablePolicyIdsMock: vi.fn(),
+  filterLegibleMock: vi.fn(),
+  resolveTargetOwnerMock: vi.fn(),
   getConfigPolicyMock: vi.fn(),
   assignPolicyMock: vi.fn(),
   unassignPolicyMock: vi.fn(),
@@ -41,8 +47,13 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     authorizeAssignmentTarget: authorizeAssignmentTargetMock,
     getAssignment: getAssignmentMock,
     canManagePartnerWidePolicies: canManagePartnerWideMock,
+    readablePolicyIds: readablePolicyIdsMock,
   };
 });
+
+vi.mock('../../services/configPolicyLegibleAssignments', () => ({ filterLegibleAssignments: filterLegibleMock }));
+
+vi.mock('./assignmentTargetOwner', () => ({ resolveAssignmentTargetOwner: resolveTargetOwnerMock }));
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
@@ -110,6 +121,8 @@ describe('configurationPolicies assignment routes', () => {
     // helper is a no-op for callers without allowedSiteIds, so mocking it keeps
     // these route tests DB-free while still exercising the wiring.
     authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
+    readablePolicyIdsMock.mockImplementation(async (_auth: unknown, ids: readonly string[]) => [...ids]);
+    filterLegibleMock.mockImplementation(async (_auth: unknown, _policy: unknown, rows: unknown[]) => [...rows]);
     // getAssignment backs the DELETE re-check; default to a partner-level row.
     getAssignmentMock.mockResolvedValue({ id: 'aid', level: 'partner', targetId: PARTNER_ID });
     app = new Hono();
@@ -152,16 +165,15 @@ describe('configurationPolicies assignment routes', () => {
     });
   });
 
-  it('filters policy assignment reads through target site authorization', async () => {
-    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+  it('returns the rows the shared filter keeps, which carries the site/device ceiling (Strix, PR #12552)', async () => {
+    const policy = { id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' };
+    getConfigPolicyMock.mockResolvedValue(policy);
     listAssignmentsMock.mockResolvedValue([
       { id: 'allowed', level: 'device', targetId: DEVICE_ID },
       { id: 'denied', level: 'site', targetId: '55555555-5555-4555-8555-555555555555' },
     ]);
-    authorizeAssignmentTargetMock.mockImplementation(async (_auth, _level, targetId) => ({
-      valid: targetId === DEVICE_ID,
-      error: 'Target is outside your site access',
-    }));
+    filterLegibleMock.mockImplementation(async (_a: unknown, _p: unknown, rows: Array<{ id: string }>) =>
+      rows.filter((r) => r.id === 'allowed'));
 
     const res = await app.request(`/${POLICY_ID}/assignments`);
 
@@ -169,7 +181,45 @@ describe('configurationPolicies assignment routes', () => {
     await expect(res.json()).resolves.toEqual({
       data: [{ id: 'allowed', level: 'device', targetId: DEVICE_ID }],
     });
-    expect(authorizeAssignmentTargetMock).toHaveBeenCalledTimes(2);
+    // One row filter for this route and the AI get tool: no second, per-row
+    // ceiling here that the AI path could lack.
+    expect(filterLegibleMock).toHaveBeenCalledWith(expect.anything(), policy, expect.any(Array));
+    expect(authorizeAssignmentTargetMock).not.toHaveBeenCalled();
+    // A read: the read predicate, so an org admin can open an MSP-managed
+    // policy that applies to its organization (W03a).
+    expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything(), { access: 'read' });
+  });
+
+  it("drops rows of another customer's targets on an MSP-managed policy (W03a)", async () => {
+    const policy = { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Baseline' };
+    getConfigPolicyMock.mockResolvedValue(policy);
+    listAssignmentsMock.mockResolvedValue([
+      { id: 'mine', level: 'device', targetId: DEVICE_ID },
+      { id: 'theirs', level: 'organization', targetId: '55555555-5555-4555-8555-555555555555' },
+    ]);
+    filterLegibleMock.mockImplementation(async (_a: unknown, _p: unknown, rows: Array<{ id: string }>) =>
+      rows.filter((r) => r.id === 'mine'));
+
+    const res = await app.request(`/${POLICY_ID}/assignments`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.map((r: { id: string }) => r.id)).toEqual(['mine']);
+    expect(filterLegibleMock).toHaveBeenCalledWith(expect.anything(), policy, expect.any(Array));
+  });
+
+  it('the assignment writes still use the write-side reader', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1', featureLinks: [] });
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'new' });
+    await app.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'device', targetId: DEVICE_ID }),
+    });
+    unassignPolicyMock.mockResolvedValue({ id: 'aid' });
+    getAssignmentMock.mockResolvedValue({ id: 'aid', level: 'device', targetId: DEVICE_ID });
+    await app.request(`/${POLICY_ID}/assignments/44444444-4444-4444-8444-444444444444`, { method: 'DELETE' });
+    expect(getConfigPolicyMock).toHaveBeenCalledTimes(2);
+    for (const call of getConfigPolicyMock.mock.calls) expect(call).toHaveLength(2);
   });
 
   it('authorizes an explicit target before listing its assignments', async () => {
@@ -592,5 +642,162 @@ describe('configurationPolicies assignment routes', () => {
 
     expect(res.status).toBe(404);
     expect(unassignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  describe('GET /assignments/target lists MSP-managed policies to their partner (#12466 G5)', () => {
+    const SITE_ID = '77777777-7777-7777-7777-777777777777';
+    const OTHER_ORG = '88888888-8888-8888-8888-888888888888';
+    const OTHER_PARTNER = '99999999-9999-9999-9999-999999999999';
+    const GROUP_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+    const row = (id: string, policyOrgId: string | null, policyPartnerId: string | null) => ({
+      assignment: { id, configPolicyId: id, level: 'site', targetId: SITE_ID },
+      policyName: id,
+      policyStatus: 'active',
+      policyOrgId,
+      policyPartnerId,
+    });
+
+    function partnerApp(overrides: Record<string, unknown> = {}) {
+      const partnerApp = new Hono();
+      partnerApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID,
+          ...overrides,
+        }));
+        await next();
+      });
+      partnerApp.route('/', assignmentRoutes);
+      return partnerApp;
+    }
+
+    async function listIds(target: string, appToUse: Hono) {
+      const res = await appToUse.request(`/assignments/target?${target}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      return body.data.map((r: { assignment: { id: string } }) => r.assignment.id);
+    }
+
+    it('target listing includes an MSP-managed policy for its own partner', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([
+        row('org-owned', ORG_ID, null),
+        row('msp-managed', null, PARTNER_ID),
+      ]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+
+      const ids = await listIds(`level=site&targetId=${SITE_ID}`, partnerApp());
+
+      expect(ids).toEqual(['org-owned', 'msp-managed']);
+      expect(resolveTargetOwnerMock).toHaveBeenCalledTimes(1);
+      expect(resolveTargetOwnerMock).toHaveBeenCalledWith('site', SITE_ID);
+    });
+
+    it('target listing omits an MSP-managed row whose target organization the caller cannot access', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: OTHER_ORG });
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, partnerApp())).toEqual([]);
+    });
+
+    it('omits an MSP-managed row when the target cannot be resolved (fail closed)', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue(null);
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, partnerApp())).toEqual([]);
+    });
+
+    it("omits another partner's MSP-managed policy", async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('foreign', null, OTHER_PARTNER)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, partnerApp())).toEqual([]);
+    });
+
+    it('lists an MSP-managed row to an org-scope caller of its partner on a target in its organization (W03a)', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([
+        row('org-owned', ORG_ID, null),
+        row('msp-managed', null, PARTNER_ID),
+      ]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+      const orgApp = new Hono();
+      orgApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ partnerId: PARTNER_ID }));
+        await next();
+      });
+      orgApp.route('/', assignmentRoutes);
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, orgApp)).toEqual(['org-owned', 'msp-managed']);
+      expect(readablePolicyIdsMock).toHaveBeenCalledWith(expect.anything(), ['msp-managed']);
+    });
+
+    it('omits an MSP-managed row from an org-scope caller when the read predicate does not admit it', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+      readablePolicyIdsMock.mockResolvedValue([]);
+      const orgApp = new Hono();
+      orgApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ partnerId: PARTNER_ID }));
+        await next();
+      });
+      orgApp.route('/', assignmentRoutes);
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, orgApp)).toEqual([]);
+    });
+
+    it('an org-scope caller without a partner still sees no MSP-managed row', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([
+        row('org-owned', ORG_ID, null),
+        row('msp-managed', null, PARTNER_ID),
+      ]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, app)).toEqual(['org-owned']);
+    });
+
+    it('omits an MSP-managed row the read predicate does not admit', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+      readablePolicyIdsMock.mockResolvedValue([]);
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, partnerApp())).toEqual([]);
+    });
+
+    it('resolves no target owner when no row is MSP-managed', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('org-owned', ORG_ID, null)]);
+
+      await listIds(`level=site&targetId=${SITE_ID}`, partnerApp());
+
+      expect(resolveTargetOwnerMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps an MSP-managed row on a partner-owned group target only with full partner access', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'partner_group', partnerId: PARTNER_ID });
+
+      canManagePartnerWideMock.mockReturnValue(false);
+      expect(await listIds(`level=device_group&targetId=${GROUP_ID}`, partnerApp())).toEqual([]);
+
+      canManagePartnerWideMock.mockReturnValue(true);
+      expect(await listIds(`level=device_group&targetId=${GROUP_ID}`, partnerApp())).toEqual(['msp-managed']);
+
+      // Another partner's group: never.
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'partner_group', partnerId: OTHER_PARTNER });
+      expect(await listIds(`level=device_group&targetId=${GROUP_ID}`, partnerApp())).toEqual([]);
+    });
+
+    it('keeps an MSP-managed row on the partner target itself only with full partner access', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'partner', partnerId: PARTNER_ID });
+
+      canManagePartnerWideMock.mockReturnValue(false);
+      expect(await listIds(`level=partner&targetId=${PARTNER_ID}`, partnerApp())).toEqual([]);
+
+      canManagePartnerWideMock.mockReturnValue(true);
+      expect(await listIds(`level=partner&targetId=${PARTNER_ID}`, partnerApp())).toEqual(['msp-managed']);
+    });
   });
 });

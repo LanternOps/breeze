@@ -80,6 +80,7 @@ describe('alert read authorization with real JWT, custom roles and breeze_app', 
     const summary = await (await f.client.get('/alerts/summary')).json();
     expect(summary).toEqual({ total: expected.length,
       bySeverity: { critical: siteScope === 'one' ? 1 : 0, high: 0, medium: 0, low: 0, info: 0 },
+      openBySeverity: { critical: siteScope === 'one' ? 1 : 0, high: siteScope === 'one' ? 1 : 0, medium: 0, low: 0, info: 0 },
       byStatus: { active: siteScope === 'one' ? 1 : 0, acknowledged: siteScope === 'one' ? 1 : 0, resolved: 0, suppressed: 0, dismissed: 0 },
     });
     for (const row of f.alertRows) {
