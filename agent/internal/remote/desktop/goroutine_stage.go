@@ -48,7 +48,7 @@ func allGoroutineStacks() string {
 // Returns "" when the goroutine is not in the dump.
 func goroutineStage(dump string, id uint64) string {
 	prefix := "goroutine " + strconv.FormatUint(id, 10) + " ["
-	for _, block := range strings.Split(dump, "\n\n") {
+	for block := range strings.SplitSeq(dump, "\n\n") {
 		block = strings.TrimLeft(block, "\n")
 		if !strings.HasPrefix(block, prefix) {
 			continue

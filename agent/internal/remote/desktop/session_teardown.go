@@ -119,13 +119,11 @@ func (t *loopTracker) describe() string {
 // runLoop runs fn as one of the session's goroutines: stop waits for it, and
 // names it if it does not exit.
 func (s *Session) runLoop(name string, fn func()) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		token := s.loops.enter(name)
 		defer s.loops.exit(token)
 		fn()
-	}()
+	})
 }
 
 // setCleanupStage records what cleanup is doing, for the stuck-cleanup Warn.
@@ -256,7 +254,9 @@ func (s *Session) releasePipeline() {
 	s.pipelineOnce.Do(func() {
 		s.setCleanupStage("close encoder")
 		if enc := s.encoder.Load(); enc != nil {
-			enc.Close()
+			if err := enc.Close(); err != nil {
+				slog.Warn("Failed to close the video encoder", "session", s.id, "error", err.Error())
+			}
 		}
 		s.mu.Lock()
 		s.captureClosed = true
@@ -265,10 +265,14 @@ func (s *Session) releasePipeline() {
 		s.mu.Unlock()
 		s.setCleanupStage("close capturer")
 		for _, oc := range old {
-			oc.Close()
+			if err := oc.Close(); err != nil {
+				slog.Warn("Failed to close a replaced screen capturer", "session", s.id, "error", err.Error())
+			}
 		}
 		if current != nil {
-			current.Close()
+			if err := current.Close(); err != nil {
+				slog.Warn("Failed to close the screen capturer", "session", s.id, "error", err.Error())
+			}
 		}
 		// The backend session owns the capturer and the input sink; it is
 		// released after both are done with.

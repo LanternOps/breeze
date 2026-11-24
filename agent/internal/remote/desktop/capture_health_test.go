@@ -118,7 +118,7 @@ func TestDXGIRetryBackoff(t *testing.T) {
 	}
 	warns, attempts := 0, 0
 	// 60 s of 500 ms ticks with the failure unchanged.
-	for i := 0; i < 120; i++ {
+	for range 120 {
 		if r.due(now, 0) {
 			attempts++
 			if r.failed(now, 0) {
@@ -149,7 +149,7 @@ func TestDXGIRetryBackoff(t *testing.T) {
 
 	// Something in this process released a duplication: retry at once.
 	r = dxgiRetry{}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		r.failed(now, 7)
 	}
 	if r.due(now, 7) {
@@ -167,7 +167,7 @@ func TestDXGIRetryBackoff(t *testing.T) {
 		t.Error("not due after recovery")
 	}
 	warned := false
-	for i := 0; i < dxgiRetryFastAttempts; i++ {
+	for range dxgiRetryFastAttempts {
 		warned = r.failed(now, 8) || warned
 	}
 	if !warned {

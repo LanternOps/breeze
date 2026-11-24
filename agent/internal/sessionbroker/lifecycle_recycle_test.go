@@ -110,7 +110,7 @@ func TestRecycleHelperReplacesTheProcessAtOnce(t *testing.T) {
 func TestRecycleHelperDoesNothingWhenTheHelperIsBusy(t *testing.T) {
 	h := newRecycleHarness(t)
 	busy := errors.New("remote desktop session active")
-	for i := 0; i < helperRecycleLimit+2; i++ {
+	for range helperRecycleLimit + 2 {
 		if err := h.m.RecycleHelper(h.session, "leaked", func() error { return busy }); !errors.Is(err, busy) {
 			t.Fatalf("err = %v, want the prepare error", err)
 		}
@@ -138,7 +138,7 @@ func TestRecycleHelperIsBounded(t *testing.T) {
 	h.m.mu.Unlock()
 
 	prepared := false
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err := h.m.RecycleHelper(h.session, "leaked", func() error { prepared = true; return nil })
 		if !errors.Is(err, ErrHelperRecycleBudget) {
 			t.Fatalf("err = %v, want ErrHelperRecycleBudget", err)

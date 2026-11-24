@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"log/slog"
 	"strings"
@@ -298,6 +299,65 @@ func TestNormalStopClosesPipelineOnceAndLeavesProcessClean(t *testing.T) {
 	}
 	if health.teardownInProgress() {
 		t.Error("teardown still counted after a normal stop")
+	}
+}
+
+// closeFailCapturer and closeFailEncoder report an error from Close.
+type closeFailCapturer struct {
+	staticTestCapturer
+	closed atomic.Int32
+}
+
+func (c *closeFailCapturer) Close() error {
+	c.closed.Add(1)
+	return errors.New("capturer close failed")
+}
+
+type closeFailEncoder struct {
+	stubEncoder
+	closed atomic.Int32
+}
+
+func (e *closeFailEncoder) Close() error {
+	e.closed.Add(1)
+	return errors.New("encoder close failed")
+}
+
+// A failed Close is logged; it must not skip the rest of the release or make
+// the stop look abandoned.
+func TestFailedCloseIsLoggedAndTeardownContinues(t *testing.T) {
+	health := isolatedCaptureHealth(t)
+	logs := captureLogs(t)
+	enc, old, current := &closeFailEncoder{}, &closeFailCapturer{}, &closeFailCapturer{}
+	backend := newFakeBackendSession()
+	s := newTestSession("close-fails")
+	s.encoder.Store(&VideoEncoder{backend: enc})
+	s.oldCapturers = []ScreenCapturer{old}
+	s.capturer = current
+	s.backend = backend
+	s.Stop()
+
+	for what, n := range map[string]int32{
+		"encoder": enc.closed.Load(), "replaced capturer": old.closed.Load(),
+		"capturer": current.closed.Load(), "backend": backend.closed.Load(),
+	} {
+		if n != 1 {
+			t.Errorf("%s closed %d times, want 1", what, n)
+		}
+	}
+	if !s.pipelineReleased.Load() {
+		t.Error("a failed Close left the pipeline counted as held")
+	}
+	if r := health.poisonReason(); r != "" {
+		t.Errorf("a failed Close marked the process poisoned: %q", r)
+	}
+	out := logs()
+	for _, want := range []string{
+		"Failed to close the video encoder", "Failed to close a replaced screen capturer", "Failed to close the screen capturer",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in logs:\n%s", want, out)
+		}
 	}
 }
 
