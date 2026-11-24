@@ -3257,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Mover para outra organização",
-    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico, tickets e políticas vão junto, e o agente reconecta sob a nova organização.",
+    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico e tickets vão junto, e o agente reconecta sob a nova organização.",
     "targetOrgLabel": "Organização de destino",
     "targetOrgPlaceholder": "Escolha uma organização",
     "targetSiteLabel": "Local de destino",
@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} lançamentos de tempo não faturados e {{parts}} peças não faturadas mantêm a moeda original após a movimentação.",
     "currencyMismatchAccept": "Entendi — mover o dispositivo e manter essas linhas na moeda original",
     "currencyMismatchNoPermission": "Aceitar isso exige permissão de escrita em faturas. Peça a um administrador de faturamento para faturar ou resolver o trabalho pendente primeiro.",
+    "policyAssignmentsHeading": "Políticas de configuração removidas deste dispositivo",
+    "policyAssignmentsDetail": "Estas políticas estão atribuídas diretamente a este dispositivo e não podem ser aplicadas na nova organização. A movimentação remove as atribuições. As políticas em si não são alteradas.",
     "stepUpHeading": "Confirme que é você",
     "stepUpIntro": "Mover um dispositivo entre organizações exige um segundo fator.",
     "stepUpCodeLabel": "Código do autenticador",

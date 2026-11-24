@@ -3257,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Başka bir kuruluşa taşı",
-    "description": "{{hostname}} cihazını {{orgName}} kuruluşundan çıkarır. Geçmişi, biletleri ve ilkeleri onunla birlikte taşınır ve aracı yeni kuruluş altında yeniden bağlanır.",
+    "description": "{{hostname}} cihazını {{orgName}} kuruluşundan çıkarır. Geçmişi ve biletleri onunla birlikte taşınır ve aracı yeni kuruluş altında yeniden bağlanır.",
     "targetOrgLabel": "Hedef kuruluş",
     "targetOrgPlaceholder": "Bir kuruluş seçin",
     "targetSiteLabel": "Hedef konum",
@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} faturalandırılmamış zaman girişi ve {{parts}} faturalandırılmamış parça, taşımadan sonra orijinal para birimini korur.",
     "currencyMismatchAccept": "Anladım — cihazı taşı ve bu satırları orijinal para biriminde bırak",
     "currencyMismatchNoPermission": "Bunu kabul etmek için fatura yazma izni gerekir. Önce bir faturalama yöneticisinden açık işi faturalandırmasını veya temizlemesini isteyin.",
+    "policyAssignmentsHeading": "Bu cihazdan kaldırılacak yapılandırma ilkeleri",
+    "policyAssignmentsDetail": "Bu ilkeler doğrudan bu cihaza atanmıştır ve yeni kuruluşta uygulanamaz. Taşıma işlemi bu atamaları kaldırır. İlkelerin kendisi değişmez.",
     "stepUpHeading": "Siz olduğunuzu doğrulayın",
     "stepUpIntro": "Bir cihazı kuruluşlar arasında taşımak ikinci bir faktör gerektirir.",
     "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",

@@ -3257,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Déplacer vers une autre organisation",
-    "description": "Retire {{hostname}} de {{orgName}}. Son historique, ses tickets et ses stratégies suivent, et l'agent se reconnecte sous la nouvelle organisation.",
+    "description": "Retire {{hostname}} de {{orgName}}. Son historique et ses tickets suivent, et l'agent se reconnecte sous la nouvelle organisation.",
     "targetOrgLabel": "Organisation cible",
     "targetOrgPlaceholder": "Choisir une organisation",
     "targetSiteLabel": "Site cible",
@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}} : {{timeEntries}} saisies de temps non facturées et {{parts}} pièces non facturées conservent leur devise d'origine après le déplacement.",
     "currencyMismatchAccept": "Je comprends – déplacer l'appareil et conserver ces lignes dans leur devise d'origine",
     "currencyMismatchNoPermission": "Cette acceptation nécessite le droit d'écriture sur les factures. Demandez à un administrateur de facturation de facturer ou de solder le travail en attente d'abord.",
+    "policyAssignmentsHeading": "Stratégies de configuration retirées de cet appareil",
+    "policyAssignmentsDetail": "Ces stratégies sont attribuées directement à cet appareil et ne peuvent pas s'appliquer dans la nouvelle organisation. Le déplacement retire ces attributions. Les stratégies elles-mêmes ne changent pas.",
     "stepUpHeading": "Confirmez votre identité",
     "stepUpIntro": "Déplacer un appareil entre organisations nécessite un second facteur.",
     "stepUpCodeLabel": "Code de l'application d'authentification",
