@@ -207,7 +207,7 @@ Moving is refused while durable PAM lifecycle evidence exists for the device, an
 
 ## Reattaching a Reinstalled Machine
 
-When a machine is reformatted or reimaged and the agent is installed again, the new install enrolls as a new device. Breeze compares what the new install reports (system UUID, serial number and manufacturer, hostname) with the partner's existing records. When an older record matches and has gone silent, the new device is flagged as a possible reinstall of it. **Reattach** lets the new install take over the existing record, so the machine keeps its history, policies, custom fields and tickets instead of starting over as a new device.
+When a machine is reformatted or reimaged and the agent is installed again, the new install enrolls as a new device. Breeze compares what the new install reports (its TPM endorsement key, system UUID, serial number and manufacturer, hostname) with the partner's existing records. The TPM key is compared only when TPM key collection is turned on for your Breeze server (`TPM_ATTESTATION_ENABLED`) and the device has a TPM. When an older record matches and has gone silent, the new device is flagged as a possible reinstall of it. **Reattach** lets the new install take over the existing record, so the machine keeps its history, policies, custom fields and tickets instead of starting over as a new device.
 
 ### Where to start a reattach
 
@@ -218,12 +218,16 @@ The action is offered only to partner users with `devices:write` and `devices:de
 
 ### The reattach dialog
 
-The dialog shows the new install and the existing record side by side, with what matched. The identifiers come from the device itself and are not verified, and the dialog says so. To request the reattach you:
+The dialog shows the new install and the existing record side by side, with what matched. The identifiers come from the device itself and are not verified, and the dialog says so.
+
+**TPM key match.** When the new install proved the same TPM endorsement key the existing record proved, the dialog says so and the hostname does not need to be typed. This shows key continuity, not a genuine TPM: the key's certificate is not checked, and cloned virtual machines share their TPM keys. The key does not count when another record of the partner carries it too (a cloned template, for example), when either device holds a key change waiting for review, or when the key was proven before the new install started. The dialog then says why and asks for the hostname.
+
+To request the reattach you:
 
 <Steps>
 1. **Confirm possession.** Tick the box to confirm, outside Breeze, that the new install runs on the machine the existing record describes.
 
-2. **Type the existing record's hostname.** Matching identifiers are only a hint, so the name must be typed (case does not matter).
+2. **Type the existing record's hostname**, unless the TPM key matched. Other matching identifiers are only a hint, so the name must be typed (case does not matter).
 
 3. **Acknowledge an operating system change**, when the new install reports a different operating system than the record.
 
@@ -243,7 +247,16 @@ The request is pending until the new install's agent picks it up the next time i
 - the new device record is retired;
 - the existing record shows a **Reinstalled on *date*** badge, and the reattach appears in its activity feed.
 
-A request expires if the agent does not complete it in time. Breeze refuses a reattach with an explanation when the existing record is still in use (its install authenticated recently), when either device is already in a pending reattach, when the new install's agent is too old to reattach, or when the existing record changed since the dialog was opened.
+A request expires if the agent does not complete it in time. Breeze refuses a reattach with an explanation when the existing record is still in use (its install authenticated recently), when either device is already in a pending reattach, when the new install's agent is too old to reattach, when the existing record changed since the dialog was opened, or when the TPM key match no longer holds. In that last case the dialog reloads and asks for the hostname.
+
+### Reviewing a TPM key change
+
+The first TPM endorsement key a device proves becomes its baseline, shown under **TPM key** on the device's **Security** tab. When the device later proves a different key, Breeze keeps the baseline and holds the new key for review; until then, the device's TPM key does not count as reattach evidence.
+
+- **Accept the new key** when the TPM was replaced or reset on purpose. It becomes the baseline. When two-factor authentication is enabled, you verify with a passkey or an authenticator app (text-message codes cannot be used here); the verification is bound to that device and that held key.
+- **Keep the current key** to discard the held key. If the TPM really changed, the device holds the new key again the next time it proves it.
+
+Reviewing needs the same access as a reattach: a partner user with `devices:write` and `devices:delete` and access to the device's organization; a device in the holding area needs a full partner administrator. A device in a pending reattach cannot be reviewed until the reattach finishes or is cancelled. Both decisions appear in the device's activity feed.
 
 ---
 

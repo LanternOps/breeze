@@ -59,14 +59,6 @@ interface HeldGrant {
   mintedAt: number;
 }
 
-/**
- * Until wave T2 (TPM evidence) the route always requests `hint`
- * (routes/devices/reattach.ts) and binds `hint` in the step-up, whatever the
- * read says. When T2 ships, change this, the step-up resource and the name
- * gate together with the route.
- */
-const REQUEST_EVIDENCE_LEVEL = 'hint' as const;
-
 type Phase = 'form' | 'stepUp' | 'pending';
 
 const STEP_UP_REQUIRED = 'STEP_UP_REQUIRED';
@@ -145,13 +137,18 @@ export default function ReattachDeviceForm({
 
   const { tier, ensureTier } = useReauthTier(passkeyCount, mfaMethod, totpEnrolled);
   const noUsableFactor = phase === 'stepUp' && tier === 'password';
-  const hint = REQUEST_EVIDENCE_LEVEL === 'hint';
+  // The level the candidates read showed (#8318 wave T2). It is sent as
+  // `expectedEvidenceLevel` and bound in the step-up; a `tpm_continuity`
+  // candidate needs no typed name. If the server now judges it weaker, it
+  // answers 409 evidence_changed and the parent re-reads the candidates.
+  const evidenceLevel = candidate.evidenceLevel === 'tpm_continuity' ? 'tpm_continuity' : 'hint';
+  const hint = evidenceLevel === 'hint';
 
   const resource = canonicalDeviceReattachResource({
     sourceDeviceId: source.deviceId,
     targetDeviceId: candidate.deviceId,
     targetVersion: candidate.targetVersion,
-    evidenceLevel: REQUEST_EVIDENCE_LEVEL,
+    evidenceLevel,
     restoreDecommissioned: candidate.requiresRestore && restoreDecommissioned,
   });
   const resourceKey = JSON.stringify(resource);
@@ -309,8 +306,24 @@ export default function ReattachDeviceForm({
     { key: 'lastSeen', label: t('reattachDialog.fields.lastSeenAt'), source: dateOr(source.lastSeenAt), target: dateOr(candidate.lastSeenAt) },
   ];
 
+  // Why a TPM key did not count. No line for a device with no key: most
+  // devices have none, and it says nothing new. The source's gaps are judged
+  // first (deviceReattach/evidence.ts), so a source gap can show while the
+  // old record has no key; the line is still true.
+  const tpmGapLabel = (() => {
+    switch (candidate.evidenceGap) {
+      case 'source_key_changed': return t('reattachDialog.evidenceGap.sourceKeyChanged');
+      case 'source_key_not_proven_by_install': return t('reattachDialog.evidenceGap.sourceKeyNotProvenByInstall');
+      case 'target_key_changed': return t('reattachDialog.evidenceGap.targetKeyChanged');
+      case 'keys_differ': return t('reattachDialog.evidenceGap.keysDiffer');
+      case 'key_shared': return t('reattachDialog.evidenceGap.keyShared');
+      default: return null;
+    }
+  })();
+
   const evidenceLabel = (() => {
     switch (candidate.evidence) {
+      case 'tpm_ek': return t('reattachDialog.evidence.tpmEk');
       case 'system_uuid': return t('reattachDialog.evidence.systemUuid');
       case 'serial': return t('reattachDialog.evidence.serial');
       case 'hostname': return t('reattachDialog.evidence.hostname');
@@ -374,12 +387,15 @@ export default function ReattachDeviceForm({
       <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
         <p data-testid="reattach-evidence">{t('reattachDialog.matchedOn', { evidence: evidenceLabel })}</p>
         <p className="text-xs font-medium text-warning" data-testid="reattach-evidence-notice">
-          {/* The TPM sentence is for TPM evidence only. Requests are `hint`
-              until wave T2 (REQUEST_EVIDENCE_LEVEL above); change both together. */}
-          {candidate.evidenceLevel === 'tpm_continuity'
+          {/* The TPM sentence is for TPM evidence only: it says key
+              continuity, never a genuine TPM. */}
+          {!hint
             ? t('reattachDialog.evidenceNoticeTpm')
             : t('reattachDialog.evidenceNoticeHint')}
         </p>
+        {hint && tpmGapLabel && (
+          <p className="text-xs text-muted-foreground" data-testid="reattach-evidence-gap">{tpmGapLabel}</p>
+        )}
       </div>
 
       <p className="text-sm text-muted-foreground" data-testid="reattach-consequences">

@@ -20,6 +20,7 @@ import { handleActionError, runAction } from '../../lib/runAction';
 import DeviceSecurityStatus from '../security/DeviceSecurityStatus';
 import RecoveryKeysPanel from '../security/RecoveryKeysPanel';
 import DeviceEdrPanel from './DeviceEdrPanel';
+import TpmKeyPanel from './TpmKeyPanel';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
 type ThreatStatus = 'active' | 'quarantined' | 'removed';
@@ -213,6 +214,9 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <RecoveryKeysPanel deviceId={deviceId} timezone={timezone} />
         </div>
+        <div className="rounded-lg border bg-card p-4 shadow-xs">
+          <TpmKeyPanel key={deviceId} deviceId={deviceId} timezone={timezone} />
+        </div>
         {ENABLE_EDR_INTEGRATIONS && <DeviceEdrPanel deviceId={deviceId} orgId={orgId} timezone={timezone} />}
       </div>
     );
@@ -223,6 +227,9 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
       <DeviceSecurityStatus deviceId={deviceId} showAvActions />
       <div className="rounded-lg border bg-card p-4 shadow-xs">
         <RecoveryKeysPanel deviceId={deviceId} timezone={timezone} />
+      </div>
+      <div className="rounded-lg border bg-card p-4 shadow-xs">
+        <TpmKeyPanel key={deviceId} deviceId={deviceId} timezone={timezone} />
       </div>
       {ENABLE_EDR_INTEGRATIONS && <DeviceEdrPanel deviceId={deviceId} orgId={orgId} timezone={timezone} />}
 

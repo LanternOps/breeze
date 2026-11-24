@@ -5154,7 +5154,8 @@
       "systemUuid": "UUID di sistema",
       "serial": "numero di serie e produttore",
       "hostname": "solo nome host",
-      "other": "identificatori segnalati"
+      "other": "identificatori segnalati",
+      "tpmEk": "chiave di approvazione TPM"
     },
     "evidenceNoticeHint": "Identificatori hardware segnalati dal dispositivo. Non verificati.",
     "evidenceNoticeTpm": "Stessa chiave di approvazione TPM di cui la vecchia installazione ha dimostrato il possesso. Ciò dimostra la continuità della chiave, non lo stesso TPM fisico; i TPM virtuali clonati condividono le chiavi.",
@@ -5205,8 +5206,48 @@
       "confirm_target_name_required": "Digita il nome del dispositivo esistente per confermare.",
       "confirm_target_name_mismatch": "Il nome digitato non corrisponde a {{hostname}}.",
       "same_device": "Un dispositivo non può essere ricollegato a sé stesso.",
-      "invalid_target_version": "Manca la versione del record esistente. Riapri il ricollegamento."
+      "invalid_target_version": "Manca la versione del record esistente. Riapri il ricollegamento.",
+      "evidence_changed": "La prova della chiave TPM di {{hostname}} è cambiata da quando è stata mostrata. L’elenco è stato ricaricato: conferma il nome per continuare."
     },
-    "stepUpHeld": "La tua verifica è ancora valida per questo ricollegamento."
+    "stepUpHeld": "La tua verifica è ancora valida per questo ricollegamento.",
+    "evidenceGap": {
+      "sourceKeyChanged": "La chiave TPM non conta: la nuova installazione ha un cambio di chiave in attesa di revisione.",
+      "sourceKeyNotProvenByInstall": "La chiave TPM non conta: è stata dimostrata prima dell’inizio di questa installazione.",
+      "targetKeyChanged": "La chiave TPM non conta: il vecchio record ha un cambio di chiave in attesa di revisione.",
+      "keysDiffer": "I due record hanno chiavi TPM diverse.",
+      "keyShared": "La chiave TPM non conta: un altro dispositivo del tuo partner ha la stessa chiave (ad esempio una macchina virtuale clonata)."
+    }
+  },
+  "tpmKeyPanel": {
+    "title": "Chiave TPM",
+    "loading": "Caricamento dello stato della chiave TPM…",
+    "loadError": "Impossibile caricare lo stato della chiave TPM.",
+    "attested": "Chiave di riferimento registrata. Ultima dimostrazione: {{time}}.",
+    "noTpm": "Il dispositivo segnala di non avere un TPM.",
+    "notAttested": "Nessuna chiave TPM di riferimento ancora registrata.",
+    "explainer": "La prima chiave di approvazione TPM che il dispositivo dimostra diventa il suo riferimento. Una reinstallazione che dimostra la stessa chiave può essere ricollegata senza digitarne il nome. Questo mostra la continuità della chiave, non un TPM autentico.",
+    "mismatch": "Il dispositivo ha dimostrato una chiave TPM diversa il {{time}}. È in attesa di revisione.",
+    "mismatchHelp": "Finché non decidi, la chiave TPM di questo dispositivo non conta come prova per il ricollegamento. Accettala se il TPM è stato sostituito o reimpostato di proposito; altrimenti mantieni la chiave attuale.",
+    "accept": "Accetta la nuova chiave",
+    "acceptStepUp": "Conferma e accetta",
+    "dismiss": "Mantieni la chiave attuale",
+    "working": "Elaborazione…",
+    "stepUpCodeLabel": "Codice dell’autenticatore",
+    "stepUpPasskeyNote": "Conferma con la tua passkey per accettare la nuova chiave.",
+    "noStepUpFactor": "Per accettare, il tuo account deve avere una passkey o un’app di autenticazione.",
+    "stepUpRetry": "Questa verifica è scaduta o non corrisponde più. Riprova.",
+    "genericError": "Impossibile esaminare il cambio di chiave TPM. Riprova.",
+    "acceptedToast": "Nuova chiave TPM accettata",
+    "dismissedToast": "Cambio di chiave TPM ignorato",
+    "refusals": {
+      "mismatch_changed": "Lo stato della chiave TPM è cambiato da quando è stato mostrato. È stato ricaricato.",
+      "reattach_in_progress": "Questo dispositivo ha un ricollegamento in corso. Completalo o annullalo prima.",
+      "org_draining": "L’organizzazione del dispositivo non è attiva.",
+      "permission_denied": "Per esaminare un cambio di chiave TPM serve l’autorizzazione a modificare ed eliminare dispositivi.",
+      "org_access_denied": "Non hai accesso all’organizzazione di questo dispositivo.",
+      "MFA_REQUIRED": "Attiva l’autenticazione a due fattori sul tuo account per esaminare un cambio di chiave TPM.",
+      "device_not_found": "Dispositivo non trovato, oppure non puoi esaminarne la chiave TPM."
+    },
+    "reviewNeedsAccess": "Un utente del partner autorizzato a modificare ed eliminare i dispositivi può esaminarlo."
   }
 }

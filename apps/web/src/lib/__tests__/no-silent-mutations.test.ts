@@ -135,6 +135,8 @@ const TARGET_GLOBS = [
   'src/components/devices/UnassignedDevicesPage.tsx',
   // #8318 wave 2-3: the reattach request (POST /devices/:id/reattach) goes through runAction from birth.
   'src/components/devices/ReattachDeviceForm.tsx',
+  // #8318 wave T2: accepting or dismissing a held TPM key change goes through runAction from birth.
+  'src/components/devices/TpmKeyPanel.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',

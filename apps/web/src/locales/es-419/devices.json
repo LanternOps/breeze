@@ -5154,7 +5154,8 @@
       "systemUuid": "UUID del sistema",
       "serial": "número de serie y fabricante",
       "hostname": "solo el nombre de host",
-      "other": "identificadores informados"
+      "other": "identificadores informados",
+      "tpmEk": "clave de aprobación del TPM"
     },
     "evidenceNoticeHint": "Identificadores de hardware informados por el dispositivo. No verificados.",
     "evidenceNoticeTpm": "Misma clave de aprobación del TPM cuya posesión demostró la instalación anterior. Esto demuestra la continuidad de la clave, no el mismo TPM físico; los TPM virtuales clonados comparten claves.",
@@ -5205,8 +5206,48 @@
       "confirm_target_name_required": "Escribe el nombre del dispositivo existente para confirmar.",
       "confirm_target_name_mismatch": "El nombre escrito no coincide con {{hostname}}.",
       "same_device": "Un dispositivo no se puede volver a vincular consigo mismo.",
-      "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo."
+      "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo.",
+      "evidence_changed": "La evidencia de la clave del TPM de {{hostname}} cambió desde que se mostró. La lista se volvió a cargar: confirma el nombre para continuar."
     },
-    "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación."
+    "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación.",
+    "evidenceGap": {
+      "sourceKeyChanged": "La clave del TPM no cuenta: la nueva instalación tiene un cambio de clave pendiente de revisión.",
+      "sourceKeyNotProvenByInstall": "La clave del TPM no cuenta: se demostró antes de que empezara esta instalación.",
+      "targetKeyChanged": "La clave del TPM no cuenta: el registro anterior tiene un cambio de clave pendiente de revisión.",
+      "keysDiffer": "Los dos registros tienen claves de TPM distintas.",
+      "keyShared": "La clave del TPM no cuenta: otro dispositivo de tu socio tiene la misma clave (por ejemplo, una máquina virtual clonada)."
+    }
+  },
+  "tpmKeyPanel": {
+    "title": "Clave del TPM",
+    "loading": "Cargando el estado de la clave del TPM…",
+    "loadError": "No se pudo cargar el estado de la clave del TPM.",
+    "attested": "Clave de referencia registrada. Última demostración: {{time}}.",
+    "noTpm": "El dispositivo informa que no tiene TPM.",
+    "notAttested": "Todavía no hay una clave de referencia del TPM registrada.",
+    "explainer": "La primera clave de aprobación del TPM que demuestra el dispositivo pasa a ser su referencia. Una reinstalación que demuestre la misma clave se puede volver a vincular sin escribir el nombre. Esto muestra la continuidad de la clave, no un TPM genuino.",
+    "mismatch": "El dispositivo demostró una clave de TPM distinta el {{time}}. Está pendiente de revisión.",
+    "mismatchHelp": "Hasta que decidas, la clave del TPM de este dispositivo no cuenta como evidencia para volver a vincular. Acéptala si el TPM se reemplazó o restableció a propósito; si no, conserva la clave actual.",
+    "accept": "Aceptar la nueva clave",
+    "acceptStepUp": "Confirmar y aceptar",
+    "dismiss": "Conservar la clave actual",
+    "working": "Procesando…",
+    "stepUpCodeLabel": "Código del autenticador",
+    "stepUpPasskeyNote": "Confirma con tu llave de acceso para aceptar la nueva clave.",
+    "noStepUpFactor": "Para aceptar, tu cuenta necesita una llave de acceso o una app de autenticación.",
+    "stepUpRetry": "Esa verificación venció o ya no coincide. Inténtalo de nuevo.",
+    "genericError": "No se pudo revisar el cambio de clave del TPM. Inténtalo de nuevo.",
+    "acceptedToast": "Nueva clave del TPM aceptada",
+    "dismissedToast": "Cambio de clave del TPM descartado",
+    "refusals": {
+      "mismatch_changed": "El estado de la clave del TPM cambió desde que se mostró. Se volvió a cargar.",
+      "reattach_in_progress": "Este dispositivo está en una revinculación abierta. Termínala o cancélala primero.",
+      "org_draining": "La organización del dispositivo no está activa.",
+      "permission_denied": "Revisar un cambio de clave del TPM requiere permiso para editar y eliminar dispositivos.",
+      "org_access_denied": "No tienes acceso a la organización de este dispositivo.",
+      "MFA_REQUIRED": "Activa la autenticación de dos factores en tu cuenta para revisar un cambio de clave del TPM.",
+      "device_not_found": "No se encontró el dispositivo o no puedes revisar su clave del TPM."
+    },
+    "reviewNeedsAccess": "Un usuario del socio con permiso para editar y eliminar dispositivos puede revisarlo."
   }
 }

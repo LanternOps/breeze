@@ -58,6 +58,15 @@ describe('DeviceActivityFeed', () => {
     expect(actions.split(',')).toContain('device.reinstall');
   });
 
+  it('requests device.tpm_baseline events in the server-side action filter (#8318 wave T2)', async () => {
+    mockFeed([]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const eventsCall = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/events'));
+    const actions = new URL(String(eventsCall![0]), 'http://x').searchParams.get('actions') ?? '';
+    expect(actions.split(',')).toContain('device.tpm_baseline');
+  });
+
   it('shows an Automated chip for an automated row and drops the redundant "System" label', async () => {
     mockFeed([
       {

@@ -16,6 +16,9 @@ vi.mock('../../lib/featureFlags', async (orig) => ({
 vi.mock('./DeviceEdrPanel', () => ({
   default: ({ orgId }: { orgId: string }) => <div data-testid="edr-panel-stub">{orgId}</div>
 }));
+vi.mock('./TpmKeyPanel', () => ({
+  default: ({ deviceId }: { deviceId: string }) => <div data-testid="tpm-key-panel-stub">{deviceId}</div>
+}));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -118,6 +121,8 @@ describe('DeviceSecurityTab', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/security/status/${deviceId}`);
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/security/threats/${deviceId}?limit=10`);
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/security/scans/${deviceId}?limit=10`);
+    // The TPM key panel (#8318 wave T2) is on the tab, for this device.
+    expect(screen.getByTestId('tpm-key-panel-stub').textContent).toBe(deviceId);
   });
 
   it('renders the EDR panel with the device orgId when the flag is on', async () => {
