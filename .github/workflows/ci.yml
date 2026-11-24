@@ -3125,7 +3125,7 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_InvalidSecurityDescriptorIsQuarantined|SecurityDescriptorPrincipalsFromRealDescriptor|SecurityDescriptorLocalKnownDomains|SecurityDescriptorQuarantineOnRealRestore|SecurityDescriptorSACLOnlyUnknownDropsTheSACL|RestoreFromSnapshot_RefusesInvalidWindowsNames|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
+          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_InvalidSecurityDescriptorIsQuarantined|SecurityDescriptorPrincipalsFromRealDescriptor|SecurityDescriptorLocalKnownDomains|SecurityDescriptorQuarantineOnRealRestore|SecurityDescriptorSACLOnlyUnknownDropsTheSACL|RestoreFromSnapshot_RefusesInvalidWindowsNames|OverwritesOriginals_WindowsVolumeAliases|RestoreFromSnapshot_AlternateRootTargetKeepsOriginals|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }

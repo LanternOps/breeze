@@ -39,6 +39,16 @@ type RestoreConfig struct {
 	// payload.
 	SecurityDescriptorsAsCaptured bool
 
+	// AllowOverwriteOriginals says the restore is meant to write every entry back over its
+	// original: the target is the entries' own volume root (`C:\`, `/`) or
+	// otherwise resolves onto the backed-up locations. Without it, a restore
+	// to TargetPath whose destinations would land on any original is
+	// refused before anything is written under the target (#12638; see
+	// restore_overwrite_guard.go). Set from the backup_restore payload's
+	// `allowOverwriteOriginals` and by the rebuild engines, which restore onto a volume
+	// that may be the recovery environment's view of the original root.
+	AllowOverwriteOriginals bool
+
 	// JunctionTargetsAsCaptured recreates every junction (#7325) pointing
 	// at its target exactly as recorded, never rewritten under TargetPath.
 	// Only for a whole-machine rebuild: the restore writes through a
@@ -168,7 +178,17 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		result.Status = "failed"
 		return result, err
 	}
-	snapshot, manifestWarnings, err := downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, cfg.SelectedPaths)
+	// An alternate-location restore must not write over the originals
+	// (#12638): the guard notes every original beneath the target while
+	// the manifest is decoded, selected or not, and checks the selection
+	// below, before anything is written under the target.
+	keep := restoreSelection(cfg.SelectedPaths)
+	var guard *originalsGuard
+	if cfg.TargetPath != "" && !cfg.AllowOverwriteOriginals {
+		guard = newOriginalsGuard(targetBase)
+		keep = guard.observing(keep)
+	}
+	snapshot, manifestWarnings, err := downloadVerifiedManifestKeeping(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, keep)
 	if err != nil {
 		result.Status = "failed"
 		if ctx.Err() == nil && endsVerifyRun(err) {
@@ -218,6 +238,17 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		return result, nil
 	}
+	// Checked before anything below creates a directory or file under the
+	// target (#12638).
+	if guard != nil {
+		for _, j := range snapshot.Junctions {
+			guard.noteOriginal(j.restorePath())
+		}
+		if refuseRestoreOverOriginals(guard, contentFiles, links, dirs, junctions, result) {
+			return result, nil
+		}
+	}
+
 	// NTFS security descriptors (W06a): Windows only — see restore_sd.go.
 	// The restore privilege scope (SeRestore/SeTakeOwnership/SeSecurity) is
 	// held for this run only and released when it returns.
@@ -551,6 +582,13 @@ func plainDownload(_ context.Context, p providers.BackupProvider, key, dest stri
 // file entries selectedPaths selects are kept (see filterFiles; empty keeps
 // all); junctions and every other manifest field are returned whole.
 func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation, selectedPaths []string) (*Snapshot, []string, error) {
+	return downloadVerifiedManifestKeeping(ctx, provider, snapshotID, workRoot, e, restoreSelection(selectedPaths))
+}
+
+// downloadVerifiedManifestKeeping is downloadVerifiedManifest with the
+// per-entry predicate given directly (nil keeps every file entry), so a
+// caller can also see each entry as it is decoded.
+func downloadVerifiedManifestKeeping(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation, keep func(*SnapshotFile) bool) (*Snapshot, []string, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
 	if workRoot == "" {
 		workRoot = os.TempDir()
@@ -568,7 +606,7 @@ func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProv
 	// attested mode), and streamed with the selection applied per entry:
 	// memory follows what the restore selected, not the size of the snapshot
 	// (#11234).
-	snapshot, err := decodeSnapshotManifestFile(tmpPath, restoreSelection(selectedPaths))
+	snapshot, err := decodeSnapshotManifestFile(tmpPath, keep)
 	if err != nil {
 		return nil, nil, fmt.Errorf("decode manifest: %w", err)
 	}
