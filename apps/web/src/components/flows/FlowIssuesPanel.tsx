@@ -3,15 +3,16 @@ import '@/lib/i18n';
 import type { FlowIssue } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import HashLink from '@/components/shared/HashLink';
-import { useDescribeFlowIssue } from './flowIssueMessage';
+import { dropShadowedIssues, useDescribeFlowIssue } from './flowIssueMessage';
 
 /** Validation issues for a flow, errors first, each linked to its step anchor. */
 export function FlowIssuesPanel({ issues }: { issues: FlowIssue[] }) {
   const { t } = useTranslation('flows');
   const describeFlowIssue = useDescribeFlowIssue();
+  const shown = dropShadowedIssues(issues);
   const ordered = [
-    ...issues.filter((i) => i.severity === 'error'),
-    ...issues.filter((i) => i.severity !== 'error'),
+    ...shown.filter((i) => i.severity === 'error'),
+    ...shown.filter((i) => i.severity !== 'error'),
   ];
 
   return (

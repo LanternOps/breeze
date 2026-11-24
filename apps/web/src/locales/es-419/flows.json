@@ -918,7 +918,15 @@
       "resolverRequired": "Un flujo para todas las organizaciones necesita el campo del cuerpo que nombra la organización del cliente.",
       "resolverNotAllowed": "El flujo de webhook de una organización siempre se ejecuta en esa organización. Quita la búsqueda de organización.",
       "documentTooLarge": "El documento es demasiado grande. Quita algunas acciones o texto.",
-      "secretInDocument": "El documento contiene algo que parece un secreto. Quítalo del documento."
+      "secretInDocument": "El documento contiene algo que parece un secreto. Quítalo del documento.",
+      "event": "Elige el evento que inicia este flujo.",
+      "eventFilter": "El nombre de un campo del filtro de eventos no es válido. Usa letras, números, puntos y guiones bajos, y empieza con una letra.",
+      "orgResolver": "La búsqueda de la organización no es válida. Indica el campo del cuerpo como body.nombre y, para un sistema externo, su nombre.",
+      "title": "Ponle un título a esta acción (hasta 200 caracteres).",
+      "message": "Escribe un mensaje para esta acción (hasta 4000 caracteres).",
+      "parameters": "Un parámetro del script no es válido. Ponle un nombre a cada parámetro.",
+      "target": "Elige en qué dispositivos se ejecuta este flujo.",
+      "inputInvalid": "Este valor no es válido. Revisa el campo en la ruta indicada."
     },
     "enableOpenFailed": "El borrador se guardó, pero no se pudo abrir el diálogo de habilitación. Abre el flujo para habilitarlo."
   }

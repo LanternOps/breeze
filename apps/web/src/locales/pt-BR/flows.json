@@ -918,7 +918,15 @@
       "resolverRequired": "Um fluxo para todas as organizações precisa do campo do corpo que nomeia a organização do cliente.",
       "resolverNotAllowed": "O fluxo de webhook de uma organização sempre é executado nessa organização. Remova a busca de organização.",
       "documentTooLarge": "O documento é grande demais. Remova algumas ações ou texto.",
-      "secretInDocument": "O documento contém algo que parece um segredo. Remova-o do documento."
+      "secretInDocument": "O documento contém algo que parece um segredo. Remova-o do documento.",
+      "event": "Escolha o evento que inicia este fluxo.",
+      "eventFilter": "O nome de um campo do filtro de eventos não é válido. Use letras, números, pontos e sublinhados, começando com uma letra.",
+      "orgResolver": "A busca da organização não é válida. Informe o campo do corpo como body.nome e, para um sistema externo, o nome dele.",
+      "title": "Dê um título a esta ação (até 200 caracteres).",
+      "message": "Escreva uma mensagem para esta ação (até 4000 caracteres).",
+      "parameters": "Um parâmetro do script não é válido. Dê um nome a cada parâmetro.",
+      "target": "Escolha em quais dispositivos este fluxo é executado.",
+      "inputInvalid": "Este valor não é válido. Confira o campo no caminho mostrado."
     },
     "enableOpenFailed": "O rascunho foi salvo, mas não foi possível abrir a caixa de diálogo de ativação. Abra o fluxo para ativá-lo."
   }

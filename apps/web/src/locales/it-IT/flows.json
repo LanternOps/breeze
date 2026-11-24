@@ -918,7 +918,15 @@
       "resolverRequired": "Un flusso per tutte le organizzazioni richiede il campo del corpo che indica l'organizzazione cliente.",
       "resolverNotAllowed": "Il flusso webhook di un'organizzazione viene sempre eseguito in quell'organizzazione. Rimuovi la ricerca dell'organizzazione.",
       "documentTooLarge": "Il documento è troppo grande. Rimuovi alcune azioni o del testo.",
-      "secretInDocument": "Il documento contiene qualcosa che sembra un segreto. Rimuovilo dal documento."
+      "secretInDocument": "Il documento contiene qualcosa che sembra un segreto. Rimuovilo dal documento.",
+      "event": "Scegli l'evento che avvia questo flusso.",
+      "eventFilter": "Il nome di un campo del filtro eventi non è valido. Usa lettere, numeri, punti e trattini bassi, iniziando con una lettera.",
+      "orgResolver": "La ricerca dell'organizzazione non è valida. Indica il campo del corpo come body.nome e, per un sistema esterno, il suo nome.",
+      "title": "Dai un titolo a questa azione (fino a 200 caratteri).",
+      "message": "Scrivi un messaggio per questa azione (fino a 4000 caratteri).",
+      "parameters": "Un parametro dello script non è valido. Dai un nome a ogni parametro.",
+      "target": "Scegli su quali dispositivi viene eseguito questo flusso.",
+      "inputInvalid": "Questo valore non è valido. Controlla il campo al percorso indicato."
     },
     "enableOpenFailed": "La bozza è stata salvata, ma non è stato possibile aprire la finestra di abilitazione. Apri il flusso per abilitarlo."
   }

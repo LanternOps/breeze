@@ -918,7 +918,15 @@
       "resolverRequired": "Ein Ablauf für alle Organisationen braucht das Body-Feld, das die Kundenorganisation benennt.",
       "resolverNotAllowed": "Der Webhook-Ablauf einer Organisation läuft immer in dieser Organisation. Entfernen Sie die Organisationszuordnung.",
       "documentTooLarge": "Das Dokument ist zu groß. Entfernen Sie einige Aktionen oder Text.",
-      "secretInDocument": "Das Dokument enthält etwas, das wie ein Geheimnis aussieht. Entfernen Sie es aus dem Dokument."
+      "secretInDocument": "Das Dokument enthält etwas, das wie ein Geheimnis aussieht. Entfernen Sie es aus dem Dokument.",
+      "event": "Wählen Sie das Ereignis, das diesen Flow startet.",
+      "eventFilter": "Der Name eines Ereignisfilter-Felds ist ungültig. Verwenden Sie Buchstaben, Zahlen, Punkte und Unterstriche und beginnen Sie mit einem Buchstaben.",
+      "orgResolver": "Die Organisationszuordnung ist ungültig. Geben Sie das Body-Feld als body.name an und für ein externes System dessen Namen.",
+      "title": "Geben Sie dieser Aktion einen Titel (bis zu 200 Zeichen).",
+      "message": "Schreiben Sie eine Nachricht für diese Aktion (bis zu 4000 Zeichen).",
+      "parameters": "Ein Skriptparameter ist ungültig. Geben Sie jedem Parameter einen Namen.",
+      "target": "Wählen Sie, auf welchen Geräten dieser Flow läuft.",
+      "inputInvalid": "Dieser Wert ist ungültig. Prüfen Sie das Feld am angezeigten Pfad."
     },
     "enableOpenFailed": "Der Entwurf wurde gespeichert, aber der Aktivierungsdialog konnte nicht geöffnet werden. Öffnen Sie den Ablauf, um ihn zu aktivieren."
   }

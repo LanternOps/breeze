@@ -918,7 +918,15 @@
       "resolverRequired": "A flow for all organizations needs the body field that names the customer organization.",
       "resolverNotAllowed": "An organization's webhook flow always runs in that organization. Remove the organization lookup.",
       "documentTooLarge": "The document is too large. Remove some actions or text.",
-      "secretInDocument": "The document contains what looks like a secret. Remove it from the document."
+      "secretInDocument": "The document contains what looks like a secret. Remove it from the document.",
+      "event": "Choose the event that starts this flow.",
+      "eventFilter": "An event filter field name is not valid. Use letters, numbers, dots and underscores, starting with a letter.",
+      "orgResolver": "The organization lookup is not valid. Give the body field as body.name and, for an outside system, its name.",
+      "title": "Give this action a title (up to 200 characters).",
+      "message": "Write a message for this action (up to 4000 characters).",
+      "parameters": "A script parameter is not valid. Give each parameter a name.",
+      "target": "Choose which devices this flow runs on.",
+      "inputInvalid": "This value is not valid. Check the field at the path shown."
     },
     "enableOpenFailed": "The draft was saved, but the enable dialog could not open. Open the flow to enable it."
   }
