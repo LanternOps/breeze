@@ -391,6 +391,7 @@ suite script sources apps/api/src/routes/ai/scriptProposals.ts
 suite script sources apps/api/src/routes/devices/events.ts
 suite script sources apps/api/src/services/aiModels/connectionFactory.ts
 suite script sources apps/api/src/services/aiToolsScripts.ts
+suite script sources apps/api/src/services/automationRuntime.ts
 suite script sources apps/api/src/services/orgMerge.ts
 
 # ── software ──
