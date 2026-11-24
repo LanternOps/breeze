@@ -520,7 +520,9 @@ describe("M365CustomerGraphActionsCard", () => {
   });
 
   // #12085: without Application.Read.All the executor verifies only the
-  // Microsoft Graph roles in its token; the card says so plainly.
+  // Microsoft Graph roles in its token; the card says so plainly. It must not
+  // tell the admin to grant Application.Read.All: the exact-set check reports
+  // that extra permission as unexpected, so the hint could never work.
   it("explains graph_token_only verification on an active connection", async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ connection: connection({ grantReconciliationMode: "graph_token_only" }) })),
@@ -528,9 +530,11 @@ describe("M365CustomerGraphActionsCard", () => {
 
     render(<M365CustomerGraphActionsCard />);
 
-    expect(await screen.findByTestId("m365-actions-graph-token-only")).toHaveTextContent(
-      "Graph permissions verified. Permissions on other Microsoft resources were not checked; grant Application.Read.All for a full check.",
+    const note = await screen.findByTestId("m365-actions-graph-token-only");
+    expect(note).toHaveTextContent(
+      "Graph permissions verified. Permissions on other Microsoft resources could not be checked. Do not grant extra permissions to fix this: any permission outside the required set is reported as unexpected.",
     );
+    expect(note).not.toHaveTextContent("Application.Read.All");
   });
 
   it("shows no partial-verification note in exact mode or when the API omits the mode", async () => {

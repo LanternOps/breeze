@@ -5,7 +5,7 @@ import {
   retestOperation,
   type ExecutorOperationDependencies,
 } from './operations';
-import { getM365PermissionProfile } from '@breeze/shared/m365';
+import { getM365PermissionProfile, retestResultSchema } from '@breeze/shared/m365';
 import type { MicrosoftGraphClient } from './microsoft/graphClient';
 import { MicrosoftTokenClientError } from './microsoft/tokenClient';
 
@@ -144,6 +144,41 @@ describe('retestOperation', () => {
       expect(warn).not.toHaveBeenCalled();
       expect(info).toHaveBeenCalledWith(
         '[m365-graph-actions-executor] grant reconciliation used the Graph token roles claim',
+        { operation: 'retest', correlationId: '11111111-1111-4111-8111-111111111111' },
+      );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  // #12085: resource lookup denied, manifest ids cross-checked against the
+  // token — still an exact inventory, so the wire result is exact mode.
+  it('returns a schema-valid exact result from the manifest-id cross-check and logs the path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const d = deps();
+    d.graphClient.probeTenant = vi.fn().mockResolvedValue({
+      tenantId: TENANT,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      observedGrants: [...getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!],
+      resourceRolesFromManifest: true,
+    });
+    try {
+      const result = await retestOperation({ correlationId: '11111111-1111-4111-8111-111111111111', tenantId: TENANT }, d);
+      expect(result).toMatchObject({
+        success: true,
+        grantReconciliation: 'complete',
+        grantReconciliationMode: 'exact',
+        missingGrants: [],
+        unexpectedGrants: [],
+      });
+      expect(result).not.toHaveProperty('resourceRolesFromManifest');
+      expect(retestResultSchema.safeParse(result).success).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(
+        '[m365-graph-actions-executor] grant reconciliation resolved Graph role ids from the manifest and the token roles claim',
         { operation: 'retest', correlationId: '11111111-1111-4111-8111-111111111111' },
       );
     } finally {
