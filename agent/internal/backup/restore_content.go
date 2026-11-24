@@ -45,6 +45,10 @@ func setRestoreConcurrencyForTest(n int) (restore func()) {
 	return func() { restoreDownloadConcurrency = old }
 }
 
+// restoreSettleStarting runs when a session-lost run starts waiting for its
+// in-flight downloads (see run's stop). A seam for tests; a no-op otherwise.
+var restoreSettleStarting = func() {}
+
 // contentFetchOutcome is what a download worker hands back for one file:
 // either a verified staging file ready to install, or a failure (err is the
 // download or content-check error). Warnings are carried back rather than
@@ -186,6 +190,7 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 			return false
 		}
 		if sessionLostCause(ctx) != nil && (c.callerCtx == nil || c.callerCtx.Err() == nil) {
+			restoreSettleStarting()
 			for inflight > 0 {
 				d := <-doneCh
 				inflight--
@@ -194,6 +199,12 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 				}
 			}
 			for head < n {
+				// The wait above can take minutes (plainDownload does not
+				// stop mid-object): a caller stop during it, or between
+				// installs, installs nothing further.
+				if c.callerCtx != nil && c.callerCtx.Err() != nil {
+					break
+				}
 				s := slots[head]
 				if s == nil || !s.ready || s.resumed || s.outcome.interrupted {
 					break

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,6 +201,54 @@ func TestRestore_SessionLostDuringManifestDownload(t *testing.T) {
 	}
 	if got := p.startedObjects(); got != 0 {
 		t.Fatalf("started %d object downloads, want 0", got)
+	}
+}
+
+// The session ends while downloads are still in flight, and the caller stops
+// the restore while the run waits for them. A caller stop installs nothing
+// further: the downloads that finish afterwards must not be written over the
+// target, and the run reports the cancel.
+func TestRestore_CallerCancelWhileSettlingInstallsNothing(t *testing.T) {
+	defer setRestoreConcurrencyForTest(4)()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gate := make(chan struct{})
+	settling := make(chan struct{})
+	origHook := restoreSettleStarting
+	var once sync.Once
+	restoreSettleStarting = func() { once.Do(func() { close(settling) }) }
+	t.Cleanup(func() { restoreSettleStarting = origHook })
+
+	p := newScriptedDownloadProvider(t, "restore-cancel-settling", 20)
+	gone := sessionGoneFrom(3)
+	p.objectErr = func(c context.Context, remotePath string) error {
+		if err := gone(c, remotePath); err != nil {
+			return err
+		}
+		<-gate // files 0-2 stay in flight until the test releases them
+		return nil
+	}
+	go func() {
+		<-settling
+		cancel()
+		close(gate)
+	}()
+	cfg := sessionLossRestoreConfig(t, "restore-cancel-settling")
+
+	var result *RestoreResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = RestoreFromSnapshotContext(ctx, p, cfg, nil)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesRestored != 0 {
+		t.Fatalf("restored %d files after the caller stopped the restore, want 0", result.FilesRestored)
+	}
+	assertRestoredOnDisk(t, cfg.TargetPath, result)
+	if result.Code == ResultCodeStorageSessionLost || !strings.Contains(result.Error, "operation cancelled") {
+		t.Fatalf("code=%q error=%q, want the caller's cancel reported", result.Code, result.Error)
 	}
 }
 
