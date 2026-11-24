@@ -19,7 +19,7 @@ export async function executeNotifyStep(
   const result = await sendChannelMessage(
     input.channelId,
     {
-      title: input.title, body: input.message, severity: input.severity, link: `/flows/${ctx.run.flowId}`,
+      title: input.title, body: input.message, severity: input.severity, link: `/flows/runs/${ctx.run.id}`,
       // W6 (#5221): one PagerDuty incident per run, step and for-each item.
       dedupKey: `flow:${ctx.run.id}:${ctx.step.id}:${ctx.itemIndex ?? 0}`,
     },
