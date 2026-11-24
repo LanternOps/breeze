@@ -835,7 +835,9 @@
       "trigger": {
         "title": "Quand il s'exécute",
         "timezone": "Fuseau horaire",
-        "eventDeviceHelp": "Les actions s'exécutent sur l'appareil qui a déclenché l'événement. Si un événement arrive sans appareil, l'exécution échoue.",
+        "eventDeviceHelp": "Les actions s'exécutent sur l'appareil qui a déclenché l'événement.",
+        "eventNoDeviceNoRun": "Si une alerte arrive sans appareil, aucune exécution ne démarre.",
+        "eventNoDeviceFails": "Si un événement arrive sans appareil, l'exécution échoue.",
         "filter": "Seulement si l'événement correspond",
         "filterHelp": "Chaque champ doit être exactement égal à sa valeur. Laissez vide pour exécuter à chaque événement de ce type.",
         "filterKey": "Champ de l'événement",
@@ -893,6 +895,29 @@
         "notifyHelp": "Envoyer un avis aux canaux ci-dessous pour chaque appareil auquel le script n'a pas pu être envoyé. Au plus 20 avis sont envoyés par exécution.",
         "noChannels": "Ajoutez un canal de notification pour utiliser Notifier."
       }
+    },
+    "disableWebhookNote": "Ce flux a un déclencheur webhook. Le réactiver après modification efface le secret du webhook, et l'expéditeur aura besoin du nouveau secret.",
+    "shadowLine": "Ce flux est en mode fantôme pour une tâche. Il passe en production depuis la bascule de la tâche, pas d'ici.",
+    "validation": {
+      "name": "Donnez un nom au flux (120 caractères au plus).",
+      "steps": "Un flux a besoin d'au moins une action, sans dépasser la limite.",
+      "cron": "La planification n'est pas une expression cron valide. Utilisez cinq champs, par exemple 0 2 * * *.",
+      "timezone": "Ce fuseau horaire n'est pas reconnu. Utilisez un nom comme UTC ou Europe/Paris.",
+      "script": "Choisissez un script pour cette action.",
+      "channel": "Choisissez un canal de notification pour cette action.",
+      "channels": "Choisissez au moins un canal de notification.",
+      "duplicateStepId": "Deux actions ont le même identifiant. Donnez à chaque action son propre identifiant.",
+      "unknownStepReference": "Ceci renvoie à une action qui n'existe pas. Vérifiez l'identifiant de l'action.",
+      "forwardReference": "Ceci utilise le résultat d'une action exécutée plus tard. Placez cette action avant, ou retirez la référence.",
+      "eventUnknown": "Le système ne connaît pas ce type d'événement. Choisissez-en un dans la liste.",
+      "toolNotFound": "Cette action n'est pas disponible pour ce flux. Choisissez-en une autre.",
+      "channelNotOwned": "Ce canal de notification n'appartient pas au propriétaire de ce flux. Choisissez-en un qui vous appartient.",
+      "referenceNotOwned": "Ceci renvoie à un élément qui n'appartient pas au propriétaire de ce flux.",
+      "deviceNotOwned": "Cet appareil n'appartient pas à l'organisation de ce flux.",
+      "resolverRequired": "Un flux pour toutes les organisations a besoin du champ du corps qui désigne l'organisation cliente.",
+      "resolverNotAllowed": "Le flux webhook d'une organisation s'exécute toujours dans cette organisation. Retirez la recherche d'organisation.",
+      "documentTooLarge": "Le document est trop volumineux. Retirez des actions ou du texte.",
+      "secretInDocument": "Le document contient ce qui ressemble à un secret. Retirez-le du document."
     },
     "enableOpenFailed": "Le brouillon a été enregistré, mais la boîte de dialogue d'activation n'a pas pu s'ouvrir. Ouvrez le flux pour l'activer."
   }

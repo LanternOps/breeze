@@ -835,7 +835,9 @@
       "trigger": {
         "title": "Quando viene eseguito",
         "timezone": "Fuso orario",
-        "eventDeviceHelp": "Le azioni vengono eseguite sul dispositivo che ha generato l'evento. Se un evento arriva senza dispositivo, l'esecuzione non riesce.",
+        "eventDeviceHelp": "Le azioni vengono eseguite sul dispositivo che ha generato l'evento.",
+        "eventNoDeviceNoRun": "Se un avviso arriva senza dispositivo, non viene avviata nessuna esecuzione.",
+        "eventNoDeviceFails": "Se un evento arriva senza dispositivo, l'esecuzione non riesce.",
         "filter": "Solo quando l'evento corrisponde",
         "filterHelp": "Ogni campo deve essere esattamente uguale al suo valore. Lascia vuoto per eseguire a ogni evento di questo tipo.",
         "filterKey": "Campo dell'evento",
@@ -893,6 +895,29 @@
         "notifyHelp": "Invia un avviso ai canali sottostanti per ogni dispositivo a cui non è stato possibile inviare lo script. Vengono inviati al massimo 20 avvisi per esecuzione.",
         "noChannels": "Aggiungi un canale di notifica per usare Notifica."
       }
+    },
+    "disableWebhookNote": "Questo flusso ha un trigger webhook. Riabilitarlo dopo la modifica cancella il segreto del webhook, e il mittente avrà bisogno del nuovo segreto.",
+    "shadowLine": "Questo flusso è in modalità ombra per un'attività. Va in produzione dal passaggio dell'attività, non da qui.",
+    "validation": {
+      "name": "Dai un nome al flusso (fino a 120 caratteri).",
+      "steps": "Un flusso richiede almeno un’azione, entro il limite massimo.",
+      "cron": "La pianificazione non è un'espressione cron valida. Usa cinque campi, ad esempio 0 2 * * *.",
+      "timezone": "Questo fuso orario non è riconosciuto. Usa un nome come UTC o Europe/Rome.",
+      "script": "Scegli uno script per questa azione.",
+      "channel": "Scegli un canale di notifica per questa azione.",
+      "channels": "Scegli almeno un canale di notifica.",
+      "duplicateStepId": "Due azioni hanno lo stesso id. Assegna a ogni azione un id proprio.",
+      "unknownStepReference": "Questo fa riferimento a un'azione che non esiste. Controlla l'id dell'azione.",
+      "forwardReference": "Questo usa il risultato di un'azione eseguita dopo. Sposta quell'azione prima o rimuovi il riferimento.",
+      "eventUnknown": "Il sistema non riconosce questo tipo di evento. Scegline uno dall’elenco.",
+      "toolNotFound": "Questa azione non è disponibile per questo flusso. Scegline un’altra.",
+      "channelNotOwned": "Questo canale di notifica non appartiene al proprietario di questo flusso. Scegline uno tuo.",
+      "referenceNotOwned": "Questo fa riferimento a qualcosa che non appartiene al proprietario di questo flusso.",
+      "deviceNotOwned": "Questo dispositivo non appartiene all'organizzazione di questo flusso.",
+      "resolverRequired": "Un flusso per tutte le organizzazioni richiede il campo del corpo che indica l'organizzazione cliente.",
+      "resolverNotAllowed": "Il flusso webhook di un'organizzazione viene sempre eseguito in quell'organizzazione. Rimuovi la ricerca dell'organizzazione.",
+      "documentTooLarge": "Il documento è troppo grande. Rimuovi alcune azioni o del testo.",
+      "secretInDocument": "Il documento contiene qualcosa che sembra un segreto. Rimuovilo dal documento."
     },
     "enableOpenFailed": "La bozza è stata salvata, ma non è stato possibile aprire la finestra di abilitazione. Apri il flusso per abilitarlo."
   }

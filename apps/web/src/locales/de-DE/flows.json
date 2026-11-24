@@ -835,7 +835,9 @@
       "trigger": {
         "title": "Wann er ausgeführt wird",
         "timezone": "Zeitzone",
-        "eventDeviceHelp": "Die Aktionen laufen auf dem Gerät, das das Ereignis ausgelöst hat. Trifft ein Ereignis ohne Gerät ein, schlägt die Ausführung fehl.",
+        "eventDeviceHelp": "Die Aktionen laufen auf dem Gerät, das das Ereignis ausgelöst hat.",
+        "eventNoDeviceNoRun": "Trifft ein Alarm ohne Gerät ein, wird keine Ausführung gestartet.",
+        "eventNoDeviceFails": "Trifft ein Ereignis ohne Gerät ein, schlägt die Ausführung fehl.",
         "filter": "Nur wenn das Ereignis passt",
         "filterHelp": "Jedes Feld muss genau seinem Wert entsprechen. Leer lassen, um bei jedem Ereignis dieses Typs auszuführen.",
         "filterKey": "Ereignisfeld",
@@ -893,6 +895,29 @@
         "notifyHelp": "Für jedes Gerät, an das das Skript nicht gesendet werden konnte, eine Mitteilung an die folgenden Kanäle senden. Pro Ausführung werden höchstens 20 Mitteilungen gesendet.",
         "noChannels": "Fügen Sie einen Benachrichtigungskanal hinzu, um „Benachrichtigen“ zu verwenden."
       }
+    },
+    "disableWebhookNote": "Dieser Ablauf hat einen Webhook-Auslöser. Wenn Sie ihn nach der Bearbeitung wieder aktivieren, wird das Webhook-Geheimnis gelöscht, und der Absender braucht das neue Geheimnis.",
+    "shadowLine": "Dieser Ablauf läuft im Schattenmodus für einen Auftrag. Live geht er über den Wechsel des Auftrags, nicht von hier aus.",
+    "validation": {
+      "name": "Geben Sie dem Ablauf einen Namen (bis zu 120 Zeichen).",
+      "steps": "Ein Ablauf braucht mindestens eine Aktion, aber nicht mehr als das Limit.",
+      "cron": "Der Zeitplan ist kein gültiger Cron-Ausdruck. Verwenden Sie fünf Felder, zum Beispiel 0 2 * * *.",
+      "timezone": "Diese Zeitzone ist unbekannt. Verwenden Sie einen Namen wie UTC oder Europe/Berlin.",
+      "script": "Wählen Sie ein Skript für diese Aktion.",
+      "channel": "Wählen Sie einen Benachrichtigungskanal für diese Aktion.",
+      "channels": "Wählen Sie mindestens einen Benachrichtigungskanal.",
+      "duplicateStepId": "Zwei Aktionen haben dieselbe ID. Geben Sie jeder Aktion eine eigene ID.",
+      "unknownStepReference": "Dies verweist auf eine Aktion, die es nicht gibt. Prüfen Sie die Aktions-ID.",
+      "forwardReference": "Dies verwendet das Ergebnis einer Aktion, die später läuft. Verschieben Sie diese Aktion nach vorn oder entfernen Sie den Verweis.",
+      "eventUnknown": "Dieser Ereignistyp ist dem System unbekannt. Wählen Sie einen aus der Liste.",
+      "toolNotFound": "Diese Aktion steht diesem Ablauf nicht zur Verfügung. Wählen Sie eine andere.",
+      "channelNotOwned": "Dieser Benachrichtigungskanal gehört nicht dem Eigentümer dieses Ablaufs. Wählen Sie einen eigenen.",
+      "referenceNotOwned": "Dies verweist auf etwas, das nicht dem Eigentümer dieses Ablaufs gehört.",
+      "deviceNotOwned": "Dieses Gerät gehört nicht zur Organisation dieses Ablaufs.",
+      "resolverRequired": "Ein Ablauf für alle Organisationen braucht das Body-Feld, das die Kundenorganisation benennt.",
+      "resolverNotAllowed": "Der Webhook-Ablauf einer Organisation läuft immer in dieser Organisation. Entfernen Sie die Organisationszuordnung.",
+      "documentTooLarge": "Das Dokument ist zu groß. Entfernen Sie einige Aktionen oder Text.",
+      "secretInDocument": "Das Dokument enthält etwas, das wie ein Geheimnis aussieht. Entfernen Sie es aus dem Dokument."
     },
     "enableOpenFailed": "Der Entwurf wurde gespeichert, aber der Aktivierungsdialog konnte nicht geöffnet werden. Öffnen Sie den Ablauf, um ihn zu aktivieren."
   }
