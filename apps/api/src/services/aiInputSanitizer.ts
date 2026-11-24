@@ -108,7 +108,7 @@ const DANGEROUS_UNICODE =
  * would alter ordinary emoji in every chat message (and raise
  * `dangerous_unicode`, which `sanitizeUserMessage` callers audit as a
  * prompt-injection signal), so the patterns tolerate them instead: see
- * `withVariationSelectorsTolerated`.
+ * `withHiddenMarkersMatched`.
  */
 const VARIATION_SELECTORS = /[\u180B-\u180F\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
 
@@ -116,26 +116,40 @@ const VARIATION_SELECTORS = /[\u180B-\u180F\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
 type TextFilter = (text: string, flags: string[]) => string;
 
 /**
- * Run `filter` so that no marker can hide behind a variation selector, while
- * benign text keeps its selectors byte-identical.
- *
- * The filter first runs on a copy with every selector removed (what the model
- * effectively reads). If that copy trips any pattern, the filtered copy is the
- * result: the text is already hostile, and dropping its selectors is the price
- * of matching the marker they split. Otherwise the original runs through the
- * filter unchanged, selectors and all. Either result is a fixed point of a
- * second pass: the first has no selectors left, and the second's selector-free
- * copy still trips nothing.
+ * Stripped characters that render as a visible gap: NBSP and the Hangul
+ * fillers. The model reads one as a space, but the strip deletes it and joins
+ * the words around it, so `ignore<NBSP>previous instructions` or
+ * `</untrusted_data<NBSP>x>` would stop matching. The probes below read them
+ * as a plain space instead.
  */
-function withVariationSelectorsTolerated(text: string, flags: string[], filter: TextFilter): string {
+const VISIBLE_GAPS = /[\u00A0\u115F\u1160\u3164\uFFA0]/gu;
+
+/**
+ * Run `filter` so that no marker can hide behind a variation selector or a
+ * visible-gap character, while benign text keeps its selectors byte-identical
+ * and loses its gap characters exactly as before.
+ *
+ * The filter first runs on probe copies of the text as the model reads it:
+ * (1) selectors removed and gap characters read as a space, then (2) selectors
+ * removed. The first copy that trips any pattern is the result: the text is
+ * already hostile, and normalizing its selectors and gaps is the price of
+ * matching the marker they hide. Otherwise the original runs through the
+ * filter unchanged. A probe result has no selectors or gap characters left,
+ * so it is a fixed point of a second pass; so is the fallback, whose probes
+ * still trip nothing.
+ */
+function withHiddenMarkersMatched(text: string, flags: string[], filter: TextFilter): string {
   const bare = text.replace(VARIATION_SELECTORS, '');
-  if (bare === text) return filter(text, flags);
-  const probe: string[] = [];
-  const filteredBare = filter(bare, probe);
-  if (probe.some((flag) => flag !== 'dangerous_unicode')) {
-    addFlag(flags, 'dangerous_unicode');
-    for (const flag of probe) addFlag(flags, flag);
-    return filteredBare;
+  const spaced = bare.replace(VISIBLE_GAPS, ' ');
+  for (const candidate of spaced === bare ? [bare] : [spaced, bare]) {
+    if (candidate === text) continue;
+    const probe: string[] = [];
+    const filtered = filter(candidate, probe);
+    if (probe.some((flag) => flag !== 'dangerous_unicode')) {
+      addFlag(flags, 'dangerous_unicode');
+      for (const flag of probe) addFlag(flags, flag);
+      return filtered;
+    }
   }
   return filter(text, flags);
 }
@@ -176,7 +190,7 @@ export function sanitizeUserMessage(content: string): SanitizeResult {
     flags.push('truncated');
   }
 
-  sanitized = withVariationSelectorsTolerated(sanitized, flags, filterText);
+  sanitized = withHiddenMarkersMatched(sanitized, flags, filterText);
   return { sanitized, flags };
 }
 
@@ -293,17 +307,21 @@ function replaceFenceTags(text: string, fences: readonly FenceTag[]): string {
 
 /**
  * Fence-tag neutralization for a wrapper's body, tolerant of invisible
- * characters inside the tag: the tags are matched on a copy with every
- * invisible character and variation selector removed, and that copy is used
- * only when it holds a tag. A body without one comes back byte-identical.
+ * characters inside the tag. The tags are matched on probe copies as the model
+ * reads the body: invisible characters and variation selectors removed, with
+ * visible-gap characters read first as a space (`</untrusted_data<NBSP>x>`),
+ * then removed (`<untrusted<NBSP>_data>`). A probe copy is used only when it
+ * holds a tag; a body without one comes back byte-identical.
  */
 function neutralizeFenceTagsIn(text: string, fences: readonly FenceTag[], flags: string[]): string {
-  const probe = text.replace(DANGEROUS_UNICODE, '').replace(VARIATION_SELECTORS, '');
-  const fencedProbe = replaceFenceTags(probe, fences);
-  if (fencedProbe !== probe) {
-    if (probe !== text) addFlag(flags, 'dangerous_unicode');
-    addFlag(flags, 'fence_forgery');
-    return fencedProbe;
+  const hidden = (value: string) => value.replace(DANGEROUS_UNICODE, '').replace(VARIATION_SELECTORS, '');
+  for (const probe of [hidden(text.replace(VISIBLE_GAPS, ' ')), hidden(text)]) {
+    const fencedProbe = replaceFenceTags(probe, fences);
+    if (fencedProbe !== probe) {
+      if (probe !== text) addFlag(flags, 'dangerous_unicode');
+      addFlag(flags, 'fence_forgery');
+      return fencedProbe;
+    }
   }
   const fenced = replaceFenceTags(text, fences);
   if (fenced !== text) addFlag(flags, 'fence_forgery');
@@ -353,7 +371,7 @@ export function sanitizeUntrustedText(
  * would silently drop text the model was told it had already seen.
  */
 export function sanitizeUntrustedToolText(value: string, flags?: string[]): string {
-  return withVariationSelectorsTolerated(value, flags ?? [], filterToolText);
+  return withHiddenMarkersMatched(value, flags ?? [], filterToolText);
 }
 
 /**
@@ -508,7 +526,7 @@ function sanitizeField(
   const clipped = lengthUnit === 'codePoints'
     ? Array.from(value).slice(0, maxLength).join('')
     : value.slice(0, maxLength);
-  return withVariationSelectorsTolerated(clipped, flags, filterText);
+  return withHiddenMarkersMatched(clipped, flags, filterText);
 }
 
 function sanitizeRecord(data: Record<string, unknown>, flags: string[] = []): Record<string, unknown> {
