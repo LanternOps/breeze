@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -149,6 +150,8 @@ func (h *captureProcessHealth) noteDuplicationFailed(owner any, display int, cla
 	}
 	h.mu.Unlock()
 	if leaked {
+		slog.Warn("DXGI duplication of this output outlived its session; this process can no longer capture it with DXGI",
+			"display", display, "failures", streak)
 		h.signal()
 	}
 }

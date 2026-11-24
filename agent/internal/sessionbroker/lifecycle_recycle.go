@@ -70,11 +70,13 @@ func (m *HelperLifecycleManager) RecycleHelper(session *Session, reason string, 
 	if m.broker.HelperSessionByKey(key) != session {
 		return ErrHelperRecycleStale
 	}
-	used := m.noteRecycle(key)
 	owned, killErr := m.broker.terminateHelperKeyOwner(key, session)
 	if !owned {
 		return ErrHelperRecycleStale
 	}
+	// Spent once a kill was attempted, whatever its outcome: a helper that
+	// cannot be killed must not be tried again and again.
+	used := m.noteRecycle(key)
 	if err := m.awaitRecycledExit(entry, killErr); err != nil {
 		log.Warn("lifecycle: helper that can no longer use DXGI capture could not be replaced",
 			"helperKey", key.String(), "pid", session.PID, "reason", reason, "error", err.Error())

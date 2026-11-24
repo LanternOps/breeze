@@ -163,8 +163,10 @@ func TestStopReturnsWhenCaptureLoopIsStuck(t *testing.T) {
 	if health.poisonReason() == "" {
 		t.Error("an abandoned capture loop did not mark the process as poisoned")
 	}
-	if health.teardownInProgress() {
-		t.Error("teardown still counted after the stop returned")
+	// The stuck stop still counts as in progress for a grace, so a slow one
+	// does not get the helper replaced under it.
+	if !health.teardownInProgress() {
+		t.Error("an abandoned teardown stopped counting at once")
 	}
 	out := logs()
 	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "capture loop") ||
@@ -175,7 +177,47 @@ func TestStopReturnsWhenCaptureLoopIsStuck(t *testing.T) {
 	// The loop comes back late: only now may the pipeline be released, and
 	// the process is clean again.
 	close(cap.release)
-	eventually(t, "late release", func() bool { return cap.closed.Load() == 1 && health.poisonReason() == "" })
+	eventually(t, "late release", func() bool {
+		return cap.closed.Load() == 1 && health.poisonReason() == "" && !health.teardownInProgress()
+	})
+}
+
+// A teardown that never finishes stops counting after the grace, or a stuck
+// helper could never be replaced.
+func TestStuckTeardownStopsCountingAfterGrace(t *testing.T) {
+	shortStopBounds(t, 50*time.Millisecond, 50*time.Millisecond)
+	prev := sessionSlowTeardownGrace
+	sessionSlowTeardownGrace = 100 * time.Millisecond
+	t.Cleanup(func() { sessionSlowTeardownGrace = prev })
+	health := isolatedCaptureHealth(t)
+	cap := newBlockingCapturer()
+	s := stuckSession(t, "s", cap)
+	stopWithin(t, 3*time.Second, s.Stop)
+	eventually(t, "grace to end", func() bool { return !health.teardownInProgress() })
+	if health.poisonReason() == "" {
+		t.Error("still stuck, but no longer poisoned")
+	}
+	close(cap.release)
+	eventually(t, "stuck capturer released", func() bool { return cap.closed.Load() == 1 })
+}
+
+// panickingCapturer panics in Close.
+type panickingCapturer struct{ staticTestCapturer }
+
+func (*panickingCapturer) Close() error { panic("driver fault") }
+
+func TestPanickingCleanupIsContainedAndPoisons(t *testing.T) {
+	health := isolatedCaptureHealth(t)
+	logs := captureLogs(t)
+	s := newTestSession("s")
+	s.capturer = &panickingCapturer{}
+	stopWithin(t, 3*time.Second, s.Stop)
+	if r := health.poisonReason(); !strings.Contains(r, "close capturer") {
+		t.Errorf("poison reason = %q, want the stage that panicked", r)
+	}
+	if out := logs(); !strings.Contains(out, "driver fault") || !strings.Contains(out, "level=WARN") {
+		t.Errorf("panic not reported:\n%s", out)
+	}
 }
 
 // Later starts and stops must not wait on the stuck one.

@@ -70,29 +70,49 @@ func (h *Heartbeat) handleHelperRecycleRequest(session *sessionbroker.Session, e
 		return
 	}
 	err := lc.RecycleHelper(session, reason, func() error { return prepareHelperRecycle(session) })
-	if err != nil {
-		// The outcomes that need someone to look (the budget is spent, the
-		// kill failed) are logged at Warn by the lifecycle manager.
+	switch {
+	case err == nil:
+	case errors.Is(err, errHelperRecycleNoAnswer):
+		log.Warn("helper asked to be replaced but did not answer whether it is idle",
+			"helperSession", session.SessionID, "reason", reason, "error", err.Error())
+	default:
+		// Busy, stale or in progress are routine. The outcomes that need
+		// someone to look (budget spent, kill failed) are logged at Warn by
+		// the lifecycle manager.
 		log.Info("helper not replaced", "helperSession", session.SessionID, "reason", reason, "error", err.Error())
 	}
 }
 
+var (
+	errHelperRecycleNoAnswer      = errors.New("helper did not answer the replacement request")
+	errHelperRecycleStartInFlight = errors.New("a desktop start is in flight")
+)
+
 // prepareHelperRecycle asks the helper to stop taking work. Anything but an
 // explicit Ready means it must not be ended.
+//
+// A start that began while the helper was being asked is checked for again
+// afterwards: it may be waiting in the helper's held intake.
 func prepareHelperRecycle(session *sessionbroker.Session) error {
+	if desktopStartInFlight() {
+		return errHelperRecycleStartInFlight
+	}
 	resp, err := session.SendCommand("helper-recycle-prepare", ipc.TypeHelperRecyclePrepare, struct{}{}, helperRecyclePrepareTimeout)
 	if err != nil {
-		return fmt.Errorf("helper did not answer the replacement request: %w", err)
+		return fmt.Errorf("%w: %w", errHelperRecycleNoAnswer, err)
 	}
 	if resp.Error != "" {
-		return errors.New(resp.Error)
+		return fmt.Errorf("%w: %s", errHelperRecycleNoAnswer, resp.Error)
 	}
 	var res ipc.HelperRecyclePrepareResult
 	if err := json.Unmarshal(resp.Payload, &res); err != nil {
-		return fmt.Errorf("invalid helper_recycle_prepare answer: %w", err)
+		return fmt.Errorf("%w: invalid answer: %w", errHelperRecycleNoAnswer, err)
 	}
 	if !res.Ready {
 		return fmt.Errorf("helper is busy: %s", helperRecycleReason(res.Busy))
+	}
+	if desktopStartInFlight() {
+		return errHelperRecycleStartInFlight
 	}
 	return nil
 }

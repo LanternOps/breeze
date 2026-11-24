@@ -28,7 +28,39 @@ import (
 var (
 	sessionLoopExitBound = 3 * time.Second
 	sessionCleanupBound  = 1500 * time.Millisecond
+	// sessionSlowTeardownGrace is how long a teardown that outlived its bound
+	// still counts as in progress. A merely slow one (an encoder that takes a
+	// few seconds to close) must not get the helper replaced under it; one
+	// still unfinished after this is treated as stuck.
+	sessionSlowTeardownGrace = 10 * time.Second
 )
+
+// holdTeardown keeps a teardown counted as in progress until done closes or
+// sessionSlowTeardownGrace passes, whichever is first.
+func holdTeardown(health *captureProcessHealth, done <-chan struct{}) {
+	health.beginTeardown()
+	grace := sessionSlowTeardownGrace
+	go func() {
+		defer health.endTeardown()
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		}
+	}()
+}
+
+// recoverTeardownPanic logs a panic in a teardown goroutine instead of letting
+// it end the process, and every other session in it.
+func (s *Session) recoverTeardownPanic(what string) {
+	if r := recover(); r != nil {
+		buf := make([]byte, 4096)
+		n := runtime.Stack(buf, false)
+		slog.Error("desktop session teardown panic", "session", s.id, "in", what,
+			"stage", s.currentCleanupStage(), "panic", fmt.Sprintf("%v", r), "stack", string(buf[:n]))
+	}
+}
 
 // loopTracker names the session goroutines that are still running.
 type loopTracker struct {
@@ -124,6 +156,7 @@ func (s *Session) teardown() {
 	peerDone := make(chan struct{})
 	go func() {
 		defer close(peerDone)
+		defer s.recoverTeardownPanic("peer connection close")
 		if s.peerConn != nil {
 			_ = s.peerConn.Close()
 		}
@@ -152,12 +185,16 @@ func (s *Session) teardown() {
 	slog.Warn("Desktop session stop timed out; abandoning its capture pipeline",
 		"session", s.id, "stuck", stuck, "waited", sessionLoopExitBound.String())
 	health.noteAbandoned(s, stuck)
+	holdTeardown(health, loopsDone)
 	s.cleanupBounded(health, false)
 	go func() {
+		defer s.recoverTeardownPanic("late pipeline release")
 		<-loopsDone
 		s.releasePipeline()
-		health.clearAbandoned(s)
-		slog.Info("Stuck desktop session loop exited; its capture pipeline is released", "session", s.id)
+		if s.pipelineReleased.Load() {
+			health.clearAbandoned(s)
+			slog.Info("Stuck desktop session loop exited; its capture pipeline is released", "session", s.id)
+		}
 	}()
 }
 
@@ -168,14 +205,7 @@ func (s *Session) cleanupBounded(health *captureProcessHealth, releasePipeline b
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer func() {
-			if r := recover(); r != nil {
-				buf := make([]byte, 4096)
-				n := runtime.Stack(buf, false)
-				slog.Error("desktop session cleanup panic", "session", s.id, "stage", s.currentCleanupStage(),
-					"panic", fmt.Sprintf("%v", r), "stack", string(buf[:n]))
-			}
-		}()
+		defer s.recoverTeardownPanic("cleanup")
 		s.cleanup(releasePipeline)
 	}()
 
@@ -185,7 +215,10 @@ func (s *Session) cleanupBounded(health *captureProcessHealth, releasePipeline b
 	case <-done:
 		if releasePipeline && !s.pipelineReleased.Load() {
 			// Cleanup panicked part-way: what it left held is unknown.
-			health.noteAbandoned(s, "cleanup: "+s.currentCleanupStage())
+			stage := "cleanup panic: " + s.currentCleanupStage()
+			slog.Warn("Desktop session cleanup failed before releasing capture; this process may no longer capture with DXGI",
+				"session", s.id, "stuck", stage)
+			health.noteAbandoned(s, stage)
 		}
 		return
 	case <-timer.C:
@@ -198,6 +231,7 @@ func (s *Session) cleanupBounded(health *captureProcessHealth, releasePipeline b
 		return
 	}
 	health.noteAbandoned(s, "cleanup: "+stage)
+	holdTeardown(health, done)
 	go func() {
 		<-done
 		if s.pipelineReleased.Load() {
