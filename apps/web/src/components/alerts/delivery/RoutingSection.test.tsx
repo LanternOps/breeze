@@ -154,11 +154,19 @@ describe('RoutingSection (W05b)', () => {
     expect(within(row).queryByTestId('routing-no-live-channels')).toBeNull();
   });
 
-  it('flags a rule whose channels are all deleted or empty as having no live channels (#12002)', () => {
-    renderSection([rule({ id: 'gone', channelIds: ['ch-gone'] }), rule({ id: 'empty', channelIds: [] })]);
+  it('flags a rule whose channels are all deleted as having no live channels (#12002)', () => {
+    renderSection([rule({ id: 'gone', channelIds: ['ch-gone'] })]);
     expect(within(screen.getByTestId('routing-row-gone')).getByTestId('routing-no-live-channels')).toHaveTextContent('No live channels');
-    expect(within(screen.getByTestId('routing-row-empty')).getByTestId('routing-no-live-channels')).toHaveTextContent('No live channels');
-    expect(screen.getByTestId('routing-row-empty')).not.toHaveTextContent('Send to');
+    expect(within(screen.getByTestId('routing-row-gone')).queryByTestId('routing-no-channels')).toBeNull();
+  });
+
+  it('shows a rule with no channels as such, and says it is skipped (#12002)', () => {
+    renderSection([rule({ id: 'empty', channelIds: [] })]);
+    const row = screen.getByTestId('routing-row-empty');
+    expect(within(row).getByTestId('routing-no-channels')).toHaveTextContent('No channels');
+    expect(within(row).getByTestId('routing-no-channels-hint')).toHaveTextContent('Skipped: matching alerts go to the next rule');
+    expect(within(row).queryByTestId('routing-no-live-channels')).toBeNull();
+    expect(row).not.toHaveTextContent('Send to');
   });
 
   it('flags the Everything else row when every channel it names is deleted, but not when it is inbox only (#12002)', () => {

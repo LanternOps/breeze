@@ -113,12 +113,16 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
                   </span>
                 )}
                 {!rule.enabled && <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{t('notificationChannelsPage.disabled')}</span>}
-                {!rule.channelIds.some(isLive) && noLiveChannels}
+                {rule.channelIds.length === 0
+                  ? <span data-testid="routing-no-channels" className="inline-flex items-center rounded-full border border-warning/30 bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">{t('deliveryPage.routing.noChannels')}</span>
+                  : !rule.channelIds.some(isLive) && noLiveChannels}
               </div>
               <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{t('notificationChannelsPage.priority')} {rule.priority}</span>
                 <span>{describeMatch(rule, t)}</span>
-                {rule.channelIds.length > 0 && <span>{t('deliveryPage.routing.sendTo')}: {channelList(rule.channelIds)}</span>}
+                {rule.channelIds.length > 0
+                  ? <span>{t('deliveryPage.routing.sendTo')}: {channelList(rule.channelIds)}</span>
+                  : <span data-testid="routing-no-channels-hint" className="text-warning">{t('deliveryPage.routing.noChannelsHint')}</span>}
                 {rule.escalationPolicyId && <span>{t('deliveryPage.routing.escalateVia')}: {policyName(rule.escalationPolicyId)}</span>}
               </div>
             </div>

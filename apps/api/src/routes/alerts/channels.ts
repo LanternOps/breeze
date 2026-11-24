@@ -17,7 +17,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { removeChannelFromWritableRoutingRules } from '../../services/delivery/routingRuleWrites';
+import { previewChannelRemovalFromRoutingRules, removeChannelFromWritableRoutingRules } from '../../services/delivery/routingRuleWrites';
 import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
@@ -394,6 +394,22 @@ channelsRoutes.put(
     });
 
     return c.json(toChannelResponse(updated));
+  }
+);
+
+// GET /alerts/channels/:id/routing-impact - Routing rules a DELETE by this caller would change
+channelsRoutes.get(
+  '/channels/:id/routing-impact',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  async (c) => {
+    const auth = c.get('auth');
+    const channelId = c.req.param('id')!;
+    const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
+    if (!channel) {
+      return c.json({ error: 'Notification channel not found' }, 404);
+    }
+    return c.json({ data: await previewChannelRemovalFromRoutingRules(db, channelId, auth) });
   }
 );
 

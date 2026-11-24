@@ -40,8 +40,15 @@ const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, c
     orgId: { name: 'org_id' },
     partnerId: { name: 'partner_id' },
     channelIds: { name: 'channel_ids' },
+    name: { name: 'name' },
+    isDefault: { name: 'is_default' },
   },
-  routingUpdateRef: { set: undefined as Record<string, unknown> | undefined, where: undefined as unknown, rows: [] as { id: string }[] },
+  routingUpdateRef: {
+    set: undefined as Record<string, unknown> | undefined,
+    where: undefined as unknown,
+    rows: [] as { id: string }[],
+    selectRows: [] as { id: string; name: string; isDefault: boolean; channelIds: string[] }[],
+  },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -124,7 +131,12 @@ vi.mock('../../db', () => {
     insert: (table: unknown) => (table === configTableMarker ? configBuilder : builder),
     update: (table: unknown) => (table === routingRulesMarker ? routingBuilder : builder),
     delete: () => ({ where: () => Promise.resolve(undefined) }),
-    select: () => builder,
+    select: () => ({
+      ...builder,
+      from: (table: unknown) => (table === routingRulesMarker
+        ? { where: (cond: unknown) => { routingUpdateRef.where = cond; return Promise.resolve(routingUpdateRef.selectRows); } }
+        : builder),
+    }),
     // Tests run the callback synchronously against the same mock — there is
     // no real pool/connection here for tx to isolate.
     transaction: (fn: (tx: unknown) => unknown) => fn(dbMock),
@@ -236,6 +248,7 @@ describe('notification channels — partner-wide gating (#2130)', () => {
     routingUpdateRef.set = undefined;
     routingUpdateRef.where = undefined;
     routingUpdateRef.rows = [];
+    routingUpdateRef.selectRows = [];
   });
 
   describe('PUT /alerts/channels/:id', () => {
@@ -490,6 +503,40 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         details: { routingRuleIds: ['org-rule'] },
       }));
+    });
+  });
+
+  describe('GET /alerts/channels/:id/routing-impact', () => {
+    it('lists the rules a delete would empty apart from the rules that only lose the channel, matching exactly the rules the delete edits (#12002)', async () => {
+      setPartnerAuth('selected');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, orgId: 'org-1', partnerId: null };
+      routingUpdateRef.selectRows = [
+        { id: 'only', name: 'Critical to NOC', isDefault: false, channelIds: [CHANNEL_ID] },
+        { id: 'shared', name: 'Disk alerts', isDefault: false, channelIds: ['other', CHANNEL_ID] },
+        { id: 'def', name: 'Everything else', isDefault: true, channelIds: [CHANNEL_ID, CHANNEL_ID] },
+      ];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: {
+        emptied: [{ id: 'only', name: 'Critical to NOC', isDefault: false }, { id: 'def', name: 'Everything else', isDefault: true }],
+        reduced: [{ id: 'shared', name: 'Disk alerts', isDefault: false }],
+      } });
+      const preview = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
+
+      routingUpdateRef.where = undefined;
+      await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+      const deleted = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
+      expect(preview).toEqual(deleted);
+      expect(preview.sql).toBe('(jsonb_exists($1, $2::text) and ($3 is not null and $4 = $5))');
+    });
+
+    it('returns 404 for a channel the caller cannot see (#12002)', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = undefined;
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+      expect(res.status).toBe(404);
     });
   });
 
