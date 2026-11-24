@@ -1272,7 +1272,7 @@
       "hint": "La destination de sauvegarde a refusé la requête. Vérifiez que la clé d’accès est valide et autorise l’écriture, la politique du bucket et l’état du compte de stockage, puis lancez « Tester la connexion »."
     },
     "storage_cap_exceeded": {
-      "hint": "Le fournisseur de stockage a refusé la requête, car un plafond ou un quota du compte a été atteint. Augmentez le plafond ou libérez de l’espace dans les paramètres du compte chez le fournisseur. Les plafonds quotidiens se réinitialisent automatiquement."
+      "hint": "Le fournisseur de stockage a refusé la requête, car un plafond ou un quota du compte a été atteint. Augmentez le plafond ou libérez de l’espace chez le fournisseur. Les plafonds quotidiens se réinitialisent automatiquement."
     },
     "storage_not_found": {
       "hint": "La destination de sauvegarde indique que le bucket ou ses objets sont introuvables. Vérifiez que le bucket existe toujours et qu’aucune règle de cycle de vie ne supprime les données de sauvegarde."

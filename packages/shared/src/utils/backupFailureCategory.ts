@@ -120,7 +120,7 @@ const STORE_CODE_CAUSES: ReadonlyArray<{ cause: BackupFailureCause; pattern: Reg
 
 // #12623: the agent saw the store name an account cap or quota and added its
 // fixed token (storagesession/store_refusal.go) after the code, if any. A store
-// says so under AccessDenied, so this outranks both the code and the status.
+// may say so under AccessDenied, so this outranks both the code and the status.
 // Anchored to the store's answer: a file path in the same line cannot match.
 const STORE_CAP_EXCEEDED = /\bstorage answered status \d{3} \((?:[A-Za-z0-9]{1,64}, )?provider_cap_exceeded\)/;
 

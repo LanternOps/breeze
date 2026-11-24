@@ -1,9 +1,11 @@
 package storagesession
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -63,6 +65,10 @@ func TestReadStoreErrorReason(t *testing.T) {
 		{"message not a direct child", errorDoc(`<Code>AccessDenied</Code><Detail><Message>Usage cap exceeded.</Message></Detail>`), "AccessDenied", ""},
 		{"markup inside message", errorDoc(`<Code>AccessDenied</Code><Message>Usage <b>cap exceeded</b></Message>`), "AccessDenied", ""},
 		{"message over its bound", errorDoc(`<Code>AccessDenied</Code><Message>cap exceeded ` + strings.Repeat("x", maxStoreErrorMessageBytes) + `</Message>`), "AccessDenied", ""},
+		{"message at its bound", errorDoc(`<Code>AccessDenied</Code><Message>cap exceeded ` + strings.Repeat("x", maxStoreErrorMessageBytes-len("cap exceeded ")) + `</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
+		{"only the first message counts", errorDoc(`<Code>AccessDenied</Code><Message>Usage cap exceeded.</Message><Message>ok</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
+		{"a later cap message does not count", errorDoc(`<Code>AccessDenied</Code><Message>ok</Message><Message>Usage cap exceeded.</Message>`), "AccessDenied", ""},
+		{"only the first code counts", errorDoc(`<Code>AccessDenied</Code><Code>QuotaExceeded</Code>`), "AccessDenied", ""},
 		{"message past the read limit", errorDoc(`<Code>AccessDenied</Code><Pad>` + strings.Repeat("x", maxStoreErrorBodyBytes) + `</Pad><Message>Usage cap exceeded.</Message>`), "AccessDenied", ""},
 		{"truncated after the message", `<Error><Code>AccessDenied</Code><Message>Usage cap exceeded.</Message><Req`, "AccessDenied", ""},
 		{"unterminated message", `<Error><Code>AccessDenied</Code><Message>Usage cap exceeded.`, "AccessDenied", ""},
@@ -187,6 +193,10 @@ func TestWriteProviderCapRefusalsTripTheDestination(t *testing.T) {
 	}
 	p := newTestWriteProvider(t, b, Options{})
 	src := writeTempData(t, []byte("abc"))
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
 	var last error
 	for i := 0; i < destinationRefusalThreshold; i++ {
 		last = p.UploadContext(t.Context(), src, objKey(fmt.Sprintf("files/f%03d", i)))
@@ -198,6 +208,10 @@ func TestWriteProviderCapRefusalsTripTheDestination(t *testing.T) {
 		t.Fatalf("destination error = %q, want %q", got, want)
 	}
 	assertNoMessageLeak(t, last.Error())
+	if !strings.Contains(logs.String(), "storeReason="+storeReasonProviderCapExceeded) {
+		t.Fatalf("the trip log does not name the reason: %s", logs.String())
+	}
+	assertNoMessageLeak(t, logs.String())
 }
 
 // The read-only provider (restore, verify) carries the reason too: this is

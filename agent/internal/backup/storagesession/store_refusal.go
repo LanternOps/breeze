@@ -17,7 +17,7 @@ import (
 )
 
 // maxStoreErrorBodyBytes bounds how much of a refused store response is read
-// to find its error code. An S3 error document is a few hundred bytes; a
+// to find its error code and reason. An S3 error document is a few hundred bytes; a
 // store that answers with more is not giving a code worth reading.
 const maxStoreErrorBodyBytes = 4 << 10
 
@@ -43,7 +43,7 @@ const storeReasonProviderCapExceeded = "provider_cap_exceeded"
 //
 // Backblaze B2 answers a capped account with 403 and <Code>AccessDenied</Code>,
 // so the code alone reads as a key or bucket-policy problem; the cap is named
-// only in <Message>. Each of these says "<kind> cap exceeded":
+// only in <Message>. Each of these contains "cap exceeded":
 //   - S3-compatible API, download bandwidth / Class B transaction cap, as
 //     observed in #12623: "Cannot download file, download bandwidth or
 //     transaction (Class B) cap exceeded. See the Caps & Alerts page to
@@ -126,7 +126,6 @@ func readStoreError(body io.Reader) (code, reason string) {
 				// Markup inside <Message>: not a message worth matching.
 				field = ""
 				messageSeen = true
-				message = ""
 			case depth == 1 && t.Name.Local != "Error":
 				return "", ""
 			case depth == 2 && t.Name.Local == "Code" && !codeSeen:
@@ -150,7 +149,6 @@ func readStoreError(body io.Reader) (code, reason string) {
 				}
 				field = ""
 				messageSeen = true
-				message = ""
 				continue
 			}
 			text.Write(t)
