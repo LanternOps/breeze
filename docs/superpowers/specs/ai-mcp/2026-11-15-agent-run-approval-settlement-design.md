@@ -1,6 +1,6 @@
 ---
 title: Agent runs settle when their approvals are decided
-status: draft, awaiting Todd's decisions (Open Decisions §7)
+status: approach B shipped without a migration for device_troubleshooting runs (§9); §7 answers taken as the recommended defaults, to confirm
 date: 2026-11-15
 anchor: LanternOps/breeze#11965
 builds_on:
@@ -150,6 +150,8 @@ Not part of this design; each is its own issue. The stuck status itself is #1196
 
 ## 7. Open decisions
 
+> #11965 took the recommendation on each of these as a default to confirm; see §9.
+
 1. **B or C?** Recommend B.
 2. **Settled status name.** `completed` with a tally (recommended), or a new `approvals_settled` status. A new status is one more value in every total map and the DB CHECK.
 3. **Results into the chat.** Deliver a results turn automatically (recommended), or only notify and let the technician ask.
@@ -159,3 +161,40 @@ Not part of this design; each is its own issue. The stuck status itself is #1196
 
 - No independent design opinion has been taken on this (the advisor quorum in `CLAUDE.md`). It should be, before a plan is written: this changes a cross-module status contract.
 - §5.4 was traced, not exercised. No code for B exists.
+
+## 9. What shipped (#11965, no migration)
+
+Approach B, narrowed so it needs no schema change. The §7 recommendations
+were taken as defaults; each is reversible without data repair.
+
+- **Scope:** `device_troubleshooting` runs with no AI Operator task
+  (`task_id IS NULL`). Other profiles keep `awaiting_approval` as terminal.
+- **Status:** `completed` (decision 2), also when every step was denied or
+  expired (decision 4). No tally column: the post and the chat turn count the
+  steps from `action_intents`.
+- **When:** when no step is open (`pending_approval`, `approved`,
+  `executing`), not on the decision alone. This differs from §5.1 so the
+  `completed` moment is when the step results exist; it needs no
+  `approvals_settled_at`.
+- **Exactly once:** row lock, then the open-step check and the
+  `awaiting_approval → completed` compare-and-set
+  (`services/aiAgents/runApprovalSettlement.ts`). `transitionRunStatus` treats
+  terminal → terminal as no new outcome, so the circuit and task outbox do not
+  count the run twice.
+- **Triggers:** the intent outbox job for every final step event
+  (`processIntentReleaseJob`); `finishRun` right after it parks a run (steps
+  that became final while it ran); a sweep on the Wisp grant reconciler tick
+  (also back-fills runs parked before this shipped). A run that parked more
+  than 48 h ago settles without the event or the post.
+- **Telling the launcher (decision 3, partly):** the existing paths. A
+  second thread post with a step count ("Steps: 2 ran, 1 denied."), the same
+  count in the origin chat's next turn with a pointer to `get_ai_agent_run`
+  for each step's result (#11966), and `ai.agent.run.completed` with
+  `settledAfterApproval` (the check-in fast path; the Wisp wake ignores it,
+  since each decision already woke an assessment). Full step results are not
+  pasted into the turn.
+- **`run_settled`:** an `awaiting_approval` run with an open step is not
+  settled, for every profile.
+- **Not done:** §5.3's single shared reader and the remaining per-surface
+  settled lists; settlement for other profiles; the reconciler sweep is off
+  while Wisp is off (the outbox path is not).

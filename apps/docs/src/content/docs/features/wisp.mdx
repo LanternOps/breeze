@@ -269,6 +269,8 @@ A `device_troubleshooting` run stays on the device it was given and refuses a ca
 
 When a `device_troubleshooting` run settles, it posts a report into the Wisp thread: what it found and how many steps are waiting for approval. A run stopped by a paused grant says so. You can approve or deny each step on the run card or under Approvals, and each approved step posts its outcome to the thread. These posts never send a push notification, because each step already raised its own approval request.
 
+A run waiting on its steps stays **awaiting approval** until every step has an outcome: it ran, failed, was denied, expired or was cancelled. An approved step that has not run yet still counts as waiting. The run then becomes **completed** and posts a second report that counts how the steps ended, for example "Steps: 2 ran, 1 denied." The chat that launched the run gets the same count on its next message, with a pointer to read each step's result. A check-in waiting for the run to settle fires at that moment, not while a step is still open. Settling never starts or repeats a step.
+
 **Continue** on the run card asks Wisp to start a new run on the same device, seeded with what the earlier run found and what happened to its steps. The earlier run does not resume. A run can be continued up to three times.
 
 Two refusals are user-visible. `bulk_reply_incomplete` means a bulk reply stopped part-way; what was sent and what was not is stored on the intent. `uncertain` means Wisp could not tell whether the work had taken effect, so it did not retry.

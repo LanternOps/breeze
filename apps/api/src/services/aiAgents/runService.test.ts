@@ -2069,6 +2069,24 @@ describe('transitionRunStatus', () => {
       );
     });
 
+    // #11965: a parked run settling (awaiting_approval → completed) already
+    // counted in the circuit and woke its task when it parked.
+    it('a terminal → terminal move neither counts in the circuit nor writes a task outbox row', async () => {
+      const row = { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: { runVerdict: 'needs_attention' }, profile: 'device_troubleshooting', taskId: 'task-1' };
+      // Control: the same row leaving `running` does both, so the harness sees them.
+      dbMockState.updateRows = [row];
+      await transitionRunStatus(RUN_ID, 'running', 'completed', {});
+      expect(recordRunTerminal).toHaveBeenCalledTimes(1);
+      expect(dbMockState.insertValues).toHaveLength(1);
+
+      vi.mocked(recordRunTerminal).mockClear();
+      dbMockState.insertValues = [];
+      dbMockState.updateRows = [row];
+      expect(await transitionRunStatus(RUN_ID, 'awaiting_approval', 'completed', {})).toBe(true);
+      expect(recordRunTerminal).not.toHaveBeenCalled();
+      expect(dbMockState.insertValues).toHaveLength(0);
+    });
+
     it('does not call recordRunTerminal when the CAS is lost', async () => {
       dbMockState.updateRows = [];
       await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'sdk_error' });

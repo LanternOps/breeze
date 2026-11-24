@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   reconcileActiveGrants: vi.fn(),
   resweepSpecialistResults: vi.fn(),
   resweepFirstLookPosts: vi.fn(),
+  sweepApprovalParkedRuns: vi.fn(),
   captureException: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }))
 vi.mock('../services/wisp/grantLifecycle', () => ({ reconcileActiveGrants: h.reconcileActiveGrants }));
 vi.mock('../services/wisp/specialistResult', () => ({ resweepSpecialistResults: h.resweepSpecialistResults }));
 vi.mock('../services/wisp/firstLook', () => ({ resweepFirstLookPosts: h.resweepFirstLookPosts }));
+vi.mock('../services/aiAgents/runApprovalSettlement', () => ({ sweepApprovalParkedRuns: h.sweepApprovalParkedRuns }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('bullmq', () => ({ Queue: vi.fn(), Worker: vi.fn() }));
@@ -32,6 +34,7 @@ beforeEach(() => {
   h.reconcileActiveGrants.mockResolvedValue(grants);
   h.resweepSpecialistResults.mockResolvedValue({ scanned: 1, posted: 1, failed: 0 });
   h.resweepFirstLookPosts.mockResolvedValue({ scanned: 0, posted: 0, failed: 0, skipped: {} });
+  h.sweepApprovalParkedRuns.mockResolvedValue({ scanned: 0, settled: 0, failed: 0 });
 });
 
 describe('processWispGrantReconcile', () => {
@@ -40,19 +43,34 @@ describe('processWispGrantReconcile', () => {
     expect(h.resweepSpecialistResults).toHaveBeenCalledTimes(1);
     expect(h.resweepSpecialistResults.mock.invocationCallOrder[0]!)
       .toBeGreaterThan(h.reconcileActiveGrants.mock.invocationCallOrder[0]!);
-    expect(result).toEqual({ skipped: false, ...grants, specialistPosts: 1, firstLookPosts: 0 });
+    expect(result).toEqual({ skipped: false, ...grants, specialistPosts: 1, firstLookPosts: 0, settledRuns: 0 });
+  });
+
+  // #11965: parked troubleshooting runs with no open step settle before the
+  // post re-sweep, so a settled run's post goes out in the same tick.
+  it('settles parked runs before the specialist post re-sweep and counts them', async () => {
+    h.sweepApprovalParkedRuns.mockResolvedValue({ scanned: 3, settled: 2, failed: 1 });
+    await expect(processWispGrantReconcile()).resolves.toMatchObject({ settledRuns: 2, specialistPosts: 1 });
+    expect(h.sweepApprovalParkedRuns.mock.invocationCallOrder[0]!)
+      .toBeLessThan(h.resweepSpecialistResults.mock.invocationCallOrder[0]!);
+  });
+
+  it('a throwing settlement sweep is reported and never fails the tick or the post re-sweep', async () => {
+    h.sweepApprovalParkedRuns.mockRejectedValue(new Error('db down'));
+    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 1, firstLookPosts: 0, settledRuns: 0 });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('a throwing re-sweep is reported and never fails the tick', async () => {
     h.resweepSpecialistResults.mockRejectedValue(new Error('db down'));
-    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 0, firstLookPosts: 0 });
+    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 0, firstLookPosts: 0, settledRuns: 0 });
     expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('#10402: sweeps missing first-look posts too, whatever the specialist half did', async () => {
     h.resweepFirstLookPosts.mockResolvedValue({ scanned: 2, posted: 1, failed: 0, skipped: {} });
     h.resweepSpecialistResults.mockRejectedValue(new Error('db down'));
-    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 0, firstLookPosts: 1 });
+    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 0, firstLookPosts: 1, settledRuns: 0 });
     expect(h.resweepFirstLookPosts).toHaveBeenCalledTimes(1);
   });
 
@@ -74,7 +92,7 @@ describe('processWispGrantReconcile', () => {
 
   it('#10402: a throwing first-look sweep is reported and never fails the tick', async () => {
     h.resweepFirstLookPosts.mockRejectedValue(new Error('db down'));
-    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 1, firstLookPosts: 0 });
+    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 1, firstLookPosts: 0, settledRuns: 0 });
     expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
