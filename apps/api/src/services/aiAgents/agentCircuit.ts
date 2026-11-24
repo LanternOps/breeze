@@ -105,14 +105,14 @@ async function takeCircuitLock(orgId: string, agentId: string): Promise<void> {
  *   it when the agent's model egress cannot be prepared (`prepareSdkChild`),
  *   and sets it when a classified provider failure (down, overloaded,
  *   rate-limiting) found no usable backup model to fail over to (or the
- *   backup lookup itself failed). Either way
- *   the model provider or our egress to it was unavailable — nothing the
- *   agent did.
+ *   backup lookup itself failed). Either way the model provider or our
+ *   egress to it was unavailable — nothing the agent did.
  *
  * Still counted although the cause can sit with the platform, because the
  * code alone cannot tell it apart from the agent's own behaviour:
  * `sdk_error` (it also carries a provider error that ended the run when no
- * failover was attempted), `run_failed` (any uncaught throw),
+ * failover was attempted), `run_failed` (an uncaught throw that is not an
+ * `AgentRunError` or an ownership error),
  * `wall_clock_exceeded` (a slow provider or a looping agent) and
  * `ownership_mismatch`.
  */
