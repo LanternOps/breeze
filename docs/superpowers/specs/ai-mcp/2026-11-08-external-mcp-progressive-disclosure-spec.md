@@ -1,7 +1,7 @@
 ---
-status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §7 resolved to its recommended option. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/<to be written>
+status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §7 resolved to its recommended option. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/2026-11-21-external-mcp-progressive-disclosure-plan.md (plan deviations from §3.6 — OAuth edit home and per-client granularity — are Decisions 1, 6–9 in the plan, for Todd at plan review)
 date: 2026-11-08
-tracking_issue: (register after the plan; supersedes/absorbs #6144 "[MCP] tools/list ships ~206 full schemas" — link both ways)
+tracking_issue: "#12427 (absorbs #6144)"
 covers: "External MCP server tools/list size: progressive disclosure (search / inspect / execute) for API-key and OAuth clients that have no tool search of their own"
 related: "#6151 (A-W04 tool search in chat), #10065 (W19 lazy tool index), #6156 (per-grant MCP domains), #6157 (stateless 2026-07-28 era), #6158 (Tier 3 intents over MCP), #6159 (MCP Apps), #6160 (Tasks), #6407 (tools/list pagination), #7429 (per-endpoint tool-search capability), #9596 (small-model profiles, sibling spec 2026-11-06), #6144 ([MCP] tools/list ships ~206 full schemas)"
 ---

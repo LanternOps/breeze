@@ -318,6 +318,29 @@ vi.mock('./actionLabel', async (importOriginal) => {
   return { ...actual, buildActionLabel: vi.fn(actual.buildActionLabel) };
 });
 
+// #11674: the ticket-number read has its own org-pin and projection suite
+// (approvalTicketNumber.test.ts); here it is a spy, so these tests assert what
+// createActionIntent asks for and what it stores. `argumentTicketId` stays real.
+const ticketNumberMock = vi.hoisted(() => ({
+  resolveApprovalTicketNumber: vi.fn(async (_ticketId: string, _orgId: string, _reach: unknown): Promise<string | null> => null),
+}));
+// The caller's site/device check behind the approval-label device name. The
+// real module imports the full schema index, which this harness cannot load.
+const siteScopeMock = vi.hoisted(() => ({
+  deviceInSiteScope: vi.fn(async (_auth: unknown, _deviceId: string): Promise<boolean> => true),
+}));
+vi.mock('../../routes/tickets/siteScope', () => ({ deviceInSiteScope: siteScopeMock.deviceInSiteScope }));
+// The patch-name read has its own org-pin, reach and title-hygiene suite
+// (approvalPatchNames.test.ts); here it is a spy.
+const patchNamesMock = vi.hoisted(() => ({
+  resolveApprovalPatchNames: vi.fn(async (_patchIds: unknown, _deviceIds: unknown, _orgId: string, _reach: unknown): Promise<string[] | null> => null),
+}));
+vi.mock('./approvalPatchNames', () => ({ resolveApprovalPatchNames: patchNamesMock.resolveApprovalPatchNames }));
+vi.mock('./approvalTicketNumber', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./approvalTicketNumber')>();
+  return { ...actual, resolveApprovalTicketNumber: ticketNumberMock.resolveApprovalTicketNumber };
+});
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
@@ -408,6 +431,9 @@ function makeAuth(overrides?: {
     partnerId: overrides?.partnerId ?? null,
     scope: 'organization' as const,
     accessibleOrgIds: [ORG_ID],
+    // Every real AuthContext carries one; the approval-label reads (#11674)
+    // keep the id stub for a principal without it.
+    orgCondition: () => undefined,
     ...('allowedSiteIds' in (overrides ?? {}) ? { allowedSiteIds: overrides!.allowedSiteIds } : {}),
     ...('allowedDeviceIds' in (overrides ?? {}) ? { allowedDeviceIds: overrides!.allowedDeviceIds } : {}),
   } as unknown as Parameters<typeof createActionIntent>[0];
@@ -1969,6 +1995,28 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     expect(labels[0]).not.toContain('on device');
   });
 
+  it('keeps the stub when the device is outside the filing caller\'s site scope (#11674 review)', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-out-of-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(false);
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, restartInput());
+
+    expect(siteScopeMock.deviceInSiteScope).toHaveBeenCalledWith(auth, DEVICE_ID);
+    expect(persistedApprovalLabels()[0]).toBe(`Restart service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`);
+  });
+
+  it('names the device when it is inside the filing caller\'s site scope', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-in-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(true);
+
+    await createActionIntent(makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] }), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toContain('on KIT');
+  });
+
   it('falls back to the hostname when the device has no display name', async () => {
     dbState.selectDevicesResults.push([{ hostname: 'kit-01', displayName: null }]);
     queueFanout('intent-5363-hostname');
@@ -2005,6 +2053,186 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     const label = persistedApprovalLabels()[0];
     expect(label).toContain(`on device ${OTHER_ORG_ID.slice(0, 8)}...`);
     expect(label).not.toContain('KIT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #11674 — the stored approval label names the ticket by NUMBER
+//
+// The /approvals queue and the mobile push render `action_label`. It said
+// `ticket #<8 hex>...` while the chat card already said `ticket T-2026-0001`.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline ticket number (#11674)', () => {
+  const TICKET_ID = '2aad0601-1111-4222-8333-444455556666';
+  const OPERATIVE_TICKET_ID = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+  const NOTE_DESCRIPTION = `Post internal note on ticket #${TICKET_ID.slice(0, 8)}...`;
+
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  function guardrailSays(description: string) {
+    guardrailMock.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, description });
+  }
+
+  beforeEach(() => {
+    ticketNumberMock.resolveApprovalTicketNumber.mockReset();
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValue(null);
+  });
+
+  it('resolves this call\'s ticket in the intent org, cut to the filing caller\'s reach, and stores the number', async () => {
+    guardrailSays(NOTE_DESCRIPTION);
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0001');
+    queueFanout('intent-11674-named');
+    // Site-restricted caller: the read must get THIS auth, so the resolver can
+    // apply its site/device scope (approvalTicketNumber.test.ts covers the cut).
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'Rebooted the print server.' },
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(TICKET_ID, ORG_ID, auth);
+    const labels = persistedApprovalLabels();
+    expect(labels).toEqual(['Post internal note on ticket T-2026-0001']);
+    // The number only: never the comment text the tool input carries.
+    expect(labels[0]).not.toContain('Rebooted');
+  });
+
+  it('keeps the stub when the ticket cannot be resolved (foreign, missing, or a failed read)', async () => {
+    guardrailSays(NOTE_DESCRIPTION);
+    queueFanout('intent-11674-missing');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'x' },
+    }));
+
+    expect(persistedApprovalLabels()).toEqual([NOTE_DESCRIPTION]);
+  });
+
+  it('names the expectedTicketId of a comment edit, never a stray ticketId', async () => {
+    guardrailSays(`Edit a comment on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}... (replaces its text)`);
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0042');
+    queueFanout('intent-11674-edit');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'edit_comment', commentId: TICKET_ID, ticketId: TICKET_ID, expectedTicketId: OPERATIVE_TICKET_ID, content: 'new text' },
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledTimes(1);
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(OPERATIVE_TICKET_ID, ORG_ID, expect.anything());
+    expect(persistedApprovalLabels()).toEqual(['Edit a comment on ticket T-2026-0042 (replaces its text)']);
+  });
+
+  it('skips the read when the label carries no stub for this call\'s ticket', async () => {
+    // A caller-supplied label naming some OTHER ticket keeps its stub, and costs no read.
+    guardrailSays(NOTE_DESCRIPTION);
+    queueFanout('intent-11674-other');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'x' },
+      actionLabel: `Post internal note on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}...`,
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual([`Post internal note on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}...`]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A supervised patch install read "Install 1 patch(es) on 1 device(s)" and
+// "CVEs: get_vulnerability_report.": the approver could not see which patch
+// they were signing for. The stored label names the patches.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline patch names', () => {
+  const PATCH_A = 'aaaaaaaa-1111-4222-8333-444455556666';
+  const PATCH_B = 'bbbbbbbb-1111-4222-8333-444455556666';
+  const PATCH_C = 'cccccccc-1111-4222-8333-444455556666';
+  const DEVICE_A = '6eae0f70-1111-4222-8333-444455556666';
+  const DEVICE_B = '7eae0f70-1111-4222-8333-444455556666';
+  const INSTALL = { action: 'install', patchIds: [PATCH_A, PATCH_B, PATCH_C], deviceIds: [DEVICE_A, DEVICE_B] };
+
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  function guardrailSays(description: string) {
+    guardrailMock.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, description });
+  }
+
+  beforeEach(() => {
+    patchNamesMock.resolveApprovalPatchNames.mockReset();
+    patchNamesMock.resolveApprovalPatchNames.mockResolvedValue(null);
+  });
+
+  it('resolves the install\'s patches in the intent org, cut to the filing caller\'s reach, and stores their names', async () => {
+    guardrailSays('Install 3 patches on 2 devices');
+    patchNamesMock.resolveApprovalPatchNames.mockResolvedValueOnce(['KB5034441', '"Google Chrome 120"']);
+    queueFanout('intent-patch-named');
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, baseInput({ toolName: 'manage_patches', input: INSTALL }));
+
+    expect(patchNamesMock.resolveApprovalPatchNames).toHaveBeenCalledWith(INSTALL.patchIds, INSTALL.deviceIds, ORG_ID, auth);
+    expect(persistedApprovalLabels()).toEqual(['Install KB5034441, "Google Chrome 120" +1 more on 2 devices']);
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary)
+      .toBe('Installs 3 patches on 2 devices. Devices may restart to finish installing.');
+  });
+
+  it('keeps the counted headline when no name resolves', async () => {
+    guardrailSays('Install 3 patches on 2 devices');
+    queueFanout('intent-patch-unnamed');
+
+    await createActionIntent(makeAuth(), baseInput({ toolName: 'manage_patches', input: INSTALL }));
+
+    expect(persistedApprovalLabels()).toEqual(['Install 3 patches on 2 devices']);
+  });
+
+  it('reads nothing for a patch action that is not an install', async () => {
+    guardrailSays('Rollback patch aaaaaaaa...');
+    queueFanout('intent-patch-rollback');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_patches',
+      input: { action: 'rollback', patchId: PATCH_A, deviceIds: [DEVICE_A] },
+    }));
+
+    expect(patchNamesMock.resolveApprovalPatchNames).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual(['Rollback patch aaaaaaaa...']);
+  });
+
+  it('reads nothing when the label does not carry this install\'s headline', async () => {
+    guardrailSays('Install 3 patches on 2 devices');
+    queueFanout('intent-patch-custom-label');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_patches',
+      input: INSTALL,
+      actionLabel: 'Patch the accounting laptops',
+    }));
+
+    expect(patchNamesMock.resolveApprovalPatchNames).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual(['Patch the accounting laptops']);
   });
 });
 
@@ -3208,6 +3436,126 @@ describe('buildImpactSummary (#5106)', () => {
       input: {},
       guardrailDescription: 'x',
       expected: 'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
+    },
+    {
+      name: 'manage_patches install counts patches and devices and warns of a restart',
+      toolName: 'manage_patches',
+      input: { action: 'install', patchIds: ['p1', 'p2', 'p3'], deviceIds: ['d1', 'd2'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds.',
+      expected: 'Installs 3 patches on 2 devices. Devices may restart to finish installing.',
+    },
+    {
+      name: 'manage_patches install, one patch on one device',
+      toolName: 'manage_patches',
+      input: { action: 'install', patchIds: ['p1'], deviceIds: ['d1'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Installs 1 patch on 1 device. The device may restart to finish installing.',
+    },
+    {
+      name: 'manage_patches install without lists still never shows the model-facing description',
+      toolName: 'manage_patches',
+      input: { action: 'install' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Installs the selected patches on the selected devices. Devices may restart to finish installing.',
+    },
+    {
+      name: 'manage_patches scan installs nothing',
+      toolName: 'manage_patches',
+      input: { action: 'scan', deviceIds: ['d1', 'd2'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Scans 2 devices for missing patches. Nothing is installed.',
+    },
+    {
+      // The handler inserts one pending patch_rollbacks row for deviceIds[0]
+      // and queues no command (aiToolsFleet.ts): no uninstall, no restart.
+      name: 'manage_patches rollback records a request for one device and claims no uninstall',
+      toolName: 'manage_patches',
+      input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Records a rollback request for the patch on one device. Nothing is uninstalled or restarted now.',
+    },
+    {
+      name: 'manage_patches rollback on several devices names the one device the handler uses',
+      toolName: 'manage_patches',
+      input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1', 'd2'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Records a rollback request for the patch on one device (the first listed). Nothing is uninstalled or restarted now.',
+    },
+    {
+      // Approvals are partner-wide unless a ringId names one update ring
+      // (upsertPatchApproval with ringId null, aiToolsFleet.ts).
+      name: 'manage_patches approve without a ring names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'approve', patchId: 'p1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves the patch for every organization under the partner. Nothing installs now; patch runs can install it later.',
+    },
+    {
+      name: 'manage_patches approve in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'approve', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves the patch in one update ring. Nothing installs now; patch runs can install it later.',
+    },
+    {
+      // bulk_approve always writes ringId null.
+      name: 'manage_patches bulk_approve counts the patches and names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'bulk_approve', patchIds: ['p1', 'p2'], ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves 2 patches for every organization under the partner. Nothing installs now; patch runs can install them later.',
+    },
+    {
+      name: 'manage_patches decline without a ring names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch for every organization under the partner. Nothing is installed or removed now.',
+    },
+    {
+      name: 'manage_patches decline in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch in one update ring. Nothing is installed or removed now.',
+    },
+    {
+      // allRings wins over ringId in the handler, and also clears the partner-wide row.
+      name: 'manage_patches decline allRings covers the partner and every update ring',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1', allRings: true, ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch for every organization under the partner and in every update ring. Nothing is installed or removed now.',
+    },
+    {
+      name: 'manage_patches defer without a ring names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'defer', patchId: 'p1', deferUntil: '2026-12-01' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Defers the patch for every organization under the partner. Nothing installs now.',
+    },
+    {
+      name: 'manage_patches defer in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'defer', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Defers the patch in one update ring. Nothing installs now.',
+    },
+    {
+      // The handler refuses setup_auto_approval unconditionally, so there is
+      // no effect to describe: no call-specific summary.
+      name: 'manage_patches setup_auto_approval has no call-specific summary (the handler refuses it)',
+      toolName: 'manage_patches',
+      input: { action: 'setup_auto_approval' },
+      guardrailDescription: 'Catalog text.',
+      expected: 'Catalog text.',
+    },
+    {
+      name: 'manage_patches list (a read) keeps the catalog fallback',
+      toolName: 'manage_patches',
+      input: { action: 'list' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'CVEs: get_vulnerability_report.',
     },
     {
       name: 'an unrecognized tool falls back to the guardrail description',

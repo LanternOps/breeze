@@ -35,9 +35,14 @@ import type { ResolvedVariable } from './tenantVariableResolution';
  *
  * #3409 PR4c-2 adds one exception to the table, not a new rule inside it: a
  * `tenantSecret` binding has no default and no caller candidate at all, so its
- * precedence is simply `secret variable -> fail the device`, and its value
- * leaves through {@link ResolveSourcedParametersSuccess.secretEnv} rather than
- * `parameters`. That arm additionally carries a PRIVILEGE gate — a script may
+ * precedence is simply `secret variable -> missing`, and its value leaves
+ * through {@link ResolveSourcedParametersSuccess.secretEnv} rather than
+ * `parameters`. "Missing" means NOT DEFINED for the device's org only, and is
+ * then decided by `required` like any other parameter: required (the arm's
+ * default) fails the device; optional (#12613) omits it, so the agent sets no
+ * `BREEZE_VAR_*` at all. A secret that exists but is unreadable, not a secret,
+ * or above the script's tier is a DENIAL, never "missing", whatever
+ * `required` says. That arm additionally carries a PRIVILEGE gate — a script may
  * resolve a secret at or below its own ownership tier, never above (see
  * {@link ResolveSourcedParametersInput.scriptOwnerScope}) — which is why this
  * otherwise device-only resolver is told about the SCRIPT's ownership too.
@@ -106,13 +111,18 @@ export interface ResolveSourcedParametersInput {
    * {@link variables}: an unreadable variable must never resolve to a value,
    * and `resolveForOrg`'s map is the "has a value" channel by contract.
    *
-   * Optional, and omitting it is not a silent downgrade of anything the
-   * resolver would otherwise get right — a key that is unreadable is absent
-   * from `variables` either way, so the only difference is WHICH failure the
+   * Optional in the type, but load it whenever {@link variables} is loaded.
+   * For a REQUIRED binding, omitting it only changes WHICH failure the
    * operator is shown ({@link SourceLookup} `'unreadable'` vs `'missing'`).
    * That difference matters: "not set" tells a tech to create the variable,
    * while unreadable means the ciphertext is present and the KEY MATERIAL is
    * wrong — and creating a duplicate mid-rotation is the opposite of the fix.
+   *
+   * For an OPTIONAL `tenantSecret` binding (#12613) it is load-bearing:
+   * without it an undecryptable secret would look undefined and the script
+   * would run without it. The resolver therefore THROWS (a call-site
+   * programming error, like an absent {@link variables}) rather than omit an
+   * optional secret it cannot prove is undefined.
    */
   unreadableVariableKeys?: ReadonlySet<string>;
   /**
@@ -484,10 +494,21 @@ function lookupBoundSource(
         );
       }
       const variable = input.variables.get(definition.variableKey);
-      // No default, no caller value, no omission — the arm is always
-      // `required: true` and carries no `defaultValue` (the schema rejects
-      // one), so a missing target can only fail the device.
-      if (!variable) return lookupAbsent(definition.variableKey, input);
+      // No default (the schema rejects one) and no caller value. An absent
+      // target is `'missing'` — the resolver's `required` tail then fails the
+      // device or, for an optional secret (#12613), omits the parameter — or
+      // `'unreadable'`, which is always a denial.
+      if (!variable) {
+        if (!definition.required && !input.unreadableVariableKeys) {
+          // Fail closed: without the unreadable set an undecryptable secret
+          // cannot be told apart from an undefined one, and "optional" must
+          // never cover "unreadable".
+          throw new Error(
+            'unreadableVariableKeys is required to dispatch a script with an optional tenantSecret-bound parameter',
+          );
+        }
+        return lookupAbsent(definition.variableKey, input);
+      }
       if (!variable.isSecret) return { kind: 'notSecret', variableKey: definition.variableKey };
       // PRIVILEGE GATE — AFTER the `isSecret` check on purpose: a plaintext
       // partner-wide target must be reported as "not a secret" (reclassify it)
@@ -607,8 +628,10 @@ export function resolveSourcedParameters(
       if (lookup.kind === 'secretValue') {
         // The one branch that never touches `parameters` or `resolved`: the
         // value leaves through `secretEnv` only, and `continue` skips the
-        // default/required tail below (the arm has no default and is always
-        // required, so reaching that tail could only misreport it as missing).
+        // default/required tail below (the arm has no default, and a value
+        // that resolved is not missing). An UNDEFINED secret is `'missing'`
+        // and does reach that tail, which is where `required` decides
+        // between failing the device and omitting it (#12613).
         secretEnv[name] = lookup.value;
         bindings.push(lookup.descriptor);
         continue;

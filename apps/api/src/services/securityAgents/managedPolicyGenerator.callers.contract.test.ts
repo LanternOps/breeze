@@ -15,8 +15,9 @@
  *  2. repairManagedSoftwarePolicies is called only from the compliance worker
  *     (system context).
  *  3. The set of files that call addFeatureLink / updateFeatureLink is fixed.
- *     The two that can carry a `security_agents` link carry both gates; the
- *     rest are monitor-family callers that pass only `monitors` links.
+ *     The three that can carry a `security_agents` link carry both gates (Copy,
+ *     #12309, also re-runs the arm gate and the link-write check per carried
+ *     link); the rest are monitor-family callers that pass only `monitors` links.
  *
  * A failure here means: re-verify the new caller gates (or is system-only),
  * update the allowlist reasons in both contracts, then update the sets below.
@@ -78,6 +79,9 @@ describe('security-agents managed-policy generator callers (#8736)', () => {
         // Can carry a security_agents link — gated (asserted below).
         'routes/configurationPolicies/featureLinks.ts',
         'services/aiToolsConfigPolicy.ts',
+        // Copy (#12309): re-runs mayArmSecurityAgents + checkSecurityAgentsLinkWrite
+        // for a carried security_agents link before addFeatureLink.
+        'services/configPolicyCopy.ts',
         // Monitor family: pass only `monitors` links.
         'modules/mcpInvites/tools/configureDefaults.monitors.ts',
         'routes/monitorDefinitions.ts',
@@ -91,10 +95,20 @@ describe('security-agents managed-policy generator callers (#8736)', () => {
   }, 30_000);
 
   it('the security_agents-capable callers carry both gates', () => {
-    for (const rel of ['routes/configurationPolicies/featureLinks.ts', 'services/aiToolsConfigPolicy.ts']) {
+    for (const rel of [
+      'routes/configurationPolicies/featureLinks.ts',
+      'services/aiToolsConfigPolicy.ts',
+      'services/configPolicyCopy.ts',
+    ]) {
       const source = readFileSync(join(API_SRC, rel), 'utf8');
       expect(source.includes('canMutateOrgWideGovernance'), `${rel} lost its site-ceiling gate`).toBe(true);
       expect(source.includes('canManagePartnerWidePolicies'), `${rel} lost its partner-wide gate`).toBe(true);
     }
+  });
+
+  it('Copy re-runs the security_agents arm gate and link-write check for a carried link', () => {
+    const source = readFileSync(join(API_SRC, 'services/configPolicyCopy.ts'), 'utf8');
+    expect(source.includes('mayArmSecurityAgents('), 'Copy lost its security_agents arm gate').toBe(true);
+    expect(source.includes('checkSecurityAgentsLinkWrite('), 'Copy lost its security_agents link-write check').toBe(true);
   });
 });

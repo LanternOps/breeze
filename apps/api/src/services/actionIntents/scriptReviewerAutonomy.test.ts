@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockPolicy = vi.fn();
 const mockCount = vi.fn();
+const mockMcpRuns = vi.fn();
 const mockRunCount = vi.fn();
 const mockLane = vi.fn();
 const mockDevice = vi.fn();
@@ -44,6 +45,7 @@ vi.mock('./laneQueries', () => ({
   lockScriptLane: (...a: unknown[]) => mockLock(...a),
   readLaneState: (...a: unknown[]) => mockLane(...a),
   countRecentLaneIntents: (...a: unknown[]) => mockCount(...a),
+  countRecentMcpUnattendedRuns: (...a: unknown[]) => mockMcpRuns(...a),
   countRunLaneIntents: (...a: unknown[]) => mockRunCount(...a),
   readLaneDevice: (...a: unknown[]) => mockDevice(...a),
 }));
@@ -107,6 +109,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockPolicy.mockResolvedValue({ ...EFFECTIVE });
   mockCount.mockResolvedValue(0);
+  mockMcpRuns.mockResolvedValue(0);
   mockRunCount.mockResolvedValue(0);
   mockLane.mockResolvedValue({ state: 'closed', openedReason: null });
   mockDevice.mockResolvedValue({ id: 'dev-1', status: 'online', osType: 'windows' });
@@ -293,6 +296,14 @@ describe('evaluateScriptReviewerAutonomy — invariants 11-12', () => {
     mockCount.mockResolvedValue(10);
     expect(await evaluateScriptReviewerAutonomy(args())).toEqual({ granted: false, reason: 'hourly_cap' });
     mockCount.mockResolvedValue(9);
+    expect(await evaluateScriptReviewerAutonomy(args())).toMatchObject({ granted: true });
+  });
+
+  it('12 — unattended MCP proposal runs count toward the same hourly cap', async () => {
+    mockCount.mockResolvedValue(6);
+    mockMcpRuns.mockResolvedValue(4);
+    expect(await evaluateScriptReviewerAutonomy(args())).toEqual({ granted: false, reason: 'hourly_cap' });
+    mockMcpRuns.mockResolvedValue(3);
     expect(await evaluateScriptReviewerAutonomy(args())).toMatchObject({ granted: true });
   });
 

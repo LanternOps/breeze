@@ -7,6 +7,7 @@ import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccess
 import { billingNoticeOutbox, organizations, partners } from '../../db/schema';
 import { captureException } from '../sentry';
 import { getEmailService } from '../email';
+import { heldSendDecision, isEmailSendHeldError, logHeldSendDropped } from '../emailDomains/heldSend';
 import { isBillingEnabledForOrg } from '../billingEnabled';
 import { isBlockedWhileBillingOff } from './billingNoticePolicy';
 import type { Tx, RenderedNotice } from './types';
@@ -54,6 +55,22 @@ const owns = (row: Row) => and(eq(billingNoticeOutbox.id, row.id),
   eq(billingNoticeOutbox.status, 'sending'), eq(billingNoticeOutbox.attempts, row.attempts));
 
 const ACK_PENDING = 'Delivery acknowledgement pending';
+const HELD_ERROR = 'EmailSendHeldError';
+/**
+ * How long a held notice keeps being retried (#12249), measured from its FIRST
+ * hold: one UTC day plus the retry spread. Past it the notice is parked
+ * `failed`. From the first hold rather than creation because the outbox has
+ * no creation timestamp (#12283).
+ */
+const BILLING_NOTICE_HELD_MAX_AGE_MS = 26 * 60 * 60 * 1000;
+
+/** The first-hold time a previous hold wrote into last_error, or null. */
+function parseHeldSince(lastError: string | null): Date | null {
+  const prefix = `${HELD_ERROR} since=`;
+  if (!lastError?.startsWith(prefix)) return null;
+  const at = new Date(lastError.slice(prefix.length));
+  return Number.isFinite(at.getTime()) ? at : null;
+}
 function reportFailure(row: Row, phase: string, _error: unknown): void {
   // Transport/handler messages may contain bearer URLs. Keep only safe identity
   // and a bounded phase; never persist or capture the raw exception message.
@@ -88,6 +105,8 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
       return rows;
     }));
     for (let row of claimed) {
+      // Read before the renewal below overwrites last_error (#12249).
+      const heldSince = parseHeldSince(row.lastError);
       try {
         if (!row.sentAt) {
           const validate = validators.get(row.kind);
@@ -128,7 +147,7 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
           if (!renewed) continue;
           row = renewed;
           // No transaction/context remains held while the provider is contacted.
-          await email.sendEmail({ purpose: 'billing.notice', partnerId: sender.id, partnerName: sender.name,
+          await email.sendEmail({ purpose: 'billing.notice', trigger: 'internal', partnerId: sender.id, partnerName: sender.name,
             replyTo: sender.billingEmail ?? undefined, to: row.toEmail,
             subject: rendered.subject, html: rendered.html, text: rendered.text });
           // Acceptance is external to our transaction. Retry ONLY the ack;
@@ -165,6 +184,27 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
         }));
         if (completed) counts.sent++;
       } catch (error) {
+        if (isEmailSendHeldError(error)) {
+          // #12249: held, not failed. Nothing went out on either lane. Retry at
+          // the held error's retryAt, not the transport backoff, give back the
+          // attempt the claim took, and do not report each hold to Sentry. The
+          // row has no creation time (#12283), so the maximum age runs from the
+          // first hold, carried in last_error across holds.
+          const since = heldSince ?? new Date();
+          const decision = heldSendDecision(error, { firstAttemptAt: since, maxAgeMs: BILLING_NOTICE_HELD_MAX_AGE_MS });
+          if (decision.action === 'drop') {
+            logHeldSendDropped('billingNoticeOutbox', error, {
+              billing_notice_id: row.id, billing_notice_kind: row.kind, org_id: row.orgId, held_since: since.toISOString(),
+            });
+            reportFailure(row, 'held_past_max_age', undefined);
+          }
+          try { await scope(() => db.update(billingNoticeOutbox).set(decision.action === 'reschedule'
+            ? { status: 'pending', nextAttemptAt: decision.at, attempts: Math.max(0, row.attempts - 1), lastError: `${HELD_ERROR} since=${since.toISOString()}` }
+            : { status: 'failed', lastError: HELD_ERROR }).where(owns(row))); }
+          catch (persistError) { reportFailure(row, 'retry_persistence', persistError); }
+          counts.failed++;
+          continue;
+        }
         const delay = Math.min(60 * 2 ** Math.min(row.attempts - 1, 6), 3600) * 1000;
         reportFailure(row, row.attempts >= 8 ? (row.sentAt ? 'handler_failed' : 'failed') : (row.sentAt ? 'handler' : 'send'), error);
         try { await scope(() => db.update(billingNoticeOutbox).set({

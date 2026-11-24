@@ -157,6 +157,56 @@ describe('authenticator store approver helpers', () => {
     expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
   });
 
+  describe('getBatchApprovalAssertion scope', () => {
+    const challengeBody = () =>
+      JSON.parse(String((vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit | undefined)?.body));
+
+    beforeEach(() => {
+      // A server refusal ends the call right after the POST — the body is all
+      // these cases assert, and no ceremony is needed to see it.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(makeResponse({ error: 'batch_not_homogeneous' }, false, 422)),
+      );
+    });
+
+    it('sends scope: cross_org in the challenge body when asked (it is folded into the challenge key)', async () => {
+      await getBatchApprovalAssertion('/mobile/approvals', ['ap-1', 'ap-2'], 'approved', 'cross_org')
+        .catch(() => undefined);
+
+      expect(challengeBody()).toEqual({
+        approvalRequestIds: ['ap-1', 'ap-2'],
+        decision: 'approved',
+        scope: 'cross_org',
+      });
+    });
+
+    it.each([
+      ['omitted', undefined],
+      ['same_org', 'same_org' as const],
+    ])('keeps the same-org body byte-identical when scope is %s', async (_label, scope) => {
+      await getBatchApprovalAssertion('/mobile/approvals', ['ap-1'], 'denied', scope)
+        .catch(() => undefined);
+
+      const raw = String((vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit | undefined)?.body);
+      expect(raw).toBe(JSON.stringify({ approvalRequestIds: ['ap-1'], decision: 'denied' }));
+    });
+
+    it('surfaces a 403 batch_scope_not_permitted as an AssertionChallengeError carrying the token', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(makeResponse({ error: 'batch_scope_not_permitted' }, false, 403)),
+      );
+
+      const rejection = await getBatchApprovalAssertion('/mobile/approvals', ['ap-1'], 'approved', 'cross_org')
+        .catch((e: unknown) => e);
+
+      expect(rejection).toBeInstanceOf(AssertionChallengeError);
+      expect((rejection as AssertionChallengeError).token).toBe('batch_scope_not_permitted');
+      expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([
     ['an empty 2xx body', null],
     ['an empty object', {}],

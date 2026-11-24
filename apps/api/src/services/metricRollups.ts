@@ -418,8 +418,39 @@ async function rollupRawDeviceMetrics(options: MetricRollupRange): Promise<void>
  * worse: it multiplies the grid by seven, and because `generate_series` is
  * costed at its 1000-row default the inflated estimate tripped
  * `jit_above_cost`, adding ~1.1s of JIT compilation to a sub-100ms query.)
+ *
+ * #12583: the window is read once, as an index range; see
+ * `buildRawProcessSampleRollupStatement`.
  */
 async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promise<void> {
+  await execInRollupDbContext('metricRollups.raw.device_process_samples', buildRawProcessSampleRollupStatement(options));
+}
+
+/**
+ * The raw process-sample rollup statement (see `rollupRawProcessSampleMetrics`),
+ * exported so the integration suite can `EXPLAIN` exactly what the worker runs.
+ *
+ * #12583 — the window is read ONCE, and as an index range.
+ *  - `process_devices` is the DISTINCT of `sample_values`, not a second scan of
+ *    the table. The CROSS JOIN LATERAL aggregate always yields exactly one row
+ *    per sample row, so both device sets are the same.
+ *  - The bounds are `($iso::timestamp)::timestamptz`, not `$iso::timestamp`.
+ *    `device_process_samples.timestamp` is timestamptz, and the cross-type
+ *    `timestamptz >= timestamp` operator is not leakproof. Under forced RLS,
+ *    Postgres may not evaluate a non-leakproof predicate before the policy qual,
+ *    so it kept both bounds out of the index condition. Each scan then
+ *    bitmap-read the org's whole retained history through
+ *    `device_process_samples_org_ts_idx` (`org_id` only) and discarded all but
+ *    the window in the Filter, so the cost grew with retention × fleet, not with
+ *    the window. Casting the constant side keeps the old semantics exactly (the
+ *    same timestamp → timestamptz conversion, in the session time zone), and
+ *    makes the comparison the leakproof `timestamptz >= timestamptz`, which the
+ *    index can take. The bucket grid and its join keep their old types: they
+ *    are join filters over the materialized window, not scan predicates.
+ */
+export function buildRawProcessSampleRollupStatement(
+  options: Pick<MetricRollupRange, 'orgId' | 'from' | 'to' | 'expectedSampleSeconds'>,
+): SQL {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
@@ -440,13 +471,23 @@ async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promis
     sql`(${metric.metricName}::text, ${seriesAggregateColumns(metric.metricName)})`
   ));
 
-  await execInRollupDbContext('metricRollups.raw.device_process_samples', sql`
-    WITH process_devices AS (
-      SELECT DISTINCT dps.org_id, dps.device_id
+  return sql`
+    WITH sample_values AS MATERIALIZED (
+      SELECT
+        dps.org_id,
+        dps.device_id,
+        dps.timestamp,
+        ${sampleColumns}
       FROM device_process_samples dps
+      CROSS JOIN LATERAL (${sql.raw(PROCESS_SAMPLE_PROCESS_AGGREGATE_SQL)}
+      ) AS proc_agg
       WHERE dps.org_id = ${options.orgId}
-        AND dps.timestamp >= ${fromIso}::timestamp
-        AND dps.timestamp < ${toIso}::timestamp
+        AND dps.timestamp >= (${fromIso}::timestamp)::timestamptz
+        AND dps.timestamp < (${toIso}::timestamp)::timestamptz
+    ),
+    process_devices AS (
+      SELECT DISTINCT sv.org_id, sv.device_id
+      FROM sample_values sv
     ),
     buckets AS (
       SELECT generate_series(
@@ -459,19 +500,6 @@ async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promis
       SELECT pd.org_id, pd.device_id, buckets.bucket_start
       FROM process_devices pd
       CROSS JOIN buckets
-    ),
-    sample_values AS (
-      SELECT
-        dps.org_id,
-        dps.device_id,
-        dps.timestamp,
-        ${sampleColumns}
-      FROM device_process_samples dps
-      CROSS JOIN LATERAL (${sql.raw(PROCESS_SAMPLE_PROCESS_AGGREGATE_SQL)}
-      ) AS proc_agg
-      WHERE dps.org_id = ${options.orgId}
-        AND dps.timestamp >= ${fromIso}::timestamp
-        AND dps.timestamp < ${toIso}::timestamp
     ),
     bucket_aggregates AS (
       SELECT
@@ -531,7 +559,7 @@ async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promis
     ) AS series(metric_name, ${SERIES_VALUE_COLUMNS})
     ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
     DO UPDATE SET ${upsertAssignments()}
-  `);
+  `;
 }
 
 async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {

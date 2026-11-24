@@ -337,6 +337,8 @@ describe('POST approve / deny', () => {
       orgName: 'Acme Co',
       partnerId: 'p-1',
       partnerName: 'MSP Co',
+      // #12249: a staff decision, so the partner's own (internal) bucket.
+      trigger: 'internal',
     });
     expect(h.issueAndSendInvite).toHaveBeenCalledTimes(1);
 
@@ -352,7 +354,7 @@ describe('POST approve / deny', () => {
     expect(await denied.json()).toEqual({ data: { status: 'denied' }, emailSent: true });
     expect(h.deny).toHaveBeenLastCalledWith({ orgId: ORG_ID, requestId: REQ_1, deciderUserId: 'u-1' });
     expect(h.sendDeclined).toHaveBeenCalledWith({
-      to: 'bob@customer.example', orgName: 'Acme Co', partnerId: 'p-1', partnerName: 'MSP Co',
+      to: 'bob@customer.example', orgName: 'Acme Co', partnerId: 'p-1', partnerName: 'MSP Co', trigger: 'internal',
     });
 
     expect(auditActions()).toEqual([

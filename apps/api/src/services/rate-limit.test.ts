@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   rateLimiter,
+  refundRateLimitEntries,
   loginLimiter,
   forgotPasswordLimiter,
   mfaLimiter,
@@ -179,6 +180,55 @@ describe('rate-limit service', () => {
       expect(mockMulti.zcard).toHaveBeenCalledWith('test-key');
       expect(mockMulti.zrange).toHaveBeenCalledWith('test-key', 0, 0, 'WITHSCORES');
       expect(mockMulti.expire).toHaveBeenCalledWith('test-key', 60);
+    });
+
+    // #12566: a caller that learns only AFTER the check that a request should
+    // not have used the bucket (a refusal on a proven-valid credential) needs
+    // the exact members this call added, to give back that request's slot.
+    describe('entries + refundRateLimitEntries', () => {
+      function mockAllowedExec() {
+        const now = Date.now();
+        mockMulti.exec.mockResolvedValue([
+          [null, 0],
+          [null, 1],
+          [null, 1],
+          [null, [now.toString(), now.toString()]],
+          [null, 1]
+        ]);
+      }
+
+      it('returns exactly the members an allowed call added', async () => {
+        mockAllowedExec();
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60);
+
+        const zaddCallArgs = mockMulti.zadd.mock.calls[0] as unknown[];
+        const added = zaddCallArgs.slice(1).filter((_, i) => i % 2 === 1);
+        expect(added).toHaveLength(1);
+        expect(result.entries).toEqual(added);
+      });
+
+      it('removes exactly the given members from the bucket', async () => {
+        const ok = await refundRateLimitEntries(mockRedis as Redis, 'test-key', ['m-1', 'm-2']);
+
+        expect(ok).toBe(true);
+        expect(mockRedis.zrem).toHaveBeenCalledWith('test-key', 'm-1', 'm-2');
+      });
+
+      it('reports failure, without throwing, when Redis is missing or errors', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        mockRedis.zrem = vi.fn().mockRejectedValue(new Error('redis down'));
+
+        expect(await refundRateLimitEntries(mockRedis as Redis, 'test-key', ['m-1'])).toBe(false);
+        expect(await refundRateLimitEntries(null, 'test-key', ['m-1'])).toBe(false);
+
+        consoleErrorSpy.mockRestore();
+      });
+
+      it('does nothing for an empty member list', async () => {
+        expect(await refundRateLimitEntries(mockRedis as Redis, 'test-key', [])).toBe(false);
+        expect(mockRedis.zrem).not.toHaveBeenCalled();
+      });
     });
 
     // #3696: refundOnReject — rejected attempts must not consume window

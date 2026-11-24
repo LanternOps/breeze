@@ -265,9 +265,10 @@ export default function ScriptTestRunner({
   // Runtime parameters only (#3409 PR3/PR4c-2). A BOUND parameter is resolved
   // per target device by the server, so a `required` one with no default is not
   // missing anything the author can supply here — and a `tenantSecret` row is
-  // forced `required: true` with a `defaultValue` the shared schema REJECTS, so
-  // gating on the whole list disabled Test Run forever and asked the author for
-  // something the schema forbids.
+  // `required` by default (#12613 made it optional, not unneeded) with a
+  // `defaultValue` the shared schema REJECTS, so gating on the whole list
+  // disabled Test Run forever and asked the author for something the schema
+  // forbids.
   const missingRequiredParams = useMemo(
     () => runtimeParameters(parameters).filter(p => p.required && !p.defaultValue).map(p => p.name),
     [parameters]

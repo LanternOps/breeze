@@ -59,6 +59,11 @@ describe('GET /:id/wake-status', () => {
     expect(listMock).not.toHaveBeenCalled();
   });
 
+  it('reads the policy with the read predicate (W03a)', async () => {
+    await makeApp().request(`/${POLICY}/wake-status`);
+    expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY, expect.anything(), { access: 'read' });
+  });
+
   it('403s without devices.read', async () => {
     state.permissions = new Set();
     expect((await makeApp().request(`/${POLICY}/wake-status`)).status).toBe(403);
@@ -93,6 +98,12 @@ describe('POST /:id/wake-status/:deviceId/allow', () => {
   });
 
   const post = () => makeApp().request(`/${POLICY}/wake-status/${DEVICE}/allow`, { method: 'POST' });
+
+  it('keeps the write-side reader for allow-again', async () => {
+    await post();
+    expect(getConfigPolicyMock).toHaveBeenCalledTimes(1);
+    expect(getConfigPolicyMock.mock.calls[0]).toHaveLength(2);
+  });
 
   it('requires devices.execute', async () => {
     state.permissions = new Set(['devices.read']);

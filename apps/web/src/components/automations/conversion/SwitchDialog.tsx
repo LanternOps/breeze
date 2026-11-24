@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
   CONVERSION_MIN_SHADOW_MS,
-  FLEET_MAX_TARGETS,
   type FlowConversionDto,
   type FlowConversionFinding,
   type FlowConversionPreviewDto,
@@ -11,6 +10,7 @@ import {
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { Dialog } from '../../shared/Dialog';
+import { FleetMaxTargetsField, parseFleetMaxTargets } from '../../flows/FleetMaxTargetsField';
 import {
   conversionErrorMessage,
   conversionErrorToken,
@@ -31,12 +31,6 @@ interface SwitchErrorBody {
 
 /** Gate refusals the dialog lets the user acknowledge (plan Decision 3). */
 const ACKNOWLEDGEABLE = new Set(['shadow_too_short', 'shadow_divergent']);
-
-function parseMaxTargets(raw: string | undefined): number | null {
-  if (!raw || !/^\d+$/.test(raw.trim())) return null;
-  const n = Number(raw.trim());
-  return n >= 1 && n <= FLEET_MAX_TARGETS ? n : null;
-}
 
 /**
  * The switch (#5221 W06, plan Decision 4): every authority the flow gains is
@@ -106,7 +100,7 @@ export function SwitchDialog({
 
   const preApprovals = candidates
     .filter((c) => approved[c.stepId])
-    .map((c) => ({ stepId: c.stepId, maxTargets: parseMaxTargets(maxTargets[c.stepId]) }));
+    .map((c) => ({ stepId: c.stepId, maxTargets: parseFleetMaxTargets(maxTargets[c.stepId]) }));
   const preApprovalsValid = preApprovals.every((p) => p.maxTargets !== null);
 
   const canSubmit =
@@ -196,8 +190,6 @@ export function SwitchDialog({
               <ul className="space-y-2">
                 {candidates.map((c) => {
                   const on = approved[c.stepId] === true;
-                  const raw = maxTargets[c.stepId] ?? '';
-                  const invalid = on && parseMaxTargets(raw) === null;
                   return (
                     <li key={c.stepId} className="space-y-1 rounded border p-2 text-sm" data-testid={`conversion-switch-step-${c.stepId}`}>
                       <label className="flex items-start gap-2">
@@ -217,35 +209,14 @@ export function SwitchDialog({
                         </span>
                       </label>
                       {on && (
-                        <div className="space-y-1 pl-6">
-                          <label className="flex flex-wrap items-center gap-2 text-xs">
-                            <span>{t('conversion.switch.maxTargets', { max: FLEET_MAX_TARGETS })}</span>
-                            <input
-                              type="number"
-                              inputMode="numeric"
-                              min={1}
-                              max={FLEET_MAX_TARGETS}
-                              required
-                              aria-invalid={invalid}
-                              data-testid={`conversion-switch-maxtargets-${c.stepId}`}
-                              value={raw}
-                              onChange={(e) => setMaxTargets((prev) => ({ ...prev, [c.stepId]: e.target.value }))}
-                              className="h-8 w-24 rounded border bg-background px-2"
-                            />
-                          </label>
-                          {invalid && (
-                            <p className="text-xs text-destructive" data-testid={`conversion-switch-maxtargets-invalid-${c.stepId}`}>
-                              {t('conversion.switch.maxTargetsInvalid', { max: FLEET_MAX_TARGETS })}
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground">{t('conversion.switch.liveMembership')}</p>
-                          <p className="text-xs text-muted-foreground">{t('conversion.switch.frozenDevices')}</p>
-                          {partnerWide && (
-                            <p className="text-xs text-muted-foreground" data-testid="conversion-switch-perorg">
-                              {t('conversion.switch.perOrgMultiplies')}
-                            </p>
-                          )}
-                        </div>
+                        <FleetMaxTargetsField
+                          stepId={c.stepId}
+                          value={maxTargets[c.stepId] ?? ''}
+                          onChange={(v) => setMaxTargets((prev) => ({ ...prev, [c.stepId]: v }))}
+                          partnerWide={partnerWide}
+                          testIdPrefix="conversion-switch-maxtargets"
+                          perOrgTestId="conversion-switch-perorg"
+                        />
                       )}
                     </li>
                   );

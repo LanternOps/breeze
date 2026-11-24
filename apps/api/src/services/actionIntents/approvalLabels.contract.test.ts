@@ -85,3 +85,60 @@ describe('W15 Pax8 approval consequences', () => {
     expect(buildApprovalDescription('manage_pax8_orders', 'preflight', {})).toContain('sends the staged order content to Pax8');
   });
 });
+
+// #11674: a comment edit or delete acts on `expectedTicketId` (intentRowTarget.ts),
+// so its headline names that ticket, by an id stub the intent service swaps for
+// the ticket number. Never the comment text (aiGuardrails.ts `manage_tickets`).
+describe('comment edit and delete headlines (#11674)', () => {
+  const OPERATIVE = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+  const STRAY = '2aad0601-1111-4222-8333-444455556666';
+
+  it('edit_comment names the expectedTicketId ticket and says the text is replaced', () => {
+    const label = buildApprovalDescription('manage_tickets', 'edit_comment', {
+      action: 'edit_comment', commentId: STRAY, expectedTicketId: OPERATIVE, ticketId: STRAY, content: 'secret replacement text',
+    });
+    expect(label).toBe('Edit a comment on ticket #7c1e9d02... (replaces its text)');
+    expect(label).not.toContain('secret');
+  });
+
+  it('delete_comment names the expectedTicketId ticket', () => {
+    expect(buildApprovalDescription('manage_tickets', 'delete_comment', {
+      action: 'delete_comment', commentId: STRAY, expectedTicketId: OPERATIVE, ticketId: STRAY,
+    })).toBe('Delete a comment on ticket #7c1e9d02...');
+  });
+
+  it('never names a stray ticketId when expectedTicketId is missing', () => {
+    expect(buildApprovalDescription('manage_tickets', 'delete_comment', { action: 'delete_comment', ticketId: STRAY }))
+      .toBe('Delete a comment on ticket #unknown');
+  });
+});
+
+// A supervised patch install headlined "Install 1 patch(es) on 1 device(s)":
+// it now counts in plain English, and one device is named by the
+// `on device <id>...` stub the approval surfaces swap for its name
+// (approvalDeviceName.ts `argumentDeviceId`), as run_script does (#11979).
+describe('manage_patches install headline', () => {
+  const DEVICE = '6eae0f70-1111-4222-8333-444455556666';
+  const OTHER_DEVICE = '7eae0f70-1111-4222-8333-444455556666';
+  const PATCH = 'aaaaaaaa-1111-4222-8333-444455556666';
+  const PATCH_2 = 'bbbbbbbb-1111-4222-8333-444455556666';
+
+  it('one patch on one device names the device by its stub', () => {
+    expect(buildApprovalDescription('manage_patches', 'install', { action: 'install', patchIds: [PATCH], deviceIds: [DEVICE] }))
+      .toBe('Install 1 patch on device 6eae0f70...');
+  });
+
+  it('counts several patches and devices without "(es)" or "(s)"', () => {
+    expect(buildApprovalDescription('manage_patches', 'install', {
+      action: 'install', patchIds: [PATCH, PATCH_2], deviceIds: [DEVICE, OTHER_DEVICE],
+    })).toBe('Install 2 patches on 2 devices');
+    expect(buildApprovalDescription('manage_patches', 'install', { action: 'install', patchIds: [PATCH, PATCH_2], deviceIds: [DEVICE] }))
+      .toBe('Install 2 patches on device 6eae0f70...');
+  });
+
+  it('counts a device it cannot stub', () => {
+    expect(buildApprovalDescription('manage_patches', 'install', { action: 'install', patchIds: [PATCH], deviceIds: [42] }))
+      .toBe('Install 1 patch on 1 device');
+    expect(buildApprovalDescription('manage_patches', 'install', {})).toBe('Install 0 patches on 0 devices');
+  });
+});

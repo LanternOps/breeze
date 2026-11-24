@@ -1,13 +1,27 @@
 import './setup';
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { discoveredAssets, devices, deviceMetrics, deviceProcessSamples, metricRollups, snmpDevices, snmpMetrics } from '../../db/schema';
-import { rollupDeviceMetricsRange, type MetricRollupRange } from '../../services/metricRollups';
+import {
+  buildRawProcessSampleRollupStatement,
+  rollupDeviceMetricsRange,
+  type MetricRollupRange,
+} from '../../services/metricRollups';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+
+/** The slice of an `EXPLAIN (FORMAT JSON)` node the #12583 plan-shape test reads. */
+type PlanNode = {
+  'Node Type': string;
+  'Relation Name'?: string;
+  'Index Cond'?: string;
+  'Recheck Cond'?: string;
+  Filter?: string;
+  Plans?: PlanNode[];
+};
 
 const ORG_B_USER = '99999999-9999-4999-8999-999999999999';
 
@@ -439,6 +453,150 @@ describe('metric rollups integration', () => {
       gapSeconds: 240,
     }));
     expect((updatedGapBucket.metadata as Record<string, unknown>).isGap).toBe(false);
+  });
+
+  // #12583 — the process-sample statement used to read its window twice and,
+  // under forced RLS, could not seek it: the timestamptz column was compared
+  // to `::timestamp` bounds, a cross-type operator that is not leakproof, so
+  // Postgres kept it out of the index condition and every scan walked the org's
+  // whole retained history. These pin the outputs across the rewrite and the
+  // plan shape that makes the window a single index range read.
+  describe('#12583 process-sample window read', () => {
+    const from = new Date('2026-06-18T12:00:00.000Z');
+    const to = new Date('2026-06-18T12:15:00.000Z');
+
+    async function insertPayload(orgId: string, deviceId: string, timestamp: string, topProcesses: unknown): Promise<void> {
+      await getTestDb().insert(deviceProcessSamples).values({
+        orgId,
+        deviceId,
+        timestamp: new Date(timestamp),
+        agentTimestamp: new Date(timestamp),
+        topProcesses: topProcesses as never,
+      });
+    }
+
+    async function processRows(orgId: string) {
+      const rows = await getTestDb()
+        .select()
+        .from(metricRollups)
+        .where(and(
+          eq(metricRollups.orgId, orgId),
+          eq(metricRollups.sourceTable, 'device_process_samples'),
+          eq(metricRollups.bucketSeconds, 300)
+        ));
+      return rows;
+    }
+
+    it('keeps window edges, empty and non-numeric payloads, gap rows and org scoping unchanged', async () => {
+      const busy = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'edges-busy' });
+      const sparse = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'edges-sparse' });
+      const outside = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'edges-outside' });
+      const otherOrg = await insertDevice({ orgId: orgB, siteId: siteB, hostname: 'edges-other-org' });
+
+      // Excluded on both sides: [from, to) is half-open.
+      await insertPayload(orgA, busy, '2026-06-18T11:59:59.000Z', [{ cpu: 999, ramMb: 999 }]);
+      await insertPayload(orgA, busy, '2026-06-18T12:15:00.000Z', [{ cpu: 999, ramMb: 999 }]);
+      // Bucket 12:00 — a sample exactly at `from` and one just before the bucket edge.
+      await insertPayload(orgA, busy, '2026-06-18T12:00:00.000Z', [
+        { cpu: 10, ramMb: 100, diskBps: 1, netBps: 2 },
+        { cpu: 5, ramMb: 50 },
+      ]);
+      await insertPayload(orgA, busy, '2026-06-18T12:04:59.999Z', [{ cpu: 20, ramMb: 300 }]);
+      // Bucket 12:05 — an empty process list still counts as a sample of zeros.
+      await insertPayload(orgA, busy, '2026-06-18T12:05:00.000Z', []);
+      // Bucket 12:10 — non-numeric values and non-object elements add nothing to
+      // the sums and maxima, but still count toward top_process_count.
+      await insertPayload(orgA, busy, '2026-06-18T12:10:00.000Z', [
+        { cpu: '12.5', ramMb: null, diskBps: 7 },
+        7,
+        'x',
+      ]);
+      // One populated bucket: the other two become gap rows.
+      await insertPayload(orgA, sparse, '2026-06-18T12:00:00.000Z', [{ cpu: 1, ramMb: 1 }]);
+      // Only samples outside the window: the device gets no rows at all.
+      await insertPayload(orgA, outside, '2026-06-18T12:15:00.000Z', [{ cpu: 1, ramMb: 1 }]);
+      // Another org's sample inside the window is never read by orgA's pass.
+      await insertPayload(orgB, otherOrg, '2026-06-18T12:05:00.000Z', [{ cpu: 1, ramMb: 1 }]);
+
+      await runRollup(orgA, from, to);
+
+      const rows = await processRows(orgA);
+      expect(rows).toHaveLength(2 * 7 * 3);
+      expect(new Set(rows.map((row) => row.deviceId))).toEqual(new Set([busy, sparse]));
+      await expect(processRows(orgB)).resolves.toHaveLength(0);
+
+      const pick = (deviceId: string, metricName: string) => rows
+        .filter((row) => row.deviceId === deviceId && row.metricName === metricName)
+        .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
+        .map((row) => ({
+          bucket: row.bucketStart.toISOString().slice(11, 16),
+          avg: row.avgValue, min: row.minValue, max: row.maxValue, p95: row.p95Value,
+          sum: row.sumValue, count: row.sampleCount, gap: row.gapSeconds,
+          isGap: (row.metadata as Record<string, unknown>).isGap,
+        }));
+
+      expect(pick(busy, 'top_process_count')).toEqual([
+        { bucket: '12:00', avg: 1.5, min: 1, max: 2, p95: 1.95, sum: 3, count: 2, gap: 180, isGap: false },
+        { bucket: '12:05', avg: 0, min: 0, max: 0, p95: 0, sum: 0, count: 1, gap: 240, isGap: false },
+        { bucket: '12:10', avg: 3, min: 3, max: 3, p95: 3, sum: 3, count: 1, gap: 240, isGap: false },
+      ]);
+      expect(pick(busy, 'top_process_cpu_percent_sum')).toEqual([
+        { bucket: '12:00', avg: 17.5, min: 15, max: 20, p95: 19.75, sum: 35, count: 2, gap: 180, isGap: false },
+        { bucket: '12:05', avg: 0, min: 0, max: 0, p95: 0, sum: 0, count: 1, gap: 240, isGap: false },
+        { bucket: '12:10', avg: 0, min: 0, max: 0, p95: 0, sum: 0, count: 1, gap: 240, isGap: false },
+      ]);
+      expect(pick(busy, 'top_process_ram_mb_max').map((row) => row.avg)).toEqual([200, 0, 0]);
+      expect(pick(busy, 'top_process_disk_bps_sum').map((row) => row.avg)).toEqual([0.5, 0, 7]);
+      expect(pick(busy, 'top_process_net_bps_sum').map((row) => row.avg)).toEqual([1, 0, 0]);
+
+      expect(pick(sparse, 'top_process_cpu_percent_max')).toEqual([
+        { bucket: '12:00', avg: 1, min: 1, max: 1, p95: 1, sum: 1, count: 1, gap: 240, isGap: false },
+        { bucket: '12:05', avg: null, min: null, max: null, p95: null, sum: null, count: 0, gap: 300, isGap: true },
+        { bucket: '12:10', avg: null, min: null, max: null, p95: null, sum: null, count: 0, gap: 300, isGap: true },
+      ]);
+    });
+
+    it('reads the window once, as an (org_id, timestamp) index range, under forced RLS', async () => {
+      const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'plan-shape-device' });
+      await insertPayload(orgA, device, '2026-06-18T12:00:00.000Z', [{ cpu: 1, ramMb: 1 }]);
+
+      // The app pool (breeze_app, RLS forced) under system scope, as the worker
+      // runs it — the superuser test client has no RLS qual and would never
+      // show the leak-proofness problem. The tables are tiny, so turn off
+      // sequential scans to make the planner show which predicates an index
+      // can take. EXPLAIN without ANALYZE: the INSERT is planned, not run.
+      const plan = await withSystemDbAccessContext(async () => {
+        // Guard against a vacuous pass: a role that bypasses RLS has no policy
+        // qual, so the timestamp bounds would be index conditions anyway.
+        const role = await db.execute(sql`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`);
+        expect((role as unknown as Array<Record<string, unknown>>)[0]).toEqual({ rolsuper: false, rolbypassrls: false });
+        await db.execute(sql`SET LOCAL enable_seqscan = off`);
+        const result = await db.execute(
+          sql`EXPLAIN (FORMAT JSON) ${buildRawProcessSampleRollupStatement({ orgId: orgA, from, to })}`
+        );
+        const first = (result as unknown as Array<Record<string, unknown>>)[0]!;
+        const raw = first['QUERY PLAN'];
+        return (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{ Plan: PlanNode }>;
+      });
+
+      const scans: PlanNode[] = [];
+      const visit = (node: PlanNode) => {
+        if (node['Relation Name'] === 'device_process_samples') scans.push(node);
+        for (const child of node.Plans ?? []) visit(child);
+      };
+      visit(plan[0]!.Plan);
+
+      expect(scans).toHaveLength(1);
+      const scan = scans[0]!;
+      const indexCondition = /Bitmap Heap Scan$/.test(scan['Node Type'])
+        ? scan['Recheck Cond']
+        : scan['Index Cond'];
+      expect(scan['Node Type']).not.toBe('Seq Scan');
+      expect(indexCondition).toMatch(/org_id = /);
+      expect(indexCondition).toMatch(/"timestamp" >= /);
+      expect(indexCondition).toMatch(/"timestamp" < /);
+      expect(scan.Filter ?? '').not.toMatch(/"timestamp"/);
+    });
   });
 
   // #4341 — the raw passes went from one statement per metric (10 over

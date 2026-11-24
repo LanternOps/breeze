@@ -777,7 +777,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		// backup stuck `running` until the stale-backup reaper failed it
 		// (#3001). Send failures are logged inside sendBackupResult under
 		// component=backup so they ship server-side.
-		_ = sendUnsolicitedResult(conn, result)
+		_ = sendUnsolicitedResult(conn, req.CommandType, result)
 		return
 	}
 
@@ -803,7 +803,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	// Same oversize guard as the async path above: the synchronous reply is
 	// what resolves the agent's pending request, so dropping it strands the
 	// command until its forward wait times out (#3001).
-	_ = sendBackupResult(conn, env.ID, result)
+	_ = sendBackupResult(conn, env.ID, req.CommandType, result)
 }
 
 // sendUnsolicitedResult sends a terminal backup_result envelope that is not
@@ -817,9 +817,9 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 //
 // It goes through sendBackupResult so the payload is bounded to the IPC frame
 // first — see result_bounds.go and #3001.
-func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult) error {
+func sendUnsolicitedResult(conn *ipc.Conn, commandType string, result backupipc.BackupCommandResult) error {
 	id := fmt.Sprintf("%s-final-%d", result.CommandID, time.Now().UnixNano())
-	return sendBackupResult(conn, id, result)
+	return sendBackupResult(conn, id, commandType, result)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {

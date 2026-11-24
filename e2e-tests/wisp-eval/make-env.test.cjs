@@ -69,6 +69,10 @@ const SOURCE = {
   LENOVO_API_KEY: ['fake-lenovo-13', 'blank'],
   SOME_FUTURE_VENDOR_API_KEY: ['fake-future-14', 'blank'],
   C2C_M365_CERT_PRIVATE_KEY_PATH: ['/fake/cert-15.pem', 'blank'],
+  // a real artifact store in the source: replaced by placeholders (see the SET list)
+  ARTIFACT_S3_BUCKET_US: ['source-artifact-bucket', 'placeholder'],
+  ARTIFACT_S3_ACCESS_KEY: ['fake-artifact-18', 'placeholder'],
+  ARTIFACT_S3_SECRET_KEY: ['fake-artifact-19', 'placeholder'],
   // a password inside a URL, under a name that does not look like a credential
   DATABASE_URL: ['postgresql://breeze:fake-url-pw-16@localhost:5432/breeze', 'blank'],
   AUDIT_ADMIN_DATABASE_URL: ['postgresql://audit:fake-url-pw-17@db.example:5432/breeze', 'blank'],
@@ -130,6 +134,10 @@ test('make-env carries over only the model key, generates the stack secrets and 
       assert.equal(seen[k], 1, `${k} appears exactly once`);
       if (want === 'copy') assert.equal(values[k], v, `${k} should be copied`);
       else if (want === 'blank') assert.equal(values[k], '', `${k} should be blank`);
+      else if (want === 'placeholder') {
+        assert.notEqual(values[k], '', `${k} should be set, or a hosted stack with the workspace lane on does not boot`);
+        assert.notEqual(values[k], v, `${k} must not be the source value`);
+      }
       else {
         assert.match(values[k], want, `${k} should be generated in the stack's format`);
         assert.notEqual(values[k], v, `${k} must not be the source value`);
@@ -140,6 +148,14 @@ test('make-env carries over only the model key, generates the stack secrets and 
     assert.equal(values.BREEZE_AI_WORKSPACE_ENABLED, 'true');
     assert.equal(values.AI_WORKSPACE_BACKEND, 'fake');
     assert.equal(values.MCP_OAUTH_ENABLED, 'false');
+    // The API refuses to start hosted with the workspace lane on and no artifact store
+    // for its region, so both regions get one, pointed at an address nothing listens on.
+    for (const k of ['ARTIFACT_S3_BUCKET_US', 'ARTIFACT_S3_BUCKET_EU', 'ARTIFACT_S3_ACCESS_KEY', 'ARTIFACT_S3_SECRET_KEY']) {
+      assert.equal(seen[k], 1, `${k} appears exactly once`);
+      assert.notEqual(values[k], '', `${k} is set`);
+    }
+    assert.equal(values.ARTIFACT_S3_ENDPOINT_US, 'http://127.0.0.1:9');
+    assert.equal(values.ARTIFACT_S3_ENDPOINT_EU, 'http://127.0.0.1:9');
     assert.equal(values.CORS_ALLOWED_ORIGINS, 'http://localhost:48999');
     assert.equal(values.BREEZE_CADDY_IP, '172.31.99.10');
     assert.equal(fs.statSync(s.dest).mode & 0o777, 0o600, 'the destination is mode 600');

@@ -122,7 +122,7 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
       sourceDeviceId: SOURCE,
       targetDeviceId: TARGET,
       targetVersion: VERSION,
-      evidenceLevel: 'hint',
+      expectedEvidenceLevel: 'hint',
       restoreDecommissioned: true,
       acknowledgeOsChange: true,
       confirmTargetName: 'PC-OLD',
@@ -196,6 +196,7 @@ describe('POST /devices/:id/reattach (#8318 §8)', () => {
       ['a non-uuid grant', { stepUpGrant: 'nope' }],
       // The server decides the evidence level; a client cannot raise it.
       ['an evidenceLevel field', { evidenceLevel: 'tpm_continuity' }],
+      ['an unknown expectedEvidenceLevel', { expectedEvidenceLevel: 'genuine_tpm' }],
       ['an unknown field', { force: true }],
       ['no targetVersion', { targetVersion: undefined }],
       ['a malformed targetVersion', { targetVersion: 'short' }],

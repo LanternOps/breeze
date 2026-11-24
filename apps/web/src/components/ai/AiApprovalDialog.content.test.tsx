@@ -95,6 +95,54 @@ describe('AiApprovalDialog — a ticket comment shows its message (#11674)', () 
   });
 });
 
+describe('AiApprovalDialog — a comment edit or delete says what changes (#11674)', () => {
+  const EDIT_INPUT = {
+    action: 'edit_comment',
+    commentId: '3bbb0601-1111-4222-8333-444455556666',
+    expectedTicketId: '2aad0601-1111-4222-8333-444455556666',
+    content: 'Corrected: the technician arrives at 3pm.\nSorry for the confusion.',
+  };
+
+  function commentCard(input: Record<string, unknown>, description: string) {
+    return (
+      <AiApprovalDialog {...base} toolName="manage_tickets" description={description} input={input} ticketContext={ticketContext} />
+    );
+  }
+
+  it('shows the replacement text of an edit, labelled as replacing an existing comment', () => {
+    render(commentCard(EDIT_INPUT, 'Edit a comment on ticket T-2026-0001 (replaces its text)'));
+
+    const preview = screen.getByTestId('approval-comment-edit-preview');
+    expect(preview.closest('details')).toBeNull();
+    expect(within(preview).getByTestId('approval-comment-edit-text').textContent).toBe(EDIT_INPUT.content);
+    expect(within(preview).getByTestId('approval-comment-edit-heading')).toHaveTextContent(/replaces/i);
+    // The input does not say whether the comment is public, so the card does not claim either.
+    expect(preview).not.toHaveTextContent(/customer-visible|internal note/i);
+    expect(screen.queryByTestId('approval-ticket-comment-recipient')).toBeNull();
+    // The ticket row still names the ticket.
+    expect(screen.getByTestId('approval-ticket-context')).toHaveTextContent('T-2026-0001');
+  });
+
+  it('says a comment will be deleted, with no text to show', () => {
+    render(commentCard(
+      { action: 'delete_comment', commentId: EDIT_INPUT.commentId, expectedTicketId: EDIT_INPUT.expectedTicketId },
+      'Delete a comment on ticket T-2026-0001',
+    ));
+
+    const notice = screen.getByTestId('approval-comment-delete-preview');
+    expect(notice.closest('details')).toBeNull();
+    expect(notice).toHaveTextContent(/deleted/i);
+    expect(notice).not.toHaveTextContent(/customer-visible|internal note/i);
+    expect(screen.queryByTestId('approval-comment-edit-preview')).toBeNull();
+  });
+
+  it('shows no edit preview when an edit carries no text', () => {
+    render(commentCard({ ...EDIT_INPUT, content: '' }, 'Edit a comment on ticket T-2026-0001 (replaces its text)'));
+
+    expect(screen.queryByTestId('approval-comment-edit-preview')).toBeNull();
+  });
+});
+
 describe('AiApprovalDialog — a memory write shows what will be stored (#11674)', () => {
   function rememberCard(input: Record<string, unknown>) {
     return <AiApprovalDialog {...base} toolName="remember" description="Remember" input={input} />;

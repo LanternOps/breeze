@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Enviar un paquete Wake-on-LAN a través de un agente par en línea en el LAN del dispositivo",
     "power": "Energía",
     "shutdown": "Apagar",
-    "deviceSettings": "Configuración del dispositivo",
+    "editDetails": "Editar detalles",
     "installHomebrew": "Instalar Homebrew",
     "restartAgent": "Reiniciar agente",
     "runVendorUpdates": "Ejecutar actualizaciones del fabricante",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Terminal remota",
     "runScript": "Ejecutar secuencia de comandos",
     "reboot": "Reiniciar",
-    "settings": "Configuración",
+    "editDetails": "Editar detalles",
     "restore": "Restaurar",
     "decommission": "Quitar",
     "permanentlyDelete": "Eliminar permanentemente",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} se movió a {{orgName}}",
     "failedToFetchDevice": "No se pudo recuperar el dispositivo",
+    "refreshAfterEditFailed": "Se guardó, pero esta página no se pudo actualizar. Vuelve a cargarla para ver el cambio en todas partes.",
     "online": "en línea",
     "offline": "desconectado",
     "rebootToSafeMode": "Reiniciar en modo seguro",
@@ -1048,13 +1049,12 @@
     "linkedPolicy": "Política vinculada:",
     "notEnforced": "No aplicado",
     "usingBreezeDefaults": "- usando los valores predeterminados de Breeze",
-    "inheritanceChain": "Cadena de herencia",
-    "policiesAreResolvedUsingClosestWins": "Las políticas se resuelven utilizando la prioridad de ganador más cercano. Las asignaciones más específicas (nivel de dispositivo) anulan las más amplias (nivel de organización).",
+    "inheritanceChain": "Precedencia",
     "priority": "Prioridad",
     "level": "Nivel",
     "policy2": "Política",
     "features": "Características",
-    "inheritedFrom": "Heredado de {{name}}",
+    "inheritedFrom": "Basada en {{name}}",
     "patchApproval": {
       "label": "aprobación",
       "byRing": "definida por el anillo de actualización vinculado",
@@ -1064,8 +1064,16 @@
       "extraDestinations": "Destinos adicionales durante el aislamiento",
       "invalid": "La configuración de contención de esta política no es válida, por lo que el aislamiento usa los valores predeterminados fijos, sin destinos adicionales."
     },
-    "chainResolutionRule": "Primero decide el nivel: Dispositivo gana a Grupo de dispositivos, luego Sitio, Organización y Socio. La prioridad (gana el número más bajo) solo desempata entre políticas del mismo nivel. Las funciones tachadas fueron anuladas por una política más cercana.",
-    "featureOverriddenBy": "Anulada por {{policy}}"
+    "featureOverriddenBy": "Anulada por {{policy}}",
+    "viaLevel": "mediante {{level}}",
+    "managedByYourMsp": "Administrada por su MSP",
+    "precedenceLegend": "Prevalece la más específica, por función: Dispositivo › Grupo de dispositivos › Sitio › Organización › Todas las organizaciones. Una política más cercana reemplaza la función completa; no se combinan.",
+    "lostClause": "Reemplazada para {{features}} por {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "está configurada en un nivel más específico",
+      "lower_priority_number": "mismo nivel, número de prioridad menor",
+      "assigned_earlier": "mismo nivel y prioridad, asignada antes"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",
@@ -1381,7 +1389,8 @@
     "noGroupsMatchFilter": "Ningún grupo coincide con este filtro.",
     "managedByPartner": "Administrado por tu proveedor de servicios. Las reglas de membresía no se muestran; ves los dispositivos de tu organización.",
     "partnerDynamicType": "Dinámico · Todas las org.",
-    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas."
+    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas.",
+    "policyRefusedForGroup": "No se aplicó nada. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "No se pudo recuperar el inventario de hardware",
@@ -1611,7 +1620,21 @@
     "customFields": "Campos personalizados",
     "text2": "*",
     "edit": "Editar",
-    "roleNotAssessed": "Rol aún no evaluado"
+    "roleNotAssessed": "Rol aún no evaluado",
+    "noTags": "Sin etiquetas",
+    "editTags": "Editar etiquetas",
+    "addTag": "Agregar una etiqueta",
+    "removeTag": "Quitar etiqueta {{tag}}",
+    "tagsSaved": "Etiquetas guardadas",
+    "tagsSaveFailed": "No se pudieron guardar las etiquetas",
+    "purchaseDate": "Fecha de compra",
+    "editPurchaseDate": "Editar fecha de compra",
+    "purchaseDateNotSet": "Sin definir",
+    "purchaseDateFromVendor": "Del fabricante",
+    "purchaseDateSaved": "Fecha de compra guardada",
+    "purchaseDateSaveFailed": "No se pudo guardar la fecha de compra",
+    "purchaseDateHelp": "La usa el informe de ciclo de vida del hardware para planificar reemplazos.",
+    "purchaseDateVendorHint": "Tomada de la fecha de envío del fabricante. Ingresa una fecha para reemplazarla."
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1837,7 +1860,7 @@
     "reboot": "Reiniciar",
     "sendAWakeOnLanPacket": "Enviar un paquete Wake-on-LAN a través de un agente par en línea en el LAN del dispositivo",
     "wake": "Despertar",
-    "settings": "Configuración",
+    "editDetails": "Editar detalles",
     "enterMaintenance": "Ingresar a Mantenimiento",
     "exitMaintenance": "Salir de mantenimiento",
     "restore": "Restaurar",
@@ -2492,31 +2515,6 @@
     "scanAlreadyRunning": "El análisis ya se está ejecutando en el dispositivo y no se puede cancelar.",
     "scanAlreadyQueued": "Ya hay un análisis en cola para este dispositivo."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Agregue una etiqueta...",
-    "dangerZone": "Zona de peligro",
-    "decommissionDevice": "Quitar dispositivo",
-    "decommissionWarning": "Quitar este dispositivo lo saca de su flota activa. El historial se conserva y puede restaurarlo más adelante.",
-    "decommissionedDescription": "Este dispositivo ha sido quitado. Puede restaurarlo o eliminarlo permanentemente.",
-    "decommissionedTitle": "Dispositivo quitado",
-    "displayName": "Nombre para mostrar",
-    "errors": {
-      "loadSites": "No se pudieron cargar los sitios",
-      "saveSettings": "No se pudo guardar la configuración",
-      "siteChanged": "Alguien más movió este dispositivo: recarga para ver su sitio actual"
-    },
-    "hostname": "Nombre de host: {{hostname}}",
-    "saved": "Configuración del dispositivo guardada",
-    "permanentlyDelete": "Eliminar permanentemente",
-    "restoreDevice": "Restaurar dispositivo",
-    "saveChanges": "Guardar cambios",
-    "site": "Sitio",
-    "tags": "Etiquetas",
-    "title": "Configuración del dispositivo",
-    "purchaseDate": "Fecha de compra",
-    "purchaseDateHelp": "La usa el informe de ciclo de vida del hardware para planificar el reemplazo.",
-    "purchaseDateVendorHint": "Tomada de la fecha de envío del fabricante. Ingresa una fecha para reemplazarla."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Desinstalar",
@@ -2651,7 +2649,6 @@
     "compactTitle": "Garantía",
     "endDate": "Fecha de finalización",
     "error": "Error: {{error}}",
-    "expires": "Vence",
     "lastChecked": "Última comprobación: {{time}}",
     "loadFailed": "No se pudo cargar la garantía.",
     "lookupUnavailable": "La búsqueda de garantía no está disponible para este fabricante",
@@ -2692,7 +2689,11 @@
       "import": "Importado",
       "importVendorEarlier": "Importado (el fabricante informa una fecha de fin anterior)",
       "provider": "API del fabricante"
-    }
+    },
+    "sectionTitle": "Garantía y compra",
+    "coverage": "Cobertura",
+    "coverageStarts": "Inicio de cobertura",
+    "coverageEnds": "Fin de cobertura"
   },
   "devicesPage": {
     "accessDenied": "No tiene permiso para ver dispositivos.",
@@ -3249,7 +3250,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Mover a otra organización",
-    "description": "Mueve {{hostname}} fuera de {{orgName}}. Su historial, tickets y políticas se mueven con él, y el agente se reconecta bajo la nueva organización.",
+    "description": "Mueve {{hostname}} fuera de {{orgName}}. Su historial y tickets se mueven con él, y el agente se reconecta bajo la nueva organización.",
     "targetOrgLabel": "Organización de destino",
     "targetOrgPlaceholder": "Elige una organización",
     "targetSiteLabel": "Sitio de destino",
@@ -3261,6 +3262,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} registros de tiempo sin facturar y {{parts}} piezas sin facturar conservan su moneda original después del traslado.",
     "currencyMismatchAccept": "Entiendo: mover el dispositivo y conservar esas filas en su moneda original",
     "currencyMismatchNoPermission": "Aceptar esto requiere permiso de escritura de facturas. Pide a un administrador de facturación que facture o resuelva el trabajo pendiente primero.",
+    "policyAssignmentsHeading": "Políticas de configuración que se quitarán de este dispositivo",
+    "policyAssignmentsDetail": "Estas políticas están asignadas directamente a este dispositivo y no pueden aplicarse en la nueva organización. El traslado quita las asignaciones. Las políticas en sí no cambian.",
     "stepUpHeading": "Confirma que eres tú",
     "stepUpIntro": "Mover un dispositivo entre organizaciones requiere un segundo factor.",
     "stepUpCodeLabel": "Código del autenticador",
@@ -5198,5 +5201,27 @@
       "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo."
     },
     "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Datos del dispositivo",
+    "serial": "Número de serie",
+    "serialShort": "N/S",
+    "lanIp": "IP de LAN",
+    "warranty": {
+      "active": "Garantía hasta {{date}}",
+      "expiring": "La garantía vence el {{date}}",
+      "expired": "Garantía vencida el {{date}}"
+    },
+    "warrantyStatus": "Garantía: {{status}}",
+    "warrantyDetails": "Detalles de la garantía",
+    "manageContacts": "Administrar contactos",
+    "more": "{{count}} más",
+    "showLess": "Mostrar menos",
+    "call": "Llamar a {{name}}",
+    "loadFailed": "Algunos detalles no se cargaron"
+  },
+  "deviceAssetRecord": {
+    "title": "Registro del activo",
+    "description": "A quién contactar, dónde está y quién lo paga."
   }
 }

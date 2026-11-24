@@ -311,7 +311,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { and, eq } from 'drizzle-orm';
-import { approvalRoutes } from './approvals';
+import { approvalRoutes, countAuthorizedPendingApprovals } from './approvals';
 import { approvalRequests } from '../db/schema/approvals';
 import { actionIntents } from '../db/schema/actionIntents';
 import { db } from '../db';
@@ -807,6 +807,20 @@ describe('GET /approvals/pending/count', () => {
     const res = await buildApp().request('/approvals/pending/count');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ count: 2 });
+  });
+
+  // #11677: Wisp's standing state reads this function directly; it must keep
+  // the same live re-authorisation as the route (a demoted approver's row is not counted).
+  it('countAuthorizedPendingApprovals counts only the live-authorized rows of that user', async () => {
+    const intent = { id: 'intent-c', orgId: 'org-9', status: 'pending_approval', approvalScope: 'four_eyes', requestedByUserId: 'requester-9' };
+    mockPendingJoinResolves([
+      { approval: buildPendingApproval({ id: 'c1' }), intent: null },
+      { approval: buildPendingApproval({ id: 'c2', intentId: 'intent-c' }), intent },
+    ]);
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+    expect(await countAuthorizedPendingApprovals(TEST_USER.id, null)).toBe(1);
+    const where = (vi.mocked(db.select).mock.results.at(-1)!.value as { where: ReturnType<typeof vi.fn> }).where;
+    expect(JSON.stringify(where.mock.calls[0])).toContain(TEST_USER.id);
   });
 });
 
@@ -4487,6 +4501,54 @@ describe('P2-2 batch decide routes', () => {
     expect(vi.mocked(generateApprovalAssertionOptions)).toHaveBeenCalledTimes(1);
     const key = vi.mocked(generateApprovalAssertionOptions).mock.calls[0]![0].approvalId;
     expect(key).toMatch(/^batch-approved-[0-9a-f]{64}$/);
+  });
+
+  // Cross-org scope (#12288 follow-up). The service suite owns the rules; these
+  // only prove the routes hand `scope` through instead of dropping it — a set
+  // the default scope accepts must be refused under `cross_org` (the tool is
+  // not on the cross-org allowlist), with nothing minted or decided.
+  it('POST /batch/assertion-challenge applies the cross_org rules when asked', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1', 'appr-b2'], decision: 'approved', scope: 'cross_org' }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-b1', 'appr-b2'] });
+    expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/decide applies the cross_org rules when asked', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+    mockBatchTx();
+
+    const res = await buildApp().request('/approvals/batch/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1', 'appr-b2'], decision: 'approved', scope: 'cross_org' }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/assertion-challenge 400s an unknown scope', async () => {
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1'], decision: 'approved', scope: 'everything' }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('POST /batch/assertion-challenge 422s a heterogeneous set without minting', async () => {

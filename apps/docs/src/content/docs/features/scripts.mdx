@@ -580,6 +580,7 @@ A secret is never pasted into script text. `{{var.key}}` pointing at a secret is
 1. In the script editor, add a parameter and set its **source** to **From a secret variable (environment variable)**.
 2. Bind it to a secret variable key. Non-secret variables are not offered for this source.
 3. Name the parameter using lowercase letters, digits and underscores — the name becomes the environment variable the script reads.
+4. Leave **Required** checked (the default) unless the script can do something useful without the secret. See [Optional secrets](#optional-secrets).
 
 </Steps>
 
@@ -608,14 +609,45 @@ The value is never substituted into the script body, never mirrored into `BREEZE
   - An **organization-scoped** script may bind only that organization's own secrets. A partner-wide secret is refused when the script is saved, with a message naming the parameter, and refused again at dispatch. The second check is what makes the rule airtight: a script cannot be re-scoped or re-pointed into reaching a secret above its own tier.
 - Where an organization defines a secret with the same key as a partner-wide one, the organization's value wins — the same org-over-partner precedence as ordinary variables. This is what makes the per-organization pattern work: set the partner-wide secret as the default, and override it only for the customers that need their own value.
 - A script can declare at most **32** secret parameters.
-- At run time, a target organization where the bound key resolves to a non-secret variable — or has no variable with that key — fails on that device with a message naming the parameter and the variable key. Devices whose organizations do resolve the secret still run.
+- At run time, a target organization where the bound key resolves to a non-secret variable, where the secret is **defined but cannot be read** (the stored value cannot be decrypted with the server's current encryption keys), or — for a **required** parameter — where no variable with that key exists, fails on that device with a message naming the parameter and the variable key. Devices whose organizations do resolve the secret still run.
+
+#### Optional secrets
+
+Secret parameters have a **Required** checkbox, checked by default. Clear it when the script should decide for itself what to do without the secret — for example, to run first-time setup and store the value.
+
+When **Required** is off and the secret is **not defined** for the target device's organization (neither the organization's own nor a partner-wide one), the script still runs and `BREEZE_VAR_<NAME>` is simply not set: the variable is absent, not set to an empty string. A secret can never be saved empty, so an absent variable always means "not defined". Test for it in the script:
+
+<Tabs>
+  <TabItem label="PowerShell">
+    ```powershell
+    if (Test-Path Env:BREEZE_VAR_API_TOKEN) {
+      # use $env:BREEZE_VAR_API_TOKEN
+    } else {
+      # first-time setup
+    }
+    ```
+  </TabItem>
+  <TabItem label="Bash">
+    ```bash
+    if [ -n "${BREEZE_VAR_API_TOKEN+x}" ]; then
+      : # use "$BREEZE_VAR_API_TOKEN"
+    else
+      : # first-time setup
+    fi
+    ```
+  </TabItem>
+</Tabs>
+
+**Required** off only covers *not defined*. A secret that exists but cannot be read, is bound to a non-secret variable, or is above the script's ownership tier still fails the device.
+
+When no secret is delivered, the requirements below (system-context execution, agent version) do not apply to that run, since there is nothing to deliver.
 
 **Requirements**
 
 | Requirement | If it is not met |
 |---|---|
 | System-context execution | A script set to **Run as user**, or a run targeted at a specific user session, is refused: *"This script uses secret variables, which require system-context execution; ... was not executed."* |
-| An agent that supports secure secret delivery — **agent v0.106.0 or later** | The device fails with *"Agent upgrade required: ... script not executed."* This is checked both when the run is queued and again when the agent picks the command up, so a script never runs with its secret environment variable unset. |
+| An agent that supports secure secret delivery — **agent v0.106.0 or later** | The device fails with *"Agent upgrade required: ... script not executed."* This is checked both when the run is queued and again when the agent picks the command up, so a script never runs with a **defined** secret's environment variable unset. |
 
 While the command waits for the device, the value is held in an encrypted envelope bound to that specific command, and it is erased from the command record once the run completes.
 

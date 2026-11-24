@@ -618,7 +618,7 @@ describe('DeviceActions — phone width (#9028)', () => {
     expect(sheet.contains(runScript)).toBe(true);
     expect(runScript).toHaveAttribute('aria-disabled', 'true');
     expect(runScript).toHaveTextContent('Device is offline');
-    for (const name of [/connect desktop/i, /remote tools/i, /^reboot/i, /shut ?down/i, /device settings/i, /remove/i]) {
+    for (const name of [/connect desktop/i, /remote tools/i, /^reboot/i, /shut ?down/i, /edit details/i, /remove/i]) {
       expect(screen.getAllByRole('menuitem', { name }).length).toBeGreaterThan(0);
     }
   });
@@ -712,5 +712,22 @@ describe('DeviceActions — wake availability gating (#10838)', () => {
   it('shows no WOL prompt or warning text on the device header', () => {
     const { container } = render(<DeviceActions device={{ ...offlineDevice, wakeAvailability: hidden }} />);
     expect(container.textContent ?? '').not.toMatch(/wake-on-lan|wake on lan|wol/i);
+  });
+});
+
+// The overflow item that opened the retired Device Settings modal now emits
+// "edit-details" (DeviceDetailPage reveals the Details tab). The pages are
+// tested by firing that string from stubs, so pin that the real menu emits it.
+describe('DeviceActions — "Edit details" in the overflow menu', () => {
+  it('emits edit-details with the device', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+
+    await user.click(screen.getByTestId('device-actions-menu'));
+    await user.click(screen.getByRole('menuitem', { name: /^edit details$/i }));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('edit-details', onlineDevice);
   });
 });

@@ -54,6 +54,39 @@ describe('query_devices — site narrowing (cross-site enumeration)', () => {
     expect(listRan).toBe(false);
   });
 
+  it('narrows across every org the caller reaches, not just the first one (#10396, #11677)', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    let scanWhere: unknown;
+    let listRan = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols && typeof cols === 'object' && 'id' in (cols as object) && 'siteId' in (cols as object) && Object.keys(cols as object).length === 2) {
+        return { from: () => ({ where: (w: unknown) => { scanWhere = w; return Promise.resolve([{ id: 'd2', siteId: 'site-A' }]); } }) };
+      }
+      if (cols && typeof cols === 'object' && 'count' in (cols as object)) {
+        return { from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) };
+      }
+      listRan = true;
+      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([{ id: 'd2', hostname: 'h' }]) }) }) }) }) }) };
+    });
+    const auth = { ...makeAuth(['site-A']), orgId: null, accessibleOrgIds: ['org-1', 'org-2'] } as AuthContext;
+    await handlerFor('query_devices')({}, auth);
+    expect(listRan).toBe(true);
+    const params = new PgDialect().sqlToQuery(scanWhere as never).params;
+    expect(params).toEqual(['org-1', 'org-2']);
+  });
+
+  it('a site-restricted caller with no org list gets an empty page, never an un-narrowed list (#11677)', async () => {
+    let listRan = false;
+    mockDb.select.mockImplementation(() => {
+      listRan = true;
+      return { from: () => ({ leftJoin: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([{ id: 'd9', hostname: 'h' }]) }) }) }) }), where: () => Promise.resolve([{ count: 1 }]) }) };
+    });
+    const auth = { ...makeAuth(['site-A']), orgId: null, accessibleOrgIds: null } as AuthContext;
+    const parsed = JSON.parse(await handlerFor('query_devices')({}, auth));
+    expect(parsed.total).toBe(0);
+    expect(listRan).toBe(false);
+  });
+
   it('unrestricted caller enumerates normally (no regression)', async () => {
     mockDb.select.mockImplementation((cols?: unknown) => {
       if (cols && typeof cols === 'object' && 'count' in (cols as object)) {

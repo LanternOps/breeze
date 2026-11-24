@@ -2945,7 +2945,8 @@
         "not_found": "bu aracının sahibinin görebildiği bir betik değil",
         "not_in_partner_baseline": "partner taban çizgisinde yok",
         "run_script_not_allowed": "\"Betik çalıştır\" bu aracı için izinli değil"
-      }
+      },
+      "circuitOpen": "Bu aracının devre kesicisi bu kuruluş için açık, bu yüzden çalıştırma başlatılmadı. Yeniden çalıştırmak için aracının satırından sıfırlayın."
     },
     "actions": {
       "add": "Yeni aracı",
@@ -5119,6 +5120,27 @@
           "hint": "Bu ajanın tüm çalışmaları için günlük toplam harcama limiti."
         }
       }
+    },
+    "circuit": {
+      "badge": "Devre kesici açık",
+      "openedSince": "{{org}} içinde {{at}} tarihinden beri duraklatıldı.",
+      "opened": "{{org}} içinde duraklatıldı.",
+      "reason": "Neden: {{reason}}",
+      "reset": "Sıfırla",
+      "dialog": {
+        "title": "Devre kesici sıfırlansın mı?",
+        "message": "{{agent}}, {{org}} içinde yeniden çalışacak. Hataya yol açan sorun giderilmezse aynı sayıda hatadan sonra yeniden duraklar.",
+        "reasonLabel": "Neden (denetim günlüğüne kaydedilir)",
+        "reasonPlaceholder": "Örneğin: model ağ geçidi yeniden çalışıyor",
+        "confirm": "Devre kesiciyi sıfırla"
+      },
+      "toasts": {
+        "reset": "Devre kesici sıfırlandı. Aracı yeniden çalışabilir.",
+        "resetFailed": "Devre kesici sıfırlanamadı."
+      },
+      "errors": {
+        "mfaRequired": "Devre kesiciyi sıfırlamak için iki faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. İkinci faktörünüzle yeniden oturum açın."
+      }
     }
   },
   "apiKeyForm": {
@@ -5906,7 +5928,8 @@
   "settingsSectionNav": {
     "settingsSection": "Ayarlar bölümü",
     "settingsSections": "Ayarlar bölümleri",
-    "unsavedChanges": "{{label}} (kaydedilmemiş değişiklikler)"
+    "unsavedChanges": "{{label}} (kaydedilmemiş değişiklikler)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Sağlayıcı adı gerekli",
@@ -8071,7 +8094,18 @@
     "saved": "Betik yazımı ayarları kaydedildi.",
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
-    "loadFailed": "Betik yazımı ayarları yüklenemedi."
+    "loadFailed": "Betik yazımı ayarları yüklenemedi.",
+    "mcpCeiling": {
+      "title": "Gözetimsiz MCP betik çalıştırmaları",
+      "description": "MCP_UNATTENDED_TIER3_PRINCIPALS listesindeki bir MCP sorumlusunun, yapay zekâ tarafından önerilen bir betiği insan onayı olmadan çalıştırabileceği en yüksek incelenmiş risk; en fazla Orta. Çalıştırma ayrıca cihazın kuruluşu için gözetimsiz betik hattının kurallarını karşılamalıdır: katılım, izin verilen etki sınıfları, korunan kaynaklar, devre kesici ve saatlik sınır. Sınırın üzerinde her çalıştırma onay gerektirir.",
+      "label": "Şu düzeye kadar onaysız çalıştır",
+      "options": {
+        "none": "Asla (her zaman onay iste)",
+        "low": "Düşük",
+        "medium": "Orta"
+      },
+      "stepUpBody": "Bu sınırı yükseltmek yeni bir güvenlik denetimi gerektirir. Onaylayın, ardından yeniden Kaydet'i seçin."
+    }
   },
   "ticketingHubPage": {
     "heading": "Bilet Ayarları",

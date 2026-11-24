@@ -4,6 +4,8 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 
@@ -39,12 +41,12 @@ export default function DeviceLifecycleTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
 
   const storedDays = readStoredDays(effectiveLink?.inlineSettings);
@@ -89,16 +91,6 @@ export default function DeviceLifecycleTab({
     if (ok) onLinkChanged(null, "device_lifecycle");
   };
 
-  const handleOverride = async () => {
-    if (invalid) return;
-    clearError();
-    const result = await save(null, {
-      featureType: "device_lifecycle",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: settings(),
-    });
-    if (result) onLinkChanged(result, "device_lifecycle");
-  };
 
   const handleRevert = async () => {
     if (!existingLink) return;
@@ -119,12 +111,9 @@ export default function DeviceLifecycleTab({
       saveDisabled={invalid}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined
-      }
+      {...change.shellProps}
     >
       <div className="space-y-6">
         <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">

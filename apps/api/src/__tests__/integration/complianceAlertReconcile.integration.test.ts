@@ -124,7 +124,9 @@ async function seedConfigPolicy(owner: Owner, items: RuleSet[], target: { level:
       .insert(configPolicyFeatureLinks)
       .values({ configPolicyId: policy!.id, featureType: 'compliance', inlineSettings: { items } })
       .returning();
-    await db.insert(configPolicyComplianceRules).values(items.map((item, i) => ({ featureLinkId: link!.id, ...item, sortOrder: i })));
+    if (items.length > 0) {
+      await db.insert(configPolicyComplianceRules).values(items.map((item, i) => ({ featureLinkId: link!.id, ...item, sortOrder: i })));
+    }
     const [assignment] = await db
       .insert(configPolicyAssignments)
       .values({ configPolicyId: policy!.id, level: target.level, targetId: target.targetId, priority: 0 })
@@ -250,6 +252,30 @@ describe('configuration-policy compliance alerts close when their rule stops app
 
     expect((await reconcile({ partnerId: partner.id })).alertsResolved).toBe(1);
     expectClosedBecause(await alertRow(alertA!.id), `configuration policy "${orgPolicy.policyName}" now takes precedence for this device`);
+    expect((await alertRow(alertB!.id)).status).toBe('active');
+  });
+
+  runDb('a closer policy with an EMPTY compliance list takes precedence and closes the broader rule\'s alert (#12488)', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: orgA!.id });
+    const siteB = await createSite({ orgId: orgB!.id });
+    const deviceA = await seedDevice(orgA!.id, siteA!.id);
+    const deviceB = await seedDevice(orgB!.id, siteB!.id);
+    await seedConfigPolicy({ orgId: null, partnerId: partner.id }, [rule()], { level: 'partner', targetId: partner.id });
+    await __processConfigPolicyComplianceScan();
+    const [alertA] = await openAlerts(deviceA.id);
+    const [alertB] = await openAlerts(deviceB.id);
+    expect(alertA).toBeDefined();
+    expect(alertB).toBeDefined();
+
+    // Org A's own policy carries the Compliance feature with no rules: "no
+    // compliance rules here". It is closer than the partner-level assignment.
+    const emptyPolicy = await seedConfigPolicy({ orgId: orgA!.id, partnerId: null }, [], { level: 'organization', targetId: orgA!.id });
+
+    expect((await reconcile({ partnerId: partner.id })).alertsResolved).toBe(1);
+    expectClosedBecause(await alertRow(alertA!.id), `configuration policy "${emptyPolicy.policyName}" now takes precedence for this device`);
     expect((await alertRow(alertB!.id)).status).toBe('active');
   });
 

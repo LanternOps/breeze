@@ -16,7 +16,21 @@
     "declineAll": "Tümünü reddet ({{count}})",
     "groupTitle": "{{count}} benzer istek · {{tool}}",
     "moreHostnames": "+{{count}} daha",
-    "denyConfirmSummary": "Bu, {{org}} için {{count}} isteği reddeder."
+    "denyConfirmSummary": "Bu, {{org}} için {{count}} isteği reddeder.",
+    "crossOrg": {
+      "summary_one": "{{orgCount}} kuruluşta {{count}} {{tool}} isteği",
+      "summary_other": "{{orgCount}} kuruluşta {{count}} {{tool}} isteği",
+      "reviewHint": "Tek bir doğrulama aşağıda listelenen tüm istekler için karar verir. Karar vermeden önce her kuruluşu kontrol edin.",
+      "review": "İncele",
+      "hideReview": "Gizle",
+      "orgRequestCount_one": "{{count}} istek",
+      "orgRequestCount_other": "{{count}} istek",
+      "unknownDevice": "Bilinmeyen cihaz",
+      "changed": "Bu liste değişti; yeniden inceleyin",
+      "reReview": "Yeniden incele",
+      "denyConfirmSummary_one": "Bu, {{orgCount}} kuruluştaki {{count}} isteği reddeder.",
+      "denyConfirmSummary_other": "Bu, {{orgCount}} kuruluştaki {{count}} isteği reddeder."
+    }
   },
   "filters": {
     "orgLabel": "Kuruluş",
@@ -76,6 +90,7 @@
     "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
     "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez.",
     "batchTooLarge": "Bu toplu işlemde birlikte karar verilemeyecek kadar çok istek var. Bunları daha küçük gruplar halinde onaylayın.",
+    "batchScopeNotPermitted": "Birden fazla kuruluşun isteklerine yalnızca iş ortağı düzeyinde bir onaylayan birlikte karar verebilir. Her kuruluşun isteklerine ayrı ayrı karar verin.",
     "driftedFromBatch": "Bu istek değişti ve tek başına karara bağlanmalıdır."
   },
   "registerDevice": "Cihazı kaydet",

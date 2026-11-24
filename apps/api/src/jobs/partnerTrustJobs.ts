@@ -9,7 +9,7 @@ import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
 import { offlineDataRefreshedAt } from '../services/ipClassifyOffline';
 import { classifierFor, isOfflineBaselineClear } from '../services/ipClassifyOfflineData';
 import { partnerForDevice } from '../services/partnerTrust.repo';
-import { restrictOnHardDeny, tryAutoPromote } from '../services/partnerTrustPromotion';
+import { createSuspendedAbuseSetCache, restrictOnHardDeny, tryAutoPromote } from '../services/partnerTrustPromotion';
 import { runBillingFraudFlagSweep } from '../services/partnerTrustFraudFlags';
 import { billingFraudFlagsEnabled } from '../config/env';
 import { IP_CLASSIFY_BACKFILL_JOB, runIpClassifyBackfill, scheduleIpClassifyBackfill } from './ipClassifyBackfill';
@@ -85,6 +85,10 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
   let cursor: string | undefined;
   let processed = 0;
   let promoted = 0;
+  // The suspended-for-abuse side of the hard-deny check is the same for every
+  // partner, so it is built once and shared, and rebuilt when it is older than
+  // SUSPENDED_SET_MAX_AGE_MS (#11560).
+  const suspendedSets = createSuspendedAbuseSetCache();
   do {
     const batch = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
       .select({
@@ -114,9 +118,11 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
         }
         // tryAutoPromote evaluates hard denies itself (and restricts when one
         // matches), so this is the single evaluation per partner — a failure
-        // anywhere in it skips this partner rather than aborting the batch,
-        // and never falls through to a promotion we couldn't justify.
-        if (await tryAutoPromote(partner.id)) promoted += 1;
+        // anywhere in it, including building the suspended set, skips this
+        // partner rather than aborting the batch, and never falls through to
+        // a promotion we couldn't justify.
+        const suspendedSet = await suspendedSets.get();
+        if (await tryAutoPromote(partner.id, { suspendedSet })) promoted += 1;
       } catch (error) {
         console.warn(`[partnerTrustJobs] promotion evaluation failed for partner ${partner.id}`, error);
         continue;

@@ -1095,7 +1095,8 @@ function reportLostTerminalCas(opts: {
  * `user_session` principal (same test as middleware/auth.ts
  * `isInteractiveUserSession`, inlined to keep this module's import surface)
  * that is not a Helper session opts in to the payload-aware read-only
- * `event_logs_query` classification. Anything else — a Helper session (PAM
+ * `event_logs_query` classification, and (#12453) the System / Setup
+ * `browse_device_event_log` read classification. Anything else — a Helper session (PAM
  * governs its tier-2+ calls), or any non-user principal — passes the loaded
  * proposal context through untouched and keeps the base Tier 3. Used by BOTH
  * the gate and postToolUse so the two always resolve the same tier.
@@ -1916,6 +1917,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     if (guardrailCheck.pinnedEventLogsQuery) {
       verifiedToolContext = { pinnedEventLogsQuery: guardrailCheck.pinnedEventLogsQuery };
     }
+    // #12453: the same for a System / Setup browse_device_event_log read.
+    if (guardrailCheck.pinnedDeviceEventLogRead) {
+      verifiedToolContext = { pinnedDeviceEventLogRead: guardrailCheck.pinnedDeviceEventLogRead };
+    }
 
     // RBAC permission check
     try {
@@ -2695,8 +2700,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         : contextDescription;
       // #11674: what the chat card shows. The guardrail headline names a
       // ticket or a device by an id stub; the card names them by ticket number
-      // and device name (the intent service does the device half for the
-      // stored label, so `description` itself — the intent's reason — is left
+      // and device name (the intent service does the same for the stored label,
+      // approvalDeviceName.ts and approvalTicketNumber.ts, so `description`
+      // itself — the intent's reason — is left
       // as is). The ticket's subject and requester ride as `ticketContext` for
       // the card body, never in a headline. Both reads are non-fatal.
       const cardTicketId = argumentTicketId(toolName, input as Record<string, unknown>);

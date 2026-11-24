@@ -188,12 +188,22 @@ function pickPrimaryActualValue(candidates: LeafActualValueCandidate[]): number 
 }
 
 /**
- * The leaf whose template values fill the alert copy: the first that passed in
- * tree order, since that is the leaf the alert is about, else the first at all.
+ * The template values that fill the alert copy, merged across leaves: leaves
+ * that passed first, in tree order (the leaves the alert is about), then the
+ * rest. A leaf contributes whole or not at all: one whose keys overlap a leaf
+ * already taken is skipped, so two leaves of the same kind (two event_log
+ * leaves) never mix their {{count}} and {{message}}, while leaves of different
+ * kinds (software_presence beside event_log) each keep their own tokens.
  */
 function pickLeafTemplateValues(candidates: LeafActualValueCandidate[]): ConditionTemplateValues | undefined {
-  const withValues = candidates.filter(c => c.templateValues);
-  return (withValues.find(c => c.passed) ?? withValues[0])?.templateValues;
+  const ordered = [...candidates.filter(c => c.passed), ...candidates.filter(c => !c.passed)];
+  let merged: ConditionTemplateValues | undefined;
+  for (const { templateValues } of ordered) {
+    if (!templateValues) continue;
+    if (merged && Object.keys(templateValues).some(key => key in merged!)) continue;
+    merged = { ...merged, ...templateValues };
+  }
+  return merged;
 }
 
 async function evaluateConditionRecursive(

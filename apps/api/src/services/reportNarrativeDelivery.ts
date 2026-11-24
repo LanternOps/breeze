@@ -45,13 +45,17 @@ import { organizations } from '../db/schema';
 import { reportRuns, reports } from '../db/schema/reports';
 import { users } from '../db/schema/users';
 import { getEmailService } from './email';
+import { heldSendDecision, isEmailSendHeldError, logHeldSendDropped } from './emailDomains/heldSend';
 import { resolveOrgTimezone } from './portal/timezone';
 import { loadReportBrandingForOrg } from './reportBranding';
 import { emailReportRun } from './reportDelivery';
 import {
   claimDelivery,
+  heldMarker,
+  heldNotBefore,
   listPendingDeliveriesForRun,
   recordTransientGateFailure,
+  releaseHeldDelivery,
   settleDelivery,
   summarizeDeliveries,
   type DeliveryRow,
@@ -133,6 +137,10 @@ async function resolveRecipientEmail(userId: string): Promise<string | null> {
  * idempotency key to make a retry safe.
  */
 export function classifySendError(error: unknown): 'failed' | 'unknown' {
+  // EmailSendHeldError (services/email.ts): the partner's daily partner-lane cap
+  // held the send on BOTH lanes, so it definitely did not go out. Matched by
+  // name, not instanceof, so test doubles of ./email need not export the class.
+  if (error instanceof Error && error.name === 'EmailSendHeldError') return 'failed';
   const message = error instanceof Error ? error.message : String(error);
   if (/timed out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|ECONNABORTED|network/i.test(message)) return 'unknown';
   if (/transport is not initialized|config is not initialized/i.test(message)) return 'failed';
@@ -147,6 +155,14 @@ export function classifySendError(error: unknown): 'failed' | 'unknown' {
   if (/^Mailgun API error \(4\d\d\)/i.test(message)) return 'failed';
   return 'unknown';
 }
+
+/**
+ * How long a held narrative email keeps waiting (#12249), from the row's
+ * creation: one UTC day plus the retry spread. A weekly narrative a day late
+ * is still useful; older than that it is dropped with a logged reason.
+ */
+export const NARRATIVE_HELD_MAX_AGE_MS = 26 * 60 * 60 * 1000;
+
 
 function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -251,6 +267,10 @@ async function deliverOne(
 ): Promise<OneOutcome> {
   const userId = delivery.recipientUserId;
 
+  // 0. A held send (#12249) is not retried before its not-before time.
+  const heldUntil = heldNotBefore(delivery.lastError);
+  if (heldUntil && heldUntil.getTime() > Date.now()) return 'transient';
+
   // 1. Authority and address BEFORE the claim.
   const live = await resolveLiveReportAuthority(userId, orgId, 'export');
   if (!live.ok) {
@@ -299,6 +319,18 @@ async function deliverOne(
       partnerId,
     });
   } catch (error) {
+    if (isEmailSendHeldError(error)) {
+      // #12249: held, so definitely not sent. Retry at retryAt while the row
+      // is younger than NARRATIVE_HELD_MAX_AGE_MS; past that, settle failed.
+      const decision = heldSendDecision(error, { firstAttemptAt: delivery.createdAt, maxAgeMs: NARRATIVE_HELD_MAX_AGE_MS });
+      if (decision.action === 'reschedule') {
+        await releaseHeldDelivery(delivery.id, heldMarker(error.reason, decision.at));
+        return 'transient';
+      }
+      logHeldSendDropped('reportNarrativeDelivery', error, { reportRunId: artifact.reportRunId, deliveryId: delivery.id });
+      await settleDelivery(delivery.id, { state: 'failed', error: decision.reason });
+      return 'failed';
+    }
     const state = classifySendError(error);
     console.error('[narrativeDelivery] send did not complete', {
       reportRunId: artifact.reportRunId, deliveryId: delivery.id, state, error,

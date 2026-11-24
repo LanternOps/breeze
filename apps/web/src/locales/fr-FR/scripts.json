@@ -1223,6 +1223,7 @@
       "notSecret": "« {{key}} » n’est pas un secret. Choisissez une variable secrète ou changez la source pour « À partir d’une variable ».",
       "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
       "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
+      "secretRequiredHelp": "Décoché : si ce secret n’est pas défini pour l’organisation de l’appareil, le script s’exécute quand même et {{env}} n’est pas définie. Un secret qui existe mais qui ne peut pas être lu fait toujours échouer l’exécution.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
     },
     "securityReview": {

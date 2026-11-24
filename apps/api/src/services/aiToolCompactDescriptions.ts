@@ -22,7 +22,7 @@ export const COMPACT_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = Objec
   analyze_disk_usage: 'Explain what is using disk space on a device from its latest scan; refresh=true runs a new scan (needs execute permission).',
   analyze_metrics: 'Time-series CPU, RAM, disk and network metrics for one device, with time range and aggregation. The summary covers the whole window.',
   analyze_screen: 'Screenshot a device and describe what is on screen, to troubleshoot what the user sees. Refused where remote access needs user consent.',
-  browse_device_event_log: 'Read the live Windows event log of one online device. Actions: list_logs, query, get_event. query and get_event need approval.',
+  browse_device_event_log: 'Read the live Windows event log of one online device. Actions: list_logs, query, get_event. query and get_event need approval, except System and Setup in chat.',
   disk_cleanup: 'Preview (read-only) or execute disk cleanup. Execute deletes approved safe candidates and reports space reclaimed. Actions: preview, execute.',
   execute_command: 'Run a system command on a device. commandType list_processes, file_list and event_logs_list run without approval (audited); others, including file_read, need approval.',
   file_operations: 'File operations on a device. list runs at once; read, write, delete, mkdir and rename need approval. delete moves the item to the agent trash unless permanent: true.',

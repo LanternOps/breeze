@@ -367,6 +367,11 @@ export const sites = pgTable('sites', {
   // reference here would be cyclic.
   locationSetBy: uuid('location_set_by'),
   locationSetAt: timestamp('location_set_at', { withTimezone: true }),
+  // Learned networks (#12369, spec §6): the gated flag. Set in the same transaction as the site's first network
+  // assignment; cleared only while no learned network is assigned to the site. The constraint triggers
+  // learned_networks_site_gated_chk / sites_network_required_chk (2027-01-29-100000-learned-networks.sql)
+  // make (false, has an assigned network) unrepresentable.
+  discoveryNetworkRequired: boolean('discovery_network_required').notNull().default(false),
 }, (table) => ({
   idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
   orgIdIdx: index('sites_org_id_idx').on(table.orgId),

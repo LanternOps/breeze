@@ -167,6 +167,13 @@ func restoreTree(ctx context.Context, r *run) error {
 // ends afterwards (during its staging cleanup) did not cut anything short.
 // Shared by restoreTree and winRestoreTree.
 func restoreInterrupted(ctx context.Context, res *backup.RestoreResult) error {
+	if res != nil && res.Status != "completed" && res.Code == backup.ResultCodeStorageSessionLost {
+		// The restore stopped because its storage session ended. It reports
+		// the files it never reached as not attempted rather than failed, so
+		// recordRestoreFailures sees nothing wrong; the phase must still fail.
+		return fmt.Errorf("restore files stopped after %d files: the storage session ended (%d not attempted)",
+			res.FilesRestored, res.FilesNotAttempted)
+	}
 	if ctx.Err() == nil || (res != nil && res.Status == "completed") {
 		return nil
 	}

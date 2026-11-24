@@ -266,6 +266,7 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['claimDelivery', pinned(1, 'system-context delivery CAS by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility', AUD_SYSTEM)],
     ['settleDelivery', pinned(1, 'system-context delivery settle by delivery id for the narrative delivery pass / reconciler; no caller-supplied visibility', AUD_SYSTEM)],
     ['recordTransientGateFailure', pinned(1, 'system-context delivery update by delivery id for the narrative delivery pass; no caller-supplied visibility', AUD_SYSTEM)],
+    ['releaseHeldDelivery', pinned(1, 'system-context held-send release (claimed -> pending) by delivery id for the narrative delivery pass (#12249); no caller-supplied visibility', AUD_SYSTEM)],
     ['listPendingDeliveriesForRun', pinned(1, 'system-context read for the narrative delivery pass over ONE run it is delivering; nothing is shown to a caller', AUD_SYSTEM)],
     ['listUnsettledDeliveries', pinned(1, 'system-context reconciler scan; the reconciler settles partner-owned runs as failed and shows nothing to a caller', AUD_SYSTEM)],
     ['query', pinned(1, 'summarizeDeliveries\' count query: keyed on a run id its caller already authorized (aiAgents run detail pins the run to the agent run\'s org; the delivery pass runs in system context)', AUD_SYSTEM)],

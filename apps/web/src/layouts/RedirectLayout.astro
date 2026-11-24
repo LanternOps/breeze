@@ -1,0 +1,38 @@
+---
+import '../styles/globals.css';
+import { tServer } from '../lib/i18n/server';
+
+interface Props {
+  title?: string;
+  titleKey?: string;
+}
+
+const { title, titleKey } = Astro.props;
+const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
+
+// For pages that only send the browser on to another page (pages/automations).
+// Such a page navigates without a click, so it must start no token refresh: a
+// navigation that cuts off a refresh in flight can leave the old refresh cookie
+// behind and sign the person out (#9476). So, unlike DashboardLayout, nothing
+// here mounts the session manager or loads the auth store.
+//
+// No ClientRouter on purpose: the router does a full load into a page that
+// lacks it, so a soft navigation from a dashboard page cannot carry that page's
+// auth store onto this one. The page the redirect lands on installs the router.
+---
+
+<!DOCTYPE html>
+<html lang={Astro.locals.locale ?? 'en'}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Same CSP-allowed external script as Layout.astro: the dark class before paint, so no white flash. -->
+    <script is:inline src="/theme-bootstrap.js"></script>
+    <title>{pageTitle} | Breeze RMM</title>
+  </head>
+  <body class="min-h-screen bg-background antialiased">
+    <slot />
+  </body>
+</html>

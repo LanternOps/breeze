@@ -105,7 +105,9 @@ export function forgetStandingStateFacts(grantId: string): void {
 export const STANDING_SPEND_STEPS = 10;
 
 /**
- * The facts' identity, minus what only says time has passed (concern ages),
+ * The facts' identity, minus what only says time has passed (concern ages)
+ * and the count of low/normal tickets (#11677: routine churn; the block shows
+ * the newest figure whenever it is sent for another reason),
  * with spend coarsened to tenths of the budget: every chat turn costs a few
  * cents, and an exact figure would re-send the block on nearly every turn.
  * A user action (#11611) is part of the identity: a new one re-sends the block;
@@ -118,6 +120,8 @@ function factsFingerprint(facts: StandingStateFacts): string {
   const timeless = {
     ...rest,
     concerns: { ...facts.concerns, top: facts.concerns.top.map(({ ageMinutes: _age, ...concern }) => concern) },
+    // #11677: low and normal tickets come and go all day; only urgent and high ones re-send the block.
+    tickets: facts.tickets === null ? null : (({ other: _other, ...attention }) => attention)(facts.tickets),
     spend: {
       budgetCentsPerDay: spend.budgetCentsPerDay,
       step: Math.floor((spend.totalCents * STANDING_SPEND_STEPS) / Math.max(1, spend.budgetCentsPerDay)),
@@ -129,8 +133,24 @@ function factsFingerprint(facts: StandingStateFacts): string {
 /** The fingerprint of the paused block, which carries no facts. */
 const PAUSED_FINGERPRINT = 'paused';
 
+/**
+ * #11677: what the facts are cut by besides the grant: the caller's org reach
+ * and its site and exact-device allowlists (sorted, so order does not matter).
+ * Two sessions of one user with different reach never share a cached read.
+ */
+function reachKey(auth: AuthContext): string {
+  const sorted = (ids: readonly string[] | null | undefined) => (ids == null ? null : [...ids].sort());
+  return createHash('sha256').update(JSON.stringify([
+    auth.partnerId ?? null,
+    auth.scope ?? null,
+    sorted(auth.accessibleOrgIds),
+    sorted(auth.allowedSiteIds),
+    sorted(auth.allowedDeviceIds),
+  ])).digest('hex').slice(0, 32);
+}
+
 async function cachedFacts(input: { grantId: string; revisionId: string; auth: AuthContext }, now: Date): Promise<TurnFacts> {
-  const key = `${input.grantId}:${input.revisionId}:${input.auth.user.id}`;
+  const key = `${input.grantId}:${input.revisionId}:${input.auth.user.id}:${reachKey(input.auth)}`;
   const hit = factsCache.get(key);
   if (hit && now.getTime() - hit.readAt < STANDING_FACTS_TTL_MS) return hit.facts;
 

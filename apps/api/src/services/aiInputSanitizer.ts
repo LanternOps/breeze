@@ -76,8 +76,105 @@ const INJECTION_PATTERNS: Array<{ pattern: RegExp; flag: string }> = [
   { pattern: /system\s+prompt\s*:/giu, flag: 'override_attempt' },
 ];
 
-// Dangerous Unicode ranges: bidi overrides, zero-width characters, and zero-width joiners
-const DANGEROUS_UNICODE = /[\u200B-\u200F\u200D\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u00AD\u00A0]/gu;
+/**
+ * Invisible characters stripped from every filtered string: NBSP, and every
+ * Unicode default-ignorable code point except the variation selectors below.
+ * A marker split by one of them (`Sys<U+034F>tem:`) reads as the marker to
+ * the model but never matches a pattern, so it goes before any pattern runs.
+ *
+ * - Format and bidi controls (U+00AD, U+061C, U+200B-U+200F, U+202A-U+202E,
+ *   U+2060-U+206F, U+FEFF), U+034F, the Hangul fillers (U+115F, U+1160,
+ *   U+3164, U+FFA0), U+17B4/U+17B5, and the reserved or unassigned ignorables
+ *   (U+FFF0-U+FFF8, U+E0000-U+E0FFF outside the selector block): no visible
+ *   effect in legitimate text, so they are stripped everywhere.
+ * - ZWJ/ZWNJ (U+200C/U+200D) stay stripped everywhere, as before. That
+ *   flattens emoji ZWJ sequences and some Indic/Persian shaping; the list
+ *   has always made that trade and its tests pin it.
+ * - Tag characters (U+E0000-U+E007F) are stripped everywhere. Each mirrors an
+ *   ASCII character, so a run of them carries a whole hidden string; their only
+ *   legitimate use is a few subdivision-flag emoji, which degrade to a plain
+ *   black flag.
+ * - U+1BCA0-U+1BCA3 and U+1D173-U+1D17A (shorthand and musical format
+ *   controls) are stripped everywhere.
+ */
+const DANGEROUS_UNICODE =
+  /[\u00A0\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFEFF\uFFA0\uFFF0-\uFFF8\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E00FF}\u{E01F0}-\u{E0FFF}]/gu;
+
+/**
+ * Variation selectors: U+FE00-U+FE0F (U+FE0E/U+FE0F choose text or emoji
+ * presentation: the red-heart emoji is U+2764 U+FE0F), U+E0100-U+E01EF (CJK ideographic
+ * variants), and the Mongolian free variation selectors and vowel separator
+ * U+180B-U+180F, which Mongolian shaping needs. Stripping them everywhere
+ * would alter ordinary emoji in every chat message (and raise
+ * `dangerous_unicode`, which `sanitizeUserMessage` callers audit as a
+ * prompt-injection signal), so the patterns tolerate them instead: see
+ * `withHiddenMarkersMatched`.
+ */
+const VARIATION_SELECTORS = /[\u180B-\u180F\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
+
+/** A filter pass that records what it neutralized in `flags`. */
+type TextFilter = (text: string, flags: string[]) => string;
+
+/**
+ * Stripped characters that render as a visible gap: NBSP and the Hangul
+ * fillers. The model reads one as a space, but the strip deletes it and joins
+ * the words around it, so `ignore<NBSP>previous instructions` or
+ * `</untrusted_data<NBSP>x>` would stop matching. The probes below read them
+ * as a plain space instead.
+ */
+const VISIBLE_GAPS = /[\u00A0\u115F\u1160\u3164\uFFA0]/gu;
+
+/**
+ * Run `filter` so that no marker can hide behind a variation selector or a
+ * visible-gap character, while benign text keeps its selectors byte-identical
+ * and loses its gap characters exactly as before.
+ *
+ * The filter first runs on probe copies of the text as the model reads it:
+ * (1) selectors removed and gap characters read as a space, then (2) selectors
+ * removed. The first copy that trips any pattern is the result: the text is
+ * already hostile, and normalizing its selectors and gaps is the price of
+ * matching the marker they hide. Otherwise the original runs through the
+ * filter unchanged. A probe result has no selectors or gap characters left,
+ * so it is a fixed point of a second pass; so is the fallback, whose probes
+ * still trip nothing.
+ */
+function withHiddenMarkersMatched(text: string, flags: string[], filter: TextFilter): string {
+  const bare = text.replace(VARIATION_SELECTORS, '');
+  const spaced = bare.replace(VISIBLE_GAPS, ' ');
+  for (const candidate of spaced === bare ? [bare] : [spaced, bare]) {
+    if (candidate === text) continue;
+    const probe: string[] = [];
+    const filtered = filter(candidate, probe);
+    if (probe.some((flag) => flag !== 'dangerous_unicode')) {
+      addFlag(flags, 'dangerous_unicode');
+      for (const flag of probe) addFlag(flags, flag);
+      return filtered;
+    }
+  }
+  return filter(text, flags);
+}
+
+function stripDangerousUnicode(text: string, flags: string[]): string {
+  const stripped = text.replace(DANGEROUS_UNICODE, '');
+  if (stripped !== text) addFlag(flags, 'dangerous_unicode');
+  return stripped;
+}
+
+/** The injection patterns, over text that has already lost its invisible characters. */
+function filterInjectionPatterns(text: string, flags: string[]): string {
+  let sanitized = text;
+  for (const { pattern, flag } of INJECTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(sanitized)) {
+      addFlag(flags, flag);
+      pattern.lastIndex = 0;
+      sanitized = sanitized.replace(pattern, '[filtered]');
+    }
+  }
+  return sanitized;
+}
+
+const filterText: TextFilter = (text, flags) => filterInjectionPatterns(stripDangerousUnicode(text, flags), flags);
 
 /**
  * Sanitize a user message before sending to the AI model.
@@ -93,26 +190,7 @@ export function sanitizeUserMessage(content: string): SanitizeResult {
     flags.push('truncated');
   }
 
-  // Strip dangerous Unicode (compare before/after to avoid global regex lastIndex bug)
-  const beforeUnicode = sanitized;
-  sanitized = sanitized.replace(DANGEROUS_UNICODE, '');
-  if (sanitized !== beforeUnicode) {
-    flags.push('dangerous_unicode');
-  }
-
-  // Detect and strip injection patterns
-  for (const { pattern, flag } of INJECTION_PATTERNS) {
-    // Reset lastIndex for global regexes
-    pattern.lastIndex = 0;
-    if (pattern.test(sanitized)) {
-      if (!flags.includes(flag)) {
-        flags.push(flag);
-      }
-      pattern.lastIndex = 0;
-      sanitized = sanitized.replace(pattern, '[filtered]');
-    }
-  }
-
+  sanitized = withHiddenMarkersMatched(sanitized, flags, filterText);
   return { sanitized, flags };
 }
 
@@ -186,10 +264,79 @@ export const UNTRUSTED_BLOCK_MAX_LENGTH = 16_000;
 /** Inline marker appended wherever untrusted text was clipped by a cap. */
 export const UNTRUSTED_TRUNCATION_MARKER = '… [truncated]';
 
-// `\b` + `[^>]*` also covers attribute-carrying and self-closing forms
-// (`<untrusted_data source="x">`, `<untrusted_data/>`) while leaving unrelated
-// tags with the same prefix (`<untrusted_datax>`) alone.
-const UNTRUSTED_FENCE = /<\/?untrusted_data\b[^>]*>/giu;
+/**
+ * A fence tag the wrappers use (`<untrusted_data ...>` from `wrapUntrustedData`,
+ * `<tool_output ...>` from the handoff read-back in aiToolHandoff.ts), as two
+ * patterns: `closed` is `<` + optional `/` + the name + anything up to `>`;
+ * `opener` is the same token with no `>` after it.
+ *
+ * `\b` + `[^>]*` also covers attribute-carrying and self-closing forms
+ * (`<untrusted_data source="x">`, `<untrusted_data/>`) while leaving unrelated
+ * tags with the same prefix (`<untrusted_datax>`) alone.
+ */
+interface FenceTag {
+  closed: RegExp;
+  opener: RegExp;
+}
+const UNTRUSTED_FENCE: FenceTag = { closed: /<\/?untrusted_data\b[^>]*>/giu, opener: /<\/?untrusted_data\b/giu };
+// The handoff read-back (aiToolHandoff.ts) wraps spliced device output in
+// `<tool_output untrusted>...</tool_output>`; device text must not close it.
+const TOOL_OUTPUT_FENCE: FenceTag = { closed: /<\/?tool_output\b[^>]*>/giu, opener: /<\/?tool_output\b/giu };
+const ALL_FENCE_TAGS: readonly FenceTag[] = [UNTRUSTED_FENCE, TOOL_OUTPUT_FENCE];
+
+/**
+ * Replace every fence tag in `text` with `[filtered]`, terminated or not.
+ *
+ * An opener with no `>` after it (`data </tool_output` at the end of a body)
+ * is a tag too: the wrapper's own closing line follows the body, and a partial
+ * tag there can merge with it. Only the token is replaced; the text after it
+ * is kept, since nothing here may clip. An opener is unterminated exactly when
+ * it sits after the text's last `>`, so the text is split there once: the head
+ * gets the closed pattern (every opener in it reaches a `>`), the tail the bare
+ * token. A per-match "no `>` follows" look-ahead would rescan to the end of the
+ * text from every opener, which is quadratic on uncapped device text.
+ */
+function replaceFenceTags(text: string, fences: readonly FenceTag[]): string {
+  let out = text;
+  for (const { closed, opener } of fences) {
+    const end = out.lastIndexOf('>') + 1;
+    out = out.slice(0, end).replace(closed, '[filtered]') + out.slice(end).replace(opener, '[filtered]');
+  }
+  return out;
+}
+
+/**
+ * Fence-tag neutralization for a wrapper's body, tolerant of invisible
+ * characters inside the tag. The tags are matched on probe copies as the model
+ * reads the body: invisible characters and variation selectors removed, with
+ * visible-gap characters read first as a space (`</untrusted_data<NBSP>x>`),
+ * then removed (`<untrusted<NBSP>_data>`). A probe copy is used only when it
+ * holds a tag; a body without one comes back byte-identical.
+ */
+function neutralizeFenceTagsIn(text: string, fences: readonly FenceTag[], flags: string[]): string {
+  const hidden = (value: string) => value.replace(DANGEROUS_UNICODE, '').replace(VARIATION_SELECTORS, '');
+  for (const probe of [hidden(text.replace(VISIBLE_GAPS, ' ')), hidden(text)]) {
+    const fencedProbe = replaceFenceTags(probe, fences);
+    if (fencedProbe !== probe) {
+      if (probe !== text) addFlag(flags, 'dangerous_unicode');
+      addFlag(flags, 'fence_forgery');
+      return fencedProbe;
+    }
+  }
+  const fenced = replaceFenceTags(text, fences);
+  if (fenced !== text) addFlag(flags, 'fence_forgery');
+  return fenced;
+}
+
+/**
+ * Neutralize `<untrusted_data>` / `<tool_output>` fence tags (terminated or
+ * not) in text that is about to be placed inside a fence. For a wrapper that
+ * cuts already-filtered text: a cut can strand a fence name (`<tool_outputs>`
+ * cut after `<tool_output`) that the filter never saw as a tag.
+ */
+export function neutralizeFenceTags(text: string, flags?: string[]): string {
+  return neutralizeFenceTagsIn(text, ALL_FENCE_TAGS, flags ?? []);
+}
 
 /**
  * Sanitize a single untrusted free-text field (device memory, notes, strings
@@ -224,33 +371,91 @@ export function sanitizeUntrustedText(
  * would silently drop text the model was told it had already seen.
  */
 export function sanitizeUntrustedToolText(value: string, flags?: string[]): string {
-  const sink = flags ?? [];
-  const unfenced = value.replace(UNTRUSTED_FENCE, '[filtered]').replace(TOOL_OUTPUT_FENCE, '[filtered]');
-  if (unfenced !== value) addFlag(sink, 'fence_forgery');
-  return sanitizeField(unfenced, unfenced.length, sink);
+  return withHiddenMarkersMatched(value, flags ?? [], filterToolText);
 }
 
-// The handoff read-back (aiToolHandoff.ts) wraps spliced device output in
-// `<tool_output untrusted>…</tool_output>`; device text must not close it.
-const TOOL_OUTPUT_FENCE = /<\/?tool_output\b[^>]*>/giu;
+/**
+ * Strip invisible characters BEFORE the fence match, so it sees the same text
+ * the model will: matching first let a fence tag split by a zero-width space
+ * slip past and then be joined into a real tag by the strip. Every later step
+ * only INSERTS `[filtered]`, which has no `<`/`>` and so can never assemble a
+ * tag. Clean text is untouched, and a benign NBSP still raises only
+ * `dangerous_unicode`.
+ */
+const filterToolText: TextFilter = (text, flags) => {
+  const visible = stripDangerousUnicode(text, flags);
+  const unfenced = replaceFenceTags(visible, ALL_FENCE_TAGS);
+  if (unfenced !== visible) addFlag(flags, 'fence_forgery');
+  return filterInjectionPatterns(unfenced, flags);
+};
 
-/** `sanitizeUntrustedToolText` over every string in a JSON-shaped value (keys are left alone). */
+/**
+ * `sanitizeUntrustedToolText` over every string in a JSON-shaped value: string
+ * values AND property names, at every depth. A device- or tenant-authored
+ * object (a jsonb `details`, a decoded agent stdout) chooses its own keys, so a
+ * key is as untrusted as a value. Keys are not length-capped, matching values:
+ * `sanitizeUntrustedToolText` never clips (size belongs to the compactor).
+ */
 export function sanitizeUntrustedToolValue(value: unknown, flags?: string[]): unknown {
   const sink = flags ?? [];
   if (typeof value === 'string') return value.length > 0 ? sanitizeUntrustedToolText(value, sink) : value;
   if (Array.isArray(value)) return value.map((entry) => sanitizeUntrustedToolValue(entry, sink));
   if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value);
+    const safeKeys = fenceUntrustedKeys(entries.map(([key]) => key), sink);
     const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) {
+    entries.forEach(([, entry], index) => {
       // defineProperty, not assignment: a JSON `__proto__` key stays an own
       // data property instead of re-pointing `out`'s prototype.
-      Object.defineProperty(out, key, {
+      Object.defineProperty(out, safeKeys[index]!, {
         value: sanitizeUntrustedToolValue(entry, sink), enumerable: true, writable: true, configurable: true,
       });
-    }
+    });
     return out;
   }
   return value;
+}
+
+/**
+ * Filter one object's property names, index-aligned with `keys`.
+ *
+ * A key the filter leaves unchanged is returned byte-identical, so a clean
+ * payload re-encodes to the same JSON (`sanitizeUntrustedToolStdout` relies on
+ * that to hand back the original string).
+ *
+ * Collision scheme: unchanged keys are reserved first. A changed key then takes
+ * its filtered text if that name is still free, otherwise the first free
+ * `<filtered>_<n>` for n = 2, 3, … — checked against every unchanged key in the
+ * object (including ones later in order) and every name already assigned. Keys
+ * are processed in their original order, so the result is deterministic, no
+ * value is overwritten or dropped, and a changed key can never take the name of
+ * an unchanged one. A collision raises `key_collision` (the same suffix scheme
+ * and flag as `sanitizeRecord` for page context). A Set, not `in`, decides
+ * "taken", so `constructor` / `__proto__` are not mistaken for existing keys.
+ *
+ * The key count is device-controlled, so the suffix search resumes from the
+ * last suffix handed out for that base (`nextSuffix`) instead of restarting at
+ * 2: N keys sharing one base cost O(N) lookups, not O(N²). Each candidate is
+ * still checked against `taken`, so a suffixed name never lands on a real key.
+ */
+function fenceUntrustedKeys(keys: readonly string[], flags: string[]): string[] {
+  const filtered = keys.map((key) => sanitizeUntrustedToolText(key, flags));
+  const taken = new Set(keys.filter((key, index) => filtered[index] === key));
+  const nextSuffix = new Map<string, number>();
+  return keys.map((key, index) => {
+    const safe = filtered[index]!;
+    if (safe === key) return key;
+    let candidate = safe;
+    if (taken.has(candidate)) {
+      addFlag(flags, 'key_collision');
+      let suffix = nextSuffix.get(safe) ?? 2;
+      while (taken.has(`${safe}_${suffix}`)) suffix++;
+      candidate = `${safe}_${suffix}`;
+      nextSuffix.set(safe, suffix + 1);
+    }
+    taken.add(candidate);
+    return candidate;
+  });
 }
 
 /**
@@ -288,12 +493,14 @@ export function sanitizeUntrustedToolStdout(stdout: string, flags?: string[]): s
  */
 export function wrapUntrustedData(label: string, body: string, flags?: string[]): string {
   const sink = flags ?? [];
-  // Neutralize any literal fence markers in the body so untrusted content can't
-  // forge an end-of-block boundary and resume as trusted instructions.
-  let safe = body.replace(UNTRUSTED_FENCE, '[filtered]');
-  if (safe !== body) addFlag(sink, 'fence_forgery');
+  // Neutralize any fence markers in the body (terminated or not, split by
+  // invisible characters or not) so untrusted content can't forge an
+  // end-of-block boundary and resume as trusted instructions.
+  let safe = neutralizeFenceTagsIn(body, [UNTRUSTED_FENCE], sink);
   if (safe.length > UNTRUSTED_BLOCK_MAX_LENGTH) {
-    safe = `${safe.slice(0, UNTRUSTED_BLOCK_MAX_LENGTH)}\n${UNTRUSTED_TRUNCATION_MARKER}`;
+    // Again after the cut: it can strand a fence name (`<untrusted_datax`
+    // cut after `<untrusted_data`) that was not a tag before.
+    safe = `${neutralizeFenceTagsIn(safe.slice(0, UNTRUSTED_BLOCK_MAX_LENGTH), [UNTRUSTED_FENCE], sink)}\n${UNTRUSTED_TRUNCATION_MARKER}`;
     addFlag(sink, 'truncated');
   }
   return [
@@ -316,21 +523,10 @@ function sanitizeField(
   flags: string[] = [],
   lengthUnit: 'codeUnits' | 'codePoints' = 'codeUnits',
 ): string {
-  let sanitized = lengthUnit === 'codePoints'
+  const clipped = lengthUnit === 'codePoints'
     ? Array.from(value).slice(0, maxLength).join('')
     : value.slice(0, maxLength);
-  const beforeUnicode = sanitized;
-  sanitized = sanitized.replace(DANGEROUS_UNICODE, '');
-  if (sanitized !== beforeUnicode) addFlag(flags, 'dangerous_unicode');
-  for (const { pattern, flag } of INJECTION_PATTERNS) {
-    pattern.lastIndex = 0;
-    if (pattern.test(sanitized)) {
-      addFlag(flags, flag);
-      pattern.lastIndex = 0;
-      sanitized = sanitized.replace(pattern, '[filtered]');
-    }
-  }
-  return sanitized;
+  return withHiddenMarkersMatched(clipped, flags, filterText);
 }
 
 function sanitizeRecord(data: Record<string, unknown>, flags: string[] = []): Record<string, unknown> {

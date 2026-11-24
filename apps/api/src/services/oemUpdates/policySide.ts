@@ -11,7 +11,14 @@
  *
  * Pure, given the gates. Touches no table.
  */
-import { OEM_CATEGORIES, OEM_LANES, type OemLane, type OemOutcome, type OemUpdatesInlineSettings } from '@breeze/shared';
+import {
+  hasUnsupportedBlockedUpdateIds,
+  OEM_CATEGORIES,
+  OEM_LANES,
+  type OemLane,
+  type OemOutcome,
+  type OemUpdatesInlineSettings,
+} from '@breeze/shared';
 import type { OemApplicabilityState } from '../../db/schema/oemUpdates';
 import { OEM_FLASH_CATEGORIES, resolveApplicability } from './applicability';
 import { deriveOemDisplayState, type OemDisplayState } from './displayState';
@@ -27,7 +34,8 @@ export type OemPolicySide = {
   managedSince?: Date | null;
   /**
    * The policy still asks for this lane, but for now nothing can be sent: a kill switch,
-   * a gate closed on a category it asks for, or stored settings that no longer parse.
+   * a gate closed on a category it asks for, stored settings that no longer parse, or
+   * blocked IDs stored for a lane that cannot honour them (Dell, #12265).
    * Reads as not managed, but the device has not left management, so an open alert stays.
    */
   paused?: boolean;
@@ -62,6 +70,8 @@ export function oemPolicySide(input: {
   }
   const rebootMode = link.settings.reboot;
   if (laneDisabledByKillSwitch(lane)) return { linkEnabled: false, rebootMode, occurrence: null, paused: true };
+  // The scheduler sends nothing for it (`blocked_ids_unsupported`), so it must not turn Overdue.
+  if (hasUnsupportedBlockedUpdateIds(link.settings, lane)) return { linkEnabled: false, rebootMode, occurrence: null, paused: true };
   if (!hasSendableCategory(link.settings, lane, deviceId)) {
     const open = new Set(openCategoriesForLane(lane, { deviceId }));
     const gateClosed = OEM_CATEGORIES.some((category) => link.settings.vendors[lane]?.categories[category] === true && !open.has(category));

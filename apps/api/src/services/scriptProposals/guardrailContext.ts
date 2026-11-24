@@ -2,6 +2,9 @@ import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { scriptProposals } from '../../db/schema/scriptProposals';
 import type { GuardrailContext } from '../aiGuardrails';
+import type { AuthContext } from '../../middleware/auth';
+import { inToolDbPhase } from '../aiToolDbContext';
+import { scopeDeviceIdsToCaller } from '../aiToolsSiteScope';
 
 /**
  * The DB half of the input-aware `run_script` guardrail.
@@ -77,6 +80,30 @@ export async function loadProposalGuardrailContextInReach(
 }
 
 /**
+ * The MCP sibling of {@link loadProposalGuardrailContextInReach}: the same
+ * org-reach lookup, plus the caller's site and exact-device axes. A caller
+ * restricted on either axis that can see none of the proposal's target devices
+ * gets `proposal_not_found`, exactly like a missing id, so the guardrail's
+ * pending / failed / reviewed answers never cross a site boundary (the same
+ * rule `getScriptProposalForPrincipal` applies to reads).
+ */
+export async function loadProposalGuardrailContextForCaller(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+): Promise<{ context: GuardrailContext | undefined; proposalOrgId: string | null }> {
+  const proposalId = input.proposalId;
+  if (typeof proposalId !== 'string' || proposalId.length === 0) return { context: undefined, proposalOrgId: null };
+  const row = await loadGuardrailRow(proposalId);
+  let inReach = row && auth.canAccessOrg(row.orgId) ? row : undefined;
+  if (inReach) {
+    const reachable = inReach;
+    const scoped = await inToolDbPhase(auth, () => scopeDeviceIdsToCaller(auth, reachable.orgId, reachable.targetDeviceIds));
+    if (scoped !== null && scoped.length === 0) inReach = undefined;
+  }
+  return { context: classifyProposalRow(inReach), proposalOrgId: inReach?.orgId ?? null };
+}
+
+/**
  * #10384: the org a proposal lives in, when the caller can reach it; null for
  * a missing id and for one outside `canAccessOrg` alike. For the chat
  * attribution back-fill (aiAgentSdk.ts `attachChatProposalToSession`), which
@@ -98,6 +125,7 @@ async function loadGuardrailRow(proposalId: string) {
       riskTier: scriptProposals.riskTier,
       strictHits: scriptProposals.strictHits,
       goal: scriptProposals.goal,
+      targetDeviceIds: scriptProposals.targetDeviceIds,
     })
       .from(scriptProposals)
       .where(eq(scriptProposals.id, proposalId))

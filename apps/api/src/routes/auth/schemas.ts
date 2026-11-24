@@ -1,6 +1,7 @@
 import { REATTACH_TARGET_VERSION_PATTERN } from '../../services/deviceReattach/protocol';
+import { TPM_BASELINE_VERSION_PATTERN } from '../../services/tpmBaseline/version';
 import { z } from 'zod';
-import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema, migrationWindowOpenStepUpResourceSchema } from '@breeze/shared';
+import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema, migrationWindowOpenStepUpResourceSchema, MCP_UNATTENDED_PROPOSAL_CEILINGS } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -180,6 +181,7 @@ const STEP_UP_OPERATIONS = [
   'pre_assignment_enable',
   'ai_script_lane_grant',
   'ai_partner_script_ceiling_grant',
+  'ai_partner_mcp_proposal_ceiling',
   'topology_arm',
   'backup_unattested_restore',
   'autopay_charge_now',
@@ -190,6 +192,7 @@ const STEP_UP_OPERATIONS = [
   'caller_verification_administrative_disable',
   'wisp_grant',
   'device_reattach',
+  'device_tpm_baseline_accept',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -254,6 +257,13 @@ export const deviceReattachStepUpResource = z.object({
   evidenceLevel: z.enum(['hint', 'tpm_continuity']),
   restoreDecommissioned: z.boolean(),
 }).strict();
+// Accepting a held TPM key change (#8318 wave T2): mirrors what
+// POST /devices/:id/tpm-baseline/mismatch binds. Strict, and first in the
+// coarse union, so no looser `deviceId` binding swallows it.
+export const deviceTpmBaselineAcceptStepUpResource = z.object({
+  deviceId: z.string().uuid(),
+  baselineVersion: z.string().regex(TPM_BASELINE_VERSION_PATTERN),
+}).strict();
 // Turning ON deploy-key enrollment for a partner: bound to the partner, and
 // only ever to enabled=true (turning it off needs no step-up).
 export const preAssignmentEnableStepUpResource = z.object({
@@ -293,6 +303,11 @@ export const partnerScriptCeilingStepUpResource = z.object({
   unattendedAllowed: z.boolean(),
   widening: scriptLaneWideningResource.optional(),
 });
+// Partner MCP unattended proposal ceiling — mirrors partnerMcpProposalCeilingResourceDigest.
+export const partnerMcpProposalCeilingStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  mcpUnattendedProposalMaxRisk: z.enum(MCP_UNATTENDED_PROPOSAL_CEILINGS),
+}).strict();
 // Topology M3 arm binding — mirrors topologyArmResourceDigest exactly.
 export const topologyArmStepUpResource = z.object({
   siteId: z.string().uuid(),
@@ -357,7 +372,7 @@ export const wispGrantStepUpResource = z.object({
   orgId: z.string().uuid().nullable(),
   requestedCeilingHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
-const stepUpResource = z.union([deviceReattachStepUpResource, wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
+const stepUpResource = z.union([deviceTpmBaselineAcceptStepUpResource, deviceReattachStepUpResource, wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, partnerMcpProposalCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

@@ -285,13 +285,23 @@ func TestLeaseRenewedWhenAThirdRemains(t *testing.T) {
 	st.put(key, []byte("l"))
 	d := testDescriptor(cp, clock.Now())
 	d.ExpiresAt = clock.Now().Add(90 * time.Second).UTC().Format(time.RFC3339)
+	// A renew grants the same 90s lease, so the third-left rule is visible.
+	cp.set(func(cp *fakeControlPlane) { cp.renewedExpiry = clock.Now().Add(90 * time.Second) })
 	p := newTestProvider(t, cp, d, Options{Now: clock.Now, RenewCheckInterval: time.Hour})
 	dir := t.TempDir()
 
+	// The first call renews whatever is left: until an answer has shown the
+	// control plane's clock, the device clock cannot judge the lease (#11813).
 	if err := p.Download(key, filepath.Join(dir, "a")); err != nil {
 		t.Fatalf("Download: %v", err)
 	}
-	if cp.renews() != 0 {
+	if cp.renews() != 1 {
+		t.Fatalf("renew calls = %d, want 1 (the first call learns the clock)", cp.renews())
+	}
+	if err := p.Download("snapshots/s1/files/lease1", filepath.Join(dir, "a1")); err == nil || !errors.Is(err, providers.ErrObjectNotFound) {
+		t.Fatalf("Download lease1: %v", err)
+	}
+	if cp.renews() != 1 {
 		t.Fatal("renewed with most of the lease left")
 	}
 	clock.Advance(65 * time.Second) // 25s of 90s left (< 1/3)
@@ -299,8 +309,8 @@ func TestLeaseRenewedWhenAThirdRemains(t *testing.T) {
 		// lease2 is absent from storage: the point is the renew before the resolve.
 		t.Fatalf("Download lease2: %v", err)
 	}
-	if cp.renews() != 1 {
-		t.Fatalf("renew calls = %d, want 1", cp.renews())
+	if cp.renews() != 2 {
+		t.Fatalf("renew calls = %d, want 2", cp.renews())
 	}
 }
 

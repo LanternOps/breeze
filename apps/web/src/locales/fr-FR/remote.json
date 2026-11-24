@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "Impossible de résoudre l'outil distant configuré par le partenaire (erreur de configuration). Retour au bureau à distance intégré.",
       "emptyUrlTemplate": "L'outil distant configuré par le partenaire n'a aucun modèle d'URL défini. Retour au bureau à distance intégré.",
-      "missingIdentifier": "Cet appareil manque l’identifiant par appareil dont l’outil distant configuré par partenaire a besoin (par exemple le pair RustDesk ID). Je revenais au bureau à distance intégré. Définissez l’identifiant dans les paramètres de l’appareil → dans les champs personnalisés.",
+      "missingIdentifier": "Cet appareil manque l’identifiant par appareil dont l’outil distant configuré par partenaire a besoin (par exemple le pair RustDesk ID). Je revenais au bureau à distance intégré. Définissez l’identifiant dans l’onglet Détails de l’appareil → Champs personnalisés.",
       "providerDisabled": "L’outil distant configuré par le partenaire pour cet appareil est actuellement désactivé. Je revenais au bureau à distance intégré."
     },
     "launching": "Lancement...",
@@ -245,6 +245,7 @@
     "unverifiedHint": "L'appareil n'a pas répondu à temps — actualisez pour vérifier"
   },
   "fileManager": {
+    "absolutePathHint": "Saisir le chemin absolu du dossier",
     "activeCount": "{{count}} actif",
     "activity": "Activité",
     "cancelled": "Annulé",
@@ -270,6 +271,7 @@
       "upload": "Impossible de téléverser",
       "uploadTimeout": "Le téléchargement expirait après 2 minutes. Le fichier peut toujours être écrit sur l’appareil — rafraîchir pour vérifier."
     },
+    "folderPath": "Chemin du dossier",
     "freeOf": "{{free}} libre de {{total}}",
     "goUp": "Monte",
     "home": "Accueil",
@@ -284,6 +286,7 @@
       "invalidName": "Le nom du dossier ne peut pas contenir de séparateurs de chemin ni de caractères interdits par le système de fichiers de cet appareil.",
       "nameExists": "Un fichier ou un dossier portant ce nom existe déjà ici."
     },
+    "openFolder": "Ouvrir le dossier",
     "selectedCount": "Comte sélectionné",
     "size": "Taille",
     "title": "Gestionnaire de fichiers",

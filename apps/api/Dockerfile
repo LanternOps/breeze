@@ -93,7 +93,7 @@ COPY apps/api/assets ./apps/api/assets
 # platform (pure Go, CGO off) instead of under QEMU for each target arch. The
 # Go tag must equal agent/go.mod's `go` directive
 # (scripts/security/check-go-version-pins.sh); the digest pins the image.
-FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS yarac
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS yarac
 ARG TARGETOS
 ARG TARGETARCH
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0

@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   insertValues: [] as Record<string, unknown>[],
   updateSets: [] as Record<string, unknown>[],
   updateWheres: [] as unknown[],
+  selectWheres: [] as unknown[],
   selectCount: 0,
   insertCount: 0,
   updateCount: 0,
@@ -31,6 +32,7 @@ function resetDbState(): void {
   state.insertValues = [];
   state.updateSets = [];
   state.updateWheres = [];
+  state.selectWheres = [];
   state.selectCount = 0;
   state.insertCount = 0;
   state.updateCount = 0;
@@ -41,7 +43,11 @@ vi.mock('../../db', () => {
     state.selectCount += 1;
     const builder: Record<string, unknown> = {
       from: vi.fn(() => builder),
-      where: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
+      where: vi.fn((w: unknown) => {
+        state.selectWheres.push(w);
+        return builder;
+      }),
       limit: vi.fn(() => builder),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve()
@@ -141,6 +147,7 @@ import {
   getCircuitState,
   isCircuitOpen,
   isTerminalRunStatus,
+  listOpenCircuits,
   recordRunTerminal,
   resetCircuit,
 } from './agentCircuit';
@@ -228,9 +235,20 @@ describe('classifyTerminal', () => {
   it.each([
     'sdk_error', 'sdk_output_error',
     'wall_clock_exceeded', 'budget_exceeded', 'max_turns_exceeded',
-    'llm_unavailable', 'ownership_mismatch', 'run_failed',
+    'ownership_mismatch', 'run_failed',
   ])('increments on failed with runner/ceiling code %s', (code) => {
     expect(classifyTerminal('failed', code, null)).toBe('increment');
+  });
+
+  // #12347 (owner decision 2026-11-24): the model provider being down,
+  // overloaded or rate-limiting is the platform failing the agent, not the
+  // agent misbehaving — same footing as `stalled` / `enqueue_failed`.
+  it('is neutral on failed:llm_unavailable — a provider outage, not the agent', () => {
+    expect(classifyTerminal('failed', 'llm_unavailable', null)).toBe('neutral');
+  });
+
+  it.each(AI_AGENT_RUN_PROFILES)('failed:llm_unavailable is neutral on the %s profile too', (profile) => {
+    expect(classifyTerminal('failed', 'llm_unavailable', null, profile)).toBe('neutral');
   });
 
   it('is neutral on failed:stalled — infrastructure, not the agent', () => {
@@ -284,7 +302,7 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
   it('device_troubleshooting (#11084): a clean finish resets, a genuine failure still increments', () => {
     expect(classifyTerminal('completed', null, 'no_action', 'device_troubleshooting')).toBe('reset');
     expect(classifyTerminal('awaiting_approval', null, null, 'device_troubleshooting')).toBe('reset');
-    expect(classifyTerminal('failed', 'llm_unavailable', null, 'device_troubleshooting')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'device_troubleshooting')).toBe('increment');
   });
 
   it('a patch plan is advice a human must accept, so even needs_attention is neutral', () => {
@@ -292,7 +310,7 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
   });
 
   it('a genuine failure still increments on a patch run', () => {
-    expect(classifyTerminal('failed', 'llm_unavailable', null, 'patch')).toBe('increment');
+    expect(classifyTerminal('failed', 'sdk_error', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'stalled', null, 'patch')).toBe('neutral');
   });
@@ -300,7 +318,7 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
   it('remediation_research runs are streak-neutral on completion and approval (W2)', () => {
     expect(classifyTerminal('completed', null, 'needs_attention', 'remediation_research')).toBe('neutral');
     expect(classifyTerminal('awaiting_approval', null, null, 'remediation_research')).toBe('neutral');
-    expect(classifyTerminal('failed', 'llm_unavailable', null, 'remediation_research')).toBe('increment');
+    expect(classifyTerminal('failed', 'sdk_error', null, 'remediation_research')).toBe('increment');
   });
 });
 
@@ -492,6 +510,18 @@ describe('recordRunTerminal', () => {
     expect(state.updateCount).toBe(0);
   });
 
+  // #12347: a provider outage neither increments NOR resets the streak — no
+  // lock, no read, no write. The run itself still ends `failed` (that is
+  // `transitionRunStatus`'s write, which this module never makes).
+  it('a failed:llm_unavailable run touches no circuit state at all (no increment, no reset)', async () => {
+    await recordRunTerminal(run, 'failed', 'llm_unavailable', null);
+    expect(state.executed).toHaveLength(0);
+    expect(state.selectCount).toBe(0);
+    expect(state.insertCount).toBe(0);
+    expect(state.updateCount).toBe(0);
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
   it('reset classification takes the lock and zeroes the counter without reading the agent/org', async () => {
     await recordRunTerminal(run, 'completed', null, null);
 
@@ -568,6 +598,44 @@ describe('recordRunTerminal', () => {
       }),
       expect.any(String),
     );
+  });
+
+  // #12347: the stored reason used to repeat only the threshold, so an admin
+  // looking at an open circuit could not tell WHAT failed. It now names the
+  // triggering run's error code — an allowlisted machine token, never the
+  // run's error message (which can carry model output or tenant text).
+  it.each([
+    ['max_turns_exceeded'],
+    ['wall_clock_exceeded'],
+    ['sdk_error'],
+  ])('records the triggering error code (%s) in the opened reason', async (errorCode) => {
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+
+    await recordRunTerminal(run, 'failed', errorCode, null);
+
+    expect(state.updateSets[0]).toMatchObject({
+      state: 'open',
+      openedReason: `3 consecutive terminal failures (threshold 3); last failure: ${errorCode}`,
+    });
+  });
+
+  it('names a needs_attention verdict as the trigger when the last run completed but flagged a problem', async () => {
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+
+    await recordRunTerminal(run, 'completed', null, 'needs_attention');
+
+    expect(state.updateSets[0]).toMatchObject({
+      state: 'open',
+      openedReason: '3 consecutive terminal failures (threshold 3); last run: needs_attention verdict',
+    });
   });
 
   it('a rejected publishEvent does not stop the notification or audit log from firing', async () => {
@@ -708,6 +776,60 @@ describe('getCircuitState', () => {
     expect(snapshot.state).toBe('open');
     expect(snapshot.consecutiveFailures).toBe(5);
     expect(snapshot.openedAt).toBe('2026-08-27T12:00:00.000Z');
+  });
+});
+
+// #12347 — the settings list's batched read of open circuits. Request-path:
+// it runs under the caller's own RLS context (never system scope) AND pins
+// the caller's org condition, the same "defended twice" posture the list
+// route's `loadLastRuns` documents.
+describe('listOpenCircuits', () => {
+  const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000c9';
+
+  it('touches no DB when there are no agent ids', async () => {
+    const result = await listOpenCircuits(() => undefined, []);
+    expect(result.size).toBe(0);
+    expect(state.selectCount).toBe(0);
+  });
+
+  it('reads only OPEN rows for the listed agents, pinned to the caller org condition', async () => {
+    state.selectQueue.push([]);
+    const { eq } = await import('drizzle-orm');
+    const orgCondition = vi.fn((column: Parameters<typeof eq>[0]) => eq(column, OTHER_ORG_ID));
+
+    await listOpenCircuits(orgCondition, [AGENT_ID]);
+
+    expect(orgCondition).toHaveBeenCalledTimes(1);
+    const where = dialect.sqlToQuery(state.selectWheres[0] as SQL);
+    expect(where.params).toEqual(expect.arrayContaining(['open', AGENT_ID, OTHER_ORG_ID]));
+    expect(where.sql).toContain('"state"');
+    expect(where.sql).toContain('"org_id"');
+  });
+
+  it('groups rows per agent and serialises openedAt', async () => {
+    state.selectQueue.push([
+      {
+        agentId: AGENT_ID, orgId: ORG_ID, orgName: 'Org A',
+        openedAt: new Date('2026-11-17T07:03:02.000Z'),
+        openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+        consecutiveFailures: 3,
+      },
+      {
+        agentId: AGENT_ID, orgId: OTHER_ORG_ID, orgName: 'Org B',
+        openedAt: null, openedReason: null, consecutiveFailures: 4,
+      },
+    ]);
+
+    const result = await listOpenCircuits(() => undefined, [AGENT_ID]);
+
+    expect(result.get(AGENT_ID)).toEqual([
+      {
+        orgId: ORG_ID, orgName: 'Org A', openedAt: '2026-11-17T07:03:02.000Z',
+        openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+        consecutiveFailures: 3,
+      },
+      { orgId: OTHER_ORG_ID, orgName: 'Org B', openedAt: null, openedReason: null, consecutiveFailures: 4 },
+    ]);
   });
 });
 

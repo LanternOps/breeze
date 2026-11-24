@@ -15,7 +15,9 @@
  *         skipped summary row per target device carrying the reason, and
  *       - every `install_patches` command of a running job from the ring that
  *         is still `pending` (queued for an offline device, or online but not
- *         yet claimed). The shared cancel path terminalises its
+ *         yet claimed). A job that names its patches (the AI install) stores
+ *         no ring; its commands are matched by the `evaluationRingId` the
+ *         executor stamps on them at dispatch. The shared cancel path terminalises its
  *         `patch_job_results` rows and counters through the patch finalizer.
  *     A `sent` command has reached the agent and is left alone.
  *  2. Dispatch time (`jobs/patchJobExecutor.ts` `prepareDeviceExecution`). A
@@ -148,6 +150,10 @@ export async function cancelQueuedRingPatchWork(
 
   // 2. Running jobs: cancel installs that were persisted but never delivered.
   //    `sent` (and later) commands reached the agent and finish normally.
+  //    A job that names its patches (the AI install) stores no ring: each
+  //    device is judged under its own live ring at dispatch, and the executor
+  //    stamps that ring on the command as `evaluationRingId`. Such a command is
+  //    matched by the stamp, still only for a running patch job.
   //    `cancelDeviceCommands` locks the rows, bounds the UPDATE to them, and
   //    terminalises each one's patch_job_results row and job counters in this
   //    same transaction; a command a heartbeat claim flipped to `sent` in the
@@ -156,10 +162,19 @@ export async function cancelQueuedRingPatchWork(
     where: and(
       eq(deviceCommands.type, 'install_patches'),
       eq(deviceCommands.status, 'pending'),
-      sql`${deviceCommands.payload}->>'patchJobId' IN (
-        SELECT ${patchJobs.id}::text FROM ${patchJobs}
-        WHERE ${patchJobs.status} = 'running' AND ${jobFromRing(ringId)}
-      )`,
+      or(
+        sql`${deviceCommands.payload}->>'patchJobId' IN (
+          SELECT ${patchJobs.id}::text FROM ${patchJobs}
+          WHERE ${patchJobs.status} = 'running' AND ${jobFromRing(ringId)}
+        )`,
+        and(
+          sql`${deviceCommands.payload}->>'evaluationRingId' = ${ringId}`,
+          sql`${deviceCommands.payload}->>'patchJobId' IN (
+            SELECT ${patchJobs.id}::text FROM ${patchJobs}
+            WHERE ${patchJobs.status} = 'running'
+          )`,
+        ),
+      ),
     )!,
     result: { reason },
     completedAt: now,

@@ -381,6 +381,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // Network isolation W1a (#10089, 2027-01-17-200000): returns at once while the source org is 'merging', so a
   // merge repoint passes untouched; only a plain device org move deletes resolved history or refuses (55000).
   'devices.breeze_network_isolation_device_moved': 'no-op while OLD.org_id is merging (the merge repoints the episodes with the device); outside a merge deletes resolved isolation history and refuses an unresolved episode; writes nothing on devices, never reverts org_id',
+  // Learned networks W01a (#12370, 2027-01-29-100000): returns at once while the source org is 'merging'; only a
+  // plain device org move deletes the device's learned_network_devices rows and clears NEW's attachment columns.
+  'devices.breeze_learned_networks_device_moved': 'no-op while OLD.org_id is merging (the merge folds learned_network_devices with its fingerprints); outside a merge deletes the device\'s learned_network_devices rows and nulls the network_attachment_* columns; never RAISEs or reverts org_id',
   // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
   // change; touches no other column, never RAISEs.
   'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',

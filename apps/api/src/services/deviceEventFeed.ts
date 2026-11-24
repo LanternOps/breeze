@@ -512,6 +512,7 @@ const actionLabels: Record<string, string> = {
   'alert.suppress': 'Alert suppressed',
   'config_policy.assign': 'Configuration policy assigned',
   'config_policy.unassign': 'Configuration policy unassigned',
+  'config_policy.assignment_update': 'Configuration policy assignment changed',
   'deployment.create': 'Software deployment created',
   'deployment.start': 'Software deployment started',
   'deployment.cancel': 'Software deployment cancelled',

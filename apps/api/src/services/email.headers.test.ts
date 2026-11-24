@@ -32,7 +32,7 @@ describe('SendEmailParams.headers — Resend', () => {
       html: '<p>hi</p>',
       headers: { 'In-Reply-To': '<ticket-t1@tickets.example.com>', 'Auto-Submitted': 'auto-replied' },
       purpose: 'ticket.customer_notification',
-      partnerId: null,
+      trigger: 'internal', partnerId: null,
     });
     const arg = resendSendMock.mock.calls[0]![0];
     expect(arg.headers).toEqual({
@@ -66,7 +66,7 @@ describe('SendEmailParams.headers — SMTP', () => {
         'Auto-Submitted': 'auto-replied',
       },
       purpose: 'ticket.customer_notification',
-      partnerId: null,
+      trigger: 'internal', partnerId: null,
     });
     const arg = smtpSendMock.mock.calls[0]![0];
     // Threading headers are lifted to nodemailer's dedicated options so it does NOT
@@ -90,7 +90,7 @@ describe('SendEmailParams.headers — SMTP', () => {
       html: '<p>hi</p>',
       headers: { 'Message-ID': anchor, 'Auto-Submitted': 'auto-replied' },
       purpose: 'ticket.customer_notification',
-      partnerId: null,
+      trigger: 'internal', partnerId: null,
     });
     const arg = smtpSendMock.mock.calls[0]![0];
     expect(arg.messageId).toBe(anchor);
@@ -123,7 +123,7 @@ describe('SendEmailParams.headers — Mailgun', () => {
       html: '<p>hi</p>',
       headers: { 'Message-ID': '<m@x>', 'In-Reply-To': '<a@x>', 'Auto-Submitted': 'auto-replied' },
       purpose: 'ticket.customer_notification',
-      partnerId: null,
+      trigger: 'internal', partnerId: null,
     });
     const body = fetchMock.mock.calls[0]![1].body as string;
     const params = new URLSearchParams(body);

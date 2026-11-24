@@ -73,7 +73,7 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  *
  * Returns an errorCode override. The caller applies it ONLY to the
  * normal-finish `finishRun` call — the `result.failure`/ceiling branches
- * already carry a real, more specific code (`llm_unavailable`,
+ * already carry a real, more specific code (`sdk_error`,
  * `max_turns_exceeded`, …) that must not be clobbered with the generic
  * `verdict_missing`/`verdict_persist_failed`, and `classifyTerminal`
  * (agentCircuit.ts) still needs that real code to classify a genuine

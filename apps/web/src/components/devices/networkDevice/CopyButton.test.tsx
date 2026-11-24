@@ -68,4 +68,12 @@ describe('CopyButton', () => {
     await waitFor(() => expect(screen.getByTestId('copy-ip').textContent).not.toContain('Copied'));
     expect(onCopied).not.toHaveBeenCalled();
   });
+
+  it('compact: confirms with the icon alone (no width change) and announces through a status region', async () => {
+    setClipboard(vi.fn().mockResolvedValue(undefined));
+    render(<CopyButton value="4XK9P2" label="Serial number" testId="copy-sn" compact />);
+    await userEvent.click(screen.getByTestId('copy-sn'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Copied'));
+    expect(screen.getByTestId('copy-sn').textContent).toBe('');
+  });
 });

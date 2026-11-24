@@ -21,7 +21,10 @@ const { insertValuesMock, selectMock, updateSetMock, sendEmailMock, getEmailServ
   };
 });
 
-vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn() }));
+vi.mock('bullmq', () => ({
+  Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn(),
+  DelayedError: class DelayedError extends Error { constructor() { super('delayed'); this.name = 'DelayedError'; } },
+}));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/email', () => ({ getEmailService: getEmailServiceMock }));
 const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
@@ -136,7 +139,7 @@ vi.mock('../services/expoPush', async (orig) => {
 });
 
 import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
-import { handleTicketEvent } from './ticketNotifyWorker';
+import { handleTicketEvent, processTicketEventJob, ticketPayloadKey, TICKET_HELD_MAX_AGE_MS } from './ticketNotifyWorker';
 
 describe('handleTicketEvent', () => {
   beforeEach(() => {
@@ -224,8 +227,11 @@ describe('handleTicketEvent', () => {
     // null would silently switch the `support` stream off for every ticket.
     // Folded into this case rather than a trailing one because the file's
     // beforeEach clears sendEmailMock between cases.
-    const arg = sendEmailMock.mock.calls[0]![0] as { partnerId?: string | null; headers?: Record<string, string> };
+    const arg = sendEmailMock.mock.calls[0]![0] as { partnerId?: string | null; trigger?: string; headers?: Record<string, string> };
     expect(arg.partnerId).toBe('p-1');
+    // #12249: same purpose as the autoresponse, but a technician caused it, so
+    // the partner's own (internal) bucket. Classified by call site, not purpose.
+    expect(arg.trigger).toBe('internal');
     // Spec §8.5: threading is decided by TICKETS_INBOUND_DOMAIN and nothing
     // else. If a From change could ever move the Message-ID, an inbound reply
     // would stop matching its ticket — the failure mode that loses a customer's
@@ -488,6 +494,9 @@ describe('handleTicketEvent', () => {
     expect(arg.replyTo).toBe('acme@tickets.example.com');
     expect(arg.headers!['Auto-Submitted']).toBe('auto-replied');
     expect(arg.headers!['Message-ID']).toBe('<ticket-t-1@tickets.example.com>');
+    // #12249: anyone who emails the inbound address causes this mail, so it
+    // counts against the EXTERNAL bucket and can never stop the partner's mail.
+    expect((arg as { trigger?: string }).trigger).toBe('external');
   });
 
   it('renders the partner custom auto-reply with ticket/org/partner merge variables', async () => {
@@ -1463,5 +1472,108 @@ describe('ticket-assignment Pushover to the assignee\'s own key', () => {
     await handleTicketEvent(event as never);
 
     expect(pushoverMock.send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #12249: a held customer mail is not retried three times in six seconds and
+ * then lost. The job is moved to the held error's retryAt, without spending an
+ * attempt, while it is younger than TICKET_HELD_MAX_AGE_MS; past that it is
+ * dropped with a logged reason. Payloads already delivered are recorded on the
+ * job so a re-run does not send them twice.
+ */
+describe('held customer mail (#12249)', () => {
+  const NOW = Date.UTC(2026, 10, 19, 15, 0, 0);
+  const MIDNIGHT = new Date(Date.UTC(2026, 10, 20, 0, 0, 0));
+  const heldError = (retryAt: Date) => Object.assign(new Error('held'), {
+    name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'p-1', purpose: 'ticket.customer_notification', retryAt,
+  });
+  const commented = {
+    type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+    actorUserId: 'u-1', eventId: 'evt-held', payload: { commentId: 'c-1', isPublic: true },
+  } as const;
+  const primeRequesterReads = () => selectMock
+    .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0042', ticketNumber: 'KQ04YOHZ-N', subject: 'Printer', submitterEmail: 'enduser@acme.example' }])
+    .mockResolvedValueOnce([{ slug: 'acme', settings: null }]);
+  function fakeJob(over: { timestamp?: number; data?: Record<string, unknown> } = {}) {
+    const job = {
+      id: 'job-1',
+      timestamp: over.timestamp ?? NOW - 60_000,
+      data: { ...commented, ...(over.data ?? {}) } as Record<string, unknown>,
+      updateData: vi.fn(async (d: Record<string, unknown>) => { job.data = d; }),
+      moveToDelayed: vi.fn(async (_at: number, _token?: string) => undefined),
+    };
+    return job;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => fn());
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
+    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    sendEmailMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('moves the job to retryAt without spending an attempt while inside the maximum age', async () => {
+    primeRequesterReads();
+    sendEmailMock.mockRejectedValueOnce(heldError(MIDNIGHT));
+    const job = fakeJob();
+    await expect(processTicketEventJob(job as never, 'lock-token')).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledTimes(1);
+    const [at, token] = job.moveToDelayed.mock.calls[0]!;
+    expect(token).toBe('lock-token');
+    expect(at).toBeGreaterThanOrEqual(MIDNIGHT.getTime());
+    expect(at).toBeLessThanOrEqual(MIDNIGHT.getTime() + 15 * 60 * 1000);
+    // Nothing was delivered before the hold, so nothing is skipped on the re-run.
+    expect(job.updateData).toHaveBeenCalledWith(expect.objectContaining({ heldDeliveredKeys: [] }));
+  });
+
+  it('drops the job with a logged reason once retryAt is past the maximum age', async () => {
+    primeRequesterReads();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sendEmailMock.mockRejectedValueOnce(heldError(MIDNIGHT));
+    // First attempted long enough ago that midnight is past its deadline.
+    const job = fakeJob({ timestamp: MIDNIGHT.getTime() - TICKET_HELD_MAX_AGE_MS - 1 });
+    await expect(processTicketEventJob(job as never, 'lock-token')).resolves.toBeUndefined();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[email] held send dropped', expect.objectContaining({
+      site: 'ticketNotifyWorker', reason: 'over_cap', partnerId: 'p-1', jobId: 'job-1',
+    }));
+    // Identifiers only: the recipient never reaches the log.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('enduser@acme.example');
+  });
+
+  it('a payload already delivered before the hold is not sent again on the re-run', async () => {
+    primeRequesterReads();
+    await handleTicketEvent(commented as never);
+    const sent = sendEmailMock.mock.calls[0]![0] as { purpose: string; to: string; subject: string };
+    const key = ticketPayloadKey(sent);
+    // Hashed: no recipient or subject in the job's Redis data.
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+
+    primeRequesterReads();
+    sendEmailMock.mockClear();
+    await processTicketEventJob(fakeJob({ data: { heldDeliveredKeys: [key] } }) as never, 'lock-token');
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('without the lock token the held error is thrown for the normal retry', async () => {
+    primeRequesterReads();
+    sendEmailMock.mockRejectedValueOnce(heldError(MIDNIGHT));
+    const job = fakeJob();
+    await expect(processTicketEventJob(job as never, undefined)).rejects.toMatchObject({ name: 'EmailSendHeldError' });
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('a non-held send failure still throws for the normal BullMQ retry', async () => {
+    primeRequesterReads();
+    sendEmailMock.mockRejectedValueOnce(new Error('smtp down'));
+    const job = fakeJob();
+    await expect(processTicketEventJob(job as never, 'lock-token')).rejects.toThrow('smtp down');
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 });

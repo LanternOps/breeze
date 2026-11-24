@@ -8,7 +8,7 @@ const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'sess
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson, settleApprovalWaits } from './aiAgentSdk';
 import { flushDeferredToolFailureFlags } from './aiSessionAutoFlag';
-import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
+import { classifyChatReadOnlyDeviceEventLogRead, classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { aiToolExecutions } from '../db/schema';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
@@ -154,6 +154,9 @@ vi.mock('./aiAgentSdkTools', () => ({
     // tests below stub via checkGuardrails, not this map.
     file_operations: 1,
     get_device_details: 1,
+    // #12453: base tier 1; query / get_event reach Tier 3 via TIER3_ACTIONS,
+    // stubbed here through checkGuardrails.
+    browse_device_event_log: 1,
     // #4883: the handler behind script builder's `execute_script_on_device`.
     run_script: 3,
     // Network-isolation W13 (#10101): four-eyes release.
@@ -1864,6 +1867,145 @@ describe('createSessionPreToolUse', () => {
 
       expect(checkGuardrails).toHaveBeenCalledWith(
         'execute_command',
+        input,
+        expect.objectContaining({ chatSession: true }),
+      );
+    });
+  });
+
+  describe('#12453: chat-only browse_device_event_log reads (System/Setup)', () => {
+    const pinned = Object.freeze({ action: 'query' as const, logName: 'System' as const, level: 'error' as const });
+    const eligibleCheck = {
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      readOnly: true,
+      pinnedDeviceEventLogRead: pinned,
+      description: 'Query System event log',
+    };
+    const input = { action: 'query', deviceId: 'd-1', logName: 'System', level: 'error' };
+    const chatAuth = () => makeAuth({ principal: { kind: 'user_session' } } as any);
+
+    it.each(['per_step', 'auto_approve'] as const)(
+      '%s: auto-executes with the audit row and hands the PINNED read to dispatch',
+      async (approvalMode) => {
+        vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+        const values = mockInsertValues();
+        const session = makeActiveSession({ approvalMode, auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+        expect(checkGuardrails).toHaveBeenCalledWith(
+          'browse_device_event_log',
+          input,
+          expect.objectContaining({ chatSession: true }),
+        );
+        expect(result).toEqual({ allowed: true, context: { pinnedDeviceEventLogRead: pinned } });
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({
+          toolName: 'browse_device_event_log',
+          status: 'executing',
+        }));
+        expect(waitForApproval).not.toHaveBeenCalled();
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      },
+    );
+
+    it('a plan-matched eligible call also carries the pinned read to dispatch', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertValues();
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        auth: chatAuth(),
+        approvedPlanSteps: new Map([[0, { toolName: 'browse_device_event_log', input }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+      expect(result).toEqual({ allowed: true, context: { pinnedDeviceEventLogRead: pinned } });
+    });
+
+    it('paused then approved: the approval exit still carries the pinned read', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertReturning({ id: 'exec-del-1' });
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', isPaused: true, auth: chatAuth() });
+
+      const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+      expect(waitForApproval).toHaveBeenCalled();
+      expect(result).toEqual(expect.objectContaining({ allowed: true, context: { pinnedDeviceEventLogRead: pinned } }));
+    });
+
+    // Same stand-in approach as the #7906 block above: checkGuardrails' #12453
+    // branch (pinned against the real module by
+    // aiGuardrails.chatDeviceEventLogRead.test.ts) on top of the REAL classifier.
+    describe('with the real classifier (gate ↔ classifier integration)', () => {
+      beforeEach(() => {
+        vi.mocked(checkGuardrails).mockImplementation((toolName, toolInput, ctx) => {
+          const pinnedDeviceEventLogRead = ctx?.chatSession
+            ? classifyChatReadOnlyDeviceEventLogRead(toolName, toolInput)
+            : null;
+          return pinnedDeviceEventLogRead
+            ? { allowed: true, tier: 2, requiresApproval: false, readOnly: true, pinnedDeviceEventLogRead, description: 'q' }
+            : { allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'q' };
+        });
+      });
+
+      it('a padded System query auto-executes and pins the canonical channel', async () => {
+        const values = mockInsertValues();
+        const session = makeActiveSession({ approvalMode: 'per_step', auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', { ...input, logName: '  system ' });
+
+        expect(result).toEqual({
+          allowed: true,
+          context: { pinnedDeviceEventLogRead: { action: 'query', logName: 'System', level: 'error' } },
+        });
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+        expect(waitForApproval).not.toHaveBeenCalled();
+      });
+
+      it.each(['Security', 'Application'])('%s does not auto-execute and pins nothing', async (logName) => {
+        mockInsertReturning({ id: 'exec-del-2' });
+        vi.mocked(waitForApproval).mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'auto_approve', auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', { ...input, logName });
+
+        expect(result).toMatchObject({ allowed: false });
+        expect((result as any).context).toBeUndefined();
+        expect(mockCreateActionIntent).toHaveBeenCalled();
+      });
+
+      it.each([
+        ['an ai_agent principal', () => makeAuth({ principal: { kind: 'ai_agent' } } as any)],
+        ['a helper session', () => makeAuth({ principal: { kind: 'user_session' }, helperDeviceId: 'dev-h' } as any)],
+      ])('%s with a System read does not auto-execute', async (_label, auth) => {
+        mockInsertReturning({ id: 'exec-del-3' });
+        vi.mocked(waitForApproval).mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'auto_approve', auth: auth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+        expect(result).toMatchObject({ allowed: false });
+        expect((result as any).context).toBeUndefined();
+      });
+    });
+
+    it('postToolUse resolves the SAME tier as the gate (chat opt-in passed there too)', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertValues();
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auth: chatAuth() });
+
+      await createSessionPostToolUse(session)('browse_device_event_log', input, JSON.stringify({ events: [] }), false, 3);
+
+      expect(checkGuardrails).toHaveBeenCalledWith(
+        'browse_device_event_log',
         input,
         expect.objectContaining({ chatSession: true }),
       );

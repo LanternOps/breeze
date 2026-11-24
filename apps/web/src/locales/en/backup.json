@@ -488,6 +488,8 @@
     "failedToLoadToken": "Failed to load token",
     "failedToRefreshToken": "Failed to refresh token",
     "failedToPreviewBootstrap": "Failed to preview bootstrap",
+    "previewUnavailableSessionActive": "Preview is unavailable: this token already has a recovery session. A Preview signs in with the token and cannot read a session the recovery helper holds. Use Refresh to follow the restore.",
+    "previewUnavailableNeedsRecoveryHelper": "Preview is unavailable: this snapshot references files stored with earlier snapshots, which only the recovery helper can read. Run the recovery command on the target machine.",
     "failedToRevokeToken": "Failed to revoke token",
     "failedToCopyToClipboard": "Failed to copy to clipboard.",
     "failedToCreateRecoveryBundle": "Failed to create recovery bundle",

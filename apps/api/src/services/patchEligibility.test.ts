@@ -55,6 +55,7 @@ import {
   areAllPendingPatchesManagedByVendorLane,
   evaluatePatchInstallEligibility,
   resolveApprovedPatchesForDevice,
+  resolveDevicePatchEvaluation,
   resolveDevicePatchEvaluationConfig,
   resolvePatchInstallEligibility,
 } from './patchEligibility';
@@ -657,6 +658,57 @@ describe('resolveApprovedPatchesForDevice — golden-fixture parity with the pre
   });
 });
 
+// An AI-initiated install job (manage_patches install) names its patches in
+// patch_jobs.patches.patchIds. The executor's entry point must judge ONLY
+// those, under every gate, and never widen to the rest of the device.
+describe('resolveApprovedPatchesForDevice — a requested patch list', () => {
+  const bothApproved = [
+    { patchId: P1, status: 'approved', ringId: null },
+    { patchId: P2, status: 'approved', ringId: null },
+  ];
+
+  it('returns only the requested patch when another is approved and outstanding too', async () => {
+    mockEvaluatorReads([row({ patchId: P1 }), row({ patchId: P2 })], bothApproved);
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig(), { patchIds: [P1], excludeSuperseded: true });
+    expect(approved.map((p) => p.patchId)).toEqual([P1]);
+  });
+
+  it('the list reaches the evaluator: the outstanding read is keyed on the requested ids', async () => {
+    mockEvaluatorReads([row({ patchId: P1 })], bothApproved);
+    await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig(), { patchIds: [P1], excludeSuperseded: true });
+    const pendingChain = vi.mocked(db.select).mock.results[1]!.value as { where: ReturnType<typeof vi.fn> };
+    const condition = JSON.stringify(pendingChain.where.mock.calls[0]![0]);
+    expect(condition).toContain(P1);
+    expect(condition).not.toContain(P2);
+  });
+
+  it('a requested patch that is not approved is not returned', async () => {
+    mockEvaluatorReads([row({ patchId: P1 }), row({ patchId: P2 })], [{ patchId: P2, status: 'approved', ringId: null }]);
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig({ ringId: null, ringPartnerId: null }), {
+      patchIds: [P1], excludeSuperseded: true,
+    });
+    expect(approved).toEqual([]);
+  });
+
+  it('a requested superseded patch is excluded when asked to (the AI path verdict)', async () => {
+    mockEvaluatorReads([row({ patchId: P1, supersededBy: 'KB-newer' })], [{ patchId: P1, status: 'approved', ringId: null }]);
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig(), { patchIds: [P1], excludeSuperseded: true });
+    expect(approved).toEqual([]);
+  });
+
+  it('an empty requested list resolves to nothing and reads nothing', async () => {
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig(), { patchIds: [], excludeSuperseded: true });
+    expect(approved).toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('without a list the outstanding read stays status-keyed (every outstanding patch, unchanged)', async () => {
+    mockEvaluatorReads([row({ patchId: P1 }), row({ patchId: P2 })], bothApproved);
+    const approved = await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig());
+    expect(approved.map((p) => p.patchId)).toEqual([P1, P2]);
+  });
+});
+
 describe('resolvePatchInstallEligibility — the live composition', () => {
   function mockDevice(found: boolean) {
     vi.mocked(db.select).mockReturnValueOnce(chain('limit', found ? [{ id: DEV, orgId: ORG }] : []) as never);
@@ -703,6 +755,36 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     expect(res.eligible.map((e) => e.patchId)).toEqual([P3]);
     expect(res.eligible[0]!.approvalReason).toBe('category_rule');
     expect(loadPolicyLocalPatchConfig).toHaveBeenCalledWith('cp-1');
+  });
+
+  // The live path stripped a rule's autoApproveUnrated exactly as the job
+  // snapshot did; the Patches tab and the AI plan must agree with the job.
+  it.each([
+    ['true', { autoApproveUnrated: true }, [P1, P2]],
+    ['false', { autoApproveUnrated: false }, []],
+    ['absent', {}, []],
+    ['malformed', { autoApproveUnrated: 'true' }, []],
+  ])('category rule autoApproveUnrated %s decides unrated patches (#12626)', async (_label, flag, expected) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockDevice(true);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal({
+      ring: {
+        classification: 'valid_ring', valid: true, ringId: RING, ringName: 'Ring A',
+        categoryRules: [{ category: 'driver', autoApprove: true, autoApproveSeverities: ['critical'], ...flag }],
+        categories: [], excludeCategories: [], autoApprove: {},
+      },
+    }) as never);
+    mockRingRow(0);
+    mockEvaluatorReads([
+      row({ patchId: P1, category: 'driver', severity: 'unknown' }),
+      row({ patchId: P2, category: 'driver', severity: null }),
+      row({ patchId: P3, category: 'driver', severity: 'low' }),
+    ], []);
+    const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
+    expect(res.eligible.map((e) => e.patchId)).toEqual(expected);
+    expect(res.ineligible).toContainEqual({ patchId: P3, reason: 'awaiting_manual_approval' });
+    warn.mockRestore();
   });
 
   it('with no patch policy at all, only a manual partner-wide approval can admit a patch', async () => {
@@ -884,6 +966,47 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
     expect(config.apps ?? []).toEqual([]);
     expect(config.ringReferenceInvalid).toBe(true);
     warn.mockRestore();
+  });
+
+  // A job that names its patches records `ring_unavailable` rather than "not
+  // eligible" when the device's ring is gone; the resolver says which it is.
+  it('ringUnavailable: true only for a disabled (soft-deleted) ring, false for other invalid references', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+      classification: 'disabled_ring', valid: false, ringId: null, ringName: null, appRules: [],
+    })) as never);
+    const disabled = await resolveDevicePatchEvaluation(DEV);
+    expect(disabled.ringUnavailable).toBe(true);
+    expect(disabled.config.ringReferenceInvalid).toBe(true);
+
+    for (const classification of ['missing_target', 'legacy_patch_policy', 'config_policy_uuid']) {
+      vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+        classification, valid: false, ringId: null, ringName: null, appRules: [],
+      })) as never);
+      const other = await resolveDevicePatchEvaluation(DEV);
+      expect(other.ringUnavailable, classification).toBe(false);
+      expect(other.config.ringReferenceInvalid, classification).toBe(true);
+    }
+  });
+
+  it('ringUnavailable: true when the ring is disabled or gone between resolution and the read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const ringRow of [[{ deferralDays: 0, partnerId: PARTNER, enabled: false }], []]) {
+      vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+      vi.mocked(db.select).mockReturnValueOnce(chain('limit', ringRow) as never);
+      const res = await resolveDevicePatchEvaluation(DEV);
+      expect(res.ringUnavailable).toBe(true);
+      expect(res.config.ringReferenceInvalid).toBe(true);
+    }
+    warn.mockRestore();
+  });
+
+  it('ringUnavailable: false for a live ring and for no policy at all', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER, enabled: true }]) as never);
+    expect((await resolveDevicePatchEvaluation(DEV)).ringUnavailable).toBe(false);
+
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null as never);
+    expect((await resolveDevicePatchEvaluation(DEV)).ringUnavailable).toBe(false);
   });
 });
 

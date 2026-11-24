@@ -22,10 +22,12 @@ import { useOrgScope } from '@/hooks/useOrgScope';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { mintStepUpGrant, StepUpMintError, type StepUpReauth } from '../../lib/mfaStepUp';
-import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
+import StepUpPrompt, { type ReauthTier } from './StepUpPrompt';
+import { discoverReauthTier } from '../../lib/reauthTier';
 import { listField, numberField } from './aiAgents/agentFields';
 import { useStableT } from '@/lib/i18n/useStableT';
 import ModelDefaultsLink from './aiModels/ModelDefaultsLink';
+import McpProposalCeilingCard from './McpProposalCeilingCard';
 
 /**
  * Classes the unattended lane only executes on Windows (a restore checkpoint
@@ -148,7 +150,7 @@ interface PartnerGetResponse {
   partnerId?: string | null;
 }
 
-type LaneGrantOperation = 'ai_script_lane_grant' | 'ai_partner_script_ceiling_grant';
+type LaneGrantOperation = 'ai_script_lane_grant' | 'ai_partner_script_ceiling_grant' | 'ai_partner_mcp_proposal_ceiling';
 
 /** A save the server refused because it needs a step-up grant the request did
  *  not carry. The web never reads ENABLE_2FA, so this 403 — not a client-side
@@ -173,22 +175,13 @@ function draftValues(draft: OrgDraft | PartnerDraft): ScriptLaneEnableSaveBody {
   };
 }
 
-/** Discovers the strongest available step-up factor the same way
- *  MaintenanceModeDialog does — GET /users/me + GET /auth/passkeys — since
- *  this page (unlike that dialog) always needs the grant BEFORE the first
- *  submit rather than discovering it off a 403. */
-async function discoverReauthTier(): Promise<ReauthTier | null> {
+/** The strongest available step-up factor (lib/reauthTier.ts, the same read
+ *  the device dialogs use), or null when it cannot be read: this page (unlike
+ *  those dialogs) needs the grant BEFORE the first submit rather than
+ *  discovering it off a 403. */
+async function discoverReauthTierOrNull(): Promise<ReauthTier | null> {
   try {
-    const [userRes, passkeyRes] = await Promise.all([
-      fetchWithAuth('/users/me'),
-      fetchWithAuth('/auth/passkeys'),
-    ]);
-    if (!userRes.ok || !passkeyRes.ok) return null;
-    const user = await userRes.json();
-    const passkeyData = await passkeyRes.json();
-    const passkeys = Array.isArray(passkeyData) ? passkeyData : passkeyData?.passkeys;
-    if (!user || typeof user !== 'object' || !('mfaMethod' in user) || !Array.isArray(passkeys)) return null;
-    return pickReauthTier(passkeys.length, user.mfaMethod);
+    return await discoverReauthTier();
   } catch {
     return null;
   }
@@ -294,7 +287,7 @@ export default function ScriptAuthoringPage() {
     if (reauthTier) return reauthTier;
     setResolvingReauth(true);
     try {
-      const tier = await discoverReauthTier();
+      const tier = await discoverReauthTierOrNull();
       setReauthTier(tier);
       return tier;
     } finally {
@@ -617,6 +610,18 @@ export default function ScriptAuthoringPage() {
           </div>
         )}
       </div>
+
+      {!partnerFetchFailed && partnerDraft && (
+        <McpProposalCeilingCard
+          value={partnerPolicy?.mcpUnattendedProposalMaxRisk ?? 'none'}
+          canManage={partnerCanManage}
+          partnerId={partnerId}
+          reauthTier={reauthTier}
+          mintGrant={(resource, code) => mintLaneGrant(resource, code, 'ai_partner_mcp_proposal_ceiling')}
+          revealStepUp={revealStepUp}
+          onSaved={load}
+        />
+      )}
 
       <div className="rounded-lg border bg-card p-6 space-y-4" data-testid="script-authoring-org-card">
         <div>

@@ -2945,7 +2945,8 @@
         "not_found": "não é um script que o proprietário deste agente possa ver",
         "not_in_partner_baseline": "fora da linha de base do parceiro",
         "run_script_not_allowed": "\"Executar um script\" não é permitido para este agente"
-      }
+      },
+      "circuitOpen": "O disjuntor deste agente está aberto para esta organização, então nenhuma execução foi iniciada. Redefina-o na linha do agente para executá-lo de novo."
     },
     "actions": {
       "add": "Novo agente",
@@ -5119,6 +5120,27 @@
           "hint": "Limite total de gasto por dia em todas as execuções deste agente."
         }
       }
+    },
+    "circuit": {
+      "badge": "Disjuntor aberto",
+      "openedSince": "Pausado em {{org}} desde {{at}}.",
+      "opened": "Pausado em {{org}}.",
+      "reason": "Motivo: {{reason}}",
+      "reset": "Redefinir",
+      "dialog": {
+        "title": "Redefinir o disjuntor?",
+        "message": "{{agent}} voltará a ser executado em {{org}}. Se a causa das falhas não for corrigida, ele pausará de novo após o mesmo número de falhas.",
+        "reasonLabel": "Motivo (salvo no log de auditoria)",
+        "reasonPlaceholder": "Por exemplo: o gateway do modelo voltou a funcionar",
+        "confirm": "Redefinir disjuntor"
+      },
+      "toasts": {
+        "reset": "Disjuntor redefinido. O agente pode ser executado de novo.",
+        "resetFailed": "Não foi possível redefinir o disjuntor."
+      },
+      "errors": {
+        "mfaRequired": "Para redefinir um disjuntor é preciso uma sessão com autenticação de dois fatores. Entre novamente com seu segundo fator."
+      }
     }
   },
   "apiKeyForm": {
@@ -5906,7 +5928,8 @@
   "settingsSectionNav": {
     "settingsSection": "Seção de configurações",
     "settingsSections": "Seções de configurações",
-    "unsavedChanges": "{{label}} (alterações não salvas)"
+    "unsavedChanges": "{{label}} (alterações não salvas)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "O nome do provedor é obrigatório",
@@ -8071,7 +8094,18 @@
     "saved": "Configurações de criação de scripts salvas.",
     "saveFailed": "Não foi possível salvar essas configurações.",
     "loading": "Carregando…",
-    "loadFailed": "Não foi possível carregar as configurações de criação de scripts."
+    "loadFailed": "Não foi possível carregar as configurações de criação de scripts.",
+    "mcpCeiling": {
+      "title": "Execuções de scripts MCP sem supervisão",
+      "description": "O maior risco revisado com que um principal de MCP listado em MCP_UNATTENDED_TIER3_PRINCIPALS pode executar um script proposto pela IA sem aprovação humana, até Médio. A execução também precisa cumprir as regras da faixa de scripts não assistidos para a organização do dispositivo: a adesão, as classes de impacto permitidas, os recursos protegidos, o disjuntor e o limite por hora. Acima do limite, toda execução precisa de aprovação.",
+      "label": "Executar sem aprovação até",
+      "options": {
+        "none": "Nunca (sempre exigir aprovação)",
+        "low": "Baixo",
+        "medium": "Médio"
+      },
+      "stepUpBody": "Aumentar este limite exige uma nova verificação de segurança. Confirme e selecione Salvar novamente."
+    }
   },
   "ticketingHubPage": {
     "heading": "Configurações de tickets",

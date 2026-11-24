@@ -267,6 +267,7 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // mint dispatch that swapped the two digest functions fails below.
   scriptLanePolicyResourceDigest: vi.fn(() => 'sha256:5c719710a9e000000000000000000000000000000000000000000000000000004'),
   partnerScriptCeilingResourceDigest: vi.fn(() => 'sha256:9a7c3111n9000000000000000000000000000000000000000000000000000005'),
+  partnerMcpProposalCeilingResourceDigest: vi.fn(() => 'sha256:3c9c1111n9000000000000000000000000000000000000000000000000000006'),
   // Autopay charge now / partner payment settings / redirected authorization
   // request: three more distinct constants, same reason.
   autopayChargeNowResourceDigest: vi.fn(() => 'sha256:c4a79e0000000000000000000000000000000000000000000000000000000006'),
@@ -325,7 +326,8 @@ vi.mock('../db', () => ({
     transaction: vi.fn()
   },
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
-  runOutsideDbContext: vi.fn((fn: () => any) => fn())
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined)
 }));
 
 // advanceUserEpochs/revokeAllRefreshFamilies stay REAL (they just issue
@@ -496,7 +498,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, partnerMcpProposalCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
 import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -2550,7 +2552,7 @@ describe('auth routes', () => {
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
         partnerId: null, scope: 'system', type: 'refresh', mfa: false,
-        iat: 123456, jti: 'refresh-jti-orphan'
+        iat: 123456, jti: 'refresh-jti-orphan', fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -2579,6 +2581,70 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+      // Reached the resolver (the token carries a family), and ended the session.
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('refuses a system session refresh once the platform admin holds a tenant membership', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
+        partnerId: null, scope: 'system', type: 'refresh', mfa: false,
+        iat: 123456, jti: 'refresh-jti-admin', fam: 'family-id-mock'
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com', status: 'active', isPlatformAdmin: true }]) }) })
+        } as any)
+        // The user-wide lookup now finds a partner membership.
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-new', roleId: 'role-new', isPlatformAdmin: true }]) }) })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=admin-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('refuses (and revokes) a system session whose admin gained a membership on an inactive tenant', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
+        partnerId: null, scope: 'system', type: 'refresh', mfa: false,
+        iat: 123456, jti: 'refresh-jti-admin-inactive', fam: 'family-id-mock'
+      });
+      vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com', status: 'active', isPlatformAdmin: true }]) }) })
+        } as any)
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-suspended', roleId: 'role-new' }]) }) })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=admin-inactive-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
@@ -2785,12 +2851,12 @@ describe('auth routes', () => {
           })
         })
       } as any);
-      // security review #2: membership lookups + users.isPlatformAdmin resolve a
-      // platform admin so this membership-less token re-derives to system scope.
+      // The session's own org membership (roleId) and the org's owning
+      // partner (partnerId) both resolve, so the refresh re-issues org-1.
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
+            limit: vi.fn().mockResolvedValue([{ roleId: 'role-1', partnerId: 'partner-1' }])
           })
         })
       } as any);
@@ -2815,19 +2881,23 @@ describe('auth routes', () => {
       expect(markOrder).toBeLessThan(revokeOrder);
     });
 
-    it('should re-derive token claims from current memberships', async () => {
+    it('keeps the session\'s own tenant scope and re-reads the live role on that membership', async () => {
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
         roleId: 'stale-role',
-        orgId: null,
-        partnerId: 'stale-partner',
-        scope: 'partner',
+        orgId: 'org-live',
+        // A stale partner claim is ignored: the org's owner is re-read.
+        partnerId: 'partner-stale',
+        scope: 'organization',
         type: 'refresh',
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-3',
         fam: 'family-id-mock'
+      });
+      const membershipWhere = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ roleId: 'role-live' }])
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -2842,21 +2912,7 @@ describe('auth routes', () => {
           })
         } as any)
         .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                orgId: 'org-live',
-                roleId: 'role-live'
-              }])
-            })
-          })
+          from: vi.fn().mockReturnValue({ where: membershipWhere })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -2876,6 +2932,12 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(membershipWhere).toHaveBeenCalledTimes(1);
+      expect(assertActiveTenantContext).toHaveBeenCalledWith({
+        scope: 'organization',
+        partnerId: 'partner-live',
+        orgId: 'org-live'
+      });
       expect(createTokenPair).toHaveBeenCalledWith(
         expect.objectContaining({
           sub: 'user-123',
@@ -2888,6 +2950,70 @@ describe('auth routes', () => {
         expect.any(Object)
       );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
+    });
+
+    it('refuses refresh and revokes the family when the session\'s own membership is gone, without trying another axis', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-old',
+        orgId: null,
+        partnerId: 'partner-old',
+        scope: 'partner',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-lost',
+        fam: 'family-id-mock'
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                status: 'active'
+              }])
+            })
+          })
+        } as any)
+        // No partner_users row for partner-old any more.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // An org membership that a user-wide lookup would have fallen back to.
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ orgId: 'org-other', roleId: 'role-other', partnerId: 'partner-other' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=refresh-token-lost-membership; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'auth.refresh.tenant_axis_lost',
+        resourceId: 'family-id-mock',
+        result: 'denied',
+        details: expect.objectContaining({ mintedScope: 'partner' }),
+      }));
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     });
 
     it('rejects refresh when current tenant context is inactive or deleted', async () => {
@@ -2935,7 +3061,14 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+      expect(assertActiveTenantContext).toHaveBeenCalledWith({
+        scope: 'partner',
+        partnerId: 'partner-old',
+        orgId: null
+      });
       expect(createTokenPair).not.toHaveBeenCalled();
+      // An inactive tenant is not a lost membership: the family is left alone.
+      expect(revokeFamily).not.toHaveBeenCalled();
     });
   });
 
@@ -5529,6 +5662,37 @@ describe('auth routes', () => {
 			const digestFn = operation === 'ai_partner_script_ceiling_grant' ? partnerScriptCeilingResourceDigest : scriptLanePolicyResourceDigest;
 			expect(digestFn).toHaveBeenCalledWith(expect.objectContaining({ ...base, widening }));
 			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({ operation, resourceDigest: digest }));
+		});
+
+		it('mints an ai_partner_mcp_proposal_ceiling grant bound to the partner and the exact ceiling', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-mcp-ceiling');
+			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'medium' };
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'ai_partner_mcp_proposal_ceiling', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(partnerMcpProposalCeilingResourceDigest).toHaveBeenCalledWith(resource);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'ai_partner_mcp_proposal_ceiling',
+				resourceDigest: 'sha256:3c9c1111n9000000000000000000000000000000000000000000000000000006',
+			}));
+		});
+
+		it.each([
+			[{ partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'extreme' }],
+			[{ partnerId: '00000000-0000-4000-8000-000000000040' }],
+			[{ partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'low', unattendedAllowed: true }],
+		])('refuses a malformed ai_partner_mcp_proposal_ceiling resource %j before factor verification', async (resource) => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'ai_partner_mcp_proposal_ceiling', resource }),
+			});
+			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
 		it('refuses a pre_assignment_enable grant for enabled=false (disabling needs no step-up)', async () => {

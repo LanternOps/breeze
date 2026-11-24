@@ -1,4 +1,4 @@
-import type { AiApprovalScope } from '@breeze/shared';
+import type { AiApprovalScope, ApprovalBatchScope } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import {
   AssertionChallengeError,
@@ -44,7 +44,11 @@ export type IntentBatchOutcome =
   | { outcome: 'needs_device' }
   | { outcome: 'batch_step_up' }
   | { outcome: 'batch_not_homogeneous'; offending: string[] }
-  | { outcome: 'batch_too_large' };
+  | { outcome: 'batch_too_large' }
+  /** 403 `batch_scope_not_permitted`: a `cross_org` set from a session that
+   *  is not a partner session. Nothing was decided; the cards are still
+   *  decidable per organization. */
+  | { outcome: 'batch_scope_not_permitted' };
 
 /**
  * Wraps any failure of the WebAuthn (Touch ID / Windows Hello) ceremony.
@@ -182,6 +186,14 @@ export function isBatchTooLarge(err: unknown): boolean {
   return errorToken(err) === 'batch_too_large';
 }
 
+/** The server's 403 `batch_scope_not_permitted`: a `cross_org` batch from a
+ *  session that is not a partner session (`crossOrgBatchPermitted` in
+ *  services/approvals/batchDecide.ts). Not a missing device and not a step-up:
+ *  the remedy is to decide each organization's cards on their own. */
+export function isBatchScopeNotPermitted(err: unknown): boolean {
+  return errorToken(err) === 'batch_scope_not_permitted';
+}
+
 /**
  * The batch route's 401 `reauth_required`. On the SINGLE-card path this is a
  * WebAuthn proof rejection ("your scan failed, try again"); on the batch path
@@ -211,6 +223,9 @@ export function batchDecideErrorCopy(token: string): string | undefined {
   }
   if (token === 'batch_not_homogeneous') return i18n.t('approvals:errors.batchNotHomogeneous');
   if (token === 'batch_too_large') return i18n.t('approvals:errors.batchTooLarge');
+  if (token === 'batch_scope_not_permitted') {
+    return i18n.t('approvals:errors.batchScopeNotPermitted');
+  }
   return decideErrorCopy(token);
 }
 
@@ -541,7 +556,7 @@ export async function decideIntentApproval(
  * and answers 422 for the whole set rather than partially deciding one the
  * approver may have misread.
  *
- * Returns per-row outcomes on a 200; the four refusal variants mean NOTHING
+ * Returns per-row outcomes on a 200; the five refusal variants mean NOTHING
  * was decided:
  *   - `needs_device`      — no registered approver device (no POST happened)
  *   - `batch_step_up`     — 403 `step_up_required` OR 401 `reauth_required`:
@@ -557,6 +572,9 @@ export async function decideIntentApproval(
  *                           (#4460) and refuses before calling in, so this
  *                           only fires on a stale bundle or a drifted group —
  *                           the cards remain individually decidable
+ *   - `batch_scope_not_permitted` — 403: a `cross_org` set from a session
+ *                           that is not a partner session; the cards remain
+ *                           decidable per organization
  *
  * Deny skips the ceremony (no proof required) and carries the ONE reason the
  * group collected. Throws CeremonyError on a cancelled/failed ceremony (nothing
@@ -566,22 +584,32 @@ export async function decideIntentApprovalBatch(
   approvalRequestIds: string[],
   decision: 'approve' | 'deny',
   reason?: string,
+  /** `cross_org` (one ceremony across a partner's orgs, allowlisted actions
+   *  only) must reach BOTH the challenge and the decide: the server folds it
+   *  into the challenge key. Omitted or `same_org` sends exactly the
+   *  pre-scope request bodies. */
+  scope?: ApprovalBatchScope,
 ): Promise<IntentBatchOutcome> {
   // The server's spelling: the decision is part of what the batch challenge is
   // cryptographically bound to, not a UI label.
   const serverDecision = decision === 'approve' ? 'approved' : 'denied';
+  const crossOrg = scope === 'cross_org';
   const body: Record<string, unknown> = {
     approvalRequestIds,
     decision: serverDecision,
   };
+  if (crossOrg) body.scope = 'cross_org';
 
   if (decision === 'approve') {
     try {
-      body.proof = await getBatchApprovalAssertion(
-        '/mobile/approvals',
-        approvalRequestIds,
-        serverDecision,
-      );
+      body.proof = crossOrg
+        ? await getBatchApprovalAssertion(
+            '/mobile/approvals',
+            approvalRequestIds,
+            serverDecision,
+            'cross_org',
+          )
+        : await getBatchApprovalAssertion('/mobile/approvals', approvalRequestIds, serverDecision);
     } catch (err) {
       // Same CTA signal as the single-card path — the self-approve gate
       // requires an L3 proof, so we never POST a proofless approve.
@@ -604,6 +632,11 @@ export async function decideIntentApprovalBatch(
         // falling through to CeremonyError below, which would tell the
         // approver their fingerprint scan failed when no ceremony ran at all.
         if (err.token === 'batch_too_large') return { outcome: 'batch_too_large' };
+        // Refused before minting for a non-partner session: no ceremony ran,
+        // and no device is missing — its own outcome, never CeremonyError.
+        if (err.token === 'batch_scope_not_permitted') {
+          return { outcome: 'batch_scope_not_permitted' };
+        }
       }
       throw new CeremonyError(err);
     }
@@ -666,6 +699,9 @@ export async function decideIntentApprovalBatch(
     }
     if (isBatchTooLarge(err)) {
       return { outcome: 'batch_too_large' };
+    }
+    if (isBatchScopeNotPermitted(err)) {
+      return { outcome: 'batch_scope_not_permitted' };
     }
     throw err;
   }

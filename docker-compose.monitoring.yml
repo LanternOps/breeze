@@ -142,7 +142,7 @@ services:
       - breeze
 
   postgres-exporter:
-    image: ${POSTGRES_EXPORTER_IMAGE_REF:-prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e}
+    image: ${POSTGRES_EXPORTER_IMAGE_REF:-prometheuscommunity/postgres-exporter:v0.21.1@sha256:3b8e05a84282cd1199ad2fb6c66f362738bf4c68c1547d8f4226a34a7dd6d8d7}
     container_name: breeze-postgres-exporter
     restart: unless-stopped
     # No hard `depends_on: postgres` here on purpose: this overlay must compose

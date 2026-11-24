@@ -247,24 +247,64 @@ func TestBackupHelperDeath_KeepaliveClose_ReportsAgentClosedSession(t *testing.T
 
 	rig.startAsyncRun(t, "cmd-run-ka", true)
 
+	// startAsyncRun's ack server has made its only Recv, so this is now the
+	// helper end's sole reader. It records pings and never answers: the
+	// helper is wedged.
+	pings := make(chan struct{}, 16)
+	go func() {
+		for {
+			env, err := rig.helper.Recv()
+			if err != nil {
+				return
+			}
+			if env.Type == ipc.TypePing {
+				pings <- struct{}{}
+			}
+		}
+	}()
+
 	keepaliveDone := make(chan struct{})
 	go func() {
 		rig.broker.runKeepalive(rig.session)
 		close(keepaliveDone)
 	}()
-	// Two on-time ticks with no pong: the genuine-wedge close.
-	for i := range 2 {
-		clock.Advance(30 * time.Second)
+
+	// deliverTick advances the clock, delivers one tick, and waits for what the
+	// loop did with it. The send returning is not enough: the loop reads the
+	// clock after the receive, so advancing for the next tick as soon as the
+	// send returned let one tick see both advances, close on a 60 s pong age,
+	// and leave the next send blocked until the wait expired (#12545). The
+	// loop pings only after it has read the clock, so waiting for that ping,
+	// or for the loop to exit, keeps the advances in order.
+	deliverTick := func(step string, d time.Duration) string {
+		t.Helper()
+		clock.Advance(d)
 		select {
 		case ticks <- clock.Now():
+		case <-keepaliveDone:
+			t.Fatalf("%s: keepalive loop exited before taking the tick", step)
 		case <-time.After(backupDeathWait):
-			t.Fatalf("keepalive loop did not take tick %d", i+1)
+			t.Fatalf("%s: keepalive loop did not take the tick", step)
+		}
+		select {
+		case <-pings:
+			return "ping"
+		case <-keepaliveDone:
+			return "closed"
+		case <-time.After(backupDeathWait):
+			t.Fatalf("%s: keepalive tick produced neither a ping nor a close", step)
+			return ""
 		}
 	}
-	select {
-	case <-keepaliveDone:
-	case <-time.After(backupDeathWait):
-		t.Fatal("keepalive did not close the silent backup helper session")
+
+	// A zero-gap tick first proves the loop has read its start time, so the
+	// gaps below are measured from the fake clock's starting point.
+	requireTick(t, "priming tick", deliverTick("priming tick", 0), "ping")
+	// Two on-time ticks with no pong: the genuine-wedge close.
+	requireTick(t, "first on-time tick", deliverTick("first on-time tick", 30*time.Second), "ping")
+	requireTick(t, "second on-time tick", deliverTick("second on-time tick", 30*time.Second), "closed")
+	if !rig.session.IsClosed() {
+		t.Fatal("keepalive loop exited without closing the session")
 	}
 
 	result := decodeBackupResult(t, rig.nextForwarded(t))

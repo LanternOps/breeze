@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Wake-on-LAN-Paket über einen online verfügbaren Peer-Agent im LAN des Geräts senden",
     "power": "Energie",
     "shutdown": "Herunterfahren",
-    "deviceSettings": "Geräteeinstellungen",
+    "editDetails": "Details bearbeiten",
     "installHomebrew": "Homebrew installieren",
     "restartAgent": "Agent neu starten",
     "runVendorUpdates": "Herstellerupdates ausführen",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Remote-Terminal",
     "runScript": "Skript ausführen",
     "reboot": "Neustart",
-    "settings": "Einstellungen",
+    "editDetails": "Details bearbeiten",
     "restore": "Wiederherstellen",
     "decommission": "Entfernen",
     "permanentlyDelete": "Endgültig löschen",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
     "failedToFetchDevice": "Gerät konnte nicht abgerufen werden",
+    "refreshAfterEditFailed": "Gespeichert, aber die Seite konnte nicht aktualisiert werden. Laden Sie sie neu, um die Änderung überall zu sehen.",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Im abgesicherten Modus neu starten",
@@ -1048,13 +1049,12 @@
     "linkedPolicy": "Verlinkte Richtlinie:",
     "notEnforced": "Nicht durchgesetzt",
     "usingBreezeDefaults": "– Verwendung der Breeze-Standardeinstellungen",
-    "inheritanceChain": "Vererbungskette",
-    "policiesAreResolvedUsingClosestWins": "Richtlinien werden anhand der Priorität der nächsten Gewinne gelöst. Spezifischere Zuweisungen (Geräteebene) haben Vorrang vor umfassenderen Zuweisungen (Organisationsebene).",
+    "inheritanceChain": "Vorrang",
     "priority": "Priorität",
     "level": "Ebene",
     "policy2": "Richtlinie",
     "features": "Funktionen",
-    "inheritedFrom": "Geerbt von {{name}}",
+    "inheritedFrom": "Basiert auf {{name}}",
     "patchApproval": {
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
@@ -1064,8 +1064,16 @@
       "extraDestinations": "Zusätzliche Ziele während der Isolierung",
       "invalid": "Die Eindämmungseinstellungen dieser Richtlinie sind ungültig. Bei der Isolierung gelten daher die festen Standardwerte ohne zusätzliche Ziele."
     },
-    "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
-    "featureOverriddenBy": "Überschrieben von {{policy}}"
+    "featureOverriddenBy": "Überschrieben von {{policy}}",
+    "viaLevel": "über {{level}}",
+    "managedByYourMsp": "Verwaltet von Ihrem MSP",
+    "precedenceLegend": "Das Spezifischste gewinnt, pro Funktion: Gerät › Gerätegruppe › Standort › Organisation › Alle Organisationen. Eine näher liegende Richtlinie ersetzt die gesamte Funktion; es wird nicht zusammengeführt.",
+    "lostClause": "Für {{features}} ersetzt durch {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "sie ist auf einer spezifischeren Ebene festgelegt",
+      "lower_priority_number": "gleiche Ebene, niedrigere Prioritätszahl",
+      "assigned_earlier": "gleiche Ebene und Priorität, früher zugewiesen"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",
@@ -1381,7 +1389,8 @@
     "noGroupsMatchFilter": "Keine Gruppen entsprechen diesem Filter.",
     "managedByPartner": "Von Ihrem Dienstleister verwaltet. Mitgliedschaftsregeln werden nicht angezeigt; Sie sehen die Geräte Ihrer Organisation.",
     "partnerDynamicType": "Dynamisch · Alle Org.",
-    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht."
+    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht.",
+    "policyRefusedForGroup": "Es wurde nichts angewendet. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Das Abrufen des Hardwareinventars ist fehlgeschlagen",
@@ -1611,7 +1620,21 @@
     "customFields": "Benutzerdefinierte Felder",
     "text2": "*",
     "edit": "Bearbeiten",
-    "roleNotAssessed": "Rolle noch nicht bewertet"
+    "roleNotAssessed": "Rolle noch nicht bewertet",
+    "noTags": "Keine Tags",
+    "editTags": "Tags bearbeiten",
+    "addTag": "Tag hinzufügen",
+    "removeTag": "Tag {{tag}} entfernen",
+    "tagsSaved": "Tags gespeichert",
+    "tagsSaveFailed": "Tags konnten nicht gespeichert werden",
+    "purchaseDate": "Kaufdatum",
+    "editPurchaseDate": "Kaufdatum bearbeiten",
+    "purchaseDateNotSet": "Nicht festgelegt",
+    "purchaseDateFromVendor": "Vom Hersteller",
+    "purchaseDateSaved": "Kaufdatum gespeichert",
+    "purchaseDateSaveFailed": "Kaufdatum konnte nicht gespeichert werden",
+    "purchaseDateHelp": "Wird im Bericht zum Hardware-Lebenszyklus für die Austauschplanung verwendet.",
+    "purchaseDateVendorHint": "Aus dem Versanddatum des Herstellers übernommen. Geben Sie ein Datum ein, um es zu überschreiben."
   },
   "deviceIpHistoryTab": {
     "true": "wahr",
@@ -1837,7 +1860,7 @@
     "reboot": "Neustart",
     "sendAWakeOnLanPacket": "Wake-on-LAN-Paket über einen online verfügbaren Peer-Agenten im LAN des Geräts senden",
     "wake": "Aufwecken",
-    "settings": "Einstellungen",
+    "editDetails": "Details bearbeiten",
     "enterMaintenance": "Wartungsmodus aktivieren",
     "exitMaintenance": "Wartungsmodus beenden",
     "restore": "Wiederherstellen",
@@ -2492,31 +2515,6 @@
     "scanAlreadyRunning": "Der Scan läuft bereits auf dem Gerät und kann nicht abgebrochen werden.",
     "scanAlreadyQueued": "Für dieses Gerät ist bereits ein Scan in der Warteschlange."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Tag hinzufügen...",
-    "dangerZone": "Gefahrenzone",
-    "decommissionDevice": "Gerät entfernen",
-    "decommissionWarning": "Beim Entfernen wird dieses Gerät aus Ihrer aktiven Flotte genommen. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
-    "decommissionedDescription": "Dieses Gerät wurde entfernt. Sie können es wiederherstellen oder dauerhaft löschen.",
-    "decommissionedTitle": "Entferntes Gerät",
-    "displayName": "Anzeigename",
-    "errors": {
-      "loadSites": "Die Standorte konnten nicht geladen werden",
-      "saveSettings": "Einstellungen konnten nicht gespeichert werden",
-      "siteChanged": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen"
-    },
-    "hostname": "Hostname: {{hostname}}",
-    "saved": "Geräteeinstellungen gespeichert",
-    "permanentlyDelete": "Endgültig löschen",
-    "restoreDevice": "Gerät wiederherstellen",
-    "saveChanges": "Änderungen speichern",
-    "site": "Standort",
-    "tags": "Schlagworte",
-    "title": "Geräteeinstellungen",
-    "purchaseDate": "Kaufdatum",
-    "purchaseDateHelp": "Wird vom Hardware-Lebenszyklusbericht zur Austauschplanung verwendet.",
-    "purchaseDateVendorHint": "Aus dem Versanddatum des Herstellers übernommen. Geben Sie ein Datum ein, um es zu überschreiben."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Deinstallieren",
@@ -2651,7 +2649,6 @@
     "compactTitle": "Garantie",
     "endDate": "Enddatum",
     "error": "Fehler: {{error}}",
-    "expires": "Läuft ab",
     "lastChecked": "Zuletzt geprüft: {{time}}",
     "loadFailed": "Garantie konnte nicht geladen werden.",
     "lookupUnavailable": "Für diesen Hersteller ist keine Garantiesuche verfügbar",
@@ -2692,7 +2689,11 @@
       "import": "Importiert",
       "importVendorEarlier": "Importiert (Hersteller meldet früheres Enddatum)",
       "provider": "Hersteller-API"
-    }
+    },
+    "sectionTitle": "Garantie & Kauf",
+    "coverage": "Abdeckung",
+    "coverageStarts": "Abdeckung ab",
+    "coverageEnds": "Abdeckung bis"
   },
   "devicesPage": {
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Geräten.",
@@ -3249,7 +3250,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "In eine andere Organisation verschieben",
-    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
+    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf und Tickets wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
     "targetOrgLabel": "Zielorganisation",
     "targetOrgPlaceholder": "Organisation auswählen",
     "targetSiteLabel": "Zielstandort",
@@ -3261,6 +3262,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
     "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
     "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "policyAssignmentsHeading": "Konfigurationsrichtlinien, die von diesem Gerät entfernt werden",
+    "policyAssignmentsDetail": "Diese Richtlinien sind diesem Gerät direkt zugewiesen und können in der neuen Organisation nicht gelten. Beim Verschieben werden die Zuweisungen entfernt. Die Richtlinien selbst bleiben unverändert.",
     "stepUpHeading": "Bestätigen Sie Ihre Identität",
     "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
     "stepUpCodeLabel": "Authenticator-Code",
@@ -5198,5 +5201,27 @@
       "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut."
     },
     "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Gerätedaten",
+    "serial": "Seriennummer",
+    "serialShort": "S/N",
+    "lanIp": "LAN-IP",
+    "warranty": {
+      "active": "Garantie bis {{date}}",
+      "expiring": "Garantie endet am {{date}}",
+      "expired": "Garantie abgelaufen am {{date}}"
+    },
+    "warrantyStatus": "Garantie: {{status}}",
+    "warrantyDetails": "Garantiedetails",
+    "manageContacts": "Kontakte verwalten",
+    "more": "{{count}} weitere",
+    "showLess": "Weniger anzeigen",
+    "call": "{{name}} anrufen",
+    "loadFailed": "Einige Details konnten nicht geladen werden"
+  },
+  "deviceAssetRecord": {
+    "title": "Asset-Datensatz",
+    "description": "Ansprechpartner, Standort und wer dafür bezahlt."
   }
 }

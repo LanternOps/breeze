@@ -16,7 +16,21 @@
     "declineAll": "Negar tudo ({{count}})",
     "groupTitle": "{{count}} solicitações semelhantes · {{tool}}",
     "moreHostnames": "+{{count}} mais",
-    "denyConfirmSummary": "Isso nega {{count}} solicitações de {{org}}."
+    "denyConfirmSummary": "Isso nega {{count}} solicitações de {{org}}.",
+    "crossOrg": {
+      "summary_one": "{{count}} solicitação de {{tool}} em {{orgCount}} organizações",
+      "summary_other": "{{count}} solicitações de {{tool}} em {{orgCount}} organizações",
+      "reviewHint": "Uma única verificação decide todas as solicitações listadas abaixo. Confira cada organização antes de decidir.",
+      "review": "Revisar",
+      "hideReview": "Ocultar",
+      "orgRequestCount_one": "{{count}} solicitação",
+      "orgRequestCount_other": "{{count}} solicitações",
+      "unknownDevice": "Dispositivo desconhecido",
+      "changed": "Esta lista mudou: revise-a novamente",
+      "reReview": "Revisar novamente",
+      "denyConfirmSummary_one": "Isso nega {{count}} solicitação em {{orgCount}} organizações.",
+      "denyConfirmSummary_other": "Isso nega {{count}} solicitações em {{orgCount}} organizações."
+    }
   },
   "filters": {
     "orgLabel": "Organização",
@@ -76,6 +90,7 @@
     "batchStepUp": "Este lote exige um login mais seguro. Aprove as solicitações uma de cada vez.",
     "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto.",
     "batchTooLarge": "Este lote tem solicitações demais para decidir em conjunto. Aprove-as em grupos menores.",
+    "batchScopeNotPermitted": "Somente um aprovador no nível do parceiro pode decidir em conjunto solicitações de várias organizações. Decida as solicitações de cada organização separadamente.",
     "driftedFromBatch": "Esta solicitação mudou e precisa ser decidida individualmente."
   },
   "registerDevice": "Registrar dispositivo",

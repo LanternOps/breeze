@@ -228,7 +228,7 @@ test('lint runs this suite', () => {
   const ci = read('.github/workflows/ci.yml');
   const lint = ci.match(/^  lint:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)?.[1];
   assert.ok(lint, 'lint job not found');
-  assert.match(lint, /^        run: node --test \.github\/scripts\/related-tests\.test\.mjs$/m);
+  assert.match(lint, /^        run: node --test --test-timeout=\d+ \.github\/scripts\/related-tests\.test\.mjs$/m);
 });
 
 for (const [job, label] of [['test-api', 'API'], ['test-web', 'Web']]) {

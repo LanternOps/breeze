@@ -236,6 +236,38 @@ describe('Pax8Client.listProducts', () => {
       { pax8ProductId: 'p2', name: 'Acronis Backup', vendorName: 'Acronis', vendorSku: 'ACR-1', shortDescription: null, raw: expect.any(Object) },
     ]);
   });
+
+  it('keeps paging when the page counters sit in a nested `page` object (#12322)', async () => {
+    const requested: string[] = [];
+    const client = clientWithFetch((url) => {
+      requested.push(url);
+      if (url.includes('page=0')) {
+        return jsonResponse({ content: [{ id: 'p1', name: 'One' }], page: { size: 200, totalElements: 2, totalPages: 2, number: 0 } });
+      }
+      if (url.includes('page=1')) {
+        return jsonResponse({ content: [{ id: 'p2', name: 'Two' }], page: { size: 200, totalElements: 2, totalPages: 2, number: 1 } });
+      }
+      throw new Error(`should not fetch beyond the last page: ${url}`);
+    });
+    const rows = await client.listProducts();
+    expect(rows.map((r) => r.pax8ProductId)).toEqual(['p1', 'p2']);
+    expect(requested).toHaveLength(2);
+  });
+
+  it('uses the plain sku, not the JSON-string vendorSku Pax8 returns (#12322)', async () => {
+    const client = clientWithFetch(() => jsonResponse({
+      content: [{
+        id: 'p1',
+        name: 'Microsoft 365 Business Premium',
+        sku: 'MST-PRP-YOM-C100',
+        vendorSku: '{"productId":"CFQ7TTC0LCHC","skuId":"0001","segment":"Commercial"}',
+      }],
+      last: true,
+      page: 0,
+    }));
+    const [row] = await client.listProducts();
+    expect(row!.vendorSku).toBe('MST-PRP-YOM-C100');
+  });
 });
 
 describe('Pax8Client.getProductPricing', () => {

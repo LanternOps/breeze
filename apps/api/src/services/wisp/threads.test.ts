@@ -497,7 +497,7 @@ describe('seedContextForSession', () => {
 
   it('answers status questions from the picture and the standing state first (#10429)', () => {
     const lines = WISP_BEHAVIOUR_BLOCK.split('\n');
-    expect(lines).toContain('- For "what needs my attention" or a status overview, answer from the Partner picture and the standing state first. Use tools only to drill into the item the user picks; "keep it short" means at most 3 tool calls before you answer.');
+    expect(lines).toContain('- For "what needs my attention" or a status overview, answer from the Partner picture and the standing state first. Rank its urgent and high tickets, offline devices and approvals waiting with the concerns by urgency, never after them. Use tools only to drill into the item the user picks; "keep it short" means at most 3 tool calls before you answer.');
     expect(lines.length).toBeLessThanOrEqual(40);
   });
 

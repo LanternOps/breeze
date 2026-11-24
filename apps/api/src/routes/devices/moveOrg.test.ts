@@ -1569,6 +1569,31 @@ describe('POST /devices/:id/move-org', () => {
         expect(row.details).not.toHaveProperty('alertChildRewrite');
       }
     });
+
+    it('#12491: names the removed config policy assignments on the source row and only counts them on the target row', async () => {
+      const removed = [{ assignmentId: 'a1', policyId: 'p1', policyName: 'Source org policy' }];
+      executeResultFor = (text) => (text.startsWith('DELETE FROM config_policy_assignments') ? removed : null);
+      await moveDevice();
+
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      const sourceRow = auditRows.find((row) => row.orgId === SOURCE_ORG);
+      const targetRow = auditRows.find((row) => row.orgId === TARGET_ORG);
+      expect(sourceRow.details.removedConfigPolicyAssignments).toEqual(removed);
+      expect(sourceRow.details).not.toHaveProperty('removedConfigPolicyAssignmentCount');
+      expect(targetRow.details.removedConfigPolicyAssignmentCount).toBe(1);
+      expect(targetRow.details).not.toHaveProperty('removedConfigPolicyAssignments');
+    });
+
+    it('#12491: omits the removed-assignments field when the move removed none', async () => {
+      await moveDevice();
+
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.details).not.toHaveProperty('removedConfigPolicyAssignments');
+        expect(row.details).not.toHaveProperty('removedConfigPolicyAssignmentCount');
+      }
+    });
   });
 
   describe('PAM ownership move guard', () => {
@@ -1747,7 +1772,17 @@ describe('POST /devices/:id/move-org', () => {
       expect(collapseStmt(statements[24]!)).toContain(`WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid AND topology_site_id IS NULL)`);
       expect(collapseStmt(statements[24]!)).toContain('partner_id IS DISTINCT FROM');
       expect(collapseStmt(statements[25]!)).toContain('WITH moving_mappings AS MATERIALIZED');
-      expect(statements[26]).toBe('UPDATE devices');
+      // #12491: device-level assignments of policies that cannot own a device
+      // in the target org go immediately before the flip, because
+      // config_policy_assignments_target_owner_fk checks at the end of it.
+      const policyAssignmentDelete = collapseStmt(statements[26]!);
+      expect(policyAssignmentDelete).toContain('DELETE FROM config_policy_assignments a USING configuration_policies p');
+      expect(policyAssignmentDelete).toContain(`AND a.level = 'device' AND a.target_id = ${DEVICE_ID}::uuid`);
+      expect(policyAssignmentDelete).toContain(`p.org_id <> ${TARGET_ORG}::uuid`);
+      expect(policyAssignmentDelete).toContain(
+        `OR p.org_id IS NULL AND p.partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${TARGET_ORG}::uuid)`,
+      );
+      expect(statements[27]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

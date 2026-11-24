@@ -202,9 +202,10 @@ describe('parked device — agent route admission (live route table)', () => {
     const denied = endpoints.filter((ep) => !isParkedAllowedAgentPath(ep.path.split('/').filter(Boolean), parked.agentId));
     // Floor so a broken enumeration cannot pass vacuously.
     expect(endpoints.length).toBeGreaterThanOrEqual(38);
-    // Seven allowed: heartbeat, the command poll and result, rotate-token and
-    // its confirm, uninstall-intent, and the reattach phase 1 (#8318 §6.3).
-    expect(denied.length).toBe(endpoints.length - 7);
+    // Nine allowed: heartbeat, the command poll and result, rotate-token and
+    // its confirm, uninstall-intent, the reattach phase 1 (#8318 §6.3), and the
+    // TPM attestation challenge and completion (#8318 wave T2).
+    expect(denied.length).toBe(endpoints.length - 9);
 
     const admitted: string[] = [];
     for (const ep of denied) {
@@ -246,7 +247,9 @@ describe('parked device — minimal heartbeat', () => {
     // verifies the signed `rebind` directive against them). No directive here:
     // this device is the source of no reattach intent.
     // #4618: parked beats explicitly clear containment without looking up episodes.
-    expect(Object.keys(body).sort()).toEqual(['commands', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
+    // #8318 wave T2: plus the TPM attestation switch, and no other config key.
+    expect(Object.keys(body).sort()).toEqual(['commands', 'configUpdate', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
+    expect(body.configUpdate).toEqual({ tpm_attestation_enabled: false });
     expect(body.containment).toEqual({ networkIsolation: null });
     expect(body.renewCert).toBe(true);
     expect(body.rotateToken).toBe(true);

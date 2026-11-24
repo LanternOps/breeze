@@ -636,27 +636,13 @@ func (w *winSystemWindows) SetPartitionAttributes(diskNumber, number int, attrs 
 	return wingpt.SetPartitionAttributes(diskNumber, number, attrs)
 }
 
-// WaitForVolumes polls VolumesOnDisk until at least want volumes exist
-// (each carrying its partition number) or partitionDeviceWaitTimeout.
-func (w *winSystemWindows) WaitForVolumes(ctx context.Context, diskNumber int, want int) ([]WinVolume, error) {
-	deadline := time.Now().Add(partitionDeviceWaitTimeout)
-	for {
-		vols, err := w.VolumesOnDisk(diskNumber)
-		if err != nil {
-			return nil, err
-		}
-		if len(vols) >= want {
-			return vols, nil
-		}
-		if time.Now().After(deadline) {
-			return vols, fmt.Errorf("only %d of %d expected volumes appeared on disk %d within %s", len(vols), want, diskNumber, partitionDeviceWaitTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			return vols, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+// WaitForVolumes polls VolumesOnDisk every 100 ms until every partition in
+// partitions has a volume (each volume carries its partition number) or
+// partitionDeviceWaitTimeout passes; the loop is waitForPartitionVolumes
+// (win_volume_wait.go).
+func (w *winSystemWindows) WaitForVolumes(ctx context.Context, diskNumber int, partitions []int) ([]WinVolume, error) {
+	list := func() ([]WinVolume, error) { return w.VolumesOnDisk(diskNumber) }
+	return waitForPartitionVolumes(ctx, list, diskNumber, partitions, partitionDeviceWaitTimeout, 100*time.Millisecond)
 }
 
 // Format runs format.com (the host's own System32 binary, ruling C4 — see

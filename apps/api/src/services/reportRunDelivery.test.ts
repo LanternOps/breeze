@@ -116,8 +116,11 @@ vi.mock('../db', () => {
 
 import { db } from '../db';
 import {
+  HELD_MARKER_SQL_PATTERN,
   STALE_CLAIM_MS,
   claimDelivery,
+  heldMarker,
+  heldNotBefore,
   createPendingDeliveries,
   listPendingDeliveriesForRun,
   listUnsettledDeliveries,
@@ -255,13 +258,43 @@ describe('report run delivery state machine (#4248 W03, OD-8)', () => {
       expect(sql).toMatch(/"claimed_at" is null and "[^"]*"\."created_at" < \$/);
       expect(sql).toMatch(/"claimed_at" < \$/);
       expect(sql).not.toContain('COALESCE');
-      expect(params).toHaveLength(4);
+      expect(params).toHaveLength(6);
       expect(params.slice(0, 2)).toEqual(['pending', 'claimed']);
-      for (const bound of params.slice(2)) {
+      for (const bound of params.slice(2, 4)) {
         expect(new Date(bound as string | Date).toISOString()).toBe(cutoff.toISOString());
       }
       expect(params).not.toContain('unknown');
       expect(state.selectLimits).toEqual([25]);
+    });
+
+    // #12249 review: a held row released back to pending keeps its old
+    // created_at, so without this it is listed on every pass until its
+    // not-before time and can crowd newer rows out of the limit. The filter is
+    // evaluated in a CASE so the cast only ever sees a well-formed marker.
+    it('leaves out held rows whose not-before time has not come', async () => {
+      state.selectQueue.push([]);
+      await listUnsettledDeliveries(new Date('2026-09-14T10:00:00Z'), 25);
+      const { sql, params } = compiled(state.selectWheres[0]);
+      expect(sql).toMatch(/not \(case when "[^"]*"\."last_error" ~ \$\d+ then substring\("[^"]*"\."last_error" from \$\d+\)::timestamptz > now\(\) else false end\)/);
+      expect(params).toContain(HELD_MARKER_SQL_PATTERN);
+    });
+  });
+
+  describe('held markers (#12249)', () => {
+    it('round-trip, and the SQL pattern accepts exactly what heldMarker writes', () => {
+      const at = new Date('2026-11-20T00:07:00.000Z');
+      const marker = heldMarker('over_cap', at);
+      expect(marker).toBe('held:over_cap:until=2026-11-20T00:07:00.000Z');
+      expect(heldNotBefore(marker)?.toISOString()).toBe(at.toISOString());
+      // POSIX ERE as used by Postgres `~`; this pattern is valid JS too.
+      const re = new RegExp(HELD_MARKER_SQL_PATTERN);
+      expect(re.test(marker)).toBe(true);
+      expect(re.test(heldMarker('domain_suspended', at))).toBe(true);
+      for (const other of ['held:over_cap:past_max_age', 'held:over_cap:until=garbage', 'authority:no_email', '']) {
+        expect(re.test(other)).toBe(false);
+        expect(heldNotBefore(other)).toBeNull();
+      }
+      expect(heldNotBefore(null)).toBeNull();
     });
   });
 

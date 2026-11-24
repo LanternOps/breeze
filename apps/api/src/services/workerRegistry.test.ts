@@ -161,6 +161,8 @@ const EXPECTED_WORKER_NAMES = [
   'observationRetention',
   // High-volume table retention W1 (#4342, #11588) — report-only.
   'deviceCommandRetention', 'filesystemSnapshotRetention', 'networkMonitorResultRetention', 'deviceSessionRetention',
+  // Learned networks W01b (#12369).
+  'learnedNetworkMaintenance',
 ];
 
 describe('workerRegistry: losslessness', () => {

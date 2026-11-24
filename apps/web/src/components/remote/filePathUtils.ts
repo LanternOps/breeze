@@ -180,9 +180,9 @@ export function buildBreadcrumbs(path: string): PathBreadcrumbModel {
 
   const normalized = normalizePosixPath(path);
   const parts = normalized.split('/').filter(Boolean);
-  let accumulated = '/';
+  let accumulated = '';
   const segments = parts.map((part) => {
-    accumulated = joinRemotePath(accumulated, part);
+    accumulated += `/${part}`;
     return { label: part, path: accumulated };
   });
 

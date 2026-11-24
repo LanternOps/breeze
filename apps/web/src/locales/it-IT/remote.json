@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "Impossibile individuare lo strumento remoto configurato dal partner (errore di configurazione). Verrà utilizzato il desktop remoto integrato.",
       "emptyUrlTemplate": "Lo strumento remoto configurato dal partner non dispone di un modello URL. Verrà utilizzato il desktop remoto integrato.",
-      "missingIdentifier": "In questo dispositivo manca l'identificativo specifico richiesto dallo strumento remoto configurato dal partner, ad esempio l'ID peer RustDesk. Verrà utilizzato il desktop remoto integrato. Imposta l'identificativo in Impostazioni dispositivo → Campi personalizzati.",
+      "missingIdentifier": "In questo dispositivo manca l'identificativo specifico richiesto dallo strumento remoto configurato dal partner, ad esempio l'ID peer RustDesk. Verrà utilizzato il desktop remoto integrato. Imposta l'identificativo in scheda Dettagli del dispositivo → Campi personalizzati.",
       "providerDisabled": "Lo strumento remoto configurato dal partner per questo dispositivo è attualmente disabilitato. Verrà utilizzato il desktop remoto integrato."
     },
     "launching": "Avvio in corso...",
@@ -245,6 +245,7 @@
     "unverifiedHint": "Il dispositivo non ha risposto in tempo — aggiorna per verificare"
   },
   "fileManager": {
+    "absolutePathHint": "Inserisci il percorso assoluto della cartella",
     "activeCount": "{{count}} attivi",
     "activity": "Attività",
     "cancelled": "Annullato",
@@ -270,6 +271,7 @@
       "upload": "Impossibile caricare",
       "uploadTimeout": "Il caricamento è scaduto dopo 2 minuti. Il file potrebbe essere stato comunque scritto sul dispositivo: aggiorna la pagina per verificare."
     },
+    "folderPath": "Percorso cartella",
     "freeOf": "{{free}} liberi di {{total}}",
     "goUp": "Vai al livello superiore",
     "home": "Home",
@@ -284,6 +286,7 @@
       "invalidName": "Il nome della cartella non può contenere separatori di percorso né caratteri non consentiti dal file system di questo dispositivo.",
       "nameExists": "Qui esiste già un file o una cartella con questo nome."
     },
+    "openFolder": "Apri cartella",
     "selectedCount": "Numero selezionato",
     "size": "Dimensione",
     "title": "Gestione file",

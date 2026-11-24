@@ -5,7 +5,7 @@ import {
   type PartnerMailStream,
 } from './mailPurposes';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
-import { tryCountPartnerLaneSend } from './sendCap';
+import { countPartnerLaneSend, nextCapWindowStart } from './sendCap';
 
 /**
  * Sender resolution (partner sending domains, spec §8.3).
@@ -32,10 +32,44 @@ export type PlatformLaneReason =
   | 'partner_ineligible'
   | 'no_identity'
   | 'domain_not_sendable'
-  | 'over_cap';
+  // The cap check could not answer (Redis down): send on the platform lane
+  // rather than lose the message or lift the cap (sendCap.ts).
+  | 'cap_unavailable'
+  // An externally triggered send whose own daily bucket is spent (#12249).
+  // Sent from the platform address, never held: an outsider must not be able
+  // to stop the partner's mail.
+  | 'external_over_cap';
+
+/**
+ * Who caused this send, declared by each call site (#12249). `external` is
+ * mail an outsider can make Breeze send without the partner acting: the
+ * inbound-email autoresponse, portal self-registration and password reset,
+ * the trust-page access confirmation. It is a property of the CALL SITE, not
+ * the purpose — the autoresponse and a technician's reply are both
+ * `ticket.customer_notification`. Everything else is `internal`.
+ */
+export type SendTrigger = 'internal' | 'external';
+
+/**
+ * Why a partner-lane send is held instead of sent (EmailSendHeldError). Nothing
+ * goes out on either lane; `retryAt` says when trying again can succeed.
+ *   over_cap         — the partner's INTERNAL daily bucket is spent. Falling
+ *                      back would let a partner exceed a partner-level limit on
+ *                      the platform domain. Retry at the next 00:00 UTC.
+ *   domain_suspended — an administrator suspended the stream's sending domain
+ *                      (status_reason `platform_suspended`), a decision to stop
+ *                      this partner's mail. Applies to external sends too. The
+ *                      end is unknown, so retry after DOMAIN_SUSPENDED_RECHECK_MS.
+ *                      An AUTOMATIC suspension is not held (partnerLaneLookup.ts).
+ */
+export type HeldReason = 'over_cap' | 'domain_suspended';
+
+/** How long a send held by an administrator's suspension waits before it is tried again. */
+export const DOMAIN_SUSPENDED_RECHECK_MS = 60 * 60 * 1000;
 
 export type ResolvedSender =
   | { lane: 'platform'; from: string; reason: PlatformLaneReason }
+  | { lane: 'held'; reason: HeldReason; partnerId: string; retryAt: Date }
   | {
       lane: 'partner';
       from: string;
@@ -51,6 +85,8 @@ export interface ResolveSenderInput {
   partnerId: string | null;
   /** Only read for a `partner_display_name` fallback. Never a database read. */
   partnerName?: string | null;
+  /** Which daily bucket a partner-lane send spends; ignored for a platform purpose. */
+  trigger: SendTrigger;
   /** EmailService's configured EMAIL_FROM (already provider-resolved). */
   defaultFrom: string;
 }
@@ -146,12 +182,25 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
   const { lookupPartnerLaneIdentity } = await import('./partnerLaneLookup');
   const identity = await lookupPartnerLaneIdentity(input.partnerId, policy.stream);
   if (!identity.ok) {
+    if (identity.reason === 'domain_suspended') {
+      return {
+        lane: 'held',
+        reason: 'domain_suspended',
+        partnerId: input.partnerId,
+        retryAt: new Date(Date.now() + DOMAIN_SUSPENDED_RECHECK_MS),
+      };
+    }
     return { lane: 'platform', from, reason: identity.reason };
   }
 
-  // Condition 4, LAST so an ineligible partner never burns a counter slot. A
-  // Redis outage also lands here (sendCap.ts): the message still goes out, on
-  // the platform lane, and the cap is never silently lifted.
+  // Condition 4, LAST so an ineligible partner never burns a counter slot.
+  // The call site's trigger picks the bucket (#12249). Over the INTERNAL cap the
+  // send is HELD, not moved to the platform sender (see HeldReason); over the
+  // EXTERNAL cap it goes out on the platform lane, so outsider-driven volume
+  // can neither spend the partner's own budget nor stop its mail. A Redis
+  // outage is not an over-cap verdict (sendCap.ts): the
+  // message still goes out on the platform lane, and the cap is never
+  // silently lifted on the partner lane.
   //
   // DELIBERATE: the slot is consumed HERE, before the send, so a message that
   // then falls back to the platform lane (domain_unusable / lane_unavailable,
@@ -160,8 +209,15 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
   // is exactly the state in which a runaway loop is most likely. The cost is
   // that the counter slightly over-counts during an outage; the alternative
   // (count on success) would make the cap unbounded precisely when it matters.
-  if (!(await tryCountPartnerLaneSend(input.partnerId))) {
-    return { lane: 'platform', from, reason: 'over_cap' };
+  const capVerdict = await countPartnerLaneSend(input.partnerId, input.trigger);
+  if (capVerdict === 'over_cap') {
+    if (input.trigger === 'external') {
+      return { lane: 'platform', from, reason: 'external_over_cap' };
+    }
+    return { lane: 'held', reason: 'over_cap', partnerId: input.partnerId, retryAt: nextCapWindowStart(Date.now()) };
+  }
+  if (capVerdict === 'unavailable') {
+    return { lane: 'platform', from, reason: 'cap_unavailable' };
   }
 
   return {

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { keepReadablePolicies } from '../services/configPolicyReadable';
 import { createMiddleware } from 'hono/factory';
 import { acquireMembershipExportOrgLock, isPartnerOwnedGroup, PARTNER_GROUP_READ_ONLY_BODY, resolveOrgSessionPartnerId, readPartnerGroupsForOrgSession, type OrgSessionPartnerGroupRow } from '../services/deviceGroupOwnership';
 import { zValidator, formatZodError } from '../lib/validation';
@@ -533,10 +534,11 @@ groupRoutes.get(
     const groupPolicyMap = new Map<string, { id: string; name: string }>();
     const policyGroupIds = results.filter(group => !redactPartnerGroup(group, auth)).map(group => group.id);
     if (policyGroupIds.length > 0) {
-      const policyRows = await db
+      const assignedRows = await db
         .select({
           groupId: configPolicyAssignments.targetId,
           policyId: configPolicyAssignments.configPolicyId,
+          policyOrgId: configurationPolicies.orgId,
           policyName: configurationPolicies.name,
         })
         .from(configPolicyAssignments)
@@ -549,6 +551,9 @@ groupRoutes.get(
           )
         )
         .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+      // A partner-owned group can carry an MSP-managed policy of another
+      // customer; name only the policies the caller may read (W03a).
+      const policyRows = await keepReadablePolicies(auth, assignedRows, (r) => ({ id: r.policyId, orgId: r.policyOrgId }));
 
       for (const row of policyRows) {
         if (!groupPolicyMap.has(row.groupId)) {
@@ -593,9 +598,10 @@ groupRoutes.get(
 
     const deviceCount = await getDeviceCountForGroup(id, auth);
 
-    const [assignedPolicy] = redactPartnerGroup(group, auth) ? [] : await db
+    const assignedRows = redactPartnerGroup(group, auth) ? [] : await db
       .select({
         policyId: configPolicyAssignments.configPolicyId,
+        policyOrgId: configurationPolicies.orgId,
         policyName: configurationPolicies.name,
       })
       .from(configPolicyAssignments)
@@ -608,7 +614,10 @@ groupRoutes.get(
         )
       )
       .orderBy(configPolicyAssignments.priority, configPolicyAssignments.createdAt)
-      .limit(1);
+      // A few candidates, not one: the first may name an MSP-managed policy the
+      // caller may not read (W03a), and the next readable one is the answer.
+      .limit(20);
+    const [assignedPolicy] = await keepReadablePolicies(auth, assignedRows, (r) => ({ id: r.policyId, orgId: r.policyOrgId }));
 
     return c.json({
       data: mapGroupRow(

@@ -96,6 +96,13 @@ const SITE_AXIS_MARKERS = [
   // site axis, so naming it is naming the site axis.
   'deviceInSiteScope',
   'ticketSiteScopeCondition',
+  // #11677: the list reach of `query_devices` (`aiToolsSiteScope.ts`, via
+  // `resolveSiteAllowedDeviceIds`) and of the `manage_tickets` list action
+  // (`routes/tickets/siteScope.ts`, via `ticketSiteScopeCondition`), moved
+  // into helpers so Wisp's standing state reads the same rows. Naming either
+  // is naming the site axis.
+  'deviceListReachConditions',
+  'ticketListReachConditions',
   // `services/siteScope.ts` — the reports subsystem expresses the SAME axis as
   // a resolved `SiteScopeV1` authority (`{kind:'restricted', siteIds}`) derived
   // from the caller's live grants, rather than as `auth.allowedSiteIds`.

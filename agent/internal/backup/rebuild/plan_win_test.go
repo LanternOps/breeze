@@ -155,3 +155,58 @@ func TestPlanWindows_RefusesNoRootPartition(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// #12576: a snapshot taken before the collector learned to default the ESP
+// to fat32 records it with an empty filesystem (Server 2016 exposes no
+// volume for it). The plan treats an efi-role partition with no filesystem
+// as fat32, so provision formats it; the MSR keeps no filesystem.
+func TestPlanWindows_ESPWithNoRecordedFilesystemIsFAT32(t *testing.T) {
+	for name, d := range map[string]*layout.Disk{
+		"reported Server 2016 layout (ESP at 2)": windowsUnlinkedESPDisk(2),
+		"ESP at partition 4":                     windowsUnlinkedESPDisk(4),
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, err := PlanPartitionsWindows(d, 100*GiB, 512, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]string{}
+			for _, pp := range p.Partitions {
+				got[pp.Role] = pp.Filesystem
+			}
+			want := map[string]string{layout.RoleEFI: "fat32", layout.RoleMSR: "", layout.RoleRoot: "ntfs", layout.RoleRecovery: "ntfs"}
+			for role, fs := range want {
+				if got[role] != fs {
+					t.Errorf("%s filesystem = %q, want %q (plan %+v)", role, got[role], fs, p.Partitions)
+				}
+			}
+		})
+	}
+}
+
+// windowsUnlinkedESPDisk is a system disk whose ESP was captured with no
+// filesystem, at GPT partition number espNumber:
+//   - espNumber 2 is the reported Server 2016 shape: 1 Recovery, 2 ESP,
+//     3 MSR, 4 C:.
+//   - espNumber 4 puts the ESP last: 1 Recovery, 2 MSR, 3 C:, 4 ESP.
+func windowsUnlinkedESPDisk(espNumber int) *layout.Disk {
+	rec := layout.Partition{Number: 1, TypeGUID: layout.GUIDWindowsRecovery, PartUUID: "6b1e0000-0000-4000-8000-000000000001", SizeBytes: 450 * MiB, Filesystem: "ntfs", Label: "Recovery", Role: layout.RoleRecovery, Encryption: layout.EncryptionNone, Attributes: 0x8000000000000001}
+	esp := layout.Partition{TypeGUID: layout.GUIDEFISystem, PartUUID: "6b1e0000-0000-4000-8000-000000000002", SizeBytes: 100 * MiB, Role: layout.RoleEFI, Encryption: layout.EncryptionNone}
+	msr := layout.Partition{TypeGUID: layout.GUIDMicrosoftMSR, PartUUID: "6b1e0000-0000-4000-8000-000000000003", SizeBytes: 16 * MiB, Role: layout.RoleMSR, Encryption: layout.EncryptionNone}
+	root := layout.Partition{TypeGUID: layout.GUIDMicrosoftBasic, PartUUID: testWindowsRootPartUUID, SizeBytes: 60 * GiB, UsedBytes: 20 * GiB, Filesystem: "ntfs", Label: "Windows", MountPoint: `C:\`, Role: layout.RoleRoot, Encryption: layout.EncryptionNone}
+	var parts []layout.Partition
+	if espNumber == 2 {
+		esp.Number, msr.Number, root.Number = 2, 3, 4
+		parts = []layout.Partition{rec, esp, msr, root}
+	} else {
+		msr.Number, root.Number, esp.Number = 2, 3, 4
+		parts = []layout.Partition{rec, msr, root, esp}
+	}
+	cursor := MiB
+	for i := range parts {
+		parts[i].StartBytes = cursor
+		cursor += parts[i].SizeBytes
+	}
+	return &layout.Disk{Name: `\\.\PHYSICALDRIVE0`, SizeBytes: 80 * GiB, SectorSize: 512, TableType: "gpt", IsSystem: true,
+		GUID: "bbbbbbbb-0000-4000-8000-000000000000", Partitions: parts}
+}

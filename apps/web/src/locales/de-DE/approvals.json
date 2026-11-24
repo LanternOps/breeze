@@ -16,7 +16,21 @@
     "declineAll": "Alle ablehnen ({{count}})",
     "groupTitle": "{{count}} ähnliche Anfragen · {{tool}}",
     "moreHostnames": "+{{count}} weitere",
-    "denyConfirmSummary": "Dies lehnt {{count}} Anfragen für {{org}} ab."
+    "denyConfirmSummary": "Dies lehnt {{count}} Anfragen für {{org}} ab.",
+    "crossOrg": {
+      "summary_one": "{{count}} {{tool}}-Anfrage in {{orgCount}} Organisationen",
+      "summary_other": "{{count}} {{tool}}-Anfragen in {{orgCount}} Organisationen",
+      "reviewHint": "Eine einzige Bestätigung entscheidet über alle unten aufgeführten Anfragen. Prüfen Sie jede Organisation, bevor Sie entscheiden.",
+      "review": "Prüfen",
+      "hideReview": "Ausblenden",
+      "orgRequestCount_one": "{{count}} Anfrage",
+      "orgRequestCount_other": "{{count}} Anfragen",
+      "unknownDevice": "Unbekanntes Gerät",
+      "changed": "Diese Liste hat sich geändert – prüfen Sie sie erneut",
+      "reReview": "Erneut prüfen",
+      "denyConfirmSummary_one": "Dies lehnt {{count}} Anfrage in {{orgCount}} Organisationen ab.",
+      "denyConfirmSummary_other": "Dies lehnt {{count}} Anfragen in {{orgCount}} Organisationen ab."
+    }
   },
   "filters": {
     "orgLabel": "Organisation",
@@ -76,6 +90,7 @@
     "batchStepUp": "Für diesen Stapel ist eine stärkere Anmeldung erforderlich. Genehmigen Sie die Anfragen einzeln.",
     "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden.",
     "batchTooLarge": "Dieser Stapel enthält zu viele Anfragen, um sie gemeinsam zu entscheiden. Genehmigen Sie sie in kleineren Gruppen.",
+    "batchScopeNotPermitted": "Nur eine genehmigende Person auf Partnerebene kann Anfragen aus mehreren Organisationen gemeinsam entscheiden. Entscheiden Sie die Anfragen jeder Organisation einzeln.",
     "driftedFromBatch": "Diese Anfrage hat sich geändert und muss einzeln entschieden werden."
   },
   "registerDevice": "Gerät registrieren",

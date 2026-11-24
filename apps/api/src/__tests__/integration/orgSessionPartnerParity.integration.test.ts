@@ -8,6 +8,15 @@
  * partnerId. A session minted with `partnerId: null` therefore cannot see any
  * partner-wide policy that governs its own org's devices.
  *
+ * Since #12462 W03a the app layer reads more narrowly than RLS: an org session
+ * lists, opens or names an MSP-managed (partner-owned) policy only when it
+ * applies to the session's organization (`policyReadCondition`, plan D14). So
+ * the partner baselines below are assigned at the partner level, which applies
+ * them to every customer org of their partner, and an unassigned partner policy
+ * checks that the narrowing is the read rule and not a lost partner: RLS still
+ * returns it, the route does not. Effective configuration does not go through
+ * the read rule; the last case resolves it for a device under the same session.
+ *
  * Real Postgres (RLS-enforced `breeze_app`) + Redis, real route handlers and
  * the real authMiddleware. Only the IdP network calls are stubbed.
  *
@@ -20,16 +29,31 @@ import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { decodeJwt } from 'jose';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
-import { configurationPolicies, ssoProviders, ssoSessions, users } from '../../db/schema';
+import {
+  configPolicyAssignments,
+  configPolicyFeatureLinks,
+  configPolicyMonitoringSettings,
+  configurationPolicies,
+  organizations,
+  organizationUsers,
+  partnerUsers,
+  refreshTokenFamilies,
+  ssoProviders,
+  ssoSessions,
+  users,
+} from '../../db/schema';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   bootstrapAuthBinding,
   createOrganization,
+  createDevice,
   createPartner,
   createRole,
+  createSite,
   createUser,
   grantRolePermissions,
 } from './db-utils';
@@ -64,6 +88,7 @@ type Fixture = {
   ownPartnerPolicyName: string;
   otherPartnerPolicyName: string;
   orgPolicyName: string;
+  unassignedPartnerPolicyName: string;
   ownPartnerPolicyId: string;
 };
 
@@ -79,17 +104,31 @@ async function seedTenant(): Promise<Fixture> {
   const ownPartnerPolicyName = `Partner baseline ${suffix}`;
   const otherPartnerPolicyName = `Other partner baseline ${suffix}`;
   const orgPolicyName = `Org policy ${suffix}`;
+  const unassignedPartnerPolicyName = `Unassigned partner policy ${suffix}`;
   const testDb = getTestDb();
   const [ownPartnerPolicy] = await testDb
     .insert(configurationPolicies)
     .values({ orgId: null, partnerId: partner.id, name: ownPartnerPolicyName })
     .returning({ id: configurationPolicies.id });
-  await testDb
+  const [otherPartnerPolicy] = await testDb
     .insert(configurationPolicies)
-    .values({ orgId: null, partnerId: otherPartner.id, name: otherPartnerPolicyName });
+    .values({ orgId: null, partnerId: otherPartner.id, name: otherPartnerPolicyName })
+    .returning({ id: configurationPolicies.id });
   await testDb
     .insert(configurationPolicies)
     .values({ orgId: org.id, partnerId: null, name: orgPolicyName });
+  // Partner-owned, assigned nowhere, no children: hidden from an org session
+  // by the read rule (#12462 W03a) although RLS returns it.
+  await testDb
+    .insert(configurationPolicies)
+    .values({ orgId: null, partnerId: partner.id, name: unassignedPartnerPolicyName });
+  // Each baseline governs every customer org of its own partner (D14 clause
+  // 1). The other partner's baseline is assigned too, so its exclusion below
+  // is by partner, not by being unassigned.
+  await testDb.insert(configPolicyAssignments).values([
+    { configPolicyId: ownPartnerPolicy!.id, level: 'partner', targetId: partner.id, priority: 0 },
+    { configPolicyId: otherPartnerPolicy!.id, level: 'partner', targetId: otherPartner.id, priority: 0 },
+  ]);
 
   return {
     partnerId: partner.id,
@@ -99,6 +138,7 @@ async function seedTenant(): Promise<Fixture> {
     ownPartnerPolicyName,
     otherPartnerPolicyName,
     orgPolicyName,
+    unassignedPartnerPolicyName,
     ownPartnerPolicyId: ownPartnerPolicy!.id,
   };
 }
@@ -193,7 +233,10 @@ async function refresh(app: Hono, cookies: RefreshCookies, binding: string) {
   });
 }
 
-/** Partner-wide read through a real route + authMiddleware (RLS-only filter). */
+/**
+ * Partner-wide read through a real route + authMiddleware: RLS, then the W03a
+ * read rule (an MSP-managed policy must apply to the org).
+ */
 async function eligibleParentNames(app: Hono, accessToken: string, orgId: string): Promise<string[]> {
   const res = await app.request(
     `/configuration-policies/eligible-parents?ownerScope=organization&orgId=${orgId}`,
@@ -269,6 +312,9 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     const withPartner = await visibleNames(fx.partnerId);
     expect(withPartner).toContain(fx.ownPartnerPolicyName);
     expect(withPartner).not.toContain(fx.otherPartnerPolicyName);
+    // RLS does not apply the read rule: the unassigned partner policy is
+    // visible here and hidden only by the route (see the login cases).
+    expect(withPartner).toContain(fx.unassignedPartnerPolicyName);
 
     // Read-only: the SELECT branch never widens UPDATE/DELETE targeting.
     const updated = await withDbAccessContext(orgContext(fx.partnerId), () =>
@@ -313,6 +359,8 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     expect(names).toContain(fx.ownPartnerPolicyName);
     expect(names).toContain(fx.orgPolicyName);
     expect(names).not.toContain(fx.otherPartnerPolicyName);
+    // #12462 W03a: a partner policy that applies to no org is not offered.
+    expect(names).not.toContain(fx.unassignedPartnerPolicyName);
   });
 
   it('org SSO callback: the session carries the org\'s partner, reads partner-wide config, and keeps it across refresh', async () => {
@@ -345,6 +393,7 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     expect(names).toContain(fx.ownPartnerPolicyName);
     expect(names).toContain(fx.orgPolicyName);
     expect(names).not.toContain(fx.otherPartnerPolicyName);
+    expect(names).not.toContain(fx.unassignedPartnerPolicyName);
 
     // Refresh keeps every claim, and the read still works.
     const refreshRes = await refresh(app, refreshCookiesFrom(exchangeRes), binding);
@@ -414,10 +463,349 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     });
     expect(exchangeRes.status).toBe(200);
     const { accessToken } = await exchangeRes.json() as { accessToken: string };
+    let cookies = refreshCookiesFrom(exchangeRes);
 
     expectOrgSession(accessToken, second, user.id);
     const names = await eligibleParentNames(app, accessToken, second.orgId);
     expect(names).toContain(second.ownPartnerPolicyName);
     expect(names).not.toContain(home.ownPartnerPolicyName);
+    expect(names).not.toContain(second.unassignedPartnerPolicyName);
+
+    // Refresh stays on the provider's org, not whichever membership row a
+    // user-wide lookup happens to return first.
+    for (let i = 0; i < 3; i += 1) {
+      const refreshRes = await refresh(app, cookies, binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expectOrgSession(refreshed.tokens.accessToken, second, user.id);
+    }
+  });
+
+  it('org session resolves its device\'s effective configuration from the partner baseline', async () => {
+    // Session parity for delivery: the same org session that reads the
+    // baseline also gets it in a device's effective configuration. The
+    // resolver has its own ownership clause and does not go through the W03a
+    // read rule (resolveEffectiveConfigWithExecutor).
+    const fx = await seedTenant();
+    const testDb = getTestDb();
+    const [link] = await testDb
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: fx.ownPartnerPolicyId, featureType: 'monitors', inlineSettings: { items: [], checkIntervalSeconds: 611 } })
+      .returning();
+    await testDb.insert(configPolicyMonitoringSettings).values({ featureLinkId: link!.id, checkIntervalSeconds: 611 });
+    const site = await createSite({ orgId: fx.orgId });
+    const device = await createDevice({ orgId: fx.orgId, siteId: site!.id });
+
+    const password = 'EffectiveParity123!';
+    const user = await createUser({ partnerId: fx.partnerId, orgId: fx.orgId, email: `eff-${Date.now()}@example.com`, password });
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const binding = (await bootstrapAuthBinding()).cookie;
+    const login = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: binding },
+      body: JSON.stringify({ email: user.email, password }),
+    });
+    expect(login.status).toBe(200);
+    const { tokens } = await login.json() as { tokens: { accessToken: string } };
+    expectOrgSession(tokens.accessToken, fx, user.id);
+
+    const res = await app.request(`/configuration-policies/effective/${device.id}`, {
+      headers: { Authorization: `Bearer ${tokens.accessToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      features: Record<string, { sourcePolicyId: string; sourceLevel: string }>;
+      inheritanceChain: Array<{ policyId: string }>;
+      policyOwners: Record<string, string>;
+    };
+    expect(body.features.monitors?.sourcePolicyId).toBe(fx.ownPartnerPolicyId);
+    expect(body.features.monitors?.sourceLevel).toBe('partner');
+    expect(body.inheritanceChain.some((e) => e.policyId === fx.ownPartnerPolicyId)).toBe(true);
+    expect(body.policyOwners[fx.ownPartnerPolicyId]).toBe('partner');
+  });
+});
+
+describe('refresh re-issues the session\'s own tenant scope', () => {
+  let app: Hono;
+
+  beforeEach(async () => {
+    const { getRedis } = await import('../../services');
+    const redis = getRedis();
+    if (redis) {
+      const keys = [
+        ...await redis.keys('sso:login:*'),
+        ...await redis.keys('ssolink:*'),
+        ...await redis.keys('sso:pendinglink:*'),
+      ];
+      if (keys.length > 0) await redis.del(...keys);
+    }
+    app = new Hono();
+    app.route('/sso', ssoRoutes);
+    app.route('/auth', authRoutes);
+    vi.mocked(exchangeCodeForTokens).mockReset().mockResolvedValue({
+      access_token: 'idp-access-token',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      refresh_token: 'idp-refresh-token',
+      id_token: 'header.payload.signature',
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(getUserInfo).mockClear();
+    vi.mocked(verifyIdTokenSignature).mockClear();
+  });
+
+  /** An org-homed user who also holds a partner membership on the org's partner. */
+  async function seedDualMembershipUser(fx: Fixture, opts: { password?: string } = {}) {
+    const email = `dual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}@example.com`;
+    const user = opts.password
+      ? await createUser({ partnerId: fx.partnerId, orgId: fx.orgId, email, password: opts.password })
+      : await createPasswordlessUser({ partnerId: fx.partnerId, orgId: fx.orgId, email });
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const partnerRole = await createRole({ scope: 'partner', partnerId: fx.partnerId });
+    if (!partnerRole) throw new Error('partner role fixture failed');
+    await assignUserToPartner(user.id, fx.partnerId, partnerRole.id, 'all');
+    return { user, partnerRoleId: partnerRole.id };
+  }
+
+  async function orgSsoSession(fx: Fixture, userId: string, email: string, sub: string) {
+    await createOrgAxisProvider(fx.orgId);
+    const binding = (await bootstrapAuthBinding()).cookie;
+    const callbackRes = await ssoCallback(app, fx.orgId, binding, sub, email);
+    expect(callbackRes.status).toBe(302);
+    const code = decodeURIComponent(callbackRes.headers.get('location')!.match(/#ssoCode=([^&]+)/)![1]!);
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: binding },
+      body: JSON.stringify({ code }),
+    });
+    expect(exchangeRes.status).toBe(200);
+    const { accessToken } = await exchangeRes.json() as { accessToken: string };
+    expectOrgSession(accessToken, fx, userId);
+    return { binding, cookies: refreshCookiesFrom(exchangeRes) };
+  }
+
+  async function passwordSession(email: string, password: string) {
+    const binding = (await bootstrapAuthBinding()).cookie;
+    const res = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: binding },
+      body: JSON.stringify({ email, password }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { tokens: { accessToken: string } };
+    return { binding, cookies: refreshCookiesFrom(res), accessToken: body.tokens.accessToken };
+  }
+
+  async function familyRevokedAt(cookies: RefreshCookies): Promise<Date | null> {
+    const fam = decodeJwt(decodeURIComponent(cookies.refresh.split('=')[1] ?? '')).fam as string;
+    expect(fam).toBeTruthy();
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ revokedAt: refreshTokenFamilies.revokedAt })
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, fam))
+        .limit(1));
+    if (!row) throw new Error(`no refresh_token_families row for ${fam}`);
+    return row.revokedAt;
+  }
+
+  it('org SSO session for a user who also holds a partner membership stays organization-scope on the same org', async () => {
+    const fx = await seedTenant();
+    const { user } = await seedDualMembershipUser(fx);
+    const session = await orgSsoSession(fx, user.id, user.email, 'ext-sub-dual');
+    let cookies = session.cookies;
+
+    for (let i = 0; i < 2; i += 1) {
+      const refreshRes = await refresh(app, cookies, session.binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expectOrgSession(refreshed.tokens.accessToken, fx, user.id);
+    }
+  });
+
+  it('org membership removed: refresh is refused and the session is revoked, with no partner fallback', async () => {
+    const fx = await seedTenant();
+    const { user } = await seedDualMembershipUser(fx);
+    const { binding, cookies } = await orgSsoSession(fx, user.id, user.email, 'ext-sub-dual-removed');
+
+    await getTestDb().delete(organizationUsers).where(and(
+      eq(organizationUsers.userId, user.id),
+      eq(organizationUsers.orgId, fx.orgId),
+    ));
+
+    const refreshRes = await refresh(app, cookies, binding);
+    expect(refreshRes.status).toBe(401);
+    expect(await refreshRes.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+
+    // The revocation outlasts the membership change: re-adding the org
+    // membership does not revive this session (the partner membership never
+    // could). The user signs in again.
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const retry = await refresh(app, cookies, binding);
+    expect(retry.status).toBe(401);
+  });
+
+  it('a multi-org user removed from the session\'s org is refused, not moved to their other org', async () => {
+    const home = await seedTenant();
+    const second = await seedTenant();
+    const user = await createPasswordlessUser({
+      partnerId: home.partnerId,
+      orgId: home.orgId,
+      email: `multi-removed-${Date.now()}@example.com`,
+    });
+    await assignUserToOrganization(user.id, home.orgId, home.roleId);
+    await assignUserToOrganization(user.id, second.orgId, second.roleId);
+    const { binding, cookies } = await orgSsoSession(second, user.id, user.email, 'ext-sub-multi-removed');
+
+    await getTestDb().delete(organizationUsers).where(and(
+      eq(organizationUsers.userId, user.id),
+      eq(organizationUsers.orgId, second.orgId),
+    ));
+
+    const refreshRes = await refresh(app, cookies, binding);
+    expect(refreshRes.status).toBe(401);
+    expect(await refreshRes.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+  });
+
+  it('an inactive org refuses refresh without revoking the family', async () => {
+    const fx = await seedTenant();
+    const { user } = await seedDualMembershipUser(fx);
+    const { binding, cookies } = await orgSsoSession(fx, user.id, user.email, 'ext-sub-inactive-org');
+
+    await getTestDb().update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, fx.orgId));
+
+    const refreshRes = await refresh(app, cookies, binding);
+    expect(refreshRes.status).toBe(401);
+    expect(await refreshRes.json()).not.toHaveProperty('tokens');
+    // Not a lost membership: the family stays live, and no partner session
+    // was issued in its place.
+    expect(await familyRevokedAt(cookies)).toBeNull();
+  });
+
+  it('partner-scope password session refreshes unchanged', async () => {
+    const fx = await seedTenant();
+    const password = 'PartnerAxis123!';
+    const partnerRole = await createRole({ scope: 'partner', partnerId: fx.partnerId });
+    if (!partnerRole) throw new Error('partner role fixture failed');
+    const user = await createUser({
+      partnerId: fx.partnerId,
+      orgId: null,
+      email: `partner-${Date.now()}@example.com`,
+      password,
+    });
+    await assignUserToPartner(user.id, fx.partnerId, partnerRole.id, 'all');
+    const session = await passwordSession(user.email, password);
+    expect(decodeJwt(session.accessToken)).toMatchObject({
+      scope: 'partner',
+      partnerId: fx.partnerId,
+      orgId: null,
+      roleId: partnerRole.id,
+    });
+    let cookies = session.cookies;
+
+    for (let i = 0; i < 2; i += 1) {
+      const refreshRes = await refresh(app, cookies, session.binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expect(decodeJwt(refreshed.tokens.accessToken)).toMatchObject({
+        sub: user.id,
+        scope: 'partner',
+        partnerId: fx.partnerId,
+        orgId: null,
+        roleId: partnerRole.id,
+      });
+    }
+  });
+
+  it('partner-scope password session of a dual-membership user stays partner-scope; partner membership removed refuses refresh with no org fallback', async () => {
+    const fx = await seedTenant();
+    const password = 'DualPartner123!';
+    const { user, partnerRoleId } = await seedDualMembershipUser(fx, { password });
+    const session = await passwordSession(user.email, password);
+    expect(decodeJwt(session.accessToken)).toMatchObject({
+      scope: 'partner',
+      partnerId: fx.partnerId,
+      orgId: null,
+      roleId: partnerRoleId,
+    });
+
+    const refreshRes = await refresh(app, session.cookies, session.binding);
+    expect(refreshRes.status).toBe(200);
+    const cookies = refreshCookiesFrom(refreshRes);
+    const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+    expect(decodeJwt(refreshed.tokens.accessToken)).toMatchObject({
+      scope: 'partner',
+      partnerId: fx.partnerId,
+      orgId: null,
+    });
+
+    await getTestDb().delete(partnerUsers).where(and(
+      eq(partnerUsers.userId, user.id),
+      eq(partnerUsers.partnerId, fx.partnerId),
+    ));
+
+    const denied = await refresh(app, cookies, session.binding);
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+  });
+
+  it('a user removed from the session\'s partner is refused, not moved to another partner membership', async () => {
+    const fx = await seedTenant();
+    const other = await seedTenant();
+    const password = 'TwoPartners123!';
+    const firstRole = await createRole({ scope: 'partner', partnerId: fx.partnerId });
+    const secondRole = await createRole({ scope: 'partner', partnerId: other.partnerId });
+    if (!firstRole || !secondRole) throw new Error('partner role fixture failed');
+    const user = await createUser({
+      partnerId: fx.partnerId,
+      orgId: null,
+      email: `two-partners-${Date.now()}@example.com`,
+      password,
+    });
+    await assignUserToPartner(user.id, fx.partnerId, firstRole.id, 'all');
+    const session = await passwordSession(user.email, password);
+    expect(decodeJwt(session.accessToken)).toMatchObject({ scope: 'partner', partnerId: fx.partnerId });
+    // A second partner membership arrives after sign-in.
+    await assignUserToPartner(user.id, other.partnerId, secondRole.id, 'all');
+
+    await getTestDb().delete(partnerUsers).where(and(
+      eq(partnerUsers.userId, user.id),
+      eq(partnerUsers.partnerId, fx.partnerId),
+    ));
+
+    const denied = await refresh(app, session.cookies, session.binding);
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(session.cookies)).toBeInstanceOf(Date);
+  });
+
+  it('single-membership org password session refreshes unchanged', async () => {
+    const fx = await seedTenant();
+    const password = 'SingleOrg123!';
+    const user = await createUser({
+      partnerId: fx.partnerId,
+      orgId: fx.orgId,
+      email: `single-${Date.now()}@example.com`,
+      password,
+    });
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const session = await passwordSession(user.email, password);
+    expectOrgSession(session.accessToken, fx, user.id);
+    let cookies = session.cookies;
+
+    for (let i = 0; i < 2; i += 1) {
+      const refreshRes = await refresh(app, cookies, session.binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expectOrgSession(refreshed.tokens.accessToken, fx, user.id);
+    }
   });
 });

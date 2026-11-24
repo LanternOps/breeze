@@ -617,11 +617,20 @@ approvalRoutes.get('/pending', async (c) => {
 // 'count' as an :id. Same filters as `/pending`, unpaginated — the whole
 // live-authorized set's length, not a raw table count(*) (which couldn't
 // account for the app-layer four_eyes/supervised live-authz filter above).
+/**
+ * How many approvals wait on `userId`: exactly `GET /pending/count`, the same
+ * live-authorized set as `GET /pending`. Exported for Wisp's standing state
+ * (#11677), which says how many are waiting and nothing about them. Opens its
+ * own system context (`runOutsideDbContext`), so call it outside any held one.
+ */
+export async function countAuthorizedPendingApprovals(userId: string, partnerId: string | null): Promise<number> {
+  return (await fetchAuthorizedPendingApprovals(userId, partnerId)).length;
+}
+
 approvalRoutes.get('/pending/count', async (c) => {
   const userId = c.get('auth').user.id;
   const partnerId = c.get('auth').partnerId ?? null;
-  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
-  return c.json({ count: authorized.length });
+  return c.json({ count: await countAuthorizedPendingApprovals(userId, partnerId) });
 });
 
 const denySchema = z.object({
@@ -706,6 +715,10 @@ const BATCH_ID_CAP = 200;
 const batchTargetSchema = z.object({
   approvalRequestIds: z.array(z.string().min(1)).min(1).max(BATCH_ID_CAP),
   decision: z.enum(['approved', 'denied']),
+  // Omitted = `same_org`, so existing callers (web, mobile) are unchanged.
+  // `cross_org` must be sent to BOTH routes: it is folded into the challenge
+  // key, so a challenge minted under one scope never verifies under the other.
+  scope: z.enum(['same_org', 'cross_org']).optional(),
 });
 const batchDecideSchema = batchTargetSchema.extend({
   reason: z.string().max(500).optional(),
@@ -737,11 +750,16 @@ approvalRoutes.post(
     }
     const userId = auth.user.id;
     const { approvalRequestIds, decision } = c.req.valid('json');
+    const scope = c.req.valid('json').scope ?? 'same_org';
 
-    const loaded = await loadHomogeneousBatch(userId, approvalRequestIds);
+    const loaded = await loadHomogeneousBatch(
+      userId,
+      approvalRequestIds,
+      scope === 'cross_org' ? { scope, auth } : {},
+    );
     if (!loaded.ok) return c.json(loaded.body, loaded.httpStatus as 422);
 
-    const challengeKey = batchAssertionKey(loaded.ids, decision);
+    const challengeKey = batchAssertionKey(loaded.ids, decision, scope);
 
     // Identical device query to the single-card challenge route: the caller's
     // active platform approver devices (the userId predicate is
@@ -801,6 +819,7 @@ approvalRoutes.post('/batch/decide', zValidator('json', batchDecideSchema), asyn
   const outcome = await decideApprovalBatch(auth, {
     approvalRequestIds: body.approvalRequestIds,
     decision: body.decision,
+    scope: body.scope,
     reason: body.reason,
     proof: body.proof,
   });

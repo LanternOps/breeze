@@ -20,8 +20,15 @@
  * classification, but deliberately never flips `state` back to `closed` —
  * only `resetCircuit` does that.
  */
-import { and, eq, sql } from 'drizzle-orm';
-import type { AgentRunVerdict, AiAgentRecipients, AiAgentRunProfile, AiAgentRunStatus } from '@breeze/shared';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
+import type {
+  AgentRunVerdict,
+  AiAgentOpenCircuitDto,
+  AiAgentRecipients,
+  AiAgentRunProfile,
+  AiAgentRunStatus,
+} from '@breeze/shared';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   db,
@@ -88,11 +95,26 @@ async function takeCircuitLock(orgId: string, agentId: string): Promise<void> {
  * threshold — a missed increment is far cheaper than a circuit that opens on
  * an infrastructure hiccup nobody enumerated.
  *
- * `stalled` (runService.ts's `reapStalledAgentRuns`) and `enqueue_failed`
- * (runService.ts's `failRunAfterEnqueueFailure`) are deliberately EXCLUDED —
- * both are the platform failing the agent (a SIGKILLed worker, a BullMQ
- * enqueue that never landed), not the agent doing anything wrong, and neither
- * should erode an org's failure budget.
+ * Deliberately EXCLUDED, because each is the platform failing the agent, not
+ * the agent doing anything wrong, and none should erode an org's failure
+ * budget:
+ * - `stalled` (runService.ts's `reapStalledAgentRuns`): a SIGKILLed worker.
+ * - `enqueue_failed` (runService.ts's `failRunAfterEnqueueFailure`): a BullMQ
+ *   enqueue that never landed.
+ * - `llm_unavailable` (#12347, owner decision 2026-11-24): runLoop.ts throws
+ *   it when the agent's model egress cannot be prepared (`prepareSdkChild`),
+ *   and sets it when a classified provider failure (down, overloaded,
+ *   rate-limiting) found no usable backup model to fail over to (or the
+ *   backup lookup itself failed). Either way the model provider or our
+ *   egress to it was unavailable — nothing the agent did.
+ *
+ * Still counted although the cause can sit with the platform, because the
+ * code alone cannot tell it apart from the agent's own behaviour:
+ * `sdk_error` (it also carries a provider error that ended the run when no
+ * failover was attempted), `run_failed` (an uncaught throw that is not an
+ * `AgentRunError` or an ownership error),
+ * `wall_clock_exceeded` (a slow provider or a looping agent) and
+ * `ownership_mismatch`.
  */
 const INCREMENT_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   // RESULT_DISPOSITIONS failure dispositions (SDK result-subtype mapping).
@@ -103,8 +125,6 @@ const INCREMENT_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   'wall_clock_exceeded',
   'budget_exceeded',
   'max_turns_exceeded',
-  // AgentRunError thrown inside driveSdkLoop.
-  'llm_unavailable',
   // The loop's catch-all fallback codes for an uncaught throw.
   'ownership_mismatch',
   'run_failed',
@@ -164,10 +184,11 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  *   circuit-breaker purposes, per the wave-6 quorum).
  * - `reset`: a clean `completed` (no `needs_attention`), or `awaiting_approval`
  *   (the agent did real, unflagged work and handed a decision to a human).
- * - `neutral`: `cancelled`, `expired`, `skipped` — and a `failed` whose error
- *   code is not on the increment allowlist (`stalled`, `enqueue_failed`, or
- *   anything unrecognized). Also the safe default for a non-terminal status
- *   (`queued`/`running`), which callers must never actually pass here.
+ * - `neutral`: `cancelled`, `expired`, `skipped`, `blocked` — and a `failed`
+ *   whose error code is not on the increment allowlist (`stalled`,
+ *   `enqueue_failed`, `llm_unavailable`, or anything unrecognized). Also the
+ *   safe default for a non-terminal status (`queued`/`running`), which
+ *   callers must never actually pass here.
  *
  * `profile` (phase 2 wave P2-1, default `'full'` so every pre-existing
  * 3-arg call site keeps its old behavior unchanged): a `verdict`-profile run
@@ -195,7 +216,7 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  * whether the org's remediation is working. It must therefore never reset a
  * streak the fleet's real remediation runs earned, nor increment one on a
  * `needs_attention` verdict about last week's prose. `failed` stays
- * profile-independent: a narrative run can hit `llm_unavailable` or blow the
+ * profile-independent: a narrative run can crash in the SDK or blow the
  * turn/budget ceiling exactly like any other, and that is a real signal.
  *
  * Phase 2 wave P2-4 (ticket triage, #4191): a `triage`-profile run gets the
@@ -214,9 +235,8 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  * remediation attempt, so its outcome carries no information whatsoever
  * about whether the org's remediation is working. It must never reset (or
  * increment) the streak either way. `failed` stays profile-independent: a
- * design run can genuinely blow the turn/budget ceiling or hit
- * `llm_unavailable` exactly like any other profile, and that is a real
- * signal.
+ * design run can genuinely blow the turn/budget ceiling or crash in the SDK
+ * exactly like any other profile, and that is a real signal.
  *
  * NOTE for whoever adds the next profile: this function compares `profile`
  * as a plain string and has NO exhaustive `never` guard (unlike
@@ -356,6 +376,54 @@ export async function getCircuitState(orgId: string, agentId: string): Promise<A
 }
 
 /**
+ * #12347 — every OPEN circuit for `agentIds`, grouped per agent, for the
+ * settings list (`GET /ai/agents`) in ONE query for the whole page.
+ *
+ * Deliberately NOT system-scoped, unlike every other read in this module: it
+ * runs on the request path under the caller's own RLS context, AND pins
+ * `orgCondition` (the caller's `auth.orgCondition`) — the "defended twice"
+ * posture `loadLastRuns` in routes/aiAgents.ts documents. A partner-wide
+ * agent's circuits belong to many orgs, and the caller may only learn about
+ * the ones in orgs it can reach. The org join supplies the name the card
+ * shows, so a partner on "All organizations" can tell which org is paused.
+ */
+export async function listOpenCircuits(
+  orgCondition: (column: PgColumn) => SQL | undefined,
+  agentIds: string[],
+): Promise<Map<string, AiAgentOpenCircuitDto[]>> {
+  if (agentIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      agentId: aiAgentCircuitState.agentId,
+      orgId: aiAgentCircuitState.orgId,
+      orgName: organizations.name,
+      openedAt: aiAgentCircuitState.openedAt,
+      openedReason: aiAgentCircuitState.openedReason,
+      consecutiveFailures: aiAgentCircuitState.consecutiveFailures,
+    })
+    .from(aiAgentCircuitState)
+    .innerJoin(organizations, eq(organizations.id, aiAgentCircuitState.orgId))
+    .where(and(
+      eq(aiAgentCircuitState.state, 'open'),
+      inArray(aiAgentCircuitState.agentId, agentIds),
+      orgCondition(aiAgentCircuitState.orgId),
+    ));
+  const byAgent = new Map<string, AiAgentOpenCircuitDto[]>();
+  for (const row of rows) {
+    const list = byAgent.get(row.agentId) ?? [];
+    list.push({
+      orgId: row.orgId,
+      orgName: row.orgName,
+      openedAt: row.openedAt ? row.openedAt.toISOString() : null,
+      openedReason: row.openedReason,
+      consecutiveFailures: row.consecutiveFailures,
+    });
+    byAgent.set(row.agentId, list);
+  }
+  return byAgent;
+}
+
+/**
  * The ONLY way an open circuit closes (wave-6 quorum: "manual MFA reset
  * only"). Called from the MFA-gated `POST /:id/circuit/reset` route — same
  * system-context reasoning as `getCircuitState` (the route has already
@@ -386,6 +454,25 @@ export async function resetCircuit(
       .returning();
     return row ? toSnapshot(row) : defaultSnapshot(orgId, agentId);
   });
+}
+
+/**
+ * #12347 — what the run that tripped the circuit actually did, for the stored
+ * `opened_reason`. Before this the reason repeated only the threshold, so an
+ * admin looking at an open circuit could not tell a model outage from a turn
+ * ceiling from a run that flagged a problem.
+ *
+ * Built ONLY from values that cannot carry tenant or model text, by
+ * construction: the `increment` path is reached solely by a `failed` run whose
+ * `errorCode` is on `INCREMENT_FAILURE_ERROR_CODES` (a closed allowlist of
+ * machine tokens) or by a `completed` run with a `needs_attention` verdict,
+ * which gets a fixed literal. The run's free-text error message is never read.
+ */
+function describeTriggeringOutcome(to: AiAgentRunStatus, errorCode: string | null): string {
+  if (to === 'failed' && errorCode !== null && INCREMENT_FAILURE_ERROR_CODES.has(errorCode)) {
+    return `last failure: ${errorCode}`;
+  }
+  return 'last run: needs_attention verdict';
 }
 
 interface JustOpened {
@@ -506,7 +593,8 @@ export async function recordRunTerminal(
         state: 'open',
         openedAt: new Date(),
         openedReason:
-          `${upserted.consecutiveFailures} consecutive terminal failures (threshold ${threshold})`,
+          `${upserted.consecutiveFailures} consecutive terminal failures (threshold ${threshold}); `
+          + describeTriggeringOutcome(to, errorCode),
         lastTransitionAt: new Date(),
       })
       .where(and(

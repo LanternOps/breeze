@@ -19,7 +19,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
-import { describePax8Action, describePax8Submit, humanizeToolAction } from './actionIntents/actionLabel';
+import { describePax8Action, describePax8Submit, humanizeToolAction, patchInstallHeadline } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
@@ -39,7 +39,12 @@ import {
   isSpecialistKind,
 } from './wisp/specialistPolicy';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
-import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import {
+  classifyChatReadOnlyDeviceEventLogRead,
+  classifyChatReadOnlyEventLogsQuery,
+  type PinnedDeviceEventLogRead,
+  type PinnedEventLogsQuery,
+} from './aiChatEventLogsReadOnly';
 import { classifyWispUnattendedRead, type WispUnattendedRead } from './wisp/unattendedReads';
 import { ONBOARDING_ORG_LIMIT } from './wisp/assessableOrgs';
 // Env-only operator knob; the module imports nothing but @breeze/shared.
@@ -319,7 +324,8 @@ export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
   // Full-control W14 PR B (#6784): what the next billing run would bill — no write anywhere.
   manage_contracts: ['preview_invoice'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
-  // Full-control W13 PR B (#6783): channel names and sizes only; query / get_event return event text and are tier 3.
+  // Full-control W13 PR B (#6783): channel names and sizes only; query / get_event return event text and are tier 3
+  // (#12453: a chat-session System / Setup query / get_event resolves Tier-2 read-only in checkGuardrails instead).
   browse_device_event_log: ['list_logs'],
   file_operations: ['list'],
   manage_processes: ['list'],
@@ -1107,7 +1113,8 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_device_warranty: ['refresh'],
   // Full-control W13 PR B (#6783, plan class review + quorum QW1/QW2/QW6). One approver (the requester):
   // - an event-log query / event read returns event TEXT from any channel (Security / Application logs can carry
-  //   credentials and PII) — the execute_command event_logs_query base class, without its chat-only exemption;
+  //   credentials and PII) — the execute_command event_logs_query base class. #12453 added the same chat-only
+  //   System / Setup exemption (checkGuardrails, aiChatEventLogsReadOnly.ts); every other channel stays here;
   // - a tenant-variable value is substituted into every script dispatched to the org's devices ({{var.<key>}}), and
   //   a delete loses the value (the tool never touches secrets or existing partner-wide rows, W13-D7/D13);
   // - ending a support session self-destructs the temporary client and decommissions it (irreversible).
@@ -1531,7 +1538,8 @@ export interface GuardrailContext {
    * #7906: set ONLY by the interactive chat gate (`createSessionPreToolUse` /
    * its postToolUse twin in aiAgentSdk.ts) for a `user_session` principal
    * that is not a Helper session. Opts the call in to the payload-aware
-   * read-only `event_logs_query` classification. MCP, intents, the agent
+   * read-only `event_logs_query` classification and (#12453) the System /
+   * Setup `browse_device_event_log` query / get_event classification. MCP, intents, the agent
    * catalog and headless runs never set it — `checkAgentGuardrails` strips
    * it — so they keep the base Tier 3.
    */
@@ -3091,6 +3099,11 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
     { resource: 'devices', action: 'write' },
     { resource: 'alerts', action: 'write' },
   ],
+  // Flows completion W01b (#12435, Decision P20): primary automations.write in
+  // TOOL_PERMISSIONS, plus read. The REST twins (routes/flows.ts POST / and
+  // PUT /:id) inherit the router-level requirePermission('automations', 'read'),
+  // so the tool requires both, as aiGuardrails.routeBinding.contract.test.ts binds.
+  draft_flow: [{ resource: 'automations', action: 'read' }],
   restore_snapshot: [{ resource: 'backup', action: 'read' }],
   restore_as_vm: [{ resource: 'backup', action: 'read' }],
   instant_boot_vm: [{ resource: 'backup', action: 'read' }],
@@ -3230,6 +3243,13 @@ interface GuardrailCheckCommon {
    * these values, never the raw input.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * #12453: set only on the chat-session read-only `browse_device_event_log`
+   * query / get_event resolution (System / Setup) — the strictly-parsed read
+   * the call was classified on, with the canonical channel name. The chat gate
+   * pins it on the ToolExecutionContext so dispatch uses exactly these values.
+   */
+  pinnedDeviceEventLogRead?: PinnedDeviceEventLogRead;
   /**
    * #10973: set only when `wispUnattendedReads` lowered a Security query to Tier
    * 2. The chat gate dispatches this classified call, never the raw input.
@@ -3438,6 +3458,26 @@ export function checkGuardrails(
       approvalScope: resolveApprovalScope(toolName, action, input, context),
       description: buildApprovalDescription(toolName, action, input, context)
     };
+  }
+
+  // #12453: chat-only System / Setup reads of browse_device_event_log. Its
+  // query / get_event are in TIER3_ACTIONS (the base tier is 1), so the
+  // classification must run before that table, unlike #7906's execute_command
+  // block below. After the input-aware escalation above, so that still wins.
+  // Every other channel, a missing one, and every non-chat principal fall
+  // through to the TIER3_ACTIONS approval.
+  if (context?.chatSession === true) {
+    const pinnedDeviceEventLogRead = classifyChatReadOnlyDeviceEventLogRead(toolName, input);
+    if (pinnedDeviceEventLogRead) {
+      return {
+        tier: 2,
+        allowed: true,
+        requiresApproval: false,
+        readOnly: true,
+        pinnedDeviceEventLogRead,
+        description: buildApprovalDescription(toolName, action, input, context)
+      };
+    }
   }
 
   if (action && TIER3_ACTIONS[toolName]?.includes(action)) {
@@ -4746,6 +4786,16 @@ export function buildApprovalDescription(
       } else if (action === 'draft') {
         const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
         parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
+      } else if (action === 'edit_comment' || action === 'delete_comment') {
+        // #11674: these act on `expectedTicketId` and never read `ticketId`
+        // (intentRowTarget.ts), so the stub names that ticket. Never the
+        // replacement text, and not public/internal: the input does not say.
+        const commentTicketId = typeof input.expectedTicketId === 'string'
+          ? `${input.expectedTicketId.slice(0, 8)}...`
+          : 'unknown';
+        parts.push(action === 'edit_comment'
+          ? `Edit a comment on ticket #${commentTicketId} (replaces its text)`
+          : `Delete a comment on ticket #${commentTicketId}`);
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }
@@ -4835,7 +4885,8 @@ export function buildApprovalDescription(
       break;
 
     case 'manage_patches':
-      if (action === 'install') parts.push(`Install ${Array.isArray(input.patchIds) ? input.patchIds.length : 0} patch(es) on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
+      // The intent service names the patches and the device in place of these (approvalPatchNames.ts).
+      if (action === 'install') parts.push(patchInstallHeadline(input));
       else if (action === 'scan') parts.push(`Trigger patch scan on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
       else if (action === 'rollback') parts.push(`Rollback patch ${(input.patchId as string)?.slice(0, 8)}...`);
       else if (action === 'setup_auto_approval') parts.push(`Setup auto-approval for ${Array.isArray(input.autoApproveSeverities) ? (input.autoApproveSeverities as string[]).join(', ') : 'critical, important'} patches`);

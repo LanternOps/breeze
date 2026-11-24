@@ -1159,6 +1159,7 @@
       "notSecret": "\"{{key}}\" gizli değil. Gizli bir değişken seçin veya kaynağı \"Bir değişkenden\" olarak değiştirin.",
       "notSecretRow": "Gizli değil — \"Bir değişkenden\" kullanın",
       "secretHint": "Yalnızca {{env}} ortam değişkeni olarak iletilir; komut dosyasına asla yazılmaz. Sistem bağlamında çalıştırma ve güvenli gizli bilgi iletimini destekleyen bir aracı gerektirir.",
+      "secretRequiredHelp": "İşaretli değilse: bu gizli değişken cihazın kuruluşu için tanımlanmamışsa betik yine de çalışır ve {{env}} ayarlanmaz. Var olan ancak okunamayan bir gizli değişken çalıştırmayı yine de başarısız kılar.",
       "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
     },
     "securityReview": {

@@ -3,3 +3,4 @@ export * from './expr';
 export * from './templates';
 export * from './structure';
 export * from './inputs';
+export * from './form';

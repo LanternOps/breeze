@@ -6,6 +6,7 @@ import { YARA_BUILTIN_RULE_SET_ID, YARA_MAX_RULE_SETS_PER_POLICY } from "@breeze
 import { listRuleSets, type YaraRuleSetSummary } from "../../security/detectionRules/ruleSetsApi";
 import RuleSetBadges from "../../security/detectionRules/RuleSetBadges";
 import type { FeatureLinkErrorDetail } from "./useFeatureLink";
+import { useFeatureDirty } from "./featureEditing";
 
 /**
  * The policy that owns the security link. `orgId`: a string = org policy,
@@ -82,6 +83,7 @@ export default function RuleSetPicker({
   highlightIds?: string[];
 }) {
   const { t } = useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [sets, setSets] = useState<YaraRuleSetSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -139,6 +141,7 @@ export default function RuleSetPicker({
   const editable = !disabled && !loadFailed;
 
   const toggle = (id: string) => {
+    markDirty();
     if (selected.has(norm(id))) onChange(value.filter((v) => norm(v) !== norm(id)));
     else if (!atCap) onChange([...value, id]);
   };
@@ -167,6 +170,7 @@ export default function RuleSetPicker({
           <button
             type="button"
             data-testid="rule-set-picker-retry"
+            data-feature-dirty-ignore
             onClick={() => void load()}
             className="rounded-md border border-destructive/40 bg-background px-2 py-1 font-medium"
           >
@@ -194,7 +198,10 @@ export default function RuleSetPicker({
                 type="button"
                 data-testid={`rule-set-unavailable-remove-${id}`}
                 disabled={disabled}
-                onClick={() => onChange(value.filter((v) => v !== id))}
+                onClick={() => {
+                  markDirty();
+                  onChange(value.filter((v) => v !== id));
+                }}
                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
               >
                 <X className="h-3.5 w-3.5" />

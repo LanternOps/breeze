@@ -1,4 +1,10 @@
-import { approvalBatchGroupKey, approvalBatchGroupParts } from '@breeze/shared';
+import {
+  APPROVAL_BATCH_GROUP_SEPARATOR,
+  approvalBatchGroupKey,
+  approvalBatchGroupParts,
+  approvalCrossOrgBatchKey,
+  isCrossOrgBatchEligible,
+} from '@breeze/shared';
 
 /**
  * Pure list-shaping helpers for the AI-agent approvals inbox — issue #4456.
@@ -295,4 +301,90 @@ export function buildSections(rows: PendingApproval[], driftedIds: ReadonlySet<s
     });
   }
   return sections;
+}
+
+/** One organization's share of a cross-org group, as the review list shows it. */
+export interface CrossOrgGroupOrg {
+  orgId: string;
+  orgName: string | null;
+  members: PendingApproval[];
+}
+
+/**
+ * Allowlisted cards from SEVERAL organizations that the server will decide
+ * under ONE ceremony when asked with `scope: 'cross_org'`
+ * (`isCrossOrgBatchEligible` / `CROSS_ORG_BATCH_ACTIONS` in `@breeze/shared`).
+ * Shown above the org-first list, never in place of it: the per-org groups
+ * keep their own headers.
+ */
+export interface CrossOrgGroup {
+  /**
+   * Keys every piece of UI state (deciding, group error). A leading empty part
+   * plus `xorg` makes it FOUR NUL-separated parts, so it can never equal a
+   * three-part same-org `groupIdentity` — not even for an org whose id is
+   * literally `xorg`, nor a null org (whose key starts with the empty part).
+   */
+  identity: string;
+  /** DOM-safe projection of the `(tool, action)` pair, for `data-testid` only. */
+  testKey: string;
+  /** Same label rule as `buildSections`: `tool:action`. */
+  tool: string;
+  /** Row order. */
+  members: PendingApproval[];
+  /** First-appearance order. */
+  orgs: CrossOrgGroupOrg[];
+}
+
+/** Members bucketed by org in first-appearance order. A null `orgId` never
+ *  reaches here from `buildCrossOrgGroups` (`isGroupable` requires an org), but
+ *  buckets under `''` rather than throwing if a caller passes one. */
+export function groupMembersByOrg(members: PendingApproval[]): CrossOrgGroupOrg[] {
+  const byOrg = new Map<string, CrossOrgGroupOrg>();
+  for (const member of members) {
+    const orgId = member.orgId ?? '';
+    const bucket = byOrg.get(orgId);
+    if (bucket) bucket.members.push(member);
+    else byOrg.set(orgId, { orgId, orgName: member.orgName, members: [member] });
+  }
+  return [...byOrg.values()];
+}
+
+/**
+ * Cross-org batch candidates over the SAME rows (and the same `driftedIds`)
+ * `buildSections` gets, so a filter, a search or a drifted card shapes both
+ * views identically. Eligibility is the per-org rule (`isGroupable`, not
+ * drifted) plus the shared cross-org allowlist. A group is emitted only when
+ * its members span at least two organizations — within one org the per-org
+ * "Approve all" already does the job.
+ */
+export function buildCrossOrgGroups(
+  rows: PendingApproval[],
+  driftedIds: ReadonlySet<string>,
+): CrossOrgGroup[] {
+  const byKey = new Map<string, PendingApproval[]>();
+  for (const row of rows) {
+    if (!isGroupable(row) || driftedIds.has(row.id) || !isCrossOrgBatchEligible(row)) continue;
+    const key = approvalCrossOrgBatchKey(row);
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(row);
+    else byKey.set(key, [row]);
+  }
+
+  const groups: CrossOrgGroup[] = [];
+  for (const [key, members] of byKey) {
+    const orgs = groupMembersByOrg(members);
+    if (orgs.length < 2) continue;
+    const anchor = members[0];
+    groups.push({
+      identity: ['', 'xorg', key].join(APPROVAL_BATCH_GROUP_SEPARATOR),
+      testKey: key
+        .split(APPROVAL_BATCH_GROUP_SEPARATOR)
+        .map((part) => part.replace(/[^A-Za-z0-9_-]+/g, '-'))
+        .join('--'),
+      tool: anchor.action ? `${anchor.actionToolName}:${anchor.action}` : anchor.actionToolName,
+      members,
+      orgs,
+    });
+  }
+  return groups;
 }
