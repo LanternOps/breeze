@@ -10,8 +10,13 @@
  *    `execute_command event_logs_list` precedent);
  *  - `query` / `get_event` are tier-3 supervised: event CONTENT from any channel
  *    (Security / Application logs can carry credentials and PII), the
- *    `execute_command event_logs_query` base class. There is deliberately no
- *    chat-only System/Setup exemption here (#7906 lives on execute_command).
+ *    `execute_command event_logs_query` base class;
+ *  - #12453 (the #7906 precedent): in an interactive chat session a `query` /
+ *    `get_event` on System or Setup resolves Tier-2 read-only, with no card.
+ *    The gate classifies the call (aiChatEventLogsReadOnly.ts) and pins the
+ *    parsed read on the context (`pinnedDeviceEventLogRead`); this handler then
+ *    dispatches the pinned channel and fields, never the raw input. Every
+ *    other channel, and MCP / agent runs, keep the approval.
  *
  * Device scope is the central `deviceArgs` gate plus `verifyDeviceAccess`
  * (online required: the call waits on the agent). `aiExecuteCommand` applies
@@ -110,7 +115,7 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
     deviceArgs: ['deviceId'],
     definition: {
       name: 'browse_device_event_log',
-      description: 'Actions: list_logs, query, get_event on one online Windows device, read live from its agent (search_logs has the ingested copy). query and get_event return event text and need approval.',
+      description: 'Actions: list_logs, query, get_event on one online Windows device, read live from its agent (search_logs has the ingested copy). query and get_event return event text and need approval, except System and Setup reads in chat.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -128,15 +133,23 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
         additionalProperties: false,
       },
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const action = input.action as Action;
       if (!EVENT_LOG_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
+      // #12453: a chat read the gate auto-ran carries the read it classified.
+      // Dispatch exactly that, and refuse a pin for a different action.
+      const pinned = context?.pinnedDeviceEventLogRead;
+      if (pinned && pinned.action !== action) {
+        return jsonError('A pinned event-log read cannot dispatch another action', 'PIN_MISMATCH');
+      }
+      // The pin (when present) replaces the model's arguments wholesale.
+      const args: Record<string, unknown> = pinned ? { ...pinned } : input;
       const mfa = mfaGatedToolError('browse_device_event_log', action, auth);
       if (mfa) return mfa;
-      if (action !== 'list_logs' && (typeof input.logName !== 'string' || input.logName.trim() === '')) {
+      if (action !== 'list_logs' && (typeof args.logName !== 'string' || args.logName.trim() === '')) {
         return jsonError('logName is required (see list_logs)', 'VALIDATION_ERROR');
       }
-      if (action === 'get_event' && typeof input.recordId !== 'number') {
+      if (action === 'get_event' && typeof args.recordId !== 'number') {
         return jsonError('recordId is required', 'VALIDATION_ERROR');
       }
       try {
@@ -159,14 +172,16 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
           return bounded({ device: { id: device.id, hostname: device.hostname }, logs });
         }
 
+        const logName = String(args.logName);
+
         if (action === 'query') {
-          const page = clampLimit(input.page, 1, MAX_EVENT_LOG_PAGE);
-          const limit = clampLimit(input.limit, 25, 100);
+          const page = clampLimit(args.page, 1, MAX_EVENT_LOG_PAGE);
+          const limit = clampLimit(args.limit, 25, 100);
           const result = await aiExecuteCommand(auth, 'browse_device_event_log', device.id, CommandTypes.EVENT_LOGS_QUERY, {
-            logName: String(input.logName),
-            level: typeof input.level === 'string' ? input.level : '',
-            source: typeof input.source === 'string' ? input.source : '',
-            eventId: typeof input.eventId === 'number' ? input.eventId : 0,
+            logName,
+            level: typeof args.level === 'string' ? args.level : '',
+            source: typeof args.source === 'string' ? args.source : '',
+            eventId: typeof args.eventId === 'number' ? args.eventId : 0,
             page,
             limit,
           }, options);
@@ -177,7 +192,7 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
           const dropped = payload.events.length - events.length;
           return bounded({
             device: { id: device.id, hostname: device.hostname },
-            logName: String(input.logName),
+            logName,
             events,
             total: num(payload.total) ?? events.length,
             page: num(payload.page) ?? page,
@@ -187,13 +202,13 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
         }
 
         const result = await aiExecuteCommand(auth, 'browse_device_event_log', device.id, CommandTypes.EVENT_LOG_GET, {
-          logName: String(input.logName),
-          recordId: input.recordId as number,
+          logName,
+          recordId: args.recordId as number,
         }, options);
         if (result.status !== 'completed') return jsonError(result.error ?? 'Failed to get the event', 'COMMAND_FAILED');
         const event = projectEvent(parseStdout(result.stdout), 8000);
         if (!event) return jsonError('The agent returned an unreadable event', 'INVALID_AGENT_RESPONSE');
-        return bounded({ device: { id: device.id, hostname: device.hostname }, logName: String(input.logName), event });
+        return bounded({ device: { id: device.id, hostname: device.hostname }, logName, event });
       } catch (error) {
         return thrown('browse_device_event_log', error);
       }

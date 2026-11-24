@@ -1916,6 +1916,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     if (guardrailCheck.pinnedEventLogsQuery) {
       verifiedToolContext = { pinnedEventLogsQuery: guardrailCheck.pinnedEventLogsQuery };
     }
+    // #12453: the same for a System / Setup browse_device_event_log read.
+    if (guardrailCheck.pinnedDeviceEventLogRead) {
+      verifiedToolContext = { pinnedDeviceEventLogRead: guardrailCheck.pinnedDeviceEventLogRead };
+    }
 
     // RBAC permission check
     try {
