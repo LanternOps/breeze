@@ -1271,6 +1271,9 @@
     "storage_access_denied": {
       "hint": "O destino do backup recusou a solicitação. Verifique se a chave de acesso é válida e tem permissão de gravação, a política do bucket e a situação da conta de armazenamento, e então execute Testar conexão."
     },
+    "storage_cap_exceeded": {
+      "hint": "O provedor de armazenamento recusou a solicitação porque um limite ou uma cota da conta foi atingido. Aumente o limite ou libere espaço nas configurações da conta do provedor. Os limites diários são redefinidos automaticamente."
+    },
     "storage_not_found": {
       "hint": "O destino do backup informa que o bucket ou seus objetos não existem. Verifique se o bucket ainda existe e se nenhuma regra de ciclo de vida exclui os dados do backup."
     },

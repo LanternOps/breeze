@@ -1271,6 +1271,9 @@
     "storage_access_denied": {
       "hint": "Yedekleme hedefi isteği reddetti. Erişim anahtarının geçerli olduğunu ve yazma yetkisi bulunduğunu, bucket ilkesini ve depolama hesabının durumunu kontrol edin, ardından bağlantıyı test edin."
     },
+    "storage_cap_exceeded": {
+      "hint": "Depolama sağlayıcısı, hesaptaki bir sınıra veya kotaya ulaşıldığı için isteği reddetti. Sağlayıcının hesap ayarlarında sınırı yükseltin veya yer açın. Günlük sınırlar kendiliğinden sıfırlanır."
+    },
     "storage_not_found": {
       "hint": "Yedekleme hedefi, bucket'ın veya nesnelerinin bulunmadığını bildiriyor. Bucket'ın hâlâ var olduğunu ve hiçbir yaşam döngüsü kuralının yedek verilerini silmediğini kontrol edin."
     },

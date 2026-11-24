@@ -96,6 +96,14 @@ describe('BackupFailureCategoryBadge cause (#11768)', () => {
     expect(screen.queryByText(EN_COPY.storage.hint)).toBeNull();
   });
 
+  it('points a provider cap at the provider account, not at the key or bucket (#12623)', () => {
+    render(<BackupFailureCategoryBadge category="storage" cause="storage_cap_exceeded" showHint />);
+
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/account cap or quota was reached/);
+    expect(text).not.toMatch(/bucket policy|access key/i);
+  });
+
   it('never tells the user their bucket is at fault for a provider-side operation failure', () => {
     render(<BackupFailureCategoryBadge category="storage" cause="storage_operation_failed" showHint />);
 

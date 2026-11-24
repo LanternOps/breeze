@@ -49,7 +49,8 @@ func TestReadStoreErrorReason(t *testing.T) {
 		{"b2 download cap", b2DownloadCapBody, "AccessDenied", storeReasonProviderCapExceeded},
 		{"b2 native usage cap wording", errorDoc(`<Code>AccessDenied</Code><Message>Usage cap exceeded.</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
 		{"b2 native transaction cap wording", errorDoc(`<Code>AccessDenied</Code><Message>Transaction cap exceeded. Daily transaction caps apply to non-paying accounts.</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
-		{"b2 storage cap wording", errorDoc(`<Code>AccessDenied</Code><Message>Cannot upload files, storage cap exceeded.</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
+		// B2 does not document its S3 storage-cap wording; this is the same phrase.
+		{"storage cap wording", errorDoc(`<Code>AccessDenied</Code><Message>Cannot upload files, storage cap exceeded.</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
 		{"mixed case", errorDoc(`<Code>AccessDenied</Code><Message>STORAGE Cap EXCEEDED</Message>`), "AccessDenied", storeReasonProviderCapExceeded},
 		{"line break inside the phrase", errorDoc("<Code>AccessDenied</Code><Message>download cap\n   exceeded</Message>"), "AccessDenied", storeReasonProviderCapExceeded},
 		{"message before code", errorDoc(`<Message>Usage cap exceeded.</Message><Code>AccessDenied</Code>`), "AccessDenied", storeReasonProviderCapExceeded},
@@ -75,6 +76,31 @@ func TestReadStoreErrorReason(t *testing.T) {
 			code, reason := readStoreError(strings.NewReader(tc.body))
 			if code != tc.wantCode || reason != tc.wantReason {
 				t.Fatalf("readStoreError = (%q, %q), want (%q, %q)", code, reason, tc.wantCode, tc.wantReason)
+			}
+		})
+	}
+}
+
+// A quota code is a reason on its own, with or without a message, and even
+// when the rest of the body is cut off: the code is already a fixed word.
+func TestStorageStatusErrorQuotaCodeCarriesReason(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		body       string
+		wantCode   string
+		wantReason string
+	}{
+		{"code alone", 403, errorDoc(`<Code>QuotaExceeded</Code>`), "QuotaExceeded", storeReasonProviderCapExceeded},
+		{"unrelated message", 403, s3ErrorBody("QuotaExceeded"), "QuotaExceeded", storeReasonProviderCapExceeded},
+		{"truncated after the code", 403, `<Error><Code>QuotaExceeded</Code><Mess`, "QuotaExceeded", storeReasonProviderCapExceeded},
+		{"not a 403", 503, errorDoc(`<Code>QuotaExceeded</Code>`), "QuotaExceeded", ""},
+		{"other case is another code", 403, errorDoc(`<Code>quotaexceeded</Code>`), "quotaexceeded", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newStorageStatusError(&http.Response{StatusCode: tc.status, Header: http.Header{}, Body: readCloser(tc.body)})
+			if e.code != tc.wantCode || e.reason != tc.wantReason {
+				t.Fatalf("(code, reason) = (%q, %q), want (%q, %q)", e.code, e.reason, tc.wantCode, tc.wantReason)
 			}
 		})
 	}

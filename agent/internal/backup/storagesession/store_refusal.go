@@ -43,7 +43,7 @@ const storeReasonProviderCapExceeded = "provider_cap_exceeded"
 //
 // Backblaze B2 answers a capped account with 403 and <Code>AccessDenied</Code>,
 // so the code alone reads as a key or bucket-policy problem; the cap is named
-// only in <Message>. Every B2 cap message says "<kind> cap exceeded":
+// only in <Message>. Each of these says "<kind> cap exceeded":
 //   - S3-compatible API, download bandwidth / Class B transaction cap, as
 //     observed in #12623: "Cannot download file, download bandwidth or
 //     transaction (Class B) cap exceeded. See the Caps & Alerts page to
@@ -55,13 +55,22 @@ const storeReasonProviderCapExceeded = "provider_cap_exceeded"
 //     (403 transaction_cap_exceeded): "Transaction cap exceeded. Daily
 //     transaction caps apply to non-paying accounts."
 //
-// B2 does not document the S3-compatible wording of its storage-cap refusal;
-// the "cap exceeded" phrase is what all of its documented cap messages share.
+// B2 does not document its S3-compatible cap messages, and the wording of its
+// storage-cap refusal there has not been observed; the phrase is what the
+// messages above share.
 var storeReasonPhrases = []struct {
 	phrase *regexp.Regexp
 	reason string
 }{
 	{regexp.MustCompile(`(?i)\bcap exceeded\b`), storeReasonProviderCapExceeded},
+}
+
+// storeReasonCodes are S3 error codes that name a cap or quota by themselves:
+// QuotaExceeded, a 403 from Ceph RGW (rgw_http_s3_errors in
+// https://github.com/ceph/ceph/blob/main/src/rgw/rgw_common.cc) and from
+// VersityGW (https://github.com/versity/versitygw/wiki/Incompatibilities-With-AWS-S3).
+var storeReasonCodes = map[string]string{
+	"QuotaExceeded": storeReasonProviderCapExceeded,
 }
 
 // storeReasonOf matches a store's <Message> text against storeReasonPhrases
@@ -174,8 +183,8 @@ type storageStatusError struct {
 	status     int
 	retryAfter time.Duration
 	code       string
-	// reason is a fixed token from storeReasonPhrases (only on a 403), never
-	// the store's own text.
+	// reason is a fixed token from storeReasonPhrases or storeReasonCodes
+	// (only on a 403), never the store's own text.
 	reason string
 }
 
@@ -185,6 +194,9 @@ type storageStatusError struct {
 // refuses with: a 5xx or 429 stays on the transient path whatever it says.
 func newStorageStatusError(resp *http.Response) *storageStatusError {
 	code, reason := readStoreError(resp.Body)
+	if reason == "" {
+		reason = storeReasonCodes[code]
+	}
 	if resp.StatusCode != http.StatusForbidden {
 		reason = ""
 	}

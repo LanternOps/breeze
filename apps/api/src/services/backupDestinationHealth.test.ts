@@ -16,6 +16,7 @@ const DENIED = 'storage session: storage answered status 403 (AccessDenied)';
 const NOT_FOUND = 'file upload failed: storage session: storage answered status 404';
 const STORE_5XX = 'storage session: storage answered status 503';
 const CLOCK = 'storage session: storage answered status 403 (RequestTimeTooSkewed)';
+const CAPPED = 'storage session: storage answered status 403 (AccessDenied, provider_cap_exceeded)';
 // Storage category, but nothing ties it to the customer's bucket: a Breeze API refusal.
 const BREEZE_REFUSAL = 'storage session: create refused with status 403';
 const OFFLINE = '[stale-backup-reaper] Device went offline during backup';
@@ -37,6 +38,7 @@ describe('classifyDestinationOutcome', () => {
     expect(classifyDestinationOutcome({ status: 'partial', errorLog: STORE_5XX })).toEqual({ outcome: 'bad', cause: 'storage_operation_failed' });
     expect(classifyDestinationOutcome({ status: 'completed_with_errors', errorLog: NOT_FOUND })).toEqual({ outcome: 'bad', cause: 'storage_not_found' });
     expect(classifyDestinationOutcome({ status: 'failed', errorLog: CLOCK })).toEqual({ outcome: 'bad', cause: 'storage_clock_skew' });
+    expect(classifyDestinationOutcome({ status: 'failed', errorLog: CAPPED })).toEqual({ outcome: 'bad', cause: 'storage_cap_exceeded' });
   });
 
   it('offline, cancelled, in-flight, non-storage and unattributable storage failures are unknown', () => {
@@ -90,6 +92,15 @@ describe('evaluateBackupDestination', () => {
       .toMatchObject({ state: 'broken', severity: 'transient', cause: 'storage_operation_failed' });
     expect(evaluate([job('a', 1, 'failed', STORE_5XX), job('b', 1, 'failed', DENIED)]))
       .toMatchObject({ state: 'broken', severity: 'transient', cause: null });
+  });
+
+  // #12623: caps reset or are raised without a change to the destination.
+  it('a provider cap is a destination fault, and transient', () => {
+    expect(evaluate([job('a', 1, 'failed', CAPPED), job('b', 1, 'failed', CAPPED)]))
+      .toMatchObject({ state: 'broken', severity: 'transient', cause: 'storage_cap_exceeded', failingDevices: 2 });
+    expect(evaluate([job('a', 1, 'failed', CAPPED)]).state).toBe('unknown');
+    expect(evaluate([job('a', 1, 'failed', CAPPED), job('a', 5, 'failed', CAPPED)]))
+      .toMatchObject({ state: 'broken', severity: 'transient', cause: 'storage_cap_exceeded' });
   });
 
   it('the majority cause decides severity', () => {
