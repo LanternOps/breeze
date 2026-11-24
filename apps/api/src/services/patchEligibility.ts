@@ -468,11 +468,15 @@ export async function areAllPendingPatchesManagedByVendorLane(
 // Strict shape for one stored ring categoryRules entry — the same shape the
 // job executor validates its snapshot with. severityFilter is the legacy
 // stored alias for autoApproveSeverities (pre-2026-08 rows), both read-only.
-const storedCategoryRuleSchema = z.object({
+// Keep the field list in step with the executor's (#12626 drift guard in
+// jobs/patchJobExecutor.categoryRules.test.ts).
+export const storedCategoryRuleSchema = z.object({
   category: z.string().min(1),
   autoApprove: z.boolean(),
   autoApproveSeverities: z.array(z.string()).optional(),
   severityFilter: z.array(z.string()).optional(),
+  // A present non-boolean fails the parse, and coerceCategoryRules turns the rule into a deny.
+  autoApproveUnrated: z.boolean().optional(),
   deferralDaysOverride: z.number().int().min(0).nullable().optional(),
 });
 
