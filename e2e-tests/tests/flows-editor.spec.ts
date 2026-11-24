@@ -1,5 +1,5 @@
 import { test, expect } from '../fixtures';
-import type { APIRequestContext, Page, Request } from '@playwright/test';
+import type { APIRequestContext, Frame, Page, Request } from '@playwright/test';
 import { FlowEditorPage } from '../pages/FlowEditorPage';
 
 // Requires a stack with Flows enabled (FLOWS_ENABLED). The seed carries only
@@ -27,6 +27,32 @@ async function readAccessToken(page: Page): Promise<string> {
     page.off('request', onRequest);
   }
   return token!;
+}
+
+/**
+ * Record, for every `/auth/refresh` request, the path of the document that was
+ * committed in the main frame when it started. Navigations and requests arrive
+ * in protocol order, so a refresh the redirect page started is attributed to
+ * it, and one the landing page starts after it commits is attributed to that.
+ */
+function recordRefreshesByDocument(page: Page): { startedOn: (path: string) => number; stop: () => void } {
+  let current = '';
+  const started: string[] = [];
+  const onNavigated = (frame: Frame) => {
+    if (frame === page.mainFrame()) current = new URL(frame.url()).pathname;
+  };
+  const onRequest = (req: Request) => {
+    if (req.url().includes('/auth/refresh')) started.push(current);
+  };
+  page.on('framenavigated', onNavigated);
+  page.on('request', onRequest);
+  return {
+    startedOn: (path) => started.filter((p) => p === path).length,
+    stop: () => {
+      page.off('framenavigated', onNavigated);
+      page.off('request', onRequest);
+    },
+  };
 }
 
 /**
@@ -197,8 +223,25 @@ test.describe('Flows editor', () => {
   });
 
   test('legacy /automations URLs redirect to Flows and Jobs', async ({ authedPage: page }) => {
-    await page.goto('/automations');
-    await page.waitForURL(/\/flows(?:$|\?|#)/);
+    // The redirect navigates on its own, so it must start no token refresh: a
+    // navigation that cuts one off can sign the person out (#9476).
+    // Hold the config answer for a second so the /automations document stays
+    // up long enough for a refresh started on mount (about 300 ms after commit
+    // under the old layout) to start there, rather than slip past by leaving first.
+    const CONFIG = '**/api/v1/config';
+    await page.route(CONFIG, async (route) => {
+      await new Promise((r) => setTimeout(r, 1000));
+      await route.continue();
+    });
+    const refreshes = recordRefreshesByDocument(page);
+    try {
+      await page.goto('/automations');
+      await page.waitForURL(/\/flows(?:$|\?|#)/);
+    } finally {
+      refreshes.stop();
+      await page.unroute(CONFIG);
+    }
+    expect(refreshes.startedOn('/automations'), '/auth/refresh requests started by the /automations document').toBe(0);
     await settleSession(page);
 
     await page.goto('/automations/new');
