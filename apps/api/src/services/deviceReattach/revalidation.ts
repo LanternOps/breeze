@@ -17,12 +17,18 @@
  *    (`source_changed`);
  *  - the target is not quarantined, suspended or ephemeral, decommissioned
  *    only with `restore_decommissioned`, and was never the source of a
- *    confirmed reattach (`target_changed`).
+ *    confirmed reattach (`target_changed`);
+ *  - a `tpm_continuity` intent still has that evidence (evidence.ts): a key
+ *    change held on either device, a third device carrying the key, … since
+ *    the request (`evidence_changed`). Authoritative at confirm, which holds
+ *    both rows FOR UPDATE; advisory at phase 1 (FOR KEY SHARE does not block
+ *    the tpm_* writers).
  */
 import type { DeviceReattachIntent } from '../../db/schema';
 import { canActorReattach, loadReattachActor, REACHABLE_ORG_STATUSES } from './access';
 import { wasRetiredReattachSource, type LockedReattachDevice, type ReattachTx } from './intentStore';
 import type { ReattachCancelReason } from './protocol';
+import { installStartedAt, readTpmEvidence } from './evidence';
 
 /** The device's org is one a reattach may touch: active or trial, not soft-deleted. */
 export function isLiveOrg(device: Pick<LockedReattachDevice, 'orgStatus' | 'orgDeletedAt'>): boolean {
@@ -73,5 +79,15 @@ export async function revalidateLockedIntent(
     return 'target_changed';
   }
   if (await wasRetiredReattachSource(tx, target.id)) return 'target_changed';
+  if (intent.evidenceLevel === 'tpm_continuity') {
+    const evidence = await readTpmEvidence(tx, {
+      partnerId: intent.partnerId,
+      sourceDeviceId: source.id,
+      sourceInstallStartedAt: installStartedAt(source),
+      targetDeviceId: target.id,
+      lockKey: true,
+    });
+    if (evidence.level !== 'tpm_continuity') return 'evidence_changed';
+  }
   return null;
 }

@@ -342,6 +342,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // while the request's sat idle (#1105).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/reattach\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/reinstall-candidates\/?$/ },
+  // #8318 wave T2: accepting or dismissing a held TPM key change runs one
+  // system transaction that holds the device row while it consumes the
+  // step-up grant (Redis GETDEL), as the reattach request does.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/tpm-baseline\/mismatch\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request

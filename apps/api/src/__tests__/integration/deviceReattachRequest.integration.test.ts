@@ -55,7 +55,7 @@ async function request(tenant: ReattachTenant, sourceDeviceId: string, targetDev
     sourceDeviceId,
     targetDeviceId,
     targetVersion: await targetVersionOf(targetDeviceId),
-    evidenceLevel: 'hint',
+    expectedEvidenceLevel: 'hint',
     restoreDecommissioned: false,
     confirmTargetName: targetRow?.hostname ?? null,
     stepUp: { kind: 'not_required' },

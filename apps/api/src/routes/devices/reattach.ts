@@ -23,7 +23,8 @@
  * the request needs a `device_reattach` step-up grant (POST /auth/mfa/step-up)
  * bound to { sourceDeviceId, targetDeviceId, targetVersion, evidenceLevel,
  * restoreDecommissioned } — `targetVersion` and `evidenceLevel` as the
- * candidates read returned them — consumed in the creating transaction after
+ * candidates read returned them (`evidenceLevel` is the body's
+ * `expectedEvidenceLevel`) — consumed in the creating transaction after
  * every refusal, so a refusal never burns it.
  *
  * Both routes are self-managed DB context routes
@@ -59,9 +60,11 @@ reattachRoutes.use('*', authMiddleware);
 const sourceParamSchema = z.object({ id: z.string().uuid() });
 
 /**
- * The body of §8. `evidenceLevel` is not a field: the server decides it, and
- * until TPM evidence ships (wave T2) every reattach is `hint`, which needs the
- * target's name typed in `confirmTargetName`.
+ * The body of §8. `evidenceLevel` is not a field: the server decides it under
+ * the row locks (services/deviceReattach/evidence.ts). `expectedEvidenceLevel`
+ * is the level the candidates read showed, which the step-up grant is bound
+ * to; it defaults to `hint` (a client older than wave T2). `hint` needs the
+ * target's name typed in `confirmTargetName`; `tpm_continuity` does not.
  */
 export const reattachBodySchema = z.object({
   targetDeviceId: z.string().uuid(),
@@ -74,6 +77,7 @@ export const reattachBodySchema = z.object({
   // by the device itself.
   possessionConfirmed: z.literal(true),
   confirmTargetName: z.string().max(255).optional(),
+  expectedEvidenceLevel: z.enum(['hint', 'tpm_continuity']).default('hint'),
   restoreDecommissioned: z.boolean().default(false),
   acknowledgeOsChange: z.boolean().default(false),
   // Single-use `device_reattach` grant. Optional in the schema so a missing
@@ -138,7 +142,7 @@ reattachRoutes.post(
         sourceDeviceId,
         targetDeviceId: body.targetDeviceId.toLowerCase(),
         targetVersion: body.targetVersion,
-        evidenceLevel: 'hint',
+        expectedEvidenceLevel: body.expectedEvidenceLevel,
         restoreDecommissioned: body.restoreDecommissioned,
         acknowledgeOsChange: body.acknowledgeOsChange,
         confirmTargetName: body.confirmTargetName ?? null,

@@ -40,7 +40,7 @@ export interface ReinstallSuspicion {
   evidence: ReinstallEvidence;
   detectedAt: Date;
   kind: 'new' | 'upgrade' | 'replace';
-  trigger: 'enroll' | 'hardware_report';
+  trigger: 'enroll' | 'hardware_report' | 'tpm_baseline';
 }
 
 /**
@@ -74,7 +74,10 @@ export function buildReinstallSuspectedEventPayload(s: ReinstallSuspicion): Rein
   };
 }
 
+// Key continuity, never "the same TPM" or "a genuine TPM" (wave T2, §12.2):
+// the EK certificate is not validated, and a cloned vTPM carries its keys.
 const EVIDENCE_LABEL: Record<ReinstallEvidence, string> = {
+  tpm_ek: 'TPM endorsement key (the same key the existing record proved; not a hardware authenticity check)',
   system_uuid: 'hardware (SMBIOS system UUID)',
   serial: 'hardware (serial number and manufacturer)',
   hostname: 'hostname',
