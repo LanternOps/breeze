@@ -263,9 +263,15 @@ type recoveryDownloadProvider struct {
 	// authNotBefore is the earliest time another authenticate may be sent
 	// (a server Retry-After, or our own backoff).
 	authNotBefore time.Time
-	// proactiveTriedFor is the descriptor expiresAt a proactive refresh was
-	// already attempted for — at most one attempt per expiry.
-	proactiveTriedFor time.Time
+	// proactiveFor is the descriptor expiresAt the proactive attempts below
+	// were counted for; proactiveAttempts is how many were made for it (at
+	// most proactiveMaxAttempts per expiry).
+	proactiveFor      time.Time
+	proactiveAttempts int
+	// sessionRenewal is the server's session renewal credential (#12566),
+	// sent on every re-authenticate and replaced when a refresh returns a
+	// new one. "" when the server issued none.
+	sessionRenewal string
 
 	// now is the clock seam for tests.
 	now func() time.Time
