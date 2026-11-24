@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { FlowFormOnFailure } from '@breeze/shared';
+import { useChannelTypeLabel } from '../../automations/channelTypeLabel';
 import type { ChannelOption } from './ActionsSection';
 
 /**
@@ -27,6 +28,7 @@ export function OnFailureSection({
   readOnly?: boolean;
 }) {
   const { t } = useTranslation('flows');
+  const channelTypeLabel = useChannelTypeLabel();
   const selected = onFailure.mode === 'notify' ? Array.from(new Set(onFailure.channelIds)) : [];
   const notice = onFailure.mode === 'notify' ? onFailure.notice : 'summary';
 
@@ -86,7 +88,7 @@ export function OnFailureSection({
                   data-testid={`flow-form-onfailure-channel-${c.id}`}
                   onChange={() => toggle(c.id)}
                 />
-                {c.name} ({c.type})
+                {c.name} ({channelTypeLabel(c.type)})
               </label>
             );
           })}
