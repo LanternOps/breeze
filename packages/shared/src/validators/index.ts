@@ -72,6 +72,7 @@ export * from './alertRuleConditions';
 export * from './eventLogProviders';
 export * from './complianceInlineSettings';
 export * from './mcpDomains';
+export * from './fleetFilter';
 
 // ============================================
 // Device Roles
