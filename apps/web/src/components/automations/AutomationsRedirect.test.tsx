@@ -39,6 +39,7 @@ describe('AutomationsRedirect', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     Object.defineProperty(window, 'location', { configurable: true, value: original });
   });
@@ -68,6 +69,16 @@ describe('AutomationsRedirect', () => {
     expect(init?.credentials).toBe('same-origin');
     // A plain GET with no custom headers: no CORS preflight on split-origin installs.
     expect(init?.headers).toBeUndefined();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('reads the config from the API origin on a split-origin install', async () => {
+    vi.stubEnv('PUBLIC_API_URL', ' https://api.example.test/// ');
+    fetchMock.mockResolvedValue(jsonResponse({ features: { flows: true } }));
+    render(<AutomationsRedirect />);
+    await settle();
+    expect(requestedUrls()).toEqual(['https://api.example.test/api/v1/config']);
+    expect(replace).toHaveBeenCalledWith('/flows');
   });
 
   it('sends Flows-off to /jobs', async () => {
@@ -85,6 +96,7 @@ describe('AutomationsRedirect', () => {
     await settle();
     expect(replace).toHaveBeenCalledTimes(1);
     expect(replace).toHaveBeenCalledWith('/jobs');
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('read failed'), expect.any(TypeError));
   });
 
   it('sends a non-2xx answer to /jobs', async () => {
@@ -93,6 +105,7 @@ describe('AutomationsRedirect', () => {
     await settle();
     expect(replace).toHaveBeenCalledTimes(1);
     expect(replace).toHaveBeenCalledWith('/jobs');
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('answered'), 503, expect.any(String));
   });
 
   it.each([
@@ -108,15 +121,26 @@ describe('AutomationsRedirect', () => {
     expect(replace).toHaveBeenCalledWith('/jobs');
   });
 
-  it('goes to /jobs when the config read does not answer within the cap', async () => {
+  it('goes to /jobs when the config read does not answer within the cap, and aborts it', async () => {
     vi.useFakeTimers();
-    fetchMock.mockReturnValue(new Promise<Response>(() => {}));
+    let aborted = false;
+    // Like a real fetch: never answers, but rejects with an AbortError once aborted.
+    fetchMock.mockImplementation((_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('aborted', 'AbortError'));
+      });
+    }));
     render(<AutomationsRedirect />);
     await vi.advanceTimersByTimeAsync(2500);
     expect(replace).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
     expect(replace).toHaveBeenCalledTimes(1);
     expect(replace).toHaveBeenCalledWith('/jobs');
+    expect(aborted).toBe(true);
+    // One trace for the cap; the abort it caused is not reported as a second failure.
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('did not answer'));
   });
 
   it('navigates exactly once when the answer arrives after the cap', async () => {
@@ -140,6 +164,7 @@ describe('AutomationsRedirect', () => {
     expect(replace).toHaveBeenCalledWith('/flows');
     await vi.advanceTimersByTimeAsync(10_000);
     expect(replace).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it('does not navigate after unmount', async () => {
@@ -150,5 +175,6 @@ describe('AutomationsRedirect', () => {
     answer(jsonResponse({ features: { flows: true } }));
     await vi.advanceTimersByTimeAsync(10_000);
     expect(replace).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
   });
 });

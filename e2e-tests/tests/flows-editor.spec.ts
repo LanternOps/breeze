@@ -30,12 +30,6 @@ async function readAccessToken(page: Page): Promise<string> {
 }
 
 /**
- * Let the page we just landed on finish its start-up work (the /auth/refresh
- * every full load makes, which rotates the refresh cookie) before the next
- * `goto`. Navigating away mid-refresh can drop the rotated cookie, and the next
- * page then lands on the login page (#9476). Also asserts we are still signed in.
- */
-/**
  * Record, for every `/auth/refresh` request, the path of the document that was
  * committed in the main frame when it started. Navigations and requests arrive
  * in protocol order, so a refresh the redirect page started is attributed to
@@ -61,6 +55,12 @@ function recordRefreshesByDocument(page: Page): { startedOn: (path: string) => n
   };
 }
 
+/**
+ * Let the page we just landed on finish its start-up work (the /auth/refresh
+ * every full load makes, which rotates the refresh cookie) before the next
+ * `goto`. Navigating away mid-refresh can drop the rotated cookie, and the next
+ * page then lands on the login page (#9476). Also asserts we are still signed in.
+ */
 async function settleSession(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle', { timeout: 30_000 });
   expect(page.url(), 'still signed in after the page settled').not.toMatch(/\/(login|logout)(?:$|\?|#)/);
@@ -225,12 +225,21 @@ test.describe('Flows editor', () => {
   test('legacy /automations URLs redirect to Flows and Jobs', async ({ authedPage: page }) => {
     // The redirect navigates on its own, so it must start no token refresh: a
     // navigation that cuts one off can sign the person out (#9476).
+    // Hold the config answer for a second so the /automations document stays
+    // up long enough for a refresh started on mount (about 300 ms after commit
+    // under the old layout) to start there, rather than slip past by leaving first.
+    const CONFIG = '**/api/v1/config';
+    await page.route(CONFIG, async (route) => {
+      await new Promise((r) => setTimeout(r, 1000));
+      await route.continue();
+    });
     const refreshes = recordRefreshesByDocument(page);
     try {
       await page.goto('/automations');
       await page.waitForURL(/\/flows(?:$|\?|#)/);
     } finally {
       refreshes.stop();
+      await page.unroute(CONFIG);
     }
     expect(refreshes.startedOn('/automations'), '/auth/refresh requests started by the /automations document').toBe(0);
     await settleSession(page);
