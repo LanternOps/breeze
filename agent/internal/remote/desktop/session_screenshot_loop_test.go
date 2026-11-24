@@ -208,7 +208,7 @@ func TestCaptureScreenshot_GPUStreamServedByCaptureLoop(t *testing.T) {
 
 	waitForShot(t, "the stream to encode frames", func() bool { return cap.textures.Load() > 5 })
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		img, w, h, err := m.CaptureScreenshot(0)
 		if err != nil {
 			t.Fatalf("screenshot %d: %v", i, err)
