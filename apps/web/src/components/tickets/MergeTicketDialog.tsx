@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
+import { usePermissions } from '../../lib/permissions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { Dialog } from '../shared/Dialog';
 import { showToast } from '../shared/Toast';
@@ -97,6 +98,12 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
   const [previewFailed, setPreviewFailed] = useState(false);
   const [notify, setNotify] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // #12256: resolved/closed tickets are opt-in candidates; a closed one must be
+  // reopened before it can receive a merge (the server refuses it).
+  const [includeClosed, setIncludeClosed] = useState(false);
+  const [reopening, setReopening] = useState(false);
+  const { can } = usePermissions();
+  const canReopen = can('tickets', 'write');
   // Guards a slow preview for an earlier target from landing over a newer one.
   const previewSeq = useRef(0);
 
@@ -111,7 +118,8 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const params = new URLSearchParams({ orgId: source.orgId, statusGroup: 'open', sort: 'oldest', limit: '100' });
+    const params = new URLSearchParams({ orgId: source.orgId, sort: 'oldest', limit: '100' });
+    if (!includeClosed) params.set('statusGroup', 'open');
     if (debouncedSearch) params.set('search', debouncedSearch);
     setCandidatesLoading(true);
     setCandidatesFailed(false);
@@ -138,7 +146,7 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
       }
     })();
     return () => { cancelled = true; };
-  }, [open, source.id, source.orgId, debouncedSearch]);
+  }, [open, source.id, source.orgId, debouncedSearch, includeClosed]);
 
   // `keepNotify`: a re-check of the SAME target (after a refused confirm) keeps
   // the user's notify choice; only a new target re-defaults it.
@@ -170,7 +178,36 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
   const choose = (c: Candidate) => {
     setTarget(c);
     setPreview(null);
+    setPreviewFailed(false);
+    // Invalidate any in-flight preview for the previous target.
+    previewSeq.current += 1;
+    setPreviewLoading(false);
+    // A closed ticket cannot receive a merge: explain instead of previewing.
+    if (c.status === 'closed') return;
     void loadPreview(c);
+  };
+
+  const reopenTarget = async () => {
+    if (!target || reopening) return;
+    setReopening(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${target.id}/status`, { method: 'POST', body: JSON.stringify({ status: 'open' }) }),
+        errorFallback: t('ticketWorkbench.merge.reopenFailed'),
+        successMessage: t('ticketWorkbench.merge.reopened', { number: targetNumber }),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true }),
+      });
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('ticketWorkbench.merge.reopenFailed') });
+      return;
+    } finally {
+      setReopening(false);
+    }
+    const reopened: Candidate = { ...target, status: 'open', statusName: null };
+    setCandidates((prev) => prev.map((c) => (c.id === reopened.id ? reopened : c)));
+    setTarget(reopened);
+    void loadPreview(reopened);
   };
 
   const targetNumber = target ? ticketDisplayNumber(target) : '';
@@ -266,6 +303,16 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
             data-testid="ticket-merge-search"
           />
+          <label className="mt-2 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={includeClosed}
+              disabled={submitting}
+              onChange={(e) => setIncludeClosed(e.target.checked)}
+              data-testid="ticket-merge-include-closed"
+            />
+            <span>{t('ticketWorkbench.merge.includeClosed')}</span>
+          </label>
           <ul className="mt-2 max-h-56 divide-y overflow-y-auto rounded-md border" aria-label={t('ticketWorkbench.merge.pickerLabel')}>
             {candidatesLoading && candidates.length === 0 ? (
               <li className="px-3 py-2 text-sm text-muted-foreground" data-testid="ticket-merge-picker-loading">{t('ticketWorkbench.merge.loading')}</li>
@@ -294,6 +341,22 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
           <p className="mt-1 text-xs text-muted-foreground">{t('ticketWorkbench.merge.pickerHint')}</p>
         </div>
 
+        {target && target.status === 'closed' && (
+          <div className="mt-4 space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm" role="status" data-testid="ticket-merge-reopen-first">
+            <p>{t('ticketWorkbench.merge.reopenFirst', { number: targetNumber })}</p>
+            {canReopen && (
+              <button
+                type="button"
+                onClick={() => void reopenTarget()}
+                disabled={reopening || submitting}
+                className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                data-testid="ticket-merge-reopen"
+              >
+                {reopening ? t('ticketWorkbench.merge.reopening') : t('ticketWorkbench.merge.reopen', { number: targetNumber })}
+              </button>
+            )}
+          </div>
+        )}
         {target && previewLoading && !preview && (
           <p className="mt-4 text-sm text-muted-foreground" data-testid="ticket-merge-preview-loading">{t('ticketWorkbench.merge.previewLoading')}</p>
         )}
