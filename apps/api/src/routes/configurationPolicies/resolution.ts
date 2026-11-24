@@ -1,15 +1,17 @@
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { db } from '../../db';
-import { devices } from '../../db/schema';
+import { configurationPolicies, devices } from '../../db/schema';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
+  PolicyNotReadableError,
+  type EffectiveConfiguration,
 } from '../../services/configurationPolicy';
 import { getPolicyBaselineDefaults } from '../../services/policyBaselineDefaults';
 import { diffSchema, deviceIdParamSchema } from './schemas';
@@ -35,6 +37,53 @@ async function canAccessDeviceSite(c: Context, deviceId: string): Promise<{ ok: 
     return { ok: false, status: 403 };
   }
   return { ok: true };
+}
+
+export type PolicyOwner = 'organization' | 'partner';
+
+/**
+ * Who owns each policy the effective config names (#12306 W01a, plan D4), so
+ * the web links a policy only where the caller can open it.
+ *
+ * Keys are every winning `sourcePolicyId` and every chain `policyId`, minus the
+ * synthesized Breeze Defaults layer (`'default'` level; its sentinel id is not a
+ * uuid and would break the IN list). One select on the ambient `db`, so it runs
+ * in the caller's own request context: an id that context cannot read gets no
+ * key, and the web then treats the owner as unknown and does not link. An
+ * org-scope request context carries its partner as `currentPartnerId`, and the
+ * SELECT-only `configuration_policies_partner_wide_select` policy lets it read
+ * its own partner's partner-wide rows, so those come back as `'partner'`.
+ * Ownership follows `policyAccessCondition`: an org_id makes it the org's; a
+ * partner-wide row is org_id NULL with a partner_id; a row with neither gets no
+ * key rather than a guess. Built here, after the resolver, so
+ * `resolveEffectiveConfig` and its AI callers keep their output.
+ */
+export async function loadPolicyOwners(result: EffectiveConfiguration): Promise<Record<string, PolicyOwner>> {
+  const ids = new Set<string>();
+  for (const feature of Object.values(result.features)) {
+    if (feature.sourceLevel !== 'default') ids.add(feature.sourcePolicyId);
+  }
+  for (const entry of result.inheritanceChain) {
+    if (entry.level !== 'default') ids.add(entry.policyId);
+  }
+
+  const owners: Record<string, PolicyOwner> = {};
+  if (ids.size === 0) return owners;
+
+  const rows = await db
+    .select({
+      id: configurationPolicies.id,
+      orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
+    })
+    .from(configurationPolicies)
+    .where(inArray(configurationPolicies.id, [...ids]));
+  for (const row of rows) {
+    if (!ids.has(row.id)) continue;
+    if (row.orgId !== null) owners[row.id] = 'organization';
+    else if (row.partnerId !== null) owners[row.id] = 'partner';
+  }
+  return owners;
 }
 
 // GET /baseline — static "Breeze Defaults" registry (read-only, no tenant data)
@@ -66,7 +115,8 @@ resolutionRoutes.get(
     const result = await resolveEffectiveConfig(deviceId, auth, { includeBaseline: true });
     if (!result) return c.json({ error: 'Device not found or access denied' }, 404);
 
-    return c.json(result);
+    const policyOwners = await loadPolicyOwners(result);
+    return c.json({ ...result, policyOwners });
   }
 );
 
@@ -90,7 +140,15 @@ resolutionRoutes.post(
       return c.json({ error: 'Device not found or access denied' }, 404);
     }
 
-    const result = await previewEffectiveConfig(deviceId, changes, auth);
+    let result;
+    try {
+      result = await previewEffectiveConfig(deviceId, changes, auth);
+    } catch (err) {
+      // An added policy the caller may not read (W03a): the same 404 as any
+      // other policy it cannot see.
+      if (err instanceof PolicyNotReadableError) return c.json({ error: 'Configuration policy not found' }, 404);
+      throw err;
+    }
     if (!result) return c.json({ error: 'Device not found or access denied' }, 404);
 
     return c.json(result);

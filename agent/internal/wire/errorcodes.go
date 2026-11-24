@@ -101,6 +101,13 @@ const (
 	// the machine-wide isolation lock). Transient — the heartbeat's desired
 	// state retries it.
 	ErrCodeIsolationBusy CommandErrorCode = "isolation_busy"
+
+	// ErrCodeVerificationQueueExpired: a backup_verify or backup_test_restore
+	// waited on the agent's verification lane until less of its budget was
+	// left than a useful run needs, so it was failed without being started
+	// (#11813). Rides only verification results; the API persists it as the
+	// verification's reasonCode.
+	ErrCodeVerificationQueueExpired CommandErrorCode = "verification_queue_expired"
 )
 
 // AllCommandErrorCodes lists every code above. It is what the cross-language
@@ -132,4 +139,5 @@ var AllCommandErrorCodes = []CommandErrorCode{
 	ErrCodeIsolationStaleGeneration,
 	ErrCodeIsolationInvalidSpec,
 	ErrCodeIsolationBusy,
+	ErrCodeVerificationQueueExpired,
 }

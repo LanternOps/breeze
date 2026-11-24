@@ -437,7 +437,9 @@ const listSitesSchema = z.object({
   // Opt-in: resolve and attach the org's enrollment defaults (#2776). Costs an
   // extra org⋈partner settings read that runs in an escaped system context, so
   // it is OFF by default — see the call site for the pool-exhaustion reason.
-  includeEnrollmentDefaults: z.enum(['1', 'true']).optional()
+  includeEnrollmentDefaults: z.enum(['1', 'true']).optional(),
+  // Case-insensitive substring match on the site name (#12465).
+  search: z.string().max(100).optional()
 });
 
 // IANA timezone validation lives in @breeze/shared (`isValidIanaTimezone`) so
@@ -3196,7 +3198,7 @@ async function getDeviceCountsBySite(siteIds: string[]): Promise<{
 
 orgRoutes.get('/sites',requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { orgId, organizationId, includeEnrollmentDefaults, ...pagination } = c.req.valid('query');
+  const { orgId, organizationId, includeEnrollmentDefaults, search, ...pagination } = c.req.valid('query');
 
   // Precedence: the explicit `organizationId` (the resource the page is
   // managing) MUST win over `orgId`. `orgId` may be an *ambient* value the web
@@ -3257,9 +3259,15 @@ orgRoutes.get('/sites',requireScope('organization', 'partner', 'system'), requir
   // deliberately: the builder form issues a second `db.select()` chain, which
   // the route tests' queue-based db mock would consume as if it were a real query.
   const notQuickSupportSite = notInHiddenOrgCondition(sites.orgId);
+  // Server-side name search (#12465): the applies-to target picker searches
+  // sites without paging the whole list client-side. LIKE metacharacters are
+  // escaped, as listConfigPolicies does.
+  const nameSearch = search
+    ? sql`${sites.name} ILIKE ${'%' + search.replace(/[%_\\]/g, '\\$&') + '%'}`
+    : undefined;
   const whereCondition = allowedSiteIds
-    ? and(baseCondition, notQuickSupportSite, inArray(sites.id, allowedSiteIds))
-    : and(baseCondition, notQuickSupportSite);
+    ? and(baseCondition, notQuickSupportSite, inArray(sites.id, allowedSiteIds), nameSearch)
+    : and(baseCondition, notQuickSupportSite, nameSearch);
 
   const countResult = await db
     .select({ count: sql<number>`count(*)` })

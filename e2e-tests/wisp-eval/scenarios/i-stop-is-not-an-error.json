@@ -2,7 +2,7 @@
   "id": "stop-is-not-an-error",
   "title": "Pressing Stop mid-reply does not show an error banner",
   "issue": 11676,
-  "expect": "known-red",
+  "expect": "pass",
   "door": "wisp",
   "steps": [
     { "name": "stop", "type": "stop_stream", "afterSec": 3, "maxSec": 60,

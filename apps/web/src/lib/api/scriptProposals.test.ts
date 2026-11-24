@@ -12,13 +12,21 @@ vi.mock('@/lib/runAction', async (importOriginal) => ({
 }));
 
 import {
-  fetchScriptProposal, requestScriptProposalChanges, promoteScriptProposal,
+  fetchScriptProposal, ScriptProposalLoadError, requestScriptProposalChanges, promoteScriptProposal,
   overrideRunScriptProposal, overrideSaveScriptProposal,
 } from './scriptProposals';
 
 beforeEach(() => vi.clearAllMocks());
 
 describe('scriptProposals api', () => {
+  // #12557: callers pick copy from the HTTP status, not the API error code.
+  it('fetchScriptProposal rejects with a status-carrying ScriptProposalLoadError', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) });
+    const err = await fetchScriptProposal('p1').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ScriptProposalLoadError);
+    expect(err).toMatchObject({ status: 404, message: 'not_found' });
+  });
+
   // #10954: both overrides go through runAction and carry the sign-off.
   it('routes override-run through runAction with the sign-off and acknowledgements', async () => {
     fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ status: 'executed', results: [] }) });

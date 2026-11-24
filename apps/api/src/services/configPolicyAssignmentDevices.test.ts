@@ -261,6 +261,53 @@ describe('resolveAssignmentDevices — device_group', () => {
   });
 });
 
+// A read (policy reach, #12465 D11) expands assignments to count devices; it
+// must never write audit rows. auditAction null is that switch.
+describe('resolveAssignmentDevices — auditAction', () => {
+  const refused = [{ id: 'group-x', refusedFields: ['hostname'] }];
+
+  it('auditAction null skips the refused-group audit (resolve)', async () => {
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({ allowedGroupIds: [], refusedGroups: refused });
+    mockChain([{ id: 'dev-legit' }]);
+
+    const result = await resolveAssignmentDevices(
+      assignment('device_group', 'group-x'),
+      { policyOrgId: 'org-y', policyPartnerId: null },
+      { refusedGroups: 'resolve', auditAction: null },
+    );
+
+    expect(result).toEqual({ deviceIds: ['dev-legit'], refusedGroups: refused });
+    expect(mockAuditRefusedExecutionGroups).not.toHaveBeenCalled();
+  });
+
+  it('auditAction null skips the refused-group audit (exclude)', async () => {
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({ allowedGroupIds: [], refusedGroups: refused });
+
+    const result = await resolveAssignmentDevices(
+      assignment('device_group', 'group-x'),
+      { policyOrgId: 'org-y', policyPartnerId: null },
+      { refusedGroups: 'exclude', auditAction: null },
+    );
+
+    expect(result).toEqual({ deviceIds: [], refusedGroups: refused });
+    expect(mockAuditRefusedExecutionGroups).not.toHaveBeenCalled();
+  });
+
+  it('a string auditAction still audits', async () => {
+    mockResolveExecutionSafeGroupIds.mockResolvedValueOnce({ allowedGroupIds: [], refusedGroups: refused });
+    mockChain([{ id: 'dev-legit' }]);
+
+    await resolveAssignmentDevices(
+      assignment('device_group', 'group-x'),
+      { policyOrgId: 'org-y', policyPartnerId: null },
+      resolveOpts,
+    );
+
+    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledTimes(1);
+    expect(mockAuditRefusedExecutionGroups).toHaveBeenCalledWith('org-y', AUDIT, refused);
+  });
+});
+
 describe('resolveAssignmentDevices — role / OS filter (#8442)', () => {
   const rows: Row[] = [
     { id: 'ws-linux', deviceRole: 'workstation', osType: 'linux' },

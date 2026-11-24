@@ -1,14 +1,20 @@
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { FlowFormOnFailure } from '@breeze/shared';
+import { useChannelTypeLabel } from '../../automations/channelTypeLabel';
 import type { ChannelOption } from './ActionsSection';
 
 /**
  * What happens when a script can't be sent to a device (dispatch failed or
  * the device was offline under "skip"): stop, continue with the rest, or
- * send a notice per failed device to the chosen channels and stop. This is
- * not "the script exited non-zero". In notify mode the channel list is never
- * empty and never repeats a channel.
+ * send a notice to the chosen channels and stop. This is not "the script
+ * exited non-zero". In notify mode the channel list is never empty and never
+ * repeats a channel.
+ *
+ * Choosing Notify creates the summary notice (one per channel for each script
+ * that had failures, #12596). A flow that already carries the per-device
+ * notice (moved from a Job) keeps it: changing its channels never rewrites the
+ * shape, and the help text describes the notice the flow actually sends.
  */
 export function OnFailureSection({
   onFailure,
@@ -22,12 +28,14 @@ export function OnFailureSection({
   readOnly?: boolean;
 }) {
   const { t } = useTranslation('flows');
+  const channelTypeLabel = useChannelTypeLabel();
   const selected = onFailure.mode === 'notify' ? Array.from(new Set(onFailure.channelIds)) : [];
+  const notice = onFailure.mode === 'notify' ? onFailure.notice : 'summary';
 
   const toggle = (id: string) => {
     const next = selected.includes(id) ? selected.filter((c) => c !== id) : [...selected, id];
     if (next.length === 0) return; // notify mode never has an empty channel list
-    onChange({ mode: 'notify', channelIds: next });
+    onChange({ mode: 'notify', channelIds: next, notice });
   };
 
   const radio = (mode: FlowFormOnFailure['mode'], label: string, help: string, disabled = false) => (
@@ -40,7 +48,7 @@ export function OnFailureSection({
         data-testid={`flow-form-onfailure-${mode}`}
         onChange={() => {
           if (mode === 'notify') {
-            if (channels.length > 0) onChange({ mode: 'notify', channelIds: [channels[0].id] });
+            if (channels.length > 0) onChange({ mode: 'notify', channelIds: [channels[0].id], notice: 'summary' });
           } else {
             onChange({ mode });
           }
@@ -48,7 +56,7 @@ export function OnFailureSection({
       />
       <span>
         <span className="font-medium">{label}</span>
-        <span className="block text-xs text-muted-foreground">{help}</span>
+        <span className="block text-xs text-muted-foreground" data-testid={`flow-form-onfailure-${mode}-help`}>{help}</span>
       </span>
     </label>
   );
@@ -59,7 +67,12 @@ export function OnFailureSection({
       <div className="space-y-2">
         {radio('stop', t('flowEditor.form.onFailure.stop'), t('flowEditor.form.onFailure.stopHelp'))}
         {radio('continue', t('flowEditor.form.onFailure.continue'), t('flowEditor.form.onFailure.continueHelp'))}
-        {radio('notify', t('flowEditor.form.onFailure.notify'), t('flowEditor.form.onFailure.notifyHelp'), channels.length === 0)}
+        {radio(
+          'notify',
+          t('flowEditor.form.onFailure.notify'),
+          notice === 'perDevice' ? t('flowEditor.form.onFailure.notifyHelp') : t('flowEditor.form.onFailure.notifySummaryHelp'),
+          channels.length === 0,
+        )}
       </div>
       {channels.length === 0 && <p className="text-xs text-muted-foreground">{t('flowEditor.form.onFailure.noChannels')}</p>}
       {onFailure.mode === 'notify' && (
@@ -75,7 +88,7 @@ export function OnFailureSection({
                   data-testid={`flow-form-onfailure-channel-${c.id}`}
                   onChange={() => toggle(c.id)}
                 />
-                {c.name} ({c.type})
+                {c.name} ({channelTypeLabel(c.type)})
               </label>
             );
           })}

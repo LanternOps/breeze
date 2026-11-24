@@ -36,6 +36,10 @@ export const SENTRY_EVENT_CODES = [
   /** A mobile caller's device id resolved to no `mobile_devices` row. */
   'mobile_device_unresolved',
 
+  // --- AI agent ---------------------------------------------------------
+  /** The Agent SDK reported `session_writes_lost` for a transcript it was resuming; the session is rebuilt fresh (#11818). */
+  'ai_sdk_session_writes_lost',
+
   // --- background workers -----------------------------------------------
   /**
    * A metric-anomaly detection stage has been skipped (advisory-lock contention

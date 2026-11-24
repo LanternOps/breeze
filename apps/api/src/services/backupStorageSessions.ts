@@ -132,6 +132,11 @@ const REF_TYPES = new Set(BACKUP_READ_CREDENTIAL_COMMAND_TYPES);
 const MSSQL_TYPES = new Set<string>([CommandTypes.MSSQL_RESTORE, CommandTypes.MSSQL_VERIFY]);
 /** device_commands statuses under which a session may still be used. */
 const LIVE_COMMAND_STATUSES = new Set(['pending', 'sent']);
+/**
+ * Command types whose unused read session may be renewed after its lease
+ * lapsed (isQueuedVerificationRenew). Restores are deliberately absent.
+ */
+const QUEUED_RENEW_COMMAND_TYPES = new Set<string>([CommandTypes.BACKUP_VERIFY, CommandTypes.BACKUP_TEST_RESTORE]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,512}={0,2}$/;
 /** Keys longer than this are denied outright (S3 caps keys at 1024 bytes). */
@@ -244,7 +249,7 @@ export interface BrokeredReadStore {
   nextGeneration(commandId: string): Promise<number>;
   insertSession(row: StorageSessionRow): Promise<void>;
   loadSession(sessionId: string): Promise<StorageSessionRow | null>;
-  loadCommand(commandId: string): Promise<{ status: string; deviceId: string } | null>;
+  loadCommand(commandId: string): Promise<{ status: string; deviceId: string; type: string } | null>;
   revokeSession(sessionId: string, reason: string): Promise<void>;
   /**
    * The subset of `keys` that are rows of the snapshot's file index, counted
@@ -879,7 +884,12 @@ async function mint(
   }
 
   const now = deps.now();
-  const base = ctx.claimedAt && ctx.claimedAt.getTime() > now.getTime() ? ctx.claimedAt : now;
+  // Measured from the claim (device_commands.executed_at), the instant the
+  // stale-command reaper and the verification timeout also measure from, so
+  // the session never outlives its command. The refresher runs after the
+  // claim, seconds after on a heartbeat that claims several commands; the
+  // mint instant is used only when there is no claim.
+  const base = ctx.claimedAt ?? now;
   const deadline = new Date(Math.floor((base.getTime() + getCommandTimeoutMs(ctx.type, payload)) / 1000) * 1000);
   const expiresAt = new Date(Math.min(Math.floor((now.getTime() + STORAGE_SESSION_LEASE_MS) / 1000) * 1000, deadline.getTime()));
   if (expiresAt.getTime() <= now.getTime()) return { mode: 'unbrokered', reason: 'deadline_passed' };
@@ -944,13 +954,22 @@ export type StorageSessionAuthResult =
   | { ok: true; session: StorageSessionRow }
   | { ok: false; status: 401 | 403 | 404 | 410; error: string };
 
+/** The call being authenticated; only `renew` can be exempt from a lapsed lease. */
+export type StorageSessionCallOp = 'renew' | 'resolve' | 'object' | 'write';
+
 /**
  * Authenticates one storage-session call. The caller has already passed normal
  * agent authentication; `agent` is that authenticated identity, which must be
- * the session's executing device in the session's organization.
+ * the session's executing device in the session's organization. `op` is the
+ * call being made; absent means no lapsed-lease exemption for a read session.
  */
 export async function authenticateStorageSession(
-  input: { sessionId: string; token: string | undefined | null; agent: { deviceId: string; orgId: string } },
+  input: {
+    sessionId: string;
+    token: string | undefined | null;
+    agent: { deviceId: string; orgId: string };
+    op?: StorageSessionCallOp;
+  },
   deps: BrokeredReadDeps = defaultBrokeredReadDeps,
 ): Promise<StorageSessionAuthResult> {
   if (!UUID_PATTERN.test(input.sessionId)) return { ok: false, status: 404, error: 'Unknown storage session' };
@@ -973,7 +992,11 @@ export async function authenticateStorageSession(
   if (now >= session.deadline.getTime()) {
     return { ok: false, status: 410, error: 'Storage session has expired' };
   }
-  if (now >= session.expiresAt.getTime() && !isUnstartedWriteSession(session)) {
+  const leaseLapsed = now >= session.expiresAt.getTime();
+  // A lapsed read session can only be a queued verification's renew; whether
+  // it is one needs its command, checked below after the liveness check.
+  const queuedRenewCandidate = leaseLapsed && input.op === 'renew' && isUnstartedReadSession(session);
+  if (leaseLapsed && !isUnstartedWriteSession(session) && !queuedRenewCandidate) {
     return { ok: false, status: 410, error: 'Storage session has expired' };
   }
 
@@ -987,7 +1010,48 @@ export async function authenticateStorageSession(
     await deps.store.revokeSession(session.id, command ? `command_${command.status}` : 'command_missing');
     return { ok: false, status: 410, error: 'Storage session has ended with its command' };
   }
+  if (queuedRenewCandidate && !QUEUED_RENEW_COMMAND_TYPES.has(command.type)) {
+    return { ok: false, status: 410, error: 'Storage session has expired' };
+  }
   return { ok: true, session };
+}
+
+/**
+ * A session that has not been used yet: no charged call (call_count,
+ * last_used_at), no resume and no issued URL. Shared by the write and read
+ * exemptions below.
+ */
+function isUnusedSession(session: StorageSessionRow): boolean {
+  return session.callCount === 0
+    && !session.lastUsedAt
+    && !session.resumedAt
+    && !session.urlHorizonAt;
+}
+
+/**
+ * A read session that has not been used yet, whose lapsed lease a renew may
+ * re-arm (#11813) when its command is a backup_verify or backup_test_restore
+ * (QUEUED_RENEW_COMMAND_TYPES, checked by authenticateStorageSession once it
+ * has loaded the command).
+ *
+ * The agent runs verifications on their own worker lane, a bounded number at
+ * a time, and a bulk verify parks the rest there before the helper sees them.
+ * A parked verification reaches the helper after its 15-minute lease has
+ * lapsed; until its first call the lease is not a liveness window (nothing
+ * has run yet), so the session stays renewable up to its deadline. The
+ * helper's first call is a renew (it renews any lease with under a third left
+ * before using the session, judged on the absolute expiresAt it was
+ * delivered), which grants a lease from now; from then on the lease lapses as
+ * for any running session.
+ *
+ * Narrow on purpose: only a renew (a resolve or object call on a lapsed lease
+ * is still refused), only those two command types (a restore's longer
+ * deadline is not stretched), and only after revocation, the deadline, the
+ * device and organization binding and the command's liveness (pending or
+ * sent, on this device) have all been checked.
+ */
+function isUnstartedReadSession(session: StorageSessionRow): boolean {
+  return session.scope === 'snapshot_read' && isUnusedSession(session);
 }
 
 /**
@@ -1004,19 +1068,14 @@ export async function authenticateStorageSession(
  * job revokes it (trigger); and every write call re-checks
  * (ensureWriteSessionLive, in backupStorageWriteSessions.ts) that its backup
  * job is still pending or running and that the snapshot id reservation is
- * still reserved for that job at the session's write generation. Read
- * sessions are delivered to a command that is already running and are never
- * exempt.
+ * still reserved for that job at the session's write generation. A read
+ * session has its own, narrower exemption (isUnstartedReadSession).
  *
  * Every charged call raises call_count and stamps last_used_at; a resume or
  * an issued URL leaves its own mark too. Any of them counts as used.
  */
 function isUnstartedWriteSession(session: StorageSessionRow): boolean {
-  return session.scope === 'snapshot_write'
-    && session.callCount === 0
-    && !session.lastUsedAt
-    && !session.resumedAt
-    && !session.urlHorizonAt;
+  return session.scope === 'snapshot_write' && isUnusedSession(session);
 }
 
 export type ResolvedObject = {

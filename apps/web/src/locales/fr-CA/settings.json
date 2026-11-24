@@ -2945,7 +2945,8 @@
         "not_found": "pas un script visible par le propriétaire de cet agent",
         "not_in_partner_baseline": "absent du référentiel du partenaire",
         "run_script_not_allowed": "« Exécuter un script » n'est pas autorisé pour cet agent"
-      }
+      },
+      "circuitOpen": "Le disjoncteur de cet agent est déclenché pour cette organisation; aucune exécution n'a donc été lancée. Réinitialisez-le depuis la ligne de l'agent pour l'exécuter de nouveau."
     },
     "actions": {
       "add": "Nouvel agent",
@@ -5119,6 +5120,27 @@
           "hint": "Plafond total de dépenses par jour pour toutes les exécutions de cet agent."
         }
       }
+    },
+    "circuit": {
+      "badge": "Disjoncteur déclenché",
+      "openedSince": "En pause dans {{org}} depuis {{at}}.",
+      "opened": "En pause dans {{org}}.",
+      "reason": "Motif : {{reason}}",
+      "reset": "Réinitialiser",
+      "dialog": {
+        "title": "Réinitialiser le disjoncteur?",
+        "message": "{{agent}} s'exécutera de nouveau dans {{org}}. Si la cause des échecs n'est pas corrigée, il se remettra en pause après le même nombre d'échecs.",
+        "reasonLabel": "Motif (enregistré dans le journal d'audit)",
+        "reasonPlaceholder": "Par exemple : la passerelle du modèle est de retour",
+        "confirm": "Réinitialiser le disjoncteur"
+      },
+      "toasts": {
+        "reset": "Disjoncteur réinitialisé. L'agent peut s'exécuter de nouveau.",
+        "resetFailed": "Impossible de réinitialiser le disjoncteur."
+      },
+      "errors": {
+        "mfaRequired": "La réinitialisation exige une session ouverte avec l'authentification à deux facteurs. Reconnectez-vous avec votre deuxième facteur."
+      }
     }
   },
   "apiKeyForm": {
@@ -5896,7 +5918,8 @@
   "settingsSectionNav": {
     "settingsSection": "Section des paramètres",
     "settingsSections": "Sections des paramètres",
-    "unsavedChanges": "{{label}} (changements non enregistrés)"
+    "unsavedChanges": "{{label}} (changements non enregistrés)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Le nom du fournisseur est requis",

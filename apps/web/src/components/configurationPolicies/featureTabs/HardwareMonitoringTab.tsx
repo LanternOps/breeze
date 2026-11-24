@@ -4,13 +4,15 @@ import { HARDWARE_MONITORING_DEFAULTS,hardwareMonitoringInlineSettingsSchema } f
 import { FEATURE_META,type FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 
 // Stored settings from an older/newer policy shape must not crash the tab; fall back to defaults.
 function parseStoredSettings(value:unknown){
  const parsed=hardwareMonitoringInlineSettingsSchema.safeParse(value??HARDWARE_MONITORING_DEFAULTS);
  return parsed.success?parsed.data:{...HARDWARE_MONITORING_DEFAULTS};
 }
-export default function HardwareMonitoringTab({policyId,existingLink,parentLink,linkedPolicyId,onLinkChanged}:FeatureTabProps){
+export default function HardwareMonitoringTab({policyId,existingLink,parentLink,onLinkChanged}:FeatureTabProps){
  const {save,remove,saving,error,clearError}=useFeatureLink(policyId);
  const read=()=>parseStoredSettings((existingLink??parentLink)?.inlineSettings);
  const initial=read();
@@ -23,6 +25,7 @@ export default function HardwareMonitoringTab({policyId,existingLink,parentLink,
  },[existingLink,parentLink]);
  const parsed=hardwareMonitoringInlineSettingsSchema.safeParse({enabled,pollIntervalMinutes:raid===''?NaN:Number(raid),diskHealthIntervalMinutes:disk===''?NaN:Number(disk)});
  const inherited=!!parentLink&&!existingLink;
+ const change = useChangeForPolicy(inherited);
  const persist=async(id:string|null)=>{
   if(!parsed.success)return;
   clearError();
@@ -41,13 +44,12 @@ export default function HardwareMonitoringTab({policyId,existingLink,parentLink,
    saveDisabled={!parsed.success}
    error={error}
    onSave={()=>void persist(existingLink?.id??null)}
-   onRemove={existingLink&&!linkedPolicyId?discard:undefined}
+   {...featureEditProps(existingLink, parentLink, { remove: discard })}
    isInherited={inherited}
-   onOverride={inherited?()=>void persist(null):undefined}
-   onRevert={!inherited&&!!linkedPolicyId&&!!existingLink?discard:undefined}
+   {...change.shellProps}
   >
    <p className="mb-4 text-sm text-muted-foreground">Probes installed RAID tools and disk health sources. Collection is enabled by default. Attach hardware monitors separately to receive alerts.</p>
-   <fieldset disabled={inherited||saving} className="space-y-4">
+   <fieldset disabled={change.locked||saving} className="space-y-4">
     <label htmlFor="hardware-enabled" className="flex items-center gap-2">
      <input id="hardware-enabled" data-testid="hardware-monitoring-enabled" role="switch" type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>
      Enable hardware collection

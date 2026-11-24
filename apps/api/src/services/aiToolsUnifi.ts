@@ -23,10 +23,10 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { siteAllowlistOf } from './aiToolsSiteScope';
-import { createUnifiClient, UnifiApiError } from './unifi/unifiClient';
-import { buildMappingHostList } from './unifi/unifiMappingHosts';
+import { UnifiApiError } from './unifi/unifiClient';
+import { readHostsAcrossKeys, type HostsKeyOutcome } from './unifi/unifiHostsAcrossKeys';
 import { getConnection } from './unifi/unifiConnectionService';
-import { getSyncKeys, pickSingleSyncKey } from './unifi/unifiKeyService';
+import { getSyncKeys } from './unifi/unifiKeyService';
 import { listCollectors } from './unifi/unifiCollectorService';
 import { listControllerSitesForIntegration } from './unifi/unifiControllerSiteService';
 import { enqueueUnifiSync } from '../jobs/unifiWorker';
@@ -37,6 +37,14 @@ import { inToolDbPhase } from './aiToolDbContext';
 type Action = (typeof UNIFI_STATUS_ACTIONS)[number];
 
 const ROW_CAP = 500;
+
+/** A key's failure in the `hosts` view: a fixed string, never the vendor's body (it can echo request details). */
+function keyFailureText(k: HostsKeyOutcome): string {
+  if (k.unreadable) return 'The stored key could not be read; replace it in Settings';
+  if (k.authFailure) return 'The UniFi API key was rejected';
+  if (k.httpStatus !== null) return `The UniFi cloud request failed (HTTP ${k.httpStatus})`;
+  return 'The UniFi cloud could not be reached';
+}
 const PARTNER_GATE = 'Full partner scope is required to manage the shared UniFi integration';
 
 /** The route's `resolvePartnerId`: partner scope uses its own partner; system scope must name one; org scope has none. */
@@ -111,22 +119,24 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
           }
           case 'hosts': {
             if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
-            const key = pickSingleSyncKey(await inToolDbPhase(auth, () => getSyncKeys(db, conn.id, partnerId)));
-            if (!key.ok) {
-              // W1 reads one key (#11808); a connection with several is refused, not read through one of them.
-              if (key.reason === 'multi_key') {
-                return jsonError('This connection has several API keys; this server version supports one', 'UNIFI_MULTI_KEY');
-              }
-              return jsonError(key.reason === 'decrypt_error'
-                ? 'The stored UniFi API key could not be read; reconnect the integration in Settings'
-                : 'No API key found', 'NOT_CONNECTED');
+            const creds = await inToolDbPhase(auth, () => getSyncKeys(db, conn.id, partnerId));
+            if (!creds || creds.keys.length === 0) return jsonError('No API key found', 'NOT_CONNECTED');
+            if (creds.keys.every((k) => k.apiKey === null)) {
+              return jsonError('The stored UniFi API key could not be read; reconnect the integration in Settings', 'NOT_CONNECTED');
             }
             try {
-              const client = createUnifiClient({ baseUrl: key.baseUrl, apiKey: key.apiKey });
-              const [hosts, allSites] = await runOutsideDbContext(() => Promise.all([client.listHosts(), client.listSites()]));
-              const list = buildMappingHostList(hosts, allSites);
-              return bounded({ hosts: list.hosts, omitted: list.omitted });
+              // Every enabled key, merged (#11808); `complete` is false when a key failed.
+              const list = await runOutsideDbContext(() => readHostsAcrossKeys(creds.keys, creds.baseUrl));
+              return bounded({
+                hosts: list.hosts,
+                omitted: list.omitted,
+                keys: list.keys.map((k) => (k.ok
+                  ? { id: k.id, label: k.label, ok: true }
+                  : { id: k.id, label: k.label, ok: false, error: keyFailureText(k) })),
+                complete: list.complete,
+              });
             } catch (error) {
+              // Every key failed: the first key's error.
               // Only a vendor API error is an upstream failure; anything else is ours and goes to thrown() (logged in full).
               if (!(error instanceof UnifiApiError)) throw error;
               console.warn('[get_unifi_status] hosts lookup failed', { partnerId, status: error.status });

@@ -219,6 +219,46 @@ describe('FlowDetailPage', () => {
     expect(screen.queryByTestId('flow-moved-from-reverted')).toBeNull();
   });
 
+  it('shadow: no Enable button; a notice names the job and links to its Move dialog (#12499)', async () => {
+    const d = detail();
+    Object.assign(d.flow, {
+      status: 'draft',
+      convertedFrom: { automationId: 'a-1', name: 'Nightly cleanup', conversionId: 'c-1', state: 'shadow' },
+    });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    const notice = await screen.findByTestId('flow-shadowing-notice');
+    expect(screen.queryByTestId('flow-enable')).toBeNull();
+    expect(notice.textContent).toContain('Nightly cleanup');
+    expect(within(notice).getByRole('link').getAttribute('href')).toBe('/jobs#convert-a-1');
+  });
+
+  it('switched: a disabled flow keeps its Enable button and shows no shadow notice (#12499)', async () => {
+    const d = detail();
+    Object.assign(d.flow, {
+      status: 'disabled',
+      convertedFrom: { automationId: 'a-1', name: 'Nightly cleanup', conversionId: 'c-1', state: 'switched' },
+    });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-moved-from');
+    expect(screen.getByTestId('flow-enable')).toBeTruthy();
+    expect(screen.queryByTestId('flow-shadowing-notice')).toBeNull();
+  });
+
+  it('moved-from shows once: the generated description line is not repeated beside the link (#12499)', async () => {
+    const d = detail();
+    Object.assign(d.flow, {
+      description: 'Cleans temp files\n\nMoved from Job Nightly cleanup',
+      convertedFrom: { automationId: 'a-1', name: 'Nightly cleanup', conversionId: 'c-1', state: 'switched' },
+    });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-moved-from');
+    expect(screen.getAllByText(/Moved from Job/)).toHaveLength(1);
+    expect(screen.getByText('Cleans temp files')).toBeTruthy();
+  });
+
   it('a flow that was never converted shows no moved-from line', async () => {
     render(<FlowDetailPage flowId={ID} />);
     await screen.findByTestId('flow-steps');

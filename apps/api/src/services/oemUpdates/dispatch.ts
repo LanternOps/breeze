@@ -18,6 +18,7 @@ import {
   agentSupportsOemUpdateRelease,
   agentSupportsOemUpdates,
   OEM_LANES,
+  oemLaneHonoursBlockedUpdateIds,
   oemUpdateReleasePayloadSchema,
   oemUpdateRunPayloadSchema,
   type OemCategory,
@@ -167,6 +168,11 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
   });
   if (applicability.state !== 'applicable') return { ok: false, refusal: 'not_applicable' };
   const { lane } = applicability;
+  // #12265: the agent refuses a Dell run with any blocked ID and runs nothing. The
+  // scheduler already sends none (`blocked_ids_unsupported`), so this is a caller bug.
+  if (input.blockedUpdateIds.length > 0 && !oemLaneHonoursBlockedUpdateIds(lane)) {
+    throw new RangeError(`oem_update_run dispatch with blocked update IDs for the ${lane} lane, which cannot honour them`);
+  }
 
   if (laneDisabledByKillSwitch(lane)) return { ok: false, refusal: 'kill_switch' };
   const gateScope = { deviceId: device.id };
@@ -255,6 +261,9 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     applicability: 'applicable' as const,
     reason: null,
     lastAttemptAt: now,
+    // Only a scheduled run uses up the night (#12266). Run Now leaves the key out,
+    // rather than nulling it, so it cannot erase tonight's scheduled attempt either.
+    ...(input.trigger === 'scheduled' ? { lastScheduledAttemptAt: now } : {}),
     lastCommandId: dispatched.command.id,
     updatedAt: now,
     // A scheduled run opens its occurrence with no outcome yet: last month's success

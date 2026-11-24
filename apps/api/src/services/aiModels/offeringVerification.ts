@@ -168,6 +168,22 @@ function summarize(result: FidelityCheckResult, secrets: ReadonlyArray<string | 
   return scrubSecrets(first ? `${first.name}: ${first.detail ?? 'failed'}` : 'verification failed', secrets, SUMMARY_MAX);
 }
 
+type WindowOffering = Parameters<typeof resolveEffectiveContextWindow>[0] & { contextWindowObservedAt?: Date | null };
+
+/**
+ * The offering's effective window and its gateway form, resolved once so the
+ * basic stage and the surface turns cannot drift (#12455).
+ */
+function verificationWindow(offering: WindowOffering, configVersion: number) {
+  const window = resolveEffectiveContextWindow(offering, configVersion);
+  return { window, known: knownContextWindow(window, offering.contextWindowObservedAt) };
+}
+
+/** Grant option carrying the known window for `wireModel`; nothing when none is known. */
+function knownWindowsOption(wireModel: string, known: KnownWindow | null): { knownWindows?: Map<string, KnownWindow> } {
+  return known ? { knownWindows: new Map<string, KnownWindow>([[wireModel, known]]) } : {};
+}
+
 interface SurfaceStageContext {
   offering: Parameters<typeof toolProfileFactsFrom>[0] & Parameters<typeof resolveEffectiveContextWindow>[0] & { id: string; capabilities: unknown };
   configVersion: number;
@@ -206,8 +222,9 @@ async function runSurfaceStage(ctx: SurfaceStageContext): Promise<{
     assigned = await systemRead(() => listOfferingToolSurfaces(ctx.partnerId, offeringId));
     // The offering's facts as the resolver reads them (gatewayCandidate): its
     // profile, allow-list and effective window under this connection version.
-    const window = resolveEffectiveContextWindow(ctx.offering, ctx.configVersion);
-    known = knownContextWindow(window, ctx.offering.contextWindowObservedAt);
+    const resolved = verificationWindow(ctx.offering, ctx.configVersion);
+    const window = resolved.window;
+    known = resolved.known;
     facts = toolProfileFactsFrom(ctx.offering, 'gateway', window.value, isStaleObservedWindow(window));
   } catch (error) {
     capture('surface turns skipped (could not list its tool surfaces or read its tool profile)', error);
@@ -317,6 +334,14 @@ export async function verifyConnectionOffering(
   try {
     const gateway = await acquireModelGateway();
     proxy = await getLlmEgressProxy();
+    // Same effective window the surface turns use, so an operator override applies to every request.
+    // A malformed stored window must not fail the basic run (the surface stage reports it).
+    let basicKnown: KnownWindow | null = null;
+    try {
+      basicKnown = verificationWindow(offering, conn.configVersion).known;
+    } catch {
+      basicKnown = null;
+    }
     const issueGrant = (): GatewayGrant => {
       const grant = gateway.grant({
         config,
@@ -326,6 +351,7 @@ export async function verifyConnectionOffering(
         aiSessionId: null,
         purpose: 'verification',
         ttlMs: VERIFY_GRANT_TTL_MS,
+        ...knownWindowsOption(wireModel, basicKnown),
       });
       grants.push(grant);
       secrets.push(grant.token);
@@ -369,7 +395,7 @@ export async function verifyConnectionOffering(
             ttlMs: VERIFY_GRANT_TTL_MS,
             compactSchemas,
             // Capped as a dispatch grant would be; no observers, so nothing is persisted.
-            ...(known ? { knownWindows: new Map<string, KnownWindow>([[wireModel, known]]) } : {}),
+            ...knownWindowsOption(wireModel, known),
           });
           grants.push(grant);
           secrets.push(grant.token);

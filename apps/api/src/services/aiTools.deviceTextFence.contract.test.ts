@@ -194,10 +194,16 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   // devices, or app publishers) in the customer's tenant.
   m365_query_users: ['displayName', 'userPrincipalName', 'mail', 'jobTitle', 'department'],
   m365_query_signins: ['userPrincipalName', 'appDisplayName', 'clientAppUsed', 'status', 'location', 'deviceDetail'],
-  m365_query_intune_devices: ['deviceName', 'userPrincipalName', 'osVersion', 'model', 'manufacturer', 'serialNumber'],
+  m365_query_intune_devices: ['deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'model', 'manufacturer', 'serialNumber'],
   m365_query_groups: ['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName'],
   m365_query_org: ['displayName', 'verifiedDomains'],
   m365_query_sites: ['name', 'displayName', 'webUrl'],
+  // Microsoft 365 helpdesk tools: `message` carries a Graph or broker error message (fenced in the handler too).
+  m365_lookup_user: ['message'],
+  m365_recent_signins: ['message'],
+  m365_list_group_memberships: ['message'],
+  m365_disable_user: ['message'],
+  m365_reset_password: ['message'],
   // Watched service/process names and the check's details blob are agent-reported.
   get_service_monitoring_status: ['name', 'details'],
   // A network check's last error and each result's error/details are written by the reporting agent.

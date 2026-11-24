@@ -1,6 +1,7 @@
 ---
 tracking_issue: LanternOps/breeze#9408
 status: plan-drafted
+amended: 2026-11-23
 ---
 
 # Monitor Deploy to… — device-group and device targets — Implementation Plan
@@ -24,6 +25,34 @@ status: plan-drafted
 - Dynamic assignment filters beyond role/OS are #8957.
 - Changing the existing-policy picker (which policies it lists) is not touched.
 
+## Amendment (2026-11-23): device targets wait for device-own settings
+
+Decision 2 of the device-own settings spec
+(`docs/superpowers/specs/config-policy/2026-11-21-device-own-settings-spec.md`, #6670) changes
+what a device target does:
+
+- A monitor deployed to specific devices is written to each device's own settings. It does
+  not mint a `Monitor: <name>` policy with device-level assignments; those policies are the
+  one-off list rows that spec removes.
+- A monitor deployed to an organization, a site or a device group keeps its minted policy.
+
+What this does to the tasks below:
+
+| Task | Status |
+|---|---|
+| 1. API: `device` level and multiple targets | **On hold** until wave D2 of that spec (the device configuration service). Then re-plan: the route writes own settings per device and does not call `createConfigPolicy` or `assignPolicy` for a device target. |
+| 2. API: attachment targets and `sourcePolicyName` | Proceed as written. |
+| 3. Web: device target in the dialog | **On hold** with Task 1. The picker stands; the request and the auto-name rule change. |
+| 4. Web: Deployed card targets, Source column | Proceed as written. A device that carries the monitor in its own settings needs its own line on the card; add that with Task 1. |
+| 5. Docs | Proceed for the Deployed card and the existing targets. Leave "specific devices" out until Task 1 ships. |
+
+Device-group targets need no work. The route and the dialog already accept `device_group`
+(checked on main at `180bb38099`: `attachSchema` in `monitorDefinitions.ts`, the level list
+in `DeployMonitorDialog.tsx`).
+
+Open point: decision 2 names a single-device target. This amendment reads a multi-device
+target the same way (one write per chosen device). Confirm it when Task 1 is re-planned.
+
 ## Global Constraints
 
 - Migrations: none. `config_assignment_level` already contains `device` (`apps/api/src/db/schema/configurationPolicies.ts:70-76`).
@@ -44,7 +73,7 @@ status: plan-drafted
 
 ---
 
-### Task 1: API — `device` level and multiple targets on `POST /monitor-definitions/:id/attachments`
+### Task 1: API — `device` level and multiple targets on `POST /monitor-definitions/:id/attachments` (ON HOLD, see Amendment)
 
 **Files:**
 - Modify: `apps/api/src/routes/monitorDefinitions.ts:329-344` (schema), `:386-435` (create branch)
@@ -169,7 +198,7 @@ git add apps/api/src/routes/monitorDefinitions.ts apps/api/src/routes/monitorDef
 git commit -m "feat(monitors): attachment targets and source policy name on the monitor read endpoints (#9408)"
 ```
 
-### Task 3: Web — device target in `DeployMonitorDialog`
+### Task 3: Web — device target in `DeployMonitorDialog` (ON HOLD, see Amendment)
 
 **Files:**
 - Modify: `apps/web/src/components/monitoring/DeployMonitorDialog.tsx` (`TargetLevel` `:16`, state `:39-48`, name effect `:65-74`, submit `:76-108`, level list `:174`)
@@ -294,6 +323,6 @@ git commit -m "docs(monitors): Deploy to… device group and device targets (#94
 
 ## PR checklist
 
-- Branch `fix/9408-monitor-deploy-device-targets`, PR body `Closes #9408`, Refs #5238 and #8957 (do not use closing keywords for those).
+- Branch `fix/9408-monitor-deploy-device-targets`. PR body `Refs #9408`, with no closing keyword: the issue is community-filed and device targets are on hold (see Amendment), so comment with what shipped and leave it open. Refs #5238 and #8957 (do not use closing keywords for those).
 - CI: `test-api`, `test-web` cover every task; no migration, so Check Migrations and the RLS/cascade suites are unaffected. No new `apps/api/src/services` file unless `loadAssignmentTargets` is placed in `monitorAttachments.ts` (existing file, so `parkedFanout.contract.test.ts` needs no entry).
 - Lab leg: none (no agent change).

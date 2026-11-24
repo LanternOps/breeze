@@ -52,7 +52,7 @@ import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors
 import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
 import { TroubleshootAgentEditError } from '../services/aiAgents/troubleshootAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
-import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
+import { getCircuitState, listOpenCircuits, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
 import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
 import { AI_AGENTS_ENV_FLAG_NAME, aiAgentsEnvFlagEnabled } from '../services/aiAgents/subsystemState';
@@ -499,6 +499,11 @@ aiAgentsRoutes.get(
     // AI patch agent W01 (#5747): the card's "next occurrence", batched the
     // same way — one cadence read for the page.
     const nextOccurrences = await loadNextOccurrences(auth, agentIds);
+    // #12347: every OPEN circuit for these agents in orgs this caller can
+    // reach, batched the same way — one read for the page. Nothing on the page
+    // used to say a circuit was open, so a tripped agent skipped every run
+    // until someone found the reset route by hand.
+    const openCircuits = await listOpenCircuits(auth.orgCondition, agentIds);
     // #4170: one query for the whole page, same convention as loadLastRuns
     // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
     // so the list can flag an org row the resolver would treat as inert) and
@@ -523,6 +528,7 @@ aiAgentsRoutes.get(
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
           nextOccurrenceAt: nextOccurrences.get(row.id) ?? null,
+          openCircuits: openCircuits.get(row.id) ?? [],
         };
       }),
       partnerBaselineKinds: Array.from(partnerBaselineKinds),
@@ -2481,7 +2487,8 @@ aiAgentsRoutes.get(
  * The ONLY way an open circuit closes (wave-6 quorum: "manual MFA reset
  * only" — never automatic, and a config edit on the agent must never touch
  * this row, see `agentService.test.ts`'s coverage). Same write-permission +
- * MFA gate as every other mutating route in this file.
+ * MFA gate as every other mutating route in this file, plus
+ * `assertAgentWriteAllowed` (site/device ceiling, automation principals).
  */
 aiAgentsRoutes.post(
   '/:id/circuit/reset',
@@ -2503,6 +2510,23 @@ aiAgentsRoutes.post(
     const orgResult = resolveOrgId(auth, body.orgId, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     if (!orgResult.orgId) return c.json({ error: 'orgId is required' }, 400);
+
+    // #12347 (Strix round 2): an open circuit stops this agent on EVERY site
+    // in the org, so clearing it is an org-wide governance write and gets the
+    // same gate as every other agent write — a caller with a site or
+    // exact-device ceiling is refused (403), an automation principal cannot
+    // re-arm an agent, and the org must be reachable. Authorized against the
+    // CIRCUIT's owner (the resolved org), not the agent row: a circuit is
+    // per-(org, agent), so an unrestricted org admin may reset their own org's
+    // circuit on a partner-wide baseline agent without partner-wide rights —
+    // the same org-owner shape `scheduleService` uses for an org override.
+    // Only the synchronous assert sits in the try; `resetCircuit` stays
+    // outside it (a catch around a query would mask a rethrow at COMMIT).
+    try {
+      assertAgentWriteAllowed(auth, { orgId: orgResult.orgId, partnerId: null });
+    } catch (err) {
+      return mapError(c, err);
+    }
 
     const snapshot = await resetCircuit(orgResult.orgId, id, auth.user.id);
     writeRouteAudit(c, {

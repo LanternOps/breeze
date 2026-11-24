@@ -156,6 +156,9 @@ export const unifiSyncRuns = pgTable('unifi_sync_runs', {
   // Listed sites with no mapping row. NULL = not recorded (older, failed, no-mapping or incomplete-list runs).
   sitesUnmapped: integer('sites_unmapped'),
   error: text('error'),
+  // One entry per API key the run read (#11808): { keyId, label, status, hostsSeen, sitesSeen, error }.
+  // Never a key or its ciphertext. NULL on runs before W2.
+  keyResults: jsonb('key_results'),
 }, (table) => ({
   integrationStartedIdx: index('unifi_sync_runs_integration_started_idx')
     .on(table.integrationId, table.startedAt.desc()),

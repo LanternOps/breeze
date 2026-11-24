@@ -491,7 +491,9 @@
       "ring_deleted": "Cancelado antes del envío: se eliminó el anillo de actualización.",
       "ring_disabled": "Cancelado antes del envío: se deshabilitó el anillo de actualización.",
       "ring_unavailable": "Omitido: el anillo de actualización se eliminó o deshabilitó antes de enviar a este dispositivo.",
-      "all_managed_by_vendor_updates": "Omitido: todas las actualizaciones pendientes de este dispositivo las administran las actualizaciones del fabricante, por lo que no se requiere aprobación."
+      "all_managed_by_vendor_updates": "Omitido: todas las actualizaciones pendientes de este dispositivo las administran las actualizaciones del fabricante, por lo que no se requiere aprobación.",
+      "requested_patches_not_eligible": "Omitido: ninguna de las actualizaciones seleccionadas para este trabajo se puede instalar en este dispositivo según su política de actualizaciones actual.",
+      "invalid_patch_ids": "Omitido: la lista de actualizaciones seleccionadas para este trabajo no era válida, por lo que no se instaló nada."
     },
     "errors": {
       "load": "No se pudo cargar el trabajo de parche"
@@ -512,6 +514,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "¿Descartar los cambios sin guardar?",
+      "message": "Este anillo tiene cambios sin guardar. Al cerrar el editor, se descartan.",
+      "confirm": "Descartar"
+    },
     "validation": {
       "selectCategory": "Seleccione una categoría",
       "selectSeverity": "Seleccione al menos una gravedad para la aprobación automática.",

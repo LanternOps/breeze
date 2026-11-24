@@ -21,7 +21,7 @@ describe('executeNotifyStep', () => {
     const out = await executeNotifyStep(input, ctx());
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(CH, {
-      title: 'Done', body: 'All good', severity: 'info', link: '/flows/flow-1', dedupKey: 'flow:run-1:a1_notify:0',
+      title: 'Done', body: 'All good', severity: 'info', link: '/flows/runs/run-1', dedupKey: 'flow:run-1:a1_notify:0',
     }, owner);
     expect(out).toEqual({ kind: 'completed', output: { channelId: CH, sent: true }, truncated: false });
   });

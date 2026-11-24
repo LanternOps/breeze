@@ -491,7 +491,9 @@
       "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
       "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
       "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched.",
-      "all_managed_by_vendor_updates": "Skipped: every pending update on this device is managed by Vendor updates, so no approval is needed."
+      "all_managed_by_vendor_updates": "Skipped: every pending update on this device is managed by Vendor updates, so no approval is needed.",
+      "requested_patches_not_eligible": "Skipped: none of the updates selected for this job can be installed on this device under its current update policy.",
+      "invalid_patch_ids": "Skipped: the list of updates selected for this job was not valid, so nothing was installed."
     },
     "errors": {
       "load": "Failed to load patch job"
@@ -512,6 +514,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Discard unsaved changes?",
+      "message": "You have unsaved changes to this ring. Closing the editor discards them.",
+      "confirm": "Discard"
+    },
     "validation": {
       "selectCategory": "Select a category",
       "selectSeverity": "Select at least one severity for auto-approval.",

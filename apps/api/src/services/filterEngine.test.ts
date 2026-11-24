@@ -48,6 +48,7 @@ import {
   getFieldDefinition,
   escapeLikePattern,
   evaluateFilter,
+  evaluateFilterInOrgs,
   evaluateFilterWithPreview,
   deviceMatchesFilter,
   FilterQueryTimeoutError,
@@ -752,6 +753,17 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
   it('evaluateFilter sets a statement_timeout before querying', async () => {
     await evaluateFilter(matchesFilter, { orgId: 'org-1' });
     expectTimeoutWrappedQuery();
+  });
+
+  it('evaluateFilterInOrgs sets a statement_timeout before its one query', async () => {
+    await evaluateFilterInOrgs(matchesFilter, { orgIds: ['org-1', 'org-2'] });
+    expectTimeoutWrappedQuery();
+    expect(dbMock.events.filter((e) => e === 'query')).toHaveLength(1);
+  });
+
+  it('evaluateFilterInOrgs with no orgs matches nothing and never queries', async () => {
+    await expect(evaluateFilterInOrgs(matchesFilter, { orgIds: [] })).resolves.toMatchObject({ deviceIds: [], totalCount: 0 });
+    expect(dbMock.events).toHaveLength(0);
   });
 
   it('deviceMatchesFilter sets a statement_timeout before querying', async () => {

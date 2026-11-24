@@ -21,12 +21,17 @@ import {
   PolicyHasChildrenError,
   parentPolicyEnablesHpCmslCollection,
   parentPolicyArmsOemUpdates,
+  policyViewerAccess,
+  readablePolicyIds,
 } from '../../services/configurationPolicy';
 import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
+import { loadAppliesToSummaries } from '../../services/configPolicyAppliesTo';
+import { copyConfigPolicy, ConfigPolicyCopyRefusedError } from '../../services/configPolicyCopy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
   createConfigPolicySchema,
+  copyConfigPolicySchema,
   updateConfigPolicySchema,
   listConfigPoliciesSchema,
   idParamSchema,
@@ -49,13 +54,32 @@ crudRoutes.get(
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(Math.max(1, Number(query.limit) || 25), 100);
 
+    // W03a: the org a list is filtered to must be one the caller can access.
+    if (query.appliesToOrgId && !auth.canAccessOrg(query.appliesToOrgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
     const result = await listConfigPolicies(auth, {
       status: query.status,
       search: query.search,
       orgId: query.orgId,
+      appliesToOrgId: query.appliesToOrgId,
+      notApplied: query.notApplied === 'true',
     }, { page, limit });
 
-    return c.json(result);
+    // Applies-to summary (#12306 W01a). Merged here, not in listConfigPolicies,
+    // because that service also feeds AI tools whose output must not grow (D3).
+    // Only the page's ids, read in the caller's own request context. A row the
+    // read model did not return carries no `appliesTo`, which the web treats as
+    // unknown rather than "Not applied".
+    const summaries = await loadAppliesToSummaries(auth, result.data.map((row) => row.id));
+    return c.json({
+      ...result,
+      data: result.data.map((row) => {
+        const appliesTo = summaries.get(row.id);
+        return appliesTo ? { ...row, appliesTo } : row;
+      }),
+    });
   }
 );
 
@@ -72,6 +96,19 @@ crudRoutes.post(
       return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     }
     const data = c.req.valid('json');
+
+    // A parent the caller may not read is refused with the same 400 as every
+    // other invalid parent (W03a). Without this, naming any MSP-managed policy
+    // id as the parent of a new org-owned policy would make that parent
+    // readable through D14 clause 5. It runs before the parent gates below,
+    // whose 403s would otherwise reveal a hidden parent's armed state.
+    if (data.parentPolicyId) {
+      const [readable] = await readablePolicyIds(auth, [data.parentPolicyId]);
+      if (!readable) {
+        const err = new InvalidParentPolicyError();
+        return c.json({ error: err.code, message: err.message }, 400);
+      }
+    }
 
     // #5511 W02 (contract D4): gating follows EFFECTIVENESS, not the verb.
     // Creating a child of a parent whose warranty link collects HP warranty
@@ -209,9 +246,8 @@ crudRoutes.post(
 //
 // MUST stay above `GET /:id`, or Hono captures "eligible-parents" as an id.
 // Returns NAMES ONLY. For an org-scoped caller this includes their partner's
-// partner-wide policies — the one narrow widening of org-scoped read
-// visibility, and the whole point of the feature (an org tech inheriting the
-// MSP baseline). policyAccessCondition is NOT relaxed anywhere else.
+// partner-wide policies that apply to their organization (W03a read rule), so
+// an org tech can inherit the MSP baseline that governs them.
 crudRoutes.get(
   '/eligible-parents',
   requireScope('organization', 'partner', 'system'),
@@ -245,10 +281,65 @@ crudRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
 
-    const policy = await getConfigPolicy(id, auth);
+    // The read predicate (W03a): an org admin opens the MSP-managed policies
+    // that apply to its organization, read-only; `access` says why it cannot
+    // edit, so the page can state the reason up front.
+    const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    return c.json(policy);
+    const access = policyViewerAccess(auth, policy);
+    // After the 404, never before: an invisible policy loads nothing (D3).
+    const appliesTo = (await loadAppliesToSummaries(auth, [policy.id])).get(policy.id);
+    return c.json(appliesTo ? { ...policy, appliesTo, access } : { ...policy, access });
+  }
+);
+
+// POST /:id/copy — copy a policy, to the same owner or to another
+// organization or the MSP (#12309, #11776). The copy is always inactive and
+// applies nowhere. `dryRun: true` answers what would be carried and what left
+// behind, and writes nothing. The service (services/configPolicyCopy.ts) owns
+// every gate: the read predicate on the source, write access to the new owner
+// from this body (canManagePartnerWidePolicies for the MSP), the parent, and
+// each carried link's arming gates with this caller's own permissions.
+crudRoutes.post(
+  '/:id/copy',
+  requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  zValidator('json', copyConfigPolicySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const { id } = c.req.valid('param');
+    const data = c.req.valid('json');
+
+    let result;
+    try {
+      result = await copyConfigPolicy(auth, id, data, {
+        permissions: c.get('permissions') as UserPermissions | undefined,
+      });
+    } catch (err) {
+      if (err instanceof ConfigPolicyCopyRefusedError) return c.json(err.body, err.status);
+      throw err;
+    }
+    if (result.dryRun) return c.json(result);
+
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'config_policy.copy',
+      resourceType: 'configuration_policy',
+      resourceId: result.policyId,
+      resourceName: data.name,
+      details: {
+        sourcePolicyId: id,
+        ownerScope: data.ownerScope,
+        dropped: result.dropped.map((d) => d.featureType),
+      },
+    });
+    return c.json(result, 201);
   }
 );
 

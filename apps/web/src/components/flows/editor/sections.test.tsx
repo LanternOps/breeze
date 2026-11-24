@@ -190,17 +190,54 @@ describe('OnFailureSection', () => {
     const onChange = vi.fn();
     const { rerender } = render(<OnFailureSection onFailure={{ mode: 'stop' }} onChange={onChange} channels={channels} />);
     fireEvent.click(screen.getByTestId('flow-form-onfailure-notify'));
-    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL] });
-    const one: FlowFormOnFailure = { mode: 'notify', channelIds: [CHANNEL] };
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL], notice: 'summary' });
+    const one: FlowFormOnFailure = { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' };
     rerender(<OnFailureSection onFailure={one} onChange={onChange} channels={channels} />);
     expect(screen.getByTestId(`flow-form-onfailure-channel-${CHANNEL}`)).toBeDisabled();
   });
 
+  it("names each channel's type in the reader's language, not the raw type", () => {
+    const one: FlowFormOnFailure = { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' };
+    render(<OnFailureSection onFailure={one} onChange={vi.fn()} channels={channels} />);
+    const list = screen.getByTestId('flow-form-onfailure-channels').textContent ?? '';
+    expect(list).toContain('Ops (Email)');
+    expect(list).toContain('Pager (Slack)');
+    expect(list).not.toContain('(email)');
+  });
+
   it('channel ids are never duplicated', () => {
     const onChange = vi.fn();
-    render(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL, CHANNEL] }} onChange={onChange} channels={channels} />);
+    render(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL, CHANNEL], notice: 'summary' }} onChange={onChange} channels={channels} />);
     fireEvent.click(screen.getByTestId(`flow-form-onfailure-channel-${CHANNEL_2}`));
-    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_2] });
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'summary' });
+  });
+
+  it('a per-device notice (a flow moved from a Job) stays per-device when its channels change', () => {
+    const onChange = vi.fn();
+    render(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL], notice: 'perDevice' }} onChange={onChange} channels={channels} />);
+    fireEvent.click(screen.getByTestId(`flow-form-onfailure-channel-${CHANNEL_2}`));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'perDevice' });
+  });
+
+  it('choosing Stop on a per-device flow, then Notify again, creates a summary (an explicit choice, not a silent rewrite)', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL], notice: 'perDevice' }} onChange={onChange} channels={channels} />);
+    fireEvent.click(screen.getByTestId('flow-form-onfailure-stop'));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'stop' });
+    rerender(<OnFailureSection onFailure={{ mode: 'stop' }} onChange={onChange} channels={channels} />);
+    fireEvent.click(screen.getByTestId('flow-form-onfailure-notify'));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL], notice: 'summary' });
+  });
+
+  it('the notify help describes the notice the flow sends: one summary per script, or one per failed device', () => {
+    const { rerender } = render(<OnFailureSection onFailure={{ mode: 'stop' }} onChange={vi.fn()} channels={channels} />);
+    const help = () => screen.getByTestId('flow-form-onfailure-notify-help').textContent ?? '';
+    expect(help()).toMatch(/one notice/i);
+    expect(help()).not.toMatch(/for each device/i);
+    rerender(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL], notice: 'summary' }} onChange={vi.fn()} channels={channels} />);
+    expect(help()).toMatch(/one notice/i);
+    rerender(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL], notice: 'perDevice' }} onChange={vi.fn()} channels={channels} />);
+    expect(help()).toMatch(/for each device/i);
   });
 
   it('notify is unavailable when there are no channels', () => {

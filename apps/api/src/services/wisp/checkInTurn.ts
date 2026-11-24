@@ -84,9 +84,10 @@ const FRAME_TAG = /<\s*\/?\s*(?:wisp[\s_-]*check[\s_-]*ins?|wisp[\s_-]*standing[
  */
 const FRAME_NAME = /wisp[_-]?check[_-]?ins?\b|wisp[_-]?standing[_-]?state|prior_conversation_summary|untrusted_data/giu;
 /**
- * Invisible format characters (U+034F, U+180E, variation selectors, …) that
- * the shared sanitizer's list does not cover, any of which could split a
- * delimiter look-alike.
+ * Every default-ignorable character, variation selectors included. The shared
+ * sanitizer strips the rest of this set itself but keeps variation selectors in
+ * benign text (emoji presentation); a check-in line has no use for them, and
+ * the frame patterns below do not tolerate them, so they all go here first.
  */
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 /** A forged entry header (`[Wisp check-in fired …]`) or the run-results marker (`[breeze:analysis-results]`). */

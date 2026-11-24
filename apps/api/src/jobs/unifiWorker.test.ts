@@ -61,7 +61,11 @@ vi.mock('../services/unifi/unifiConnectionService', () => ({
   markStatus: vi.fn(),
   markSynced: vi.fn(),
 }));
-vi.mock('../services/unifi/unifiKeyService', () => ({ getSyncKeys: vi.fn() }));
+vi.mock('../services/unifi/unifiKeyService', () => ({
+  getSyncKeys: vi.fn(),
+  recordKeyResults: vi.fn(),
+  unifiKeyLast4: (k: string) => k.slice(-4),
+}));
 vi.mock('../services/unifi/unifiSyncService', () => ({
   collectSyncData: vi.fn(),
   applySyncData: vi.fn(),
@@ -69,7 +73,8 @@ vi.mock('../services/unifi/unifiSyncService', () => ({
 
 import { createUnifiClient } from '../services/unifi/unifiClient';
 import { markStatus, markSynced } from '../services/unifi/unifiConnectionService';
-import { getSyncKeys } from '../services/unifi/unifiKeyService';
+import { getSyncKeys, recordKeyResults } from '../services/unifi/unifiKeyService';
+import type { CollectedSync, KeyRunResult } from '../services/unifi/unifiSyncService';
 import { applySyncData, collectSyncData } from '../services/unifi/unifiSyncService';
 import {
   getUnifiSyncQueue,
@@ -132,16 +137,29 @@ function okKey(id: string, apiKey: string) {
   return { id, label: id, apiKey, keyLast4: null, lastSeenHostIds: null };
 }
 
-describe('unifi worker reads keys from unifi_integration_keys (#11808 W1)', () => {
+function collected(over: Partial<CollectedSync> = {}): CollectedSync {
+  return {
+    hostsSeen: 1, byMapping: new Map(), keyResults: [], uncertainHostIds: new Set(), protectedDeviceIds: new Set(),
+    allKeysSucceeded: true, ...over,
+  };
+}
+function keyResult(over: Partial<KeyRunResult>): KeyRunResult {
+  return { keyId: 'key-1', label: 'Global', status: 'success', authFailure: false, hostsSeen: 1, sitesSeen: 1, hostIds: ['h1'], error: null, ...over };
+}
+const runResult = (over: Record<string, unknown> = {}) => ({
+  hostsSeen: 1, devicesCreated: 0, devicesUpdated: 0, devicesUnchanged: 0, devicesRemoved: 0, status: 'success' as const, ...over,
+});
+
+describe('unifi worker syncs every enabled key (#11808)', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(async () => {
     vi.clearAllMocks();
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     dbState.integrations = [];
     dbState.wheres = [];
     await shutdownUnifiWorker();
-    vi.mocked(collectSyncData).mockResolvedValue({ hostsSeen: 1, byMapping: new Map() });
-    vi.mocked(applySyncData).mockResolvedValue({
-      hostsSeen: 1, devicesCreated: 0, devicesUpdated: 0, devicesUnchanged: 0, devicesRemoved: 0, status: 'success',
-    });
+    vi.mocked(collectSyncData).mockResolvedValue(collected());
+    vi.mocked(applySyncData).mockResolvedValue(runResult());
   });
 
   it('the scheduler queues cloud integrations only', async () => {
@@ -154,42 +172,103 @@ describe('unifi worker reads keys from unifi_integration_keys (#11808 W1)', () =
     expect(rendered.params).toEqual(expect.arrayContaining([true, 'cloud']));
   });
 
-  it('processSyncIntegration builds the client from the key row, not the legacy column', async () => {
-    // getSyncKeys is the only source of the key: it reads unifi_integration_keys
-    // (and owns the D12 legacy reconcile). The worker never reads the legacy column.
-    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'new')] });
+  it('builds one client per key and collects them all; a key that does not decrypt has no client', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({
+      baseUrl: 'https://api.ui.com',
+      keys: [
+        okKey('key-1', 'alpha-1234'),
+        { id: 'key-2', label: 'Broken', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: ['h2'] },
+        { ...okKey('key-3', 'gamma-9999'), keyLast4: '9999' },
+      ],
+    });
     const run = await processor();
     await run(syncJob());
-    expect(getSyncKeys).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER);
-    expect(createUnifiClient).toHaveBeenCalledWith({ baseUrl: 'https://api.ui.com', apiKey: 'new' });
-    expect(applySyncData).toHaveBeenCalledTimes(1);
+    expect(createUnifiClient).toHaveBeenCalledTimes(2);
+    expect(createUnifiClient).toHaveBeenNthCalledWith(1, { baseUrl: 'https://api.ui.com', apiKey: 'alpha-1234' });
+    expect(createUnifiClient).toHaveBeenNthCalledWith(2, { baseUrl: 'https://api.ui.com', apiKey: 'gamma-9999' });
+    const [keys] = vi.mocked(collectSyncData).mock.calls[0]!;
+    expect(keys.map((k) => [k.id, k.label, k.client === null, k.decryptError, k.lastSeenHostIds])).toEqual([
+      ['key-1', 'key-1', false, undefined, null],
+      ['key-2', 'Broken', true, 'The stored API key could not be decrypted', ['h2']],
+      ['key-3', 'key-3', false, undefined, null],
+    ]);
+    // key_last4 is offered only for a key that has none stored.
+    const recorded = vi.mocked(recordKeyResults).mock.calls[0]![1];
+    expect(recorded.keyLast4ById).toEqual(new Map([['key-1', '1234']]));
+    expect(recorded.runStartedAt).toBeInstanceOf(Date);
+  });
+
+  it('records key results, then the run, then the integration status, in that order', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'new')] });
+    const results = [keyResult({})];
+    vi.mocked(collectSyncData).mockResolvedValue(collected({ keyResults: results }));
+    const run = await processor();
+    await run(syncJob());
+    expect(recordKeyResults).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      integrationId: INTEGRATION, partnerId: PARTNER, results,
+    }));
+    const order = [recordKeyResults, markSynced, markStatus].map((fn) => vi.mocked(fn).mock.invocationCallOrder[0]!);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'connected', null);
   });
 
-  it('W1 refuses a connection with two enabled keys: no UniFi call, only a fatal (failed) run is recorded', async () => {
+  it('worker: every key auth-failed (401 and 403) -> integration reauth_required', async () => {
     vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a'), okKey('key-2', 'b')] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({
+      fatalError: 'All 2 API keys failed: "A": Unauthorized; "B": Forbidden',
+      allKeysSucceeded: false,
+      keyResults: [
+        keyResult({ keyId: 'key-1', status: 'failed', authFailure: true, error: 'Unauthorized', hostIds: null }),
+        keyResult({ keyId: 'key-2', status: 'failed', authFailure: true, error: 'Forbidden', hostIds: null }),
+      ],
+    }));
+    vi.mocked(applySyncData).mockResolvedValue(runResult({ status: 'failed', error: 'All 2 API keys failed: "A": Unauthorized; "B": Forbidden' }));
     const run = await processor();
     await run(syncJob());
-    expect(createUnifiClient).not.toHaveBeenCalled();
-    expect(collectSyncData).not.toHaveBeenCalled();
-    expect(applySyncData).toHaveBeenCalledTimes(1);
-    const collected = vi.mocked(applySyncData).mock.calls[0]![4];
-    expect(collected).toEqual({
-      hostsSeen: 0,
-      fatalError: 'This connection has several API keys; this server version supports one',
-      byMapping: new Map(),
-    });
-    expect(markStatus).not.toHaveBeenCalled();
-    expect(markSynced).not.toHaveBeenCalled();
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'reauth_required', 'All 2 API keys failed: "A": Unauthorized; "B": Forbidden');
   });
 
-  it('a cloud integration with zero enabled keys is marked reauth_required', async () => {
-    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [] });
+  it('worker: a failure that is not every key rejecting the request is error, not reauth_required', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a'), okKey('key-2', 'b')] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({
+      fatalError: 'All 2 API keys failed',
+      allKeysSucceeded: false,
+      keyResults: [
+        keyResult({ keyId: 'key-1', status: 'failed', authFailure: true, error: 'Unauthorized', hostIds: null }),
+        // The text says 401 but the failure carried no auth status: no regex decides this any more.
+        keyResult({ keyId: 'key-2', status: 'failed', authFailure: false, error: 'proxy said 401 unauthorized', hostIds: null }),
+      ],
+    }));
+    vi.mocked(applySyncData).mockResolvedValue(runResult({ status: 'failed', error: 'All 2 API keys failed' }));
     const run = await processor();
     await run(syncJob());
-    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'reauth_required', 'No enabled API key on this connection');
-    expect(applySyncData).not.toHaveBeenCalled();
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'error', 'All 2 API keys failed');
+  });
+
+  it('worker: one of two keys failed -> integration connected, partial, error names the key', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a'), okKey('key-2', 'b')] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({
+      allKeysSucceeded: false,
+      keyFailureSummary: '1 of 2 API keys failed: "Macera" (key rejected)',
+      keyResults: [keyResult({}), keyResult({ keyId: 'key-2', label: 'Macera', status: 'failed', authFailure: true, error: 'Unauthorized', hostIds: null })],
+    }));
+    vi.mocked(applySyncData).mockResolvedValue(runResult({ status: 'partial', error: '1 of 2 API keys failed: "Macera" (key rejected)' }));
+    const run = await processor();
+    await run(syncJob());
+    expect(markSynced).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'partial', '1 of 2 API keys failed: "Macera" (key rejected)');
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'connected', '1 of 2 API keys failed: "Macera" (key rejected)');
+  });
+
+  it('a cloud integration with zero enabled keys records a failed run and is marked reauth_required', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({ hostsSeen: 0, fatalError: 'No enabled API key on this connection', allKeysSucceeded: false }));
+    vi.mocked(applySyncData).mockResolvedValue(runResult({ hostsSeen: 0, status: 'failed', error: 'No enabled API key on this connection' }));
+    const run = await processor();
+    await run(syncJob());
     expect(createUnifiClient).not.toHaveBeenCalled();
+    expect(vi.mocked(collectSyncData).mock.calls[0]![0]).toEqual([]);
+    expect(applySyncData).toHaveBeenCalledTimes(1);
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'reauth_required', 'No enabled API key on this connection');
   });
 
   it('a non-cloud or missing integration returns without writing anything', async () => {
@@ -199,21 +278,29 @@ describe('unifi worker reads keys from unifi_integration_keys (#11808 W1)', () =
     expect(markStatus).not.toHaveBeenCalled();
     expect(markSynced).not.toHaveBeenCalled();
     expect(applySyncData).not.toHaveBeenCalled();
+    expect(recordKeyResults).not.toHaveBeenCalled();
   });
 
-  it('a key that fails to decrypt is a failed run, never a silent skip', async () => {
-    vi.mocked(getSyncKeys).mockResolvedValue({
-      baseUrl: 'https://api.ui.com',
-      keys: [{ id: 'key-1', label: 'Global', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: null }],
-    });
-    vi.mocked(applySyncData).mockResolvedValue({
-      hostsSeen: 0, devicesCreated: 0, devicesUpdated: 0, devicesUnchanged: 0, devicesRemoved: 0,
-      status: 'failed', error: 'The stored API key could not be decrypted',
-    });
+  it('an apply that throws still records the key results, then marks the integration error', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a')] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({ keyResults: [keyResult({})] }));
+    vi.mocked(applySyncData).mockRejectedValue(new Error('connection reset'));
     const run = await processor();
     await run(syncJob());
-    expect(createUnifiClient).not.toHaveBeenCalled();
-    expect(vi.mocked(applySyncData).mock.calls[0]![4]).toMatchObject({ fatalError: 'The stored API key could not be decrypted' });
-    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'error', 'The stored API key could not be decrypted');
+    expect(recordKeyResults).toHaveBeenCalledTimes(1);
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'error', 'connection reset');
+    expect(markSynced).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'failed', 'connection reset');
+    expect(errorSpy).toHaveBeenCalledWith('[UnifiWorker] Failed to save a sync run', { integrationId: INTEGRATION, error: 'connection reset' });
+  });
+
+  it('a failure to record key results never turns a saved run into a failed one', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a')] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({ keyResults: [keyResult({})] }));
+    vi.mocked(recordKeyResults).mockRejectedValueOnce(new Error('lock timeout'));
+    const run = await processor();
+    await run(syncJob());
+    expect(markSynced).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'success', null);
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'connected', null);
+    expect(errorSpy).toHaveBeenCalledWith('[UnifiWorker] Failed to record per-key sync results', { integrationId: INTEGRATION, error: 'lock timeout' });
   });
 });

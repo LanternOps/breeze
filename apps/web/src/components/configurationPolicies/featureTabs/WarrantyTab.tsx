@@ -4,6 +4,8 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -68,12 +70,12 @@ export default function WarrantyTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<WarrantySettings>(() => ({
     ...defaults,
@@ -103,15 +105,6 @@ export default function WarrantyTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "warranty");
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, {
-      featureType: "warranty",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: toInlineSettings(settings),
-    });
-    if (result) onLinkChanged(result, "warranty");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -140,14 +133,9 @@ export default function WarrantyTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {/* Opt-in clarification: warranty alerting only happens when this feature is

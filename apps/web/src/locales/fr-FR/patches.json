@@ -491,7 +491,9 @@
       "ring_deleted": "Annulé avant l’envoi : l’anneau de mise à jour a été supprimé.",
       "ring_disabled": "Annulé avant l’envoi : l’anneau de mise à jour a été désactivé.",
       "ring_unavailable": "Ignoré : l’anneau de mise à jour a été supprimé ou désactivé avant l’envoi à cet appareil.",
-      "all_managed_by_vendor_updates": "Ignoré : toutes les mises à jour en attente sur cet appareil sont gérées par les mises à jour du fabricant ; aucune approbation n’est nécessaire."
+      "all_managed_by_vendor_updates": "Ignoré : toutes les mises à jour en attente sur cet appareil sont gérées par les mises à jour du fabricant ; aucune approbation n’est nécessaire.",
+      "requested_patches_not_eligible": "Ignoré : aucune des mises à jour sélectionnées pour cette tâche ne peut être installée sur cet appareil selon sa politique de mise à jour actuelle.",
+      "invalid_patch_ids": "Ignoré : la liste des mises à jour sélectionnées pour cette tâche n'était pas valide ; rien n'a été installé."
     },
     "errors": {
       "load": "Échec du chargement de la tâche de correctif"
@@ -512,6 +514,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Abandonner les modifications non enregistrées ?",
+      "message": "Cet anneau contient des modifications non enregistrées. Fermer l’éditeur les abandonne.",
+      "confirm": "Abandonner"
+    },
     "validation": {
       "selectCategory": "Sélectionnez une catégorie",
       "selectSeverity": "Sélectionnez au moins une sévérité pour l’approbation automatique.",

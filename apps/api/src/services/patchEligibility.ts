@@ -13,8 +13,10 @@
  *    `ineligible` WITH a reason.
  *  - `resolveApprovedPatchesForDevice` — the job executor's entry point
  *    (`jobs/patchJobExecutor.ts`), a thin adapter that keeps its exact
- *    `ApprovedPatch[]` shape and ordering. Superseded patches are NOT excluded
- *    here (parity with the pre-extraction evaluator; recorded as a follow-up).
+ *    `ApprovedPatch[]` shape and ordering. Without a requested patch list,
+ *    superseded patches are NOT excluded here (parity with the pre-extraction
+ *    evaluator; recorded as a follow-up). With one (an AI-initiated install
+ *    job), the caller narrows to those patches and excludes superseded ones.
  *  - `resolvePatchInstallEligibility` — the LIVE composition the AI path
  *    (`aiAgents/patchPlan.ts`) and the release-time effect digest
  *    (`actionIntents/effectDigest.ts` `manage_patches:install`) share: device
@@ -413,14 +415,25 @@ export async function evaluatePatchInstallEligibility(args: {
  * The job executor's entry point (`jobs/patchJobExecutor.ts`). A thin adapter
  * over `evaluatePatchInstallEligibility` that preserves the exact
  * `ApprovedPatch[]` shape and candidate ordering the executor has always
- * consumed. Superseded patches are deliberately NOT excluded on this path.
+ * consumed.
+ *
+ * Without `requested`, every outstanding patch on the device is judged and
+ * superseded patches are deliberately NOT excluded (historical behaviour of
+ * scheduled and policy-driven jobs). With `requested` (a job that names its
+ * patches: `patch_jobs.patches.patchIds`), only those patches are judged,
+ * under the same gates; an empty list resolves to nothing without a read.
  */
 export async function resolveApprovedPatchesForDevice(
   deviceId: string,
   orgId: string,
-  ringConfig: ApprovalEvaluationConfig
+  ringConfig: ApprovalEvaluationConfig,
+  requested?: { patchIds: string[]; excludeSuperseded: boolean }
 ): Promise<ApprovedPatch[]> {
-  const verdict = await evaluatePatchInstallEligibility({ deviceId, orgId, config: ringConfig });
+  // Belt and braces: an empty list means "install nothing", never "everything".
+  if (requested && requested.patchIds.length === 0) return [];
+  const verdict = await evaluatePatchInstallEligibility(requested
+    ? { deviceId, orgId, config: ringConfig, patchIds: requested.patchIds, excludeSuperseded: requested.excludeSuperseded }
+    : { deviceId, orgId, config: ringConfig });
   return verdict.eligible.map((e) => ({
     patchId: e.patchId,
     devicePatchId: e.devicePatchId,
@@ -504,24 +517,30 @@ export async function resolveDevicePatchEvaluationConfig(deviceId: string): Prom
  * `resolveDevicePatchEvaluationConfig` plus the linked ring's display name,
  * for read-only views that need to say WHICH ring decided (#7625, the device
  * Patches tab). `ringName` is null whenever `config.ringId` is.
+ *
+ * `ringUnavailable` is true when the config is `ringReferenceInvalid` because
+ * the linked ring is disabled or deleted (a delete is a soft delete), as
+ * opposed to a reference that never pointed at a usable ring. The verdict is
+ * the same either way; the job executor uses it only to record the reason.
  */
 export async function resolveDevicePatchEvaluation(
   deviceId: string
-): Promise<{ config: ApprovalEvaluationConfig; ringName: string | null }> {
+): Promise<{ config: ApprovalEvaluationConfig; ringName: string | null; ringUnavailable: boolean }> {
   // Timezone-free on purpose (#7647): the evaluator needs only the winning
   // policy, and the timezone read would open a second pooled connection.
   const resolved = await resolvePatchConfigPolicyForDevice(deviceId);
-  if (!resolved) return { config: NO_POLICY_CONFIG, ringName: null };
+  if (!resolved) return { config: NO_POLICY_CONFIG, ringName: null, ringUnavailable: false };
   const policyLocal = await loadPolicyLocalPatchConfig(resolved.configPolicyId);
-  if (!policyLocal) return { config: NO_POLICY_CONFIG, ringName: null };
+  if (!policyLocal) return { config: NO_POLICY_CONFIG, ringName: null, ringUnavailable: false };
 
   const { settings, ring } = policyLocal;
   const ringId = ring.valid ? ring.ringId : null;
   if (!ring.valid) {
-    // missing / legacy / config-policy uuid: not the `null` no-ring case.
+    // missing / legacy / config-policy uuid / disabled: not the `null` no-ring case.
     return {
       config: { ...NO_POLICY_CONFIG, sources: settings.sources, ringAppRules: [], ringReferenceInvalid: true },
       ringName: null,
+      ringUnavailable: ring.classification === 'disabled_ring',
     };
   }
   const config: ApprovalEvaluationConfig = {
@@ -571,10 +590,11 @@ export async function resolveDevicePatchEvaluation(
       return {
         config: { ...NO_POLICY_CONFIG, sources: config.sources, ringAppRules: [], ringReferenceInvalid: true },
         ringName: null,
+        ringUnavailable: true,
       };
     }
   }
-  return { config, ringName: ringId ? ring.ringName : null };
+  return { config, ringName: ringId ? ring.ringName : null, ringUnavailable: false };
 }
 
 /**

@@ -26,6 +26,13 @@ import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
  *   acts only on an intent naming this device as its source, and writes
  *   nothing to any device row. (`rebind-confirm` authenticates outside
  *   agentAuthMiddleware, with its confirm-only token.)
+ * - `attestation/challenge`, `attestation/complete` (#8318 wave T2): the TPM
+ *   key proof that lets a parked SOURCE carry `tpm_continuity` evidence. They
+ *   write only this device's own device_hardware tpm_* columns (and audit),
+ *   under its own row lock; the challenge is rate-limited per device. Note the
+ *   exposure: a leaked deploy key enrolls parked devices that may now also
+ *   plant a key baseline. A planted (software) key matches no existing
+ *   record's baseline, so it gains no continuity; §9.3.
  *
  * Certificate renewal (`/renew-cert*`, routes/agents/mtls.ts) authenticates
  * outside agentAuthMiddleware by design (AGENT_AUTH_SKIP_ID_SEGMENTS) and is
@@ -44,6 +51,13 @@ export const PARKED_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   'rebind',
 ]);
 
+/** Two-segment actions a parked device may call, matched exactly (both segments). */
+export const PARKED_ALLOWED_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [string, string]> = [
+  ['rotate-token', 'confirm'],
+  ['attestation', 'challenge'],
+  ['attestation', 'complete'],
+];
+
 /** The deny body every refused route returns for a parked device. */
 export const PARKED_DEVICE_REFUSAL = { error: 'device_pending_assignment' } as const;
 
@@ -55,11 +69,12 @@ export function isParkedAllowedAgentPath(pathSegments: string[], agentId: string
   ) {
     return true;
   }
-  // /api/v1/agents/<agentId>/rotate-token/confirm
+  // /api/v1/agents/<agentId>/rotate-token/confirm,
+  // /api/v1/agents/<agentId>/attestation/{challenge,complete}
   if (
     isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 2)
-    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'rotate-token'
-    && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === 'confirm'
+    && PARKED_ALLOWED_TWO_SEGMENT_ACTIONS.some(([first, second]) =>
+      pathSegments[CORE_AGENT_ACTION_INDEX] === first && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === second)
   ) {
     return true;
   }

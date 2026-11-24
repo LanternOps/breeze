@@ -81,6 +81,37 @@ export type Alert = AlertSubjectFields & {
   aiVerdict?: AlertAiVerdictSummaryDto | null;
 };
 
+/**
+ * Filter + page state of a server-filtered list (#12324). `status` and
+ * `deviceId` use 'all' for no filter, `dateRange` is 'all' | '1h' | '24h' |
+ * '7d' | '30d', `page` is 1-based.
+ */
+export type AlertListQuery = {
+  search: string;
+  status: string;
+  severity: AlertSeverity[];
+  deviceId: string;
+  dateRange: string;
+  page: number;
+};
+
+export const DEFAULT_ALERT_LIST_QUERY: AlertListQuery = {
+  search: '',
+  status: 'all',
+  severity: [],
+  deviceId: 'all',
+  dateRange: 'all',
+  page: 1,
+};
+
+export type AlertListServerMode = {
+  query: AlertListQuery;
+  /** Takes an updater so several changes in one handler compose. */
+  onQueryChange: (update: (prev: AlertListQuery) => AlertListQuery) => void;
+  /** Matching alerts across every page (`pagination.total`). */
+  total: number;
+};
+
 type AlertListProps = {
   alerts: Alert[];
   devices?: { id: string; name: string }[];
@@ -110,6 +141,15 @@ type AlertListProps = {
   initialStatus?: AlertStatus;
   /** Seed for the multi-value severity filter (from the `#severity=a,b` hash). */
   initialSeverity?: AlertSeverity[];
+  /**
+   * Server-filtered mode (#12324, the Alerts page). The caller owns the
+   * filters and page in `server.query`, fetches with them, and passes in one
+   * already-filtered page as `alerts`; this component then neither filters
+   * nor slices. Without it (correlated groups, previews) every filter stays
+   * client-side over `alerts`. `initialStatus`/`initialSeverity` are ignored
+   * here — the caller seeds `server.query`.
+   */
+  server?: AlertListServerMode;
 };
 
 export default function AlertList({
@@ -129,12 +169,13 @@ export default function AlertList({
   hideAiNoise = false,
   onHideAiNoiseChange,
   initialStatus,
-  initialSeverity
+  initialSeverity,
+  server
 }: AlertListProps) {
   const { t } = useTranslation('alerts');
-  const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>(initialStatus ?? 'all');
-  const [severityFilter, setSeverityFilter] = useState<AlertSeverity[]>(initialSeverity ?? []);
+  const [localQuery, setLocalQuery] = useState('');
+  const [localStatusFilter, setLocalStatusFilter] = useState<string>(initialStatus ?? 'all');
+  const [localSeverityFilter, setLocalSeverityFilter] = useState<AlertSeverity[]>(initialSeverity ?? []);
   // Re-seed when the hash changes after mount (client-side navigation).
   const initialSeverityKey = (initialSeverity ?? []).join(',');
   const firstSeed = useRef(true);
@@ -143,13 +184,37 @@ export default function AlertList({
       firstSeed.current = false;
       return;
     }
+    if (server) return;
     setStatusFilter(initialStatus ?? 'all');
     setSeverityFilter(initialSeverityKey ? (initialSeverityKey.split(',') as AlertSeverity[]) : []);
     setCurrentPage(1);
   }, [initialStatus, initialSeverityKey]);
-  const [deviceFilter, setDeviceFilter] = useState<string>('all');
-  const [dateRangeFilter, setDateRangeFilter] = useState<string>('all');
-  const [currentPage, setCurrentPage] = useState(1);
+  const [localDeviceFilter, setLocalDeviceFilter] = useState<string>('all');
+  const [localDateRangeFilter, setLocalDateRangeFilter] = useState<string>('all');
+  const [localCurrentPage, setLocalCurrentPage] = useState(1);
+
+  // In server mode every filter reads from and writes to `server.query`.
+  // Writes go through the caller's updater so a filter change followed by
+  // `setCurrentPage(1)` in the same handler composes instead of the second
+  // write clobbering the first.
+  const query = server ? server.query.search : localQuery;
+  const statusFilter = server ? server.query.status : localStatusFilter;
+  const severityFilter = server ? server.query.severity : localSeverityFilter;
+  const deviceFilter = server ? server.query.deviceId : localDeviceFilter;
+  const dateRangeFilter = server ? server.query.dateRange : localDateRangeFilter;
+  const currentPage = server ? server.query.page : localCurrentPage;
+  const patchServerQuery = (patch: (prev: AlertListQuery) => Partial<AlertListQuery>) =>
+    server?.onQueryChange(prev => ({ ...prev, ...patch(prev) }));
+  const setQuery = (value: string) => server ? patchServerQuery(() => ({ search: value })) : setLocalQuery(value);
+  const setStatusFilter = (value: string) => server ? patchServerQuery(() => ({ status: value })) : setLocalStatusFilter(value);
+  const setSeverityFilter = (value: AlertSeverity[] | ((prev: AlertSeverity[]) => AlertSeverity[])) => server
+    ? patchServerQuery(prev => ({ severity: typeof value === 'function' ? value(prev.severity) : value }))
+    : setLocalSeverityFilter(value);
+  const setDeviceFilter = (value: string) => server ? patchServerQuery(() => ({ deviceId: value })) : setLocalDeviceFilter(value);
+  const setDateRangeFilter = (value: string) => server ? patchServerQuery(() => ({ dateRange: value })) : setLocalDateRangeFilter(value);
+  const setCurrentPage = (value: number | ((prev: number) => number)) => server
+    ? patchServerQuery(prev => ({ page: typeof value === 'function' ? value(prev.page) : value }))
+    : setLocalCurrentPage(value);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const { can } = usePermissions();
   // UX gate only — mirrors requirePermission on the /alerts/:id/* routes.
@@ -165,6 +230,8 @@ export default function AlertList({
     (hideAiNoise ? 1 : 0);
 
   const filteredAlerts = useMemo(() => {
+    // Server mode: `alerts` is already the filtered page.
+    if (server) return alerts;
     const normalizedQuery = query.trim().toLowerCase();
 
     return alerts.filter(alert => {
@@ -205,16 +272,17 @@ export default function AlertList({
 
       return matchesQuery && matchesStatus && matchesSeverity && matchesDevice && matchesDateRange;
     });
-  }, [alerts, query, statusFilter, severityFilter, deviceFilter, dateRangeFilter]);
+  }, [alerts, server, query, statusFilter, severityFilter, deviceFilter, dateRangeFilter]);
 
   useEffect(() => {
     setSelectedIds(previous => new Set([...previous].filter(id => !actionsBlocked && filteredAlerts.some(a => a.id === id))));
     if (actionsBlocked) setBulkMenuOpen(false);
   }, [actionsBlocked, filteredAlerts]);
 
-  const totalPages = Math.ceil(filteredAlerts.length / pageSize);
+  const matchingCount = server ? server.total : filteredAlerts.length;
+  const totalPages = Math.ceil(matchingCount / pageSize);
   const startIndex = (currentPage - 1) * pageSize;
-  const paginatedAlerts = filteredAlerts.slice(startIndex, startIndex + pageSize);
+  const paginatedAlerts = server ? filteredAlerts : filteredAlerts.slice(startIndex, startIndex + pageSize);
 
   const handleSelectAll = (checked: boolean) => {
     if (actionsBlocked) return;
@@ -259,6 +327,16 @@ export default function AlertList({
   const someSelected = paginatedAlerts.some(a => selectedIds.has(a.id));
 
   const availableDevices = useMemo(() => {
+    if (server) {
+      // The loaded page holds only the matching alerts, so deriving the list
+      // from it alone would shrink it to the selected device. Start from the
+      // caller's device list and add any device seen on the page.
+      const deviceMap = new Map(devices.map(d => [d.id, d.name]));
+      alerts.forEach(a => {
+        if (isDeviceAlert(a) && !deviceMap.has(a.deviceId)) deviceMap.set(a.deviceId, a.deviceName);
+      });
+      return Array.from(deviceMap.entries()).map(([id, name]) => ({ id, name }));
+    }
     if (!alerts.some(isDeviceAlert)) return [];
     if (devices.length > 0) return devices;
     const deviceMap = new Map<string, string>();
@@ -268,7 +346,7 @@ export default function AlertList({
       }
     });
     return Array.from(deviceMap.entries()).map(([id, name]) => ({ id, name }));
-  }, [alerts, devices]);
+  }, [alerts, devices, server]);
 
   return (
     <div className="rounded-lg border bg-card shadow-xs">
@@ -308,11 +386,13 @@ export default function AlertList({
         </button>
         <span
           data-testid="alert-list-count"
-          data-filtered={filteredAlerts.length}
-          data-total={alerts.length}
+          data-filtered={server ? alerts.length : filteredAlerts.length}
+          data-total={server ? server.total : alerts.length}
           className="text-xs text-muted-foreground whitespace-nowrap"
         >
-          {filteredAlerts.length} {t('alertList.of')} {alerts.length}
+          {server
+            ? <>{alerts.length} {t('alertList.of')} {server.total}</>
+            : <>{filteredAlerts.length} {t('alertList.of')} {alerts.length}</>}
         </span>
       </div>
 
@@ -777,14 +857,15 @@ export default function AlertList({
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t px-4 py-3">
           <p className="text-sm text-muted-foreground">
-            {startIndex + 1}–{Math.min(startIndex + pageSize, filteredAlerts.length)} {t('alertList.of')}{' '}
-            {filteredAlerts.length}
+            {startIndex + 1}–{Math.min(startIndex + pageSize, matchingCount)} {t('alertList.of')}{' '}
+            {matchingCount}
           </p>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
+              aria-label={t('common:actions.previousPage')}
               className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -795,7 +876,8 @@ export default function AlertList({
             <button
               type="button"
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
+              disabled={currentPage >= totalPages}
+              aria-label={t('common:actions.nextPage')}
               className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronRight className="h-4 w-4" />

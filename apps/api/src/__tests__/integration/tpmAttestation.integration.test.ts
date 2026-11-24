@@ -111,6 +111,36 @@ async function auditActions(deviceId: string) {
 
 type Fx = Awaited<ReturnType<typeof seed>>;
 
+/** The backend pid of a transaction, so lock waits can be traced back to it. */
+async function backendPid(tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> }): Promise<number> {
+  const rows = (await tx.execute(sql`SELECT pg_backend_pid()::int AS pid`)) as unknown as Array<{ pid: number }>;
+  return rows[0]!.pid;
+}
+
+/** Wait until `n` backends are blocked, directly or in a queue, behind `holderPid`. */
+async function untilBlockedBehind(holderPid: number, n: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const rows = (await getTestDb().execute(
+      sql`SELECT pid, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE wait_event_type = 'Lock'`,
+    )) as unknown as Array<{ pid: number; blockers: number[] }>;
+    const behind = new Set<number>([holderPid]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const row of rows) {
+        if (!behind.has(row.pid) && row.blockers.some((b) => behind.has(b))) {
+          behind.add(row.pid);
+          grew = true;
+        }
+      }
+    }
+    if (behind.size - 1 >= n) return;
+    if (Date.now() > deadline) throw new Error(`fewer than ${n} completion(s) ever blocked behind backend ${holderPid}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 async function attest(fx: Fx, v: Vector) {
   const issued = await issueAttestationChallenge(fx.agent, { ekPublic: v.ekPublic, akPublic: v.akPublic });
   const result = await complete(fx, issued.challengeId, activate(v, issued));
@@ -167,10 +197,36 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
     const issuedB = await issueAttestationChallenge(fx.agent, { ekPublic: b.ekPublic, akPublic: b.akPublic });
     expect(await hardwareRow(fx.device.id)).toBeUndefined();
 
-    const results = await Promise.all([
+    // Barrier: hold the device row so both completions are queued on it
+    // before either reads device_hardware. Without the barrier they could run
+    // one after the other and pass even with no row lock (a FOR SHARE lets
+    // both through together, and both would record).
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let holderPid!: number;
+    let ready!: () => void;
+    const holding = new Promise<void>((resolve) => { ready = resolve; });
+    const holder = getTestDb().transaction(async (tx) => {
+      holderPid = await backendPid(tx);
+      await tx.execute(sql`SELECT 1 FROM devices WHERE id = ${fx.device.id} FOR NO KEY UPDATE`);
+      ready();
+      await released;
+    });
+    await Promise.race([holding, holder]);
+    const racing = Promise.all([
       complete(fx, issuedA.challengeId, activate(a, issuedA)),
       complete(fx, issuedB.challengeId, activate(b, issuedB)),
     ]);
+    try {
+      await untilBlockedBehind(holderPid, 2);
+    } finally {
+      release();
+      // Settle both before leaving, even when the wait throws, so no
+      // completion is left running against the fixture.
+      await Promise.allSettled([holder, racing]);
+    }
+    await holder;
+    const results = await racing;
     const outcomes = results.map((r) => (typeof r === 'object' ? r.outcome : r));
     expect([...outcomes].sort()).toEqual(['mismatch', 'recorded']);
     const winner = outcomes[0] === 'recorded' ? a : b;
