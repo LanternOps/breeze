@@ -8,6 +8,8 @@ import {
 import { type FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import TimezoneSelect from '../../shared/TimezoneSelect';
 import '@/lib/i18n';
 function readSettings(value: unknown) {
@@ -20,7 +22,6 @@ export default function TimeSyncTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
 }: FeatureTabProps) {
   const { t } = useTranslation('devices');
@@ -53,6 +54,7 @@ export default function TimeSyncTab({
     timezone: { expected, pinnedTimezone: pin || null, autoFix },
   });
   const inherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(inherited);
   const persist = async (id: string | null) => {
     if (!parsed.success) return;
     clearError();
@@ -90,12 +92,9 @@ export default function TimeSyncTab({
       saveDisabled={!parsed.success}
       error={error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
-      onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={
-        !inherited && !!linkedPolicyId && !!existingLink ? discard : undefined
-      }
+      {...change.shellProps}
     >
       <p className="mb-4 text-sm text-muted-foreground">
         {t('timeSync.management.domainRule')}
@@ -103,7 +102,7 @@ export default function TimeSyncTab({
       <p className="mb-4 text-sm text-muted-foreground">
         {t('timeSync.management.gpoWins')}
       </p>
-      <fieldset disabled={inherited || saving} className="space-y-4">
+      <fieldset disabled={change.locked || saving} className="space-y-4">
         <label className="flex items-center gap-2">
           <input
             data-testid="time-sync-enforce-ntp"

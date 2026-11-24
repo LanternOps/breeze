@@ -16,6 +16,8 @@ describe('isParkedAllowedAgentPath', () => {
     `/api/v1/agents/${AGENT}/commands`,
     `/api/v1/agents/${AGENT}/commands/${CMD}/result`,
     `/api/v1/agents/${AGENT}/uninstall-intent`,
+    `/api/v1/agents/${AGENT}/attestation/challenge`,
+    `/api/v1/agents/${AGENT}/attestation/complete`,
   ];
 
   it.each(allowed)('admits %s', (path) => {
@@ -36,6 +38,12 @@ describe('isParkedAllowedAgentPath', () => {
     `/api/v1/agents/${AGENT}/rotate-token/extra`,
     `/api/v1/agents/${AGENT}/heartbeat/extra`,
     `/api/v1/agents/${AGENT}/uninstall-intent/extra`,
+    `/api/v1/agents/${AGENT}/attestation`,
+    `/api/v1/agents/${AGENT}/attestation/other`,
+    `/api/v1/agents/${AGENT}/attestation/challenge/extra`,
+    `/api/v1/agents/${AGENT}/rotate-token/challenge`,
+    `/api/v1/agents/${AGENT}/attestation/confirm`,
+    `/api/v1/agents/agent-B/attestation/complete`,
     `/api/v1/agents/${AGENT}`,
     `/api/v1/agents/agent-B/heartbeat`,
     `/api/v1/agents/agent-B/commands/${CMD}/result`,

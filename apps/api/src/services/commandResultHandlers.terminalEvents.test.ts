@@ -100,6 +100,23 @@ describe('script result → public terminal events (#7277)', () => {
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', exitCode: 2 }));
   });
 
+  // #12325 — pins the row a script monitor's evaluator has to interpret: an
+  // agent reports a plain non-zero exit as status 'failed' with the real code
+  // and no error, and it is persisted as 'failed' + that code + no error
+  // message. scriptMonitor.ts (alertConditions/handlers) reads exactly that.
+  it("persists an agent's plain non-zero exit as failed with the real exit code and no error", async () => {
+    const primary = updateReturning([executionRow]);
+    updateMock
+      .mockReturnValueOnce(updateReturning([])) // cancel-unconfirmed CAS
+      .mockReturnValueOnce(primary); // primary CAS
+    await commandResultHandlers.script!(scriptInput({ status: 'failed', exitCode: 1 }));
+    expect(primary.set).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      exitCode: 1,
+      errorMessage: null,
+    }));
+  });
+
   it('a timeout is emitted as timeout (published as script.failed)', async () => {
     updateMock
       .mockReturnValueOnce(updateReturning([])) // cancel-unconfirmed CAS

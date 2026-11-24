@@ -666,6 +666,7 @@ commandsRoutes.post(
             status: normalizedData.status,
             stdout,
             error: normalizedData.error,
+            errorCode: normalizedData.errorCode,
           });
         }
 

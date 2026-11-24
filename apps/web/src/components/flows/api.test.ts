@@ -149,6 +149,7 @@ describe('error toasts: friendly copy and no double-reporting', () => {
     [409, 'version_conflict'],
     [409, 'already_enabled'],
     [409, 'slug_unavailable'],
+    [409, 'flow_conversion_not_switched'],
     [422, 'permission_missing'],
     [422, 'invalid'],
     [422, 'pre_approval_not_eligible'],
@@ -158,6 +159,15 @@ describe('error toasts: friendly copy and no double-reporting', () => {
     mocks.fetchWithAuth.mockResolvedValue(json(status, { error: code }));
     await expect(enableFlow('f1', { expectedVersion: 1, preApprovedStepIds: [] })).rejects.toBeInstanceOf(ActionError);
     expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('delete MFA_REQUIRED toasts the localized MFA sentence, never the raw code (#12498 follow-up)', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(403, { error: 'MFA required', code: 'MFA_REQUIRED' }));
+    await expect(deleteFlowDraft('f1', 1)).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+    const arg = mocks.showToast.mock.calls[0]![0] as { message: string };
+    expect(arg.message).not.toContain('MFA_REQUIRED');
+    expect(arg.message.toLowerCase()).toContain('multi-factor');
   });
 
   it('enable MFA_REQUIRED (rides code) is not toasted; an unmapped enable error still is', async () => {

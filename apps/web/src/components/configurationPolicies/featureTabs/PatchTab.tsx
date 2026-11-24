@@ -1,15 +1,21 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { PackageCheck, Loader2, Plus, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
+import { useFeatureReadOnly } from "./featureEditing";
+import FeatureDirtyBridge from "./FeatureDirtyBridge";
 import RebootPromptPreview from "./RebootPromptPreview";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
+import { useRegisterDirtyForm } from "@/lib/keyboard/useRegisterDirtyForm";
 import UpdateRingForm, {
+  DiscardRingChangesDialog,
   type UpdateRingFormValues,
 } from "../../patches/UpdateRingForm";
 import type { UpdateRingItem as UpdateRing } from "../../patches/UpdateRingList";
@@ -232,7 +238,6 @@ export default function PatchTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -241,7 +246,11 @@ export default function PatchTab({
   const offlineBehaviorOptions = createOfflineBehaviorOptions();
   const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  const readOnly = useFeatureReadOnly();
+  // The shell's markDirty, reached through a child bridge (see FeatureDirtyBridge).
+  const markDirtyRef = useRef<() => void>(() => {});
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [selectedRingId, setSelectedRingId] = useState<string>(
     () => effectiveLink?.featurePolicyId ?? "",
@@ -265,6 +274,15 @@ export default function PatchTab({
   );
   const [ringSubmitting, setRingSubmitting] = useState(false);
   const [ringEditorError, setRingEditorError] = useState<string>();
+  // #12305: the form holds unsaved input, so a stray click outside the dialog
+  // is ignored and every other way out asks first.
+  const [ringEditorDirty, setRingEditorDirty] = useState(false);
+  const [confirmDiscardRing, setConfirmDiscardRing] = useState(false);
+  useRegisterDirtyForm(ringEditorOpen && ringEditorDirty);
+  const requestCloseRingEditor = () => {
+    if (ringEditorDirty) setConfirmDiscardRing(true);
+    else setRingEditorOpen(false);
+  };
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
     setRingsError(undefined);
@@ -387,26 +405,6 @@ export default function PatchTab({
       onLinkChanged(null, "patch");
     }
   };
-  const handleOverride = async () => {
-    clearError();
-    const validation = validateBeforeSave();
-    setValidationError(validation ?? undefined);
-    if (validation !== null) return;
-    const result = await save(null, {
-      featureType: "patch",
-      featurePolicyId: selectedRingId || null,
-      inlineSettings: settings,
-    }, { successMessage: null });
-    if (result) {
-      showToast({
-        message: i18n.t(
-          "policies:configurationPolicies.featureTabs.patchTab.patchSettingsOverridden",
-        ),
-        type: "success",
-      });
-      onLinkChanged(result, "patch");
-    }
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id, { successMessage: null });
@@ -480,7 +478,12 @@ export default function PatchTab({
         // response body is optional for our purposes
       }
       await fetchRings();
-      if (!editing && createdId) setSelectedRingId(createdId);
+      if (!editing && createdId) {
+        setSelectedRingId(createdId);
+        // Choosing the new ring changes this feature's form; no click or input
+        // event in the page body says so (the editor is a portaled dialog).
+        markDirtyRef.current();
+      }
       setRingEditorOpen(false);
     } catch (err) {
       setRingEditorError(
@@ -499,15 +502,11 @@ export default function PatchTab({
       saving={saving}
       error={validationError ?? error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
+      {...change.shellProps}
     >
+      <FeatureDirtyBridge markDirtyRef={markDirtyRef} />
       {/* Approval Ring */}
       <div>
         <h3 className="text-sm font-semibold">
@@ -558,10 +557,11 @@ export default function PatchTab({
                 </option>
               ))}
             </select>
-            {selectedRing && (
+            {selectedRing && !readOnly && (
               <button
                 type="button"
                 onClick={openEditRing}
+                aria-haspopup="dialog"
                 data-testid="patch-edit-ring"
                 className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
               >
@@ -569,9 +569,11 @@ export default function PatchTab({
                 {i18n.t("common:actions.edit")}
               </button>
             )}
+            {!readOnly && (
             <button
               type="button"
               onClick={openCreateRing}
+              aria-haspopup="dialog"
               data-testid="patch-new-ring"
               className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
             >
@@ -580,6 +582,7 @@ export default function PatchTab({
                 "policies:configurationPolicies.featureTabs.patchTab.newRing",
               )}
             </button>
+            )}
           </div>
         )}
         {selectedRing && (
@@ -1196,7 +1199,8 @@ export default function PatchTab({
       {/* Inline ring editor */}
       <Dialog
         open={ringEditorOpen}
-        onClose={() => setRingEditorOpen(false)}
+        onClose={requestCloseRingEditor}
+        dismissOnBackdrop={!ringEditorDirty}
         title={
           ringEditorMode === "edit"
             ? i18n.t(
@@ -1223,7 +1227,7 @@ export default function PatchTab({
           <button
             type="button"
             aria-label={i18n.t("common:actions.close")}
-            onClick={() => setRingEditorOpen(false)}
+            onClick={requestCloseRingEditor}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             {i18n.t(
@@ -1243,7 +1247,8 @@ export default function PatchTab({
             }
             onSubmit={handleRingEditorSubmit}
             existingRingOrders={rings.map((ring) => ring.ringOrder)}
-            onCancel={() => setRingEditorOpen(false)}
+            onCancel={requestCloseRingEditor}
+            onDirtyChange={setRingEditorDirty}
             loading={ringSubmitting}
             submitLabel={
               ringEditorMode === "edit"
@@ -1282,6 +1287,14 @@ export default function PatchTab({
           />
         </div>
       </Dialog>
+      <DiscardRingChangesDialog
+        open={confirmDiscardRing}
+        onClose={() => setConfirmDiscardRing(false)}
+        onConfirm={() => {
+          setConfirmDiscardRing(false);
+          setRingEditorOpen(false);
+        }}
+      />
     </FeatureTabShell>
   );
 }

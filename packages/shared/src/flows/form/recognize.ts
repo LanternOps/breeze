@@ -13,9 +13,10 @@ export type FlowFormRecognition =
  * same document (both normalized with the schema, so omitted defaults do not
  * matter and key order does not matter). Anything the form cannot rebuild
  * exactly (a custom timeout, `limits`, `notices`, a hand-written `when`, a
- * per-device converted notice, an `ai` or `http_request` step) therefore opens
- * read-only, with the Document tab as the edit surface: saving from the form
- * can never drop a field.
+ * converted notification action sent per device, an `ai` or `http_request`
+ * step) therefore opens read-only, with the Document tab as the edit surface:
+ * saving from the form can never drop a field. Both on-failure notice shapes
+ * (the converter's per-device one and the editor's summary) are form-shaped.
  */
 export function recognizeFlowForm(doc: unknown): FlowFormRecognition {
   const normalized = normalizeFlowDocument(doc);

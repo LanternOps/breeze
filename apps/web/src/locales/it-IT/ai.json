@@ -537,6 +537,8 @@
     "createTicket": "Crea ticket"
   },
   "scriptProposal": {
+    "unavailable": "Questa proposta non è più disponibile. Potrebbe essere stata decisa, essere scaduta o appartenere a un’altra organizzazione.",
+    "loadFailed": "Impossibile caricare questa proposta. Riprova tra un momento.",
     "title": "Script creato dall'IA",
     "goal": "Obiettivo",
     "expectedEffect": "Effetto previsto",

@@ -148,7 +148,16 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const { flow, validation } = state;
   const { definition } = flow;
   const canWrite = can('automations', 'write');
-  const canEnable = canWrite && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
+  // The server refuses enable while the flow shadows a Job (the Job's Switch
+  // is what takes it live), so offer no Enable then. A switched or reverted
+  // conversion enables normally.
+  // A moved flow's description ends with the generated "Moved from Job X"
+  // line; the link below says it, so drop the duplicate.
+  const description = flow.convertedFrom
+    ? flow.description?.replace(/(?:^|\n+)Moved from Job [^\n]*$/, '').trim() ?? null
+    : flow.description;
+  const shadowing = flow.convertedFrom?.state === 'shadow' ? flow.convertedFrom : null;
+  const canEnable = canWrite && shadowing === null && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
   const canDisable = canWrite && (flow.status === 'enabled' || flow.status === 'paused');
   const canRun = canWrite && flow.status === 'enabled' && definition.trigger.type === 'manual';
   // A partner-wide flow is edited or deleted only by a partner/system viewer
@@ -181,7 +190,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
 
       <header className="space-y-1">
         <h1 className="text-xl font-semibold" data-testid="flow-name">{flow.name}</h1>
-        {flow.description && <p className="max-w-2xl text-sm text-muted-foreground">{flow.description}</p>}
+        {description && <p className="max-w-2xl whitespace-pre-line text-sm text-muted-foreground">{description}</p>}
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span className="font-mono">{flow.slug}</span>
           <span className="rounded bg-muted px-1.5 py-0.5" data-testid="flow-status">{t(/* i18n-dynamic */ `status.${flow.status}`)}</span>
@@ -200,6 +209,14 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
             {flow.convertedFrom.state === 'reverted' && (
               <span className="ml-2 text-xs" data-testid="flow-moved-from-reverted">{t('detail.movedFromJobReverted')}</span>
             )}
+          </p>
+        )}
+        {shadowing && (
+          <p className="text-sm text-muted-foreground" data-testid="flow-shadowing-notice">
+            {t('detail.shadowingNotice', { name: shadowing.name })}{' '}
+            <a href={`/jobs#convert-${shadowing.automationId}`} className="font-medium text-primary hover:underline">
+              {t('detail.shadowingLink')}
+            </a>
           </p>
         )}
         {flow.status === 'paused' && flow.pausedReason && (

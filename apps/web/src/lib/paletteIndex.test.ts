@@ -28,6 +28,17 @@ describe('searchNavPages (#12210)', () => {
     }
   });
 
+  it('finds the Jobs tab for "job" / "jobs", landing on /jobs with Flows on or off (#12498)', () => {
+    for (const q of ['jobs', 'job']) {
+      expect(hrefs(q), q).toContain('/jobs');
+      expect(hrefs(q, ctx({ flowsEnabled: false })), q).toContain('/jobs');
+    }
+  });
+
+  it('a partial "jo" does not hijack Automations to /jobs when Flows is on', () => {
+    expect(hrefs('jo')).not.toContain('/jobs');
+  });
+
   it('finds Automations at /flows when Flows is on and /jobs when it is off', () => {
     expect(hrefs('automations')).toContain('/flows');
     expect(hrefs('automations')).not.toContain('/jobs');

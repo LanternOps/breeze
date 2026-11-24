@@ -860,6 +860,7 @@ sessionRoutes.post(
   requireScope('organization', 'partner', 'system'),
   zValidator('param', sessionIdParamSchema),
   async (c) => {
+    c.header('Cache-Control', 'no-store');
     const auth = c.get('auth');
     const { id: sessionId } = c.req.valid('param');
 

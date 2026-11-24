@@ -51,7 +51,11 @@ export const FORM_CASES: Array<[string, FlowFormValues]> = [
   }],
   ['onFailure notify with two channels over two scripts', {
     name: 'Failure notices', trigger: schedule, target: onGroup, actions: [script, script, notify],
-    onFailure: { mode: 'notify', channelIds: [CHANNEL, CHANNEL_2] },
+    onFailure: { mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'perDevice' },
+  }],
+  ['onFailure summary with two channels over two scripts', {
+    name: 'Failure summary', trigger: schedule, target: onGroup, actions: [script, script, notify],
+    onFailure: { mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'summary' },
   }],
   ['filter target', {
     name: 'Filter', trigger: schedule,

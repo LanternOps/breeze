@@ -246,6 +246,34 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
     expect(deviceQuery).toContain('g.org_id =');
   });
 
+  it('names an MSP-managed policy only when it applies to this organization (#12462 W03a)', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+    await loadDesignEvidence(ORG, { siteId: null });
+    const queries = vi.mocked(db.execute).mock.calls.map(([statement]) =>
+      dialect.sqlToQuery(statement as never).sql.replace(/\s+/g, ' '));
+    const policyQuery = queries.find((query) => query.includes('FROM configuration_policies cp'))!;
+    // The partner-owned branch is ANDed with the D14 applies-to test for this org.
+    expect(policyQuery).toMatch(/cp\.org_id IS NULL AND cp\.partner_id = \$\d+ AND cp\.id IN \(SELECT "configuration_policies"\."id" FROM "configuration_policies" WHERE/);
+    expect(policyQuery).toContain('"rs_a"."config_policy_id" = "configuration_policies"."id"');
+  });
+
+  it("carries only the assignment rows whose target belongs to this organization (Strix, PR #12552)", async () => {
+    rowsFor.push({ match: 'FROM configuration_policies cp', rows: [{ id: uuid(9), name: 'Policy', status: 'active', org_id: null, partner_id: uuid(8) }] });
+    await loadDesignEvidence(ORG, { siteId: null });
+    const assignmentQuery = vi.mocked(db.execute).mock.calls
+      .map(([statement]) => sqlText(statement).replace(/\s+/g, ' '))
+      .find((query) => query.includes('FROM config_policy_assignments a'));
+    expect(assignmentQuery).toBeDefined();
+    // A shared MSP-managed policy's rows in another customer are not read.
+    expect(assignmentQuery).toContain("(a.level = 'partner' AND a.target_id = cp.partner_id)");
+    expect(assignmentQuery).toMatch(/a\.level = 'organization' AND a\.target_id = /);
+    expect(assignmentQuery).toMatch(/a\.level = 'site' AND EXISTS \(SELECT 1 FROM sites s WHERE s\.id = a\.target_id AND s\.org_id = /);
+    expect(assignmentQuery).toMatch(/a\.level = 'device' AND EXISTS \(SELECT 1 FROM devices d WHERE d\.id = a\.target_id AND d\.org_id = /);
+    expect(assignmentQuery).toMatch(/a\.level = 'device_group' AND EXISTS \(SELECT 1 FROM device_groups g WHERE g\.id = a\.target_id AND/);
+    expect(assignmentQuery).toMatch(/FROM device_group_memberships m WHERE m\.group_id = g\.id AND m\.org_id = /);
+  });
+
   it('excludes retired legacy watches and rules from configuration evidence', async () => {
     rowsFor.push({ match: 'FROM configuration_policies cp', rows: [{ id: uuid(9), name: 'Policy', status: 'active', org_id: ORG, partner_id: null }] });
     await loadDesignEvidence(ORG, { siteId: null });

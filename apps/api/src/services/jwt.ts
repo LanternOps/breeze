@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify, errors as joseErrors, type JWTHeaderParameters } from 'jose';
 import { randomUUID } from 'crypto';
 import { isMfaAssuranceSource, type MfaAssuranceSource } from './mfaAssuranceSource';
+import type { ExchangeOrigin } from './exchangeOrigin';
 
 const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
 const ACCESS_TOKEN_EXPIRY = e2eMode ? '24h' : '15m';
@@ -255,6 +256,8 @@ export type ViewerTokenPayload = {
   sessionId: string;
   purpose: 'viewer';
   jti: string;
+  // Informational only, never authorization. Verify sets 'unknown' when the token has no claim.
+  exchangeOrigin?: ExchangeOrigin;
   iat?: number;
   exp?: number;
 } & ViewerTokenAssurance;
@@ -264,6 +267,7 @@ export interface CreateRootViewerAccessTokenInput {
   email: string;
   sessionId: string;
   mfaSatisfied: true;
+  exchangeOrigin?: ExchangeOrigin;
 }
 
 export function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
@@ -364,6 +368,7 @@ export async function createViewerAccessToken(
     purpose: 'viewer',
     mfaSatisfied: true,
     assuranceAbsoluteExpiresAt,
+    exchangeOrigin: payload.exchangeOrigin,
   })
     .setProtectedHeader(buildHeader(kid))
     .setJti(randomUUID())
@@ -428,6 +433,7 @@ export async function createViewerDescendantAccessToken(
     purpose: 'viewer',
     mfaSatisfied: true,
     assuranceAbsoluteExpiresAt,
+    exchangeOrigin: parent.exchangeOrigin,
   })
     .setProtectedHeader(buildHeader(kid))
     .setJti(randomUUID())
@@ -455,12 +461,17 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
       return null;
     }
 
+    const claimedOrigin = payload.exchangeOrigin;
+    const exchangeOrigin: ExchangeOrigin =
+      claimedOrigin === 'browser' || claimedOrigin === 'viewer' ? claimedOrigin : 'unknown';
+
     const base = {
       sub: payload.sub as string,
       email: payload.email as string,
       sessionId: payload.sessionId as string,
       purpose: 'viewer' as const,
       jti: payload.jti,
+      exchangeOrigin,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       exp: typeof payload.exp === 'number' ? payload.exp : undefined,
     };

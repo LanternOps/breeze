@@ -226,7 +226,7 @@ vi.mock('../services/flowValidator', async () => {
   };
 });
 
-import { compileFlowForm, evaluateExpr, isTruthy, parseExpr, type FlowDocumentV1, type FlowScope } from '@breeze/shared';
+import { compileFlowForm, evaluateExpr, isTruthy, parseExpr, renderTemplates, type FlowDocumentV1, type FlowScope } from '@breeze/shared';
 import { processFlowRunJob } from './flowRunner';
 
 const RUN_ID = 'bbbbbbbb-0000-4000-8000-000000000001';
@@ -1432,7 +1432,7 @@ describe('processFlowRunJob — a for-each step whose when is false (#12481)', (
     });
   }
 
-  /** One script action, on-failure Notify to two channels, then a second action — compiled by the form. */
+  /** One script action, on-failure Notify per device (a flow moved from a Job) to two channels, then a second action — compiled by the form. */
   function formDoc(): FlowDocumentV1 {
     return compileFlowForm({
       name: 'Nightly',
@@ -1442,7 +1442,7 @@ describe('processFlowRunJob — a for-each step whose when is false (#12481)', (
         { type: 'run_script', scriptId: SCRIPT_ID, whenOffline: 'queue' },
         { type: 'notify', channelId: CHANNEL_A, title: 'Done', message: 'Cleanup finished', severity: 'info' },
       ],
-      onFailure: { mode: 'notify', channelIds: [CHANNEL_A, CHANNEL_B] },
+      onFailure: { mode: 'notify', channelIds: [CHANNEL_A, CHANNEL_B], notice: 'perDevice' },
     });
   }
 
@@ -1645,5 +1645,135 @@ describe('processFlowRunJob — a for-each step whose when is false (#12481)', (
     expect(ran).toEqual(['after']);
     expect(scopeSeenBy('after').fix).toEqual({ status: 'completed', output: [null, null] });
     expect(h.state.run!.status).toBe('completed');
+  });
+
+  describe("the editor's on-failure summary: one notice per channel per failing script (#12596)", () => {
+    /** Notices sent: [channelId, rendered title, rendered message]. */
+    let notices: Array<[string, string, string]>;
+
+    beforeEach(() => {
+      notices = [];
+    });
+
+    /** Two script actions with on-failure Notify as a summary to two channels — compiled by the form. */
+    function summaryDoc(): FlowDocumentV1 {
+      return compileFlowForm({
+        name: 'Nightly',
+        trigger: { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' },
+        target: { kind: 'target', target: { type: 'groups', groupIds: [GROUP_ID] } },
+        actions: [
+          { type: 'run_script', scriptId: SCRIPT_ID, whenOffline: 'queue' },
+          { type: 'run_script', scriptId: SCRIPT_ID, whenOffline: 'queue' },
+        ],
+        onFailure: { mode: 'notify', channelIds: [CHANNEL_A, CHANNEL_B], notice: 'summary' },
+      });
+    }
+
+    /**
+     * Fleet steps answer from `failed[stepId]` over devices d1–d4. Notify renders
+     * its input with the real template renderer in the unit scope (the executor's
+     * step 2), so the counts asserted are the counts the channel would receive.
+     */
+    function summaryTools(failed: Record<string, string[]>) {
+      const all = ['d1', 'd2', 'd3', 'd4'];
+      whenAware((i) => {
+        if (i.step.tool === 'run_script_on_targets') {
+          const failedIds = failed[i.step.id] ?? [];
+          const succeeded = all.filter((d) => !failedIds.includes(d));
+          return completed({
+            dispatchedDeviceIds: all, succeededDeviceIds: succeeded, failedDeviceIds: failedIds,
+            count: all.length, succeededCount: succeeded.length, failedCount: failedIds.length, warnings: [],
+          });
+        }
+        if (i.step.tool === 'notify') {
+          const r = renderTemplates(i.step.input, i.scope as FlowScope);
+          if (!r.ok) throw new Error(`render failed: ${r.error}`);
+          const input = r.value as { channelId: string; title: string; message: string };
+          notices.push([input.channelId, input.title, input.message]);
+          return completed({ sent: true });
+        }
+        return completed({ from: i.step.id });
+      });
+    }
+
+    it('the compiled form document has the summary shape (guards the fixture)', () => {
+      expect(summaryDoc().steps.map((st) => [st.id, st.tool, st.when !== undefined, st.forEach ?? null])).toEqual([
+        ['a0_run_script', 'run_script_on_targets', false, null],
+        ['a0_failsummary_0', 'notify', true, null],
+        ['a0_failsummary_1', 'notify', true, null],
+        ['a1_run_script', 'run_script_on_targets', false, null],
+        ['a1_failsummary_0', 'notify', true, null],
+        ['a1_failsummary_1', 'notify', true, null],
+      ]);
+    });
+
+    it('a clean run completes and every summary notice is recorded skipped, none sent', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({});
+      await run();
+      expect(h.state.run).toMatchObject({ status: 'completed', errorCode: null, error: null });
+      expect(ran).toEqual(['a0_run_script', 'a1_run_script']);
+      expect(notices).toEqual([]);
+      for (const id of ['a0_failsummary_0', 'a0_failsummary_1', 'a1_failsummary_0', 'a1_failsummary_1']) {
+        expect(rowsOf(id)).toHaveLength(1);
+        expect(stepRow(id)).toMatchObject({ itemIndex: null, status: 'skipped', output: null, errorCode: null, error: null });
+      }
+      expect(h.log).toContain('publish:flow.run.completed');
+    });
+
+    it('a run with failed devices sends exactly one notice per channel for the failing script, with its counts', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d2', 'd3', 'd4'] });
+      await run();
+      expect(h.state.run!.status).toBe('completed');
+      expect(ran).toEqual(['a0_run_script', 'a0_failsummary_0', 'a0_failsummary_1', 'a1_run_script']);
+      const message = 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 1 succeeded, 3 failed.';
+      expect(notices).toEqual([
+        [CHANNEL_A, 'Nightly action failed', message],
+        [CHANNEL_B, 'Nightly action failed', message],
+      ]);
+      for (const id of ['a0_failsummary_0', 'a0_failsummary_1']) {
+        expect(rowsOf(id).map((r) => [r.itemIndex, r.status])).toEqual([[null, 'completed']]);
+      }
+      for (const id of ['a1_failsummary_0', 'a1_failsummary_1']) expect(stepRow(id)).toMatchObject({ status: 'skipped' });
+    });
+
+    it('two failing scripts each send their own summary; the count of notices does not grow with failed devices', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d4'], a1_run_script: ['d1', 'd2'] });
+      await run();
+      expect(h.state.run!.status).toBe('completed');
+      expect(notices.map(([c, , m]) => [c, m])).toEqual([
+        [CHANNEL_A, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 3 succeeded, 1 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 3 succeeded, 1 failed.'],
+        [CHANNEL_A, 'Automation Nightly action 2 could not be sent to every device.\n\nDevices: 2 succeeded, 2 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 2 could not be sent to every device.\n\nDevices: 2 succeeded, 2 failed.'],
+      ]);
+    });
+
+    it('every device failed: one notice per channel says 0 succeeded', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d1', 'd2', 'd3', 'd4'] });
+      await run();
+      expect(notices.map(([c, , m]) => [c, m])).toEqual([
+        [CHANNEL_A, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 0 succeeded, 4 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 0 succeeded, 4 failed.'],
+      ]);
+    });
+
+    it('a notice that cannot be sent does not stop the other channel or the next action (onFailure continue)', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d2'] });
+      const sendAware = h.execute.getMockImplementation()!;
+      h.execute.mockImplementation(async (i: ExecInput) => (i.step.id === 'a0_failsummary_0'
+        ? { kind: 'failed', code: 'step_failed', message: 'channel down', policy: false, renderedInput: {} }
+        : sendAware(i)));
+      await run();
+      expect(stepRow('a0_failsummary_0')).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+      expect(notices.map(([c]) => c)).toEqual([CHANNEL_B]);
+      expect(ran).toContain('a1_run_script');
+      // The engine's continue rule: later steps run, and the run reports the failed step.
+      expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+    });
   });
 });

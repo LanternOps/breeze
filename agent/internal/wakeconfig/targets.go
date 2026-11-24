@@ -4,6 +4,8 @@ package wakeconfig
 // name. A device is firmware-ready only when every target for its vendor is
 // present, its target value is in the model's allowed list, and the current
 // value equals it. The list is compile-time: the server never names a setting.
+// It is also the only source of the names and values a firmware write passes
+// to Adapter.Apply (planFirmwareOps, TestOnlyTargetListNamesReachApply).
 type firmwareTarget struct {
 	Name  string
 	Value string

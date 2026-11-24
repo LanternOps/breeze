@@ -12,7 +12,7 @@
  *    admission path resolves it. `createAndEnqueueAgentRun` re-resolves and
  *    re-checks `enabled` / `mode !== 'off'` at admission time, so the read
  *    here is a fast 404, not the authority.
- *  - A declined admission answers HTTP 200 `{ success: false, skipped }`
+ *  - A declined admission answers HTTP 200 `{ success: false, skipped, code }`
  *    rather than 409: nothing was queued and the caller is told why, in the
  *    exact HTTP-200 failure shape the web's `runAction` detector reads
  *    (apps/web/src/lib/apiError.ts), so "Run now" can never toast "queued"
@@ -78,7 +78,12 @@ patchPlanRoutes.post(
       if (result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
       if (result.code === 'NO_PATCH_AGENT') return c.json({ error: 'no_patch_agent' }, 404);
       audit({ skipped: result.skipped }, result.agentId, false);
-      return c.json({ success: false, skipped: result.skipped }, 200);
+      // #12347: the skip reason rides as `code` as well — `runAction`'s
+      // `friendly` hook is keyed on `body.code`, so without it an open circuit
+      // (`circuit_open`) could only toast the generic "could not start" line.
+      // `skipped` stays for existing readers; every skip reason is lowercase
+      // and none collides with an `errors:<CODE>` catalog key.
+      return c.json({ success: false, skipped: result.skipped, code: result.skipped }, 200);
     }
     // The run row exists but BullMQ never took it (it is already marked
     // failed/enqueue_failed). Not a 202, and no runId: the queue holds nothing

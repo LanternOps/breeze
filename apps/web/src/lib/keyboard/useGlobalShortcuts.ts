@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { navigateTo } from '@/lib/navigation';
 import { useUiStore } from '../../stores/uiStore';
+import { useFeaturesStore } from '../../stores/featuresStore';
+import { navItemHref } from '../navGates';
 import { CREATE_BY_KEY, GO_TO_BY_KEY, type ChordPrefix } from './goToShortcuts';
 import { requestCreate } from './createIntent';
 import {
@@ -84,7 +86,11 @@ export function useGlobalShortcuts(): ChordPrefix | null {
       // navigation here would swap the page and remount it, losing the dialog
       // and the hash filters.
       if (create?.intent && window.location.pathname === create.href) return;
-      void navigateTo(target.href);
+      // `g j` opens wherever the one Automations nav entry opens.
+      const href = target.href === '/jobs'
+        ? navItemHref({ href: '/jobs', hrefWhenFlows: '/flows' }, useFeaturesStore.getState().features.flows)
+        : target.href;
+      void navigateTo(href);
     };
 
     const onKeyDown = (event: KeyboardEvent) => {

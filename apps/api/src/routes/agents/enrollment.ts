@@ -914,6 +914,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             // by the migration-window exemption once that claim is gone.
             editionMigrationDispatchedAt: null,
             uninstallIntentAt: null,
+            // #8318 wave T2: a new install on this row. The TPM key baseline
+            // stays (device_hardware), but a proof the previous install made
+            // is not this one's (services/deviceReattach/evidence.ts).
+            installEnrolledAt: tokenIssuedAt,
             status: 'pending',
             updatedAt: new Date(),
           })

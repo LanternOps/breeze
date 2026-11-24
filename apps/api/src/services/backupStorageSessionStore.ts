@@ -184,7 +184,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
 
   async loadCommand(commandId) {
     const [row] = await db
-      .select({ status: deviceCommands.status, deviceId: deviceCommands.deviceId })
+      .select({ status: deviceCommands.status, deviceId: deviceCommands.deviceId, type: deviceCommands.type })
       .from(deviceCommands)
       .where(eq(deviceCommands.id, commandId))
       .limit(1);

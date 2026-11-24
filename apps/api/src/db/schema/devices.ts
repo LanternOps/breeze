@@ -129,6 +129,12 @@ export const devices = pgTable('devices', {
   // agent's heartbeat instead (#7067).
   lastLogAt: timestamp('last_log_at', { withTimezone: true }),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
+  // #8318 wave T2: when the CURRENT install enrolled. enrolled_at is the row's
+  // first enrollment and never moves; a re-enroll onto this row (the agent
+  // presented the row's own token) sets this. NULL on rows from before the
+  // column (read as enrolled_at). TPM reattach evidence counts only a key
+  // proof made after it (services/deviceReattach/evidence.ts).
+  installEnrolledAt: timestamp('install_enrolled_at', { withTimezone: true }).defaultNow(),
   // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
   // a recovery. recoveredFromSnapshotId is a soft reference to
   // backup_snapshots.id (no FK, like possibleReplacementOfDeviceId above) —

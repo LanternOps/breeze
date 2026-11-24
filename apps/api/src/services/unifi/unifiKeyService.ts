@@ -9,11 +9,13 @@
  * No function here returns, logs or stores a key's ciphertext or plaintext
  * outside `getSyncKeys`, whose result is for building a UniFi client only.
  */
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiIntegrationKeys, unifiIntegrations } from '../../db/schema';
 import { columnAad, UNIFI_KEY_COLUMN_SPEC } from '../encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../secretCrypto';
 import type { DbExecutor } from './unifiConnectionService';
+import type { KeyRunResult } from './unifiSyncService';
 
 export type UnifiKeyStatus = 'pending' | 'connected' | 'reauth_required' | 'error';
 
@@ -228,21 +230,68 @@ export async function getSyncKeys(
   };
 }
 
-export type SingleSyncKey =
-  | { ok: true; baseUrl: string; apiKey: string }
-  | { ok: false; reason: 'no_key' | 'multi_key' | 'decrypt_error' };
+/** How many ENABLED keys the connection holds (D9: several means mapping deletes must be explicit). */
+export async function countEnabledKeys(db: DbExecutor, integrationId: string, partnerId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(unifiIntegrationKeys)
+    .where(and(
+      eq(unifiIntegrationKeys.integrationId, integrationId),
+      eq(unifiIntegrationKeys.partnerId, partnerId),
+      eq(unifiIntegrationKeys.isEnabled, true),
+    ));
+  return Number(row?.n ?? 0);
+}
+
+const MAX_KEY_ERROR = 500;
+const clipError = (text: string | null) => (text === null ? null : text.length > MAX_KEY_ERROR ? `${text.slice(0, MAX_KEY_ERROR - 1)}…` : text);
 
 /**
- * W1 single-key parity for the live reads (`/test`, `/hosts`, the AI `hosts`
- * view): exactly one enabled, readable key, or the reason there is none. A
- * connection with several keys is refused rather than read through one of them,
- * the same rollout guard the worker applies (plan D12). W2 replaces this with a
- * fan-out across every key.
+ * Writes each key's outcome of one sync run onto its row (plan D6). Every write
+ * is conditional on the row still belonging to the connection and on
+ * `last_sync_at` being older than this run's start, so a run that finishes late
+ * never overwrites a newer run's result. A 0-row match (the key was deleted
+ * mid-run, or a newer run already recorded) is skipped, not thrown.
+ *
+ * `keyLast4ById` holds the last four characters of keys whose `key_last4` is
+ * unset (a backfilled key); they are filled only while the column is still NULL.
+ * Nothing here writes or logs a key.
  */
-export function pickSingleSyncKey(creds: { baseUrl: string; keys: UnifiSyncKey[] } | null): SingleSyncKey {
-  if (!creds || creds.keys.length === 0) return { ok: false, reason: 'no_key' };
-  if (creds.keys.length > 1) return { ok: false, reason: 'multi_key' };
-  const key = creds.keys[0]!;
-  if (key.apiKey === null) return { ok: false, reason: 'decrypt_error' };
-  return { ok: true, baseUrl: creds.baseUrl, apiKey: key.apiKey };
+export async function recordKeyResults(
+  db: DbExecutor,
+  a: { integrationId: string; partnerId: string; runStartedAt: Date; results: KeyRunResult[]; keyLast4ById: Map<string, string> },
+): Promise<void> {
+  for (const r of a.results) {
+    const now = new Date();
+    const set: PgUpdateSetSource<typeof unifiIntegrationKeys> = { lastSyncAt: a.runStartedAt, updatedAt: now };
+    if (r.status === 'success') {
+      set.status = 'connected';
+      set.lastSyncStatus = 'success';
+      set.lastSyncError = null;
+      set.lastOkAt = now;
+      if (r.hostsSeen !== null) set.hostsSeen = r.hostsSeen;
+      // A hosts-only run read no sites: keep the last counts and reach snapshot.
+      if (r.sitesSeen !== null) set.sitesSeen = r.sitesSeen;
+      if (r.hostIds !== null) set.lastSeenHostIds = r.hostIds;
+      const last4 = a.keyLast4ById.get(r.keyId);
+      if (last4) set.keyLast4 = sql`coalesce(${unifiIntegrationKeys.keyLast4}, ${last4})`;
+    } else if (r.status === 'failed') {
+      set.status = r.authFailure ? 'reauth_required' : 'error';
+      set.lastSyncStatus = 'failed';
+      set.lastSyncError = clipError(r.error ?? 'UniFi sync failed');
+    } else {
+      set.lastSyncStatus = 'skipped';
+      set.lastSyncError = clipError(r.error);
+    }
+    await db
+      .update(unifiIntegrationKeys)
+      .set(set)
+      .where(and(
+        eq(unifiIntegrationKeys.id, r.keyId),
+        eq(unifiIntegrationKeys.integrationId, a.integrationId),
+        eq(unifiIntegrationKeys.partnerId, a.partnerId),
+        or(isNull(unifiIntegrationKeys.lastSyncAt), lt(unifiIntegrationKeys.lastSyncAt, a.runStartedAt)),
+      ))
+      .returning({ id: unifiIntegrationKeys.id });
+  }
 }

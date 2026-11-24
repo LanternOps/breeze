@@ -875,6 +875,7 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.policyLocal.approvalRing.ringId).toBeNull();
       expect(json.policyLocal.settings.scheduleTime).toBe('02:00');
       expect(json.policyLocal.settings).toBeDefined();
+      expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything(), { access: 'read' });
     });
 
     it('returns 404 when policy not found', async () => {
@@ -918,6 +919,7 @@ describe('configurationPolicies patchJob routes', () => {
       expect(json.policyLocal.approvalRing.ringId).toBeNull();
       expect(json.effective.settings.scheduleTime).toBe('02:00');
       expect(json.effective.approvalRing).toBeDefined();
+      expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything(), { access: 'read' });
       // New keys sourced from the requested policy (it is also the winning one)
       expect(json.isWinning).toBe(true);
       // #8188: the retired policy-level approval keys are not previewed.

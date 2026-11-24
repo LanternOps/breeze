@@ -367,7 +367,7 @@ patchJobRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id: configPolicyId } = c.req.valid('param');
 
-    const policy = await getConfigPolicy(configPolicyId, auth);
+    const policy = await getConfigPolicy(configPolicyId, auth, { access: 'read' });
     if (!policy) {
       return c.json({ error: 'Configuration policy not found' }, 404);
     }
@@ -401,7 +401,7 @@ patchJobRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id: configPolicyId, deviceId } = c.req.valid('param');
 
-    const policy = await getConfigPolicy(configPolicyId, auth);
+    const policy = await getConfigPolicy(configPolicyId, auth, { access: 'read' });
     if (!policy) {
       return c.json({ error: 'Configuration policy not found' }, 404);
     }

@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Abandonner les modifications non enregistrées ?",
+      "message": "Cet anneau contient des modifications non enregistrées. Fermer l’éditeur les abandonne.",
+      "confirm": "Abandonner"
+    },
     "validation": {
       "selectCategory": "Sélectionnez une catégorie",
       "selectSeverity": "Sélectionnez au moins une sévérité pour l’approbation automatique.",

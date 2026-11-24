@@ -2945,7 +2945,8 @@
         "not_found": "non è uno script visibile al proprietario di questo agente",
         "not_in_partner_baseline": "non presente nella baseline del partner",
         "run_script_not_allowed": "\"Esegui uno script\" non è consentito per questo agente"
-      }
+      },
+      "circuitOpen": "L'interruttore automatico di questo agente è scattato per questa organizzazione, quindi non è stata avviata alcuna esecuzione. Reimpostalo dalla riga dell'agente per eseguirlo di nuovo."
     },
     "actions": {
       "add": "Nuovo agente",
@@ -5119,6 +5120,27 @@
           "hint": "Limite di spesa totale al giorno per tutte le esecuzioni di questo agente."
         }
       }
+    },
+    "circuit": {
+      "badge": "Interruttore scattato",
+      "openedSince": "In pausa in {{org}} dal {{at}}.",
+      "opened": "In pausa in {{org}}.",
+      "reason": "Motivo: {{reason}}",
+      "reset": "Reimposta",
+      "dialog": {
+        "title": "Reimpostare l'interruttore automatico?",
+        "message": "{{agent}} tornerà a essere eseguito in {{org}}. Se la causa degli errori non è risolta, si rimetterà in pausa dopo lo stesso numero di errori.",
+        "reasonLabel": "Motivo (salvato nel registro di controllo)",
+        "reasonPlaceholder": "Ad esempio: il gateway del modello è di nuovo attivo",
+        "confirm": "Reimposta interruttore"
+      },
+      "toasts": {
+        "reset": "Interruttore reimpostato. L'agente può essere eseguito di nuovo.",
+        "resetFailed": "Impossibile reimpostare l'interruttore."
+      },
+      "errors": {
+        "mfaRequired": "Per reimpostare l'interruttore serve una sessione con autenticazione a due fattori. Accedi di nuovo con il secondo fattore."
+      }
     }
   },
   "apiKeyForm": {
@@ -5896,7 +5918,8 @@
   "settingsSectionNav": {
     "settingsSection": "Sezione impostazioni",
     "settingsSections": "Sezioni impostazioni",
-    "unsavedChanges": "{{label}} (modifiche non salvate)"
+    "unsavedChanges": "{{label}} (modifiche non salvate)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Il nome del provider è obbligatorio",

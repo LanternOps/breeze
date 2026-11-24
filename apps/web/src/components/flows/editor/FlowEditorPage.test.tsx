@@ -556,3 +556,45 @@ describe('FlowEditorPage', () => {
     expect(await screen.findByTestId('flow-editor-limits')).toHaveTextContent(/500/);
   });
 });
+
+describe('FlowEditorPage: webhook warning in Disable and edit (#12598)', () => {
+  it('warns that re-enabling clears the webhook secret when the trigger is a webhook', async () => {
+    const hook = compileFlowForm({ ...values, trigger: { type: 'webhook', auth: 'hmac' } });
+    api.getFlow.mockResolvedValue({ flow: flow({ status: 'enabled', triggerType: 'webhook' }, hook), validation });
+    render(<FlowEditorPage flowId={ID} />);
+    fireEvent.click(await screen.findByTestId('flow-editor-disable-and-edit'));
+    const note = await screen.findByTestId('flow-editor-disable-webhook-note');
+    expect(note).toHaveTextContent(/clears the webhook secret/i);
+    expect(note).toHaveTextContent(/new secret/i);
+    // The existing message is still there, and nothing was disabled by opening the dialog.
+    expect(screen.getByText(/cancels queued and waiting runs/i)).toBeInTheDocument();
+    expect(api.disableFlow).not.toHaveBeenCalled();
+  });
+
+  it('says nothing about a webhook secret for a flow with any other trigger', async () => {
+    api.getFlow.mockResolvedValue({ flow: flow({ status: 'enabled' }), validation });
+    render(<FlowEditorPage flowId={ID} />);
+    fireEvent.click(await screen.findByTestId('flow-editor-disable-and-edit'));
+    await screen.findByText(/cancels queued and waiting runs/i);
+    expect(screen.queryByTestId('flow-editor-disable-webhook-note')).toBeNull();
+  });
+});
+
+describe('FlowEditorPage: a flow shadowing a job (#12497 part 3)', () => {
+  const converted = (state: 'shadow' | 'switched' | 'reverted') => ({ automationId: 'a1', name: 'Job', conversionId: 'c1', state });
+
+  it('offers Save only and says the flow goes live from the job\'s Switch', async () => {
+    api.getFlow.mockResolvedValue({ flow: flow({ convertedFrom: converted('shadow') }), validation });
+    render(<FlowEditorPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-editor-shadow-line')).toHaveTextContent(/Switch/);
+    expect(screen.getByTestId('flow-editor-save')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-editor-save-enable')).toBeNull();
+  });
+
+  it.each(['switched', 'reverted'] as const)('a %s conversion keeps Save and enable and shows no shadow line', async (state) => {
+    api.getFlow.mockResolvedValue({ flow: flow({ convertedFrom: converted(state) }), validation });
+    render(<FlowEditorPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-editor-save-enable')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-editor-shadow-line')).toBeNull();
+  });
+});

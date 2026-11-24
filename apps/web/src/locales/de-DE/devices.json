@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Verlinkte Richtlinie:",
     "notEnforced": "Nicht durchgesetzt",
     "usingBreezeDefaults": "– Verwendung der Breeze-Standardeinstellungen",
-    "inheritanceChain": "Vererbungskette",
-    "policiesAreResolvedUsingClosestWins": "Richtlinien werden anhand der Priorität der nächsten Gewinne gelöst. Spezifischere Zuweisungen (Geräteebene) haben Vorrang vor umfassenderen Zuweisungen (Organisationsebene).",
+    "inheritanceChain": "Vorrang",
     "priority": "Priorität",
     "level": "Ebene",
     "policy2": "Richtlinie",
     "features": "Funktionen",
-    "inheritedFrom": "Geerbt von {{name}}",
+    "inheritedFrom": "Basiert auf {{name}}",
     "patchApproval": {
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Zusätzliche Ziele während der Isolierung",
       "invalid": "Die Eindämmungseinstellungen dieser Richtlinie sind ungültig. Bei der Isolierung gelten daher die festen Standardwerte ohne zusätzliche Ziele."
     },
-    "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
-    "featureOverriddenBy": "Überschrieben von {{policy}}"
+    "featureOverriddenBy": "Überschrieben von {{policy}}",
+    "viaLevel": "über {{level}}",
+    "managedByYourMsp": "Verwaltet von Ihrem MSP",
+    "precedenceLegend": "Das Spezifischste gewinnt, pro Funktion: Gerät › Gerätegruppe › Standort › Organisation › Alle Organisationen. Eine näher liegende Richtlinie ersetzt die gesamte Funktion; es wird nicht zusammengeführt.",
+    "lostClause": "Für {{features}} ersetzt durch {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "sie ist auf einer spezifischeren Ebene festgelegt",
+      "lower_priority_number": "gleiche Ebene, niedrigere Prioritätszahl",
+      "assigned_earlier": "gleiche Ebene und Priorität, früher zugewiesen"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "Keine Gruppen entsprechen diesem Filter.",
     "managedByPartner": "Von Ihrem Dienstleister verwaltet. Mitgliedschaftsregeln werden nicht angezeigt; Sie sehen die Geräte Ihrer Organisation.",
     "partnerDynamicType": "Dynamisch · Alle Org.",
-    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht."
+    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht.",
+    "policyRefusedForGroup": "Es wurde nichts angewendet. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Das Abrufen des Hardwareinventars ist fehlgeschlagen",
@@ -3249,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "In eine andere Organisation verschieben",
-    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
+    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf und Tickets wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
     "targetOrgLabel": "Zielorganisation",
     "targetOrgPlaceholder": "Organisation auswählen",
     "targetSiteLabel": "Zielstandort",
@@ -3261,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
     "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
     "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "policyAssignmentsHeading": "Konfigurationsrichtlinien, die von diesem Gerät entfernt werden",
+    "policyAssignmentsDetail": "Diese Richtlinien sind diesem Gerät direkt zugewiesen und können in der neuen Organisation nicht gelten. Beim Verschieben werden die Zuweisungen entfernt. Die Richtlinien selbst bleiben unverändert.",
     "stepUpHeading": "Bestätigen Sie Ihre Identität",
     "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
     "stepUpCodeLabel": "Authenticator-Code",

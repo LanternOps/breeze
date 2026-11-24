@@ -95,7 +95,7 @@ test('floor: changes nothing without --pull-request and nothing on a docs path',
   assert.equal(classifyPr(['apps/api/README.md']).integration, 'false');
 });
 test('lint runs this suite', () => {
-  assert.match(job('lint'), /^        run: node --test \.github\/scripts\/ci-pr-selection\.test\.mjs$/mu);
+  assert.match(job('lint'), /^        run: node --test --test-timeout=\d+ \.github\/scripts\/ci-pr-selection\.test\.mjs$/mu);
 });
 
 const trackedFiles = (...patterns) => {
@@ -274,7 +274,7 @@ test('path-read-contracts is gated only on path_readers and asserted outside the
   assert.match(summary, /PATH_READERS_CHANGED: \$\{\{ needs\.changes\.outputs\.path_readers \}\}/u);
   assert.match(summaryScript, triState('PATH_READERS_CHANGED', 'PATH_READ_CONTRACTS_RESULT'));
   assert.ok(summaryScript.indexOf('"${PATH_READERS_CHANGED}"') < summaryScript.indexOf('"${CODE_CHANGED}" != "false"'));
-  assert.match(job('lint'), /run: node --test \.github\/scripts\/run-reader-tests\.test\.mjs/u);
+  assert.match(job('lint'), /run: node --test --test-timeout=\d+ \.github\/scripts\/run-reader-tests\.test\.mjs/u);
 });
 for (const [flag, result, passes] of [
   ['true', 'success', true], ['true', 'failure', false], ['true', 'skipped', false],
@@ -326,7 +326,8 @@ test('agent area: shared and unknown inputs set it (fail open)', () => {
   assert.equal(classifyPr(['packages/shared/src/testing/topology-unifi-v1.json']).agent_code, 'true');
 });
 test('agent area: files the Go tests read set it', () => {
-  for (const path of ['apps/api/src/routes/agents/schemas.ts', 'apps/api/src/routes/agentWs.ts', 'apps/web/public/scripts/uninstall.sh',
+  for (const path of ['apps/api/src/routes/agents/schemas.ts', 'apps/api/src/services/agentCommandResultValidation.ts',
+    'apps/api/src/routes/agentWs.ts', 'apps/web/public/scripts/uninstall.sh',
     'apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts']) {
     assert.equal(classifyPr([path]).agent_code, 'true', path);
   }
