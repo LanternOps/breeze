@@ -1,0 +1,68 @@
+---
+// Overrides Starlight's <Head/> to add JSON-LD structured data.
+// Organization is emitted on every page (same @id as breezermm.com so both hosts
+// describe one entity). Article is emitted on documentation content pages only:
+// not on splash pages (homepage, 404).
+import Default from '@astrojs/starlight/components/Head.astro';
+
+const route = Astro.locals.starlightRoute;
+const { entry, lastUpdated, head } = route;
+
+const ORG_ID = 'https://breezermm.com/#organization';
+const SITE_URL = 'https://breezermm.com';
+const SITE_DESCRIPTION =
+  'Open-source IT platform that comes with the workers. They monitor and patch fleets, resolve tickets, and quote, bill, and invoice the work, under a risk engine you control.';
+
+const organization = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  '@id': ORG_ID,
+  name: 'Breeze RMM',
+  alternateName: 'Breeze',
+  url: SITE_URL,
+  logo: {
+    '@type': 'ImageObject',
+    url: `${SITE_URL}/og-image.png`,
+    width: 1200,
+    height: 630,
+  },
+  image: `${SITE_URL}/og-image.png`,
+  description: SITE_DESCRIPTION,
+  sameAs: [
+    'https://github.com/lanternops/breeze',
+    'https://x.com/lanternopsbreez',
+    'https://discord.gg/8xDCHmqEWj',
+  ],
+  parentOrganization: {
+    '@type': 'Organization',
+    name: 'LanternOps, LLC.',
+    url: 'https://lanternops.io',
+  },
+};
+
+const canonical = head.find((h) => h.tag === 'link' && h.attrs?.rel === 'canonical')?.attrs
+  ?.href as string | undefined;
+
+const isArticle = entry.data.template !== 'splash' && entry.id !== '404' && !!canonical;
+
+const article = isArticle
+  ? {
+      '@context': 'https://schema.org',
+      '@type': 'Article',
+      headline: entry.data.title,
+      ...(entry.data.description ? { description: entry.data.description } : {}),
+      url: canonical,
+      mainEntityOfPage: { '@type': 'WebPage', '@id': canonical },
+      ...(lastUpdated ? { dateModified: lastUpdated.toISOString() } : {}),
+      author: { '@id': ORG_ID },
+      publisher: { '@id': ORG_ID },
+    }
+  : null;
+
+// "<" is escaped so page text can never close the script element.
+const ld = (data: object) => JSON.stringify(data).replace(/</g, '\\u003c');
+---
+
+<Default><slot /></Default>
+<script type="application/ld+json" set:html={ld(organization)} />
+{article && <script type="application/ld+json" set:html={ld(article)} />}
