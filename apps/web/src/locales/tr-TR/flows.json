@@ -918,7 +918,15 @@
       "resolverRequired": "Tüm kuruluşlar için bir akışta, müşteri kuruluşunu belirten gövde alanı gerekir.",
       "resolverNotAllowed": "Bir kuruluşun webhook akışı her zaman o kuruluşta çalışır. Kuruluş aramasını kaldırın.",
       "documentTooLarge": "Belge çok büyük. Bazı eylemleri veya metni kaldırın.",
-      "secretInDocument": "Belge, gizli anahtara benzeyen bir şey içeriyor. Belgeden kaldırın."
+      "secretInDocument": "Belge, gizli anahtara benzeyen bir şey içeriyor. Belgeden kaldırın.",
+      "event": "Bu akışı başlatan olayı seçin.",
+      "eventFilter": "Bir olay filtresi alan adı geçerli değil. Harf, rakam, nokta ve alt çizgi kullanın ve bir harfle başlayın.",
+      "orgResolver": "Kuruluş araması geçerli değil. Gövde alanını body.ad biçiminde, harici bir sistem için de onun adını girin.",
+      "title": "Bu eyleme bir başlık verin (en fazla 200 karakter).",
+      "message": "Bu eylem için bir ileti yazın (en fazla 4000 karakter).",
+      "parameters": "Bir betik parametresi geçerli değil. Her parametreye bir ad verin.",
+      "target": "Bu akışın hangi cihazlarda çalışacağını seçin.",
+      "inputInvalid": "Bu değer geçerli değil. Gösterilen yoldaki alanı kontrol edin."
     },
     "enableOpenFailed": "Taslak kaydedildi, ancak etkinleştirme penceresi açılamadı. Etkinleştirmek için akışı açın."
   }

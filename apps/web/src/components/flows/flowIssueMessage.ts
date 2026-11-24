@@ -24,6 +24,16 @@ export function useDescribeFlowIssue(): (issue: FlowIssue) => { text: string; de
   };
 }
 
+/**
+ * A step input that is missing or empty has no owner yet, so an ownership error on
+ * the same pointer is noise (#12614). A `reference_not_owned` that stands alone, on
+ * its own pointer or with none, is always kept.
+ */
+export function dropShadowedIssues(issues: FlowIssue[]): FlowIssue[] {
+  const invalid = new Set(issues.filter((i) => i.code === 'input_invalid' && i.pointer).map((i) => i.pointer));
+  return issues.filter((i) => !(i.code === 'reference_not_owned' && i.pointer && invalid.has(i.pointer)));
+}
+
 function friendly(t: TFunction, issue: FlowIssue): string {
   const pointer = issue.pointer ?? '';
   switch (issue.code) {
@@ -32,12 +42,20 @@ function friendly(t: TFunction, issue: FlowIssue): string {
       if (pointer === '/steps') return t('flowEditor.validation.steps');
       if (pointer === '/trigger/cron') return t('flowEditor.validation.cron');
       if (pointer === '/trigger/timezone') return t('flowEditor.validation.timezone');
+      if (pointer === '/trigger/event') return t('flowEditor.validation.event');
+      if (pointer.startsWith('/trigger/filter/')) return t('flowEditor.validation.eventFilter');
+      if (pointer === '/trigger/orgResolver' || pointer.startsWith('/trigger/orgResolver/')) return t('flowEditor.validation.orgResolver');
       break;
     case 'input_invalid':
       if (/\/input\/scriptId$/.test(pointer)) return t('flowEditor.validation.script');
       if (/\/input\/channelId$/.test(pointer)) return t('flowEditor.validation.channel');
       if (/\/input\/channelIds$/.test(pointer)) return t('flowEditor.validation.channels');
-      break;
+      if (/\/input\/title$/.test(pointer)) return t('flowEditor.validation.title');
+      if (/\/input\/message$/.test(pointer)) return t('flowEditor.validation.message');
+      if (/\/input\/parameters(\/|$)/.test(pointer)) return t('flowEditor.validation.parameters');
+      if (/\/input\/(target|deviceIds|fromStep)(\/|$)/.test(pointer)) return t('flowEditor.validation.target');
+      // A field with no sentence of its own (a document edited on the Document tab): never the validator's raw text.
+      return t('flowEditor.validation.inputInvalid');
     case 'duplicate_step_id': return t('flowEditor.validation.duplicateStepId');
     case 'unknown_step_reference': return t('flowEditor.validation.unknownStepReference');
     case 'forward_reference': return t('flowEditor.validation.forwardReference');

@@ -918,7 +918,15 @@
       "resolverRequired": "Un flux pour toutes les organisations a besoin du champ du corps qui désigne l'organisation cliente.",
       "resolverNotAllowed": "Le flux webhook d'une organisation s'exécute toujours dans cette organisation. Retirez la recherche d'organisation.",
       "documentTooLarge": "Le document est trop volumineux. Retirez des actions ou du texte.",
-      "secretInDocument": "Le document contient ce qui ressemble à un secret. Retirez-le du document."
+      "secretInDocument": "Le document contient ce qui ressemble à un secret. Retirez-le du document.",
+      "event": "Choisissez l'événement qui démarre ce flux.",
+      "eventFilter": "Le nom d'un champ du filtre d'événement n'est pas valide. Utilisez des lettres, des chiffres, des points et des traits de soulignement, en commençant par une lettre.",
+      "orgResolver": "La recherche de l'organisation n'est pas valide. Indiquez le champ du corps sous la forme body.nom et, pour un système externe, son nom.",
+      "title": "Donnez un titre à cette action (jusqu'à 200 caractères).",
+      "message": "Rédigez un message pour cette action (jusqu'à 4000 caractères).",
+      "parameters": "Un paramètre du script n'est pas valide. Donnez un nom à chaque paramètre.",
+      "target": "Choisissez les appareils sur lesquels ce flux s'exécute.",
+      "inputInvalid": "Cette valeur n'est pas valide. Vérifiez le champ au chemin indiqué."
     },
     "enableOpenFailed": "Le brouillon a été enregistré, mais la boîte de dialogue d'activation n'a pas pu s'ouvrir. Ouvrez le flux pour l'activer."
   }
