@@ -708,6 +708,7 @@ apps/portal/src/styles/tokenPresence.test.ts
 apps/web/src/components/ai-risk/tierConfig.systemCleanup.test.ts
 apps/web/src/components/aiOperator/OperatorWorkspace.test.tsx
 apps/web/src/components/auth/signupPrices.guard.test.ts
+apps/web/src/components/automations/AutomationsRedirect.imports.test.ts
 apps/web/src/components/backup/backupDashboardHelpers.test.ts
 apps/web/src/components/billing/InvoiceDocument.parity.test.tsx
 apps/web/src/components/billing/quotes/QuoteDocument.parity.test.tsx
