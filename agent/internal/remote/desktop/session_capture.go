@@ -260,11 +260,11 @@ func (s *Session) captureLoop() {
 	// sessions (Session 0 → Session 1 SYSTEM helper).
 	prepareCaptureThread()
 
-	// One-shot screenshots are served from this goroutine (#12624). On exit,
-	// including a panic, fail whatever is still pending rather than leave a
-	// caller waiting out its timeout.
-	s.screenshots.setLoopRunning(true)
-	defer s.screenshots.setLoopRunning(false)
+	// One-shot screenshots are served from this goroutine from now on
+	// (#12624). On exit, including a panic, fail whatever is still pending
+	// rather than leave a caller waiting out its timeout.
+	s.screenshots.markLoopStarted()
+	defer s.screenshots.markLoopExited()
 
 	s.mu.RLock()
 	cap := s.capturer

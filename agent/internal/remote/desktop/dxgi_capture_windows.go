@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -115,6 +116,25 @@ func (c *dxgiCapturer) CaptureWarning() error {
 	return fallback.CaptureWarning()
 }
 
+// lastHeldFrameCaptureWarn (unix nanos) rate-limits warnCaptureWhileTextureHeld.
+var lastHeldFrameCaptureWarn atomic.Int64
+
+// warnCaptureWhileTextureHeld logs, at most once a minute, that Capture() was
+// called while CaptureTexture's frame was still held. The capture loop never
+// does that, so the caller is on another goroutine (#12624): the guard keeps
+// the device alive, and this line names the misuse in the field logs.
+func warnCaptureWhileTextureHeld(display int) {
+	now := time.Now().UnixNano()
+	last := lastHeldFrameCaptureWarn.Load()
+	if last != 0 && now-last < int64(time.Minute) {
+		return
+	}
+	if lastHeldFrameCaptureWarn.CompareAndSwap(last, now) {
+		slog.Warn("DXGI Capture() called while a texture frame is held; returning no frame",
+			"display", display)
+	}
+}
+
 // Capture acquires the next desktop frame via DXGI.
 // Returns nil, nil when no new frame is available (AccumulatedFrames==0).
 func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
@@ -129,6 +149,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	// desktop-switch check, which can re-initialise DXGI too. The capture loop
 	// never gets here with a frame held; only a call from another goroutine can.
 	if c.textureFrameAcquired {
+		warnCaptureWhileTextureHeld(c.config.DisplayIndex)
 		return nil, nil
 	}
 

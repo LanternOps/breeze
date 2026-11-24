@@ -24,7 +24,9 @@ import (
 // Now the capture loop serves the request itself, between frames, on its own
 // thread: at that point it holds no frame, and any recovery Capture() needs
 // runs where the loop's own recovery would. The caller waits for the answer
-// with a bound.
+// with a bound. Before the loop has started (the peer is still connecting)
+// nothing else drives the capturer, so the caller captures directly, holding
+// the queue lock so the loop cannot start mid-capture.
 
 // screenshotRequestTimeout bounds how long CaptureScreenshot waits for the
 // capture loop. Generous next to a normal answer (one or two loop iterations),
@@ -32,10 +34,23 @@ import (
 // so tests can shorten it.
 var screenshotRequestTimeout = 3 * time.Second
 
-// screenshotMaxAttempts is how many capture-loop iterations try for a frame
-// before the request fails with errScreenshotNoFrame. A static screen gives no
-// DXGI frame until the repaint that each attempt triggers lands.
-const screenshotMaxAttempts = 10
+// The capture loop gives up on a request that has produced no frame after
+// screenshotMaxAttempts iterations or screenshotNoFrameBudget, whichever comes
+// first. A static screen gives no DXGI frame until the repaint that each
+// attempt triggers lands; the time budget keeps a slow ticker loop (low FPS)
+// answering "no frame" before the caller's timeout instead of "timed out".
+const (
+	screenshotMaxAttempts   = 10
+	screenshotNoFrameBudget = 1500 * time.Millisecond
+)
+
+// Before the capture loop starts, the caller captures directly: up to
+// screenshotDirectAttempts tries, screenshotDirectRetryDelay apart (the
+// pre-#12624 behaviour).
+const (
+	screenshotDirectAttempts   = 8
+	screenshotDirectRetryDelay = 30 * time.Millisecond
+)
 
 var (
 	// None of these wrap ErrNoActiveSession: the session is still live (or
@@ -43,7 +58,6 @@ var (
 	// standalone capturer.
 	errScreenshotTimeout        = errors.New("timed out waiting for the desktop session's capture loop")
 	errScreenshotSessionStopped = errors.New("desktop session stopped before the screenshot was captured")
-	errScreenshotLoopNotRunning = errors.New("desktop session is not capturing yet")
 	errScreenshotNoFrame        = errors.New("desktop session produced no frame for the screenshot")
 )
 
@@ -53,8 +67,9 @@ var (
 type screenshotRequest struct {
 	reply    chan screenshotResult
 	deadline time.Time
-	// attempts is touched only by the capture loop goroutine.
-	attempts int
+	// attempts and firstAttempt are touched only by the capture loop goroutine.
+	attempts     int
+	firstAttempt time.Time
 }
 
 type screenshotResult struct {
@@ -65,23 +80,30 @@ type screenshotResult struct {
 }
 
 // screenshotQueue holds the requests the capture loop has yet to answer. Its
-// zero value is ready to use. mu also orders the loop's start/exit against
-// enqueueing, so a request is never left behind by a loop that has exited.
+// zero value is ready to use. mu also orders the loop's start and exit against
+// callers: a caller that finds no loop started captures while holding it, and
+// a request is never left behind by a loop that has exited.
 type screenshotQueue struct {
 	mu          sync.Mutex
-	loopRunning bool
+	loopStarted bool
+	loopExited  bool
 	pending     []*screenshotRequest
 }
 
-// enqueue adds req, or reports that no capture loop is running to serve it.
-func (q *screenshotQueue) enqueue(req *screenshotRequest) error {
+// submit queues req for the capture loop. Before the loop has started it
+// instead runs direct with the queue locked and returns its result (queued
+// false). After the loop has exited it fails at once.
+func (q *screenshotQueue) submit(req *screenshotRequest, direct func() screenshotResult) (res screenshotResult, queued bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if !q.loopRunning {
-		return errScreenshotLoopNotRunning
+	switch {
+	case q.loopExited:
+		return screenshotResult{err: errScreenshotSessionStopped}, false
+	case !q.loopStarted:
+		return direct(), false
 	}
 	q.pending = append(q.pending, req)
-	return nil
+	return screenshotResult{}, true
 }
 
 // head returns the oldest live request, answering and dropping any whose
@@ -114,47 +136,94 @@ func (q *screenshotQueue) finish(req *screenshotRequest, res screenshotResult) {
 	}
 }
 
-// setLoopRunning marks the capture loop started or stopped. Stopping fails
-// every pending request, so no caller waits out its timeout on a loop that
-// will never answer.
-func (q *screenshotQueue) setLoopRunning(running bool) {
+// markLoopStarted is called by the capture loop before its first iteration.
+// It waits for any caller capturing directly to finish.
+func (q *screenshotQueue) markLoopStarted() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.loopRunning = running
-	if running {
-		return
-	}
+	q.loopStarted = true
+}
+
+// markLoopExited is called when the capture loop returns (or panics). It fails
+// every pending request, so no caller waits out its timeout on a loop that
+// will never answer, and makes later requests fail at once.
+func (q *screenshotQueue) markLoopExited() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.loopExited = true
 	for _, req := range q.pending {
 		req.reply <- screenshotResult{err: errScreenshotSessionStopped}
 	}
 	q.pending = nil
 }
 
+func (q *screenshotQueue) loopRunning() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.loopStarted && !q.loopExited
+}
+
 // requestScreenshot asks the capture loop for one frame and waits for it.
-func (s *Session) requestScreenshot() (screenshotResult, error) {
+func (s *Session) requestScreenshot() screenshotResult {
 	req := &screenshotRequest{
 		reply:    make(chan screenshotResult, 1),
 		deadline: time.Now().Add(screenshotRequestTimeout),
 	}
-	if err := s.screenshots.enqueue(req); err != nil {
-		return screenshotResult{}, err
+	res, queued := s.screenshots.submit(req, s.captureScreenshotBeforeLoop)
+	if !queued {
+		return res
 	}
 	timer := time.NewTimer(screenshotRequestTimeout)
 	defer timer.Stop()
 	select {
 	case res := <-req.reply:
-		return res, res.err
+		return res
 	case <-s.done:
 		// The loop may have answered in the same instant; prefer the frame.
 		select {
 		case res := <-req.reply:
-			return res, res.err
+			return res
 		default:
 		}
-		return screenshotResult{}, errScreenshotSessionStopped
+		return screenshotResult{err: errScreenshotSessionStopped}
 	case <-timer.C:
 		// The loop drops the request once it sees the deadline has passed.
-		return screenshotResult{}, errScreenshotTimeout
+		var sinceVideo time.Duration = -1
+		if last := s.lastVideoWriteUnixNano.Load(); last != 0 {
+			sinceVideo = time.Since(time.Unix(0, last)).Round(time.Millisecond)
+		}
+		slog.Warn("Screenshot request timed out waiting for the capture loop",
+			"session", s.id, "timeout", screenshotRequestTimeout,
+			"loopRunning", s.screenshots.loopRunning(), "sinceLastVideoWrite", sinceVideo)
+		return screenshotResult{err: errScreenshotTimeout}
+	}
+}
+
+// captureScreenshotBeforeLoop captures on the caller's goroutine. It runs only
+// while the capture loop has not started, with the queue locked, so nothing
+// else is driving the capturer and no frame is held.
+func (s *Session) captureScreenshotBeforeLoop() screenshotResult {
+	s.mu.RLock()
+	cap := s.capturer
+	displayIndex := s.displayIndex
+	s.mu.RUnlock()
+	if cap == nil {
+		return screenshotResult{err: errScreenshotSessionStopped}
+	}
+	forceDesktopRepaint()
+	for attempt := 1; ; attempt++ {
+		img, err := cap.Capture()
+		if err != nil {
+			return screenshotResult{err: err}
+		}
+		if img != nil {
+			w, h := screenshotBounds(cap, img)
+			return screenshotResult{img: img, w: w, h: h, displayIndex: displayIndex}
+		}
+		if attempt >= screenshotDirectAttempts {
+			return screenshotResult{err: noFrameError(cap, attempt)}
+		}
+		time.Sleep(screenshotDirectRetryDelay)
 	}
 }
 
@@ -166,7 +235,8 @@ func (s *Session) requestScreenshot() (screenshotResult, error) {
 // checks (desktop switch, capturer swap, watchdog) have seen any recovery the
 // attempt performed.
 func (s *Session) serveScreenshotRequest() bool {
-	req := s.screenshots.head(time.Now())
+	now := time.Now()
+	req := s.screenshots.head(now)
 	if req == nil {
 		return false
 	}
@@ -176,11 +246,12 @@ func (s *Session) serveScreenshotRequest() bool {
 	displayIndex := s.displayIndex
 	s.mu.RUnlock()
 	if cap == nil {
-		s.screenshots.finish(req, screenshotResult{err: errScreenshotSessionStopped})
+		s.finishScreenshot(req, screenshotResult{err: errScreenshotSessionStopped})
 		return true
 	}
 
 	if req.attempts == 0 {
+		req.firstAttempt = now
 		// Give a static screen something to deliver.
 		forceDesktopRepaint()
 	}
@@ -188,15 +259,12 @@ func (s *Session) serveScreenshotRequest() bool {
 	img, err := cap.Capture()
 	switch {
 	case err != nil:
-		s.screenshots.finish(req, screenshotResult{err: err})
+		s.finishScreenshot(req, screenshotResult{err: err})
 	case img != nil:
-		w, h, boundsErr := cap.GetScreenBounds()
-		if boundsErr != nil {
-			w, h = img.Bounds().Dx(), img.Bounds().Dy()
-		}
-		s.screenshots.finish(req, screenshotResult{img: img, w: w, h: h, displayIndex: displayIndex})
-	case req.attempts >= screenshotMaxAttempts:
-		s.screenshots.finish(req, screenshotResult{err: errScreenshotNoFrame})
+		w, h := screenshotBounds(cap, img)
+		s.finishScreenshot(req, screenshotResult{img: img, w: w, h: h, displayIndex: displayIndex})
+	case req.attempts >= screenshotMaxAttempts || time.Since(req.firstAttempt) >= screenshotNoFrameBudget:
+		s.finishScreenshot(req, screenshotResult{err: noFrameError(cap, req.attempts)})
 	default:
 		// Still waiting for a frame; the repaint below may produce one.
 	}
@@ -207,13 +275,54 @@ func (s *Session) serveScreenshotRequest() bool {
 	return true
 }
 
-// captureScreenshotFromLoop serves CaptureScreenshot for capturers that are
-// not a LatestFrameProvider: the capture loop takes the frame.
-// sessionDisplay is the display the session was on when it was chosen.
-func (s *Session) captureScreenshotFromLoop(sessionDisplay int) (*image.RGBA, int, int, error) {
-	res, err := s.requestScreenshot()
+// finishScreenshot answers req and logs the outcome: a failure at warn (one
+// line per failed tool call), a success at debug.
+func (s *Session) finishScreenshot(req *screenshotRequest, res screenshotResult) {
+	elapsed := time.Since(req.firstAttempt).Round(time.Millisecond)
+	if req.firstAttempt.IsZero() {
+		elapsed = 0
+	}
+	if res.err != nil {
+		slog.Warn("Capture loop could not serve the screenshot request",
+			"session", s.id, "attempts", req.attempts, "elapsed", elapsed, "error", res.err.Error())
+	} else {
+		slog.Debug("Capture loop served the screenshot request",
+			"session", s.id, "attempts", req.attempts, "elapsed", elapsed)
+	}
+	s.screenshots.finish(req, res)
+}
+
+func screenshotBounds(cap ScreenCapturer, img *image.RGBA) (int, int) {
+	w, h, err := cap.GetScreenBounds()
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
+		return img.Bounds().Dx(), img.Bounds().Dy()
+	}
+	return w, h
+}
+
+// noFrameError names the last failure the capturer swallowed as a nil frame
+// (GDI on a secure desktop, for example), when there is one.
+func noFrameError(cap ScreenCapturer, attempts int) error {
+	if reason := swallowedCaptureError(cap); reason != "" {
+		return fmt.Errorf("%w after %d attempts: %s", errScreenshotNoFrame, attempts, reason)
+	}
+	return fmt.Errorf("%w after %d attempts", errScreenshotNoFrame, attempts)
+}
+
+// captureScreenshotFromLoop serves CaptureScreenshot for capturers that are
+// not a LatestFrameProvider. sessionDisplay is the display the session was on
+// when it was chosen.
+func (s *Session) captureScreenshotFromLoop(sessionDisplay int) (*image.RGBA, int, int, error) {
+	res := s.requestScreenshot()
+	if res.err != nil {
+		if errors.Is(res.err, ErrNoActiveSession) {
+			// A capturer can report its own lost connection as
+			// ErrNoActiveSession (the Linux X11 capturer does). The session
+			// is still live, so do not let the tools layer read it as "no
+			// session" and open a standalone capturer.
+			return nil, 0, 0, fmt.Errorf("capture from active session: %v", res.err)
+		}
+		return nil, 0, 0, fmt.Errorf("capture from active session: %w", res.err)
 	}
 	if res.displayIndex != sessionDisplay {
 		// A monitor switch landed between choosing this session and the
