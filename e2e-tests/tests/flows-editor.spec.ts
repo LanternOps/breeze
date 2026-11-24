@@ -29,6 +29,17 @@ async function readAccessToken(page: Page): Promise<string> {
   return token!;
 }
 
+/**
+ * Let the page we just landed on finish its start-up work (the /auth/refresh
+ * every full load makes, which rotates the refresh cookie) before the next
+ * `goto`. Navigating away mid-refresh can drop the rotated cookie, and the next
+ * page then lands on the login page (#9476). Also asserts we are still signed in.
+ */
+async function settleSession(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle', { timeout: 30_000 });
+  expect(page.url(), 'still signed in after the page settled').not.toMatch(/\/(login|logout)(?:$|\?|#)/);
+}
+
 async function apiJson<T>(
   request: APIRequestContext,
   token: string,
@@ -188,9 +199,11 @@ test.describe('Flows editor', () => {
   test('legacy /automations URLs redirect to Flows and Jobs', async ({ authedPage: page }) => {
     await page.goto('/automations');
     await page.waitForURL(/\/flows(?:$|\?|#)/);
+    await settleSession(page);
 
     await page.goto('/automations/new');
     await page.waitForURL(/\/jobs\/new(?:$|\?|#)/);
+    await settleSession(page);
 
     const token = await readAccessToken(page);
     const list = await apiJson<{ data?: Array<{ id: string }> }>(
@@ -200,5 +213,6 @@ test.describe('Flows editor', () => {
     expect(jobId, 'a seeded Job from GET /api/v1/automations?limit=1').toBeTruthy();
     await page.goto(`/automations/${jobId}`);
     await page.waitForURL(new RegExp(`/jobs/${jobId}(?:$|\\?|#)`));
+    await settleSession(page);
   });
 });
