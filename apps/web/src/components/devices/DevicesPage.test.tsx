@@ -166,10 +166,6 @@ vi.mock('./ScriptPickerModal', () => ({
       </button>
     ) : null,
 }));
-// A spy, not a bare stub: the modal renders null either way, so the ONLY way a
-// test can observe whether runDeviceAction's `settings` branch ran is whether
-// this component was invoked at all (#4014).
-vi.mock('./DeviceSettingsModal', () => ({ default: vi.fn(() => null) }));
 vi.mock('./AddDeviceModal', () => ({
   default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
 }));
@@ -217,9 +213,9 @@ vi.mock('./DeviceCard', () => ({
       />
       <button
         type="button"
-        aria-label="card settings"
-        data-testid={`card-settings-${device.id}`}
-        onClick={() => onAction?.('settings', device)}
+        aria-label="card edit details"
+        data-testid={`card-edit-details-${device.id}`}
+        onClick={() => onAction?.('edit-details', device)}
       />
     </div>
   ),
@@ -2460,7 +2456,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
 
 // #4014: the SINGLE-device funnel had no network guard. `handleBulkAction` has
 // dropped network rows since #1322, but `handleDeviceAction` — the shared entry
-// point behind the list kebab, the grid card and DeviceSettingsModal — took any
+// point behind the list kebab and the grid card — took any
 // device it was handed. The real DeviceCard (stubbed in this file) had no
 // deviceClass branch at all, so the grid kebab offered Terminal / Run Script /
 // Reboot / Settings / Remove for a network-discovered asset, whose id is
@@ -2568,22 +2564,27 @@ describe('DevicesPage — single-device actions refuse network rows (#4014)', ()
     expect(screen.queryByTestId('pick-script')).toBeNull();
   });
 
-  it('refuses settings — the device settings modal never opens on an asset id', async () => {
-    const settingsModal = await import('./DeviceSettingsModal');
-    const settingsSpy = vi.mocked(settingsModal.default);
-
+  it('refuses edit-details — never opens a device page for an asset id', async () => {
     render(<DevicesPage />);
     fireEvent.click(await screen.findByLabelText('Grid view'));
-    fireEvent.click(await screen.findByTestId(`card-settings-${NET_1}`));
+    fireEvent.click(await screen.findByTestId(`card-edit-details-${NET_1}`));
 
     await waitFor(async () => {
       expect(await toastMessages()).toContainEqual(
         expect.stringMatching(/applies to agent devices only/i)
       );
     });
-    // DeviceSettingsModal is only rendered once settingsDevice is set, which
-    // only runDeviceAction's `settings` branch does.
-    expect(settingsSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalledWith(expect.stringContaining('#details'));
+  });
+
+  it('edit-details opens the device on its Details tab, the one place its record is edited', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByTestId(`card-edit-details-${DEV_1}`));
+    await waitFor(() => expect(vi.mocked(navigateTo)).toHaveBeenCalledWith(`/devices/${DEV_1}#details`));
   });
 
   it('still runs the action for an agent row (the guard is not a blanket block)', async () => {

@@ -11,13 +11,12 @@ const EXPIRES = "2026-09-08T12:00:00.000Z"; // exactly 3 days out
 
 function renderBadge(
   uninstall: Device["uninstall"],
-  overrides: { status?: string; compact?: boolean } = {},
+  overrides: { status?: string } = {},
 ) {
   return render(
     <UninstallStateBadge
       uninstall={uninstall}
       status={overrides.status ?? "decommissioned"}
-      compact={overrides.compact}
       now={NOW}
     />,
   );
@@ -131,15 +130,6 @@ describe("UninstallStateBadge", () => {
     renderBadge({ ...base, state: "pending", expiresAt: EXPIRES }, { status: "online" });
 
     expect(screen.queryByTestId("uninstall-state")).not.toBeInTheDocument();
-  });
-
-  it("drops the pill chrome in compact mode but keeps the state readable", () => {
-    renderBadge({ ...base, state: "expired" }, { compact: true });
-
-    const badge = screen.getByTestId("uninstall-state");
-    expect(badge).toHaveAttribute("data-state", "expired");
-    expect(badge).toHaveTextContent("still be installed");
-    expect(badge.className).not.toContain("rounded-full");
   });
 
   it("ignores an unrecognised state rather than rendering a raw translation key", () => {

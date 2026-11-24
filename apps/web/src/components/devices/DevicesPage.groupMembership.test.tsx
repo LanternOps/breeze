@@ -63,7 +63,6 @@ vi.mock('./BulkGroupMembershipDialog', () => ({
 }));
 vi.mock('./DeviceCard', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));

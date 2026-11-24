@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "power": "Puissance",
     "shutdown": "Éteindre",
-    "deviceSettings": "Paramètres de l’appareil",
+    "editDetails": "Modifier les détails",
     "installHomebrew": "Installer Homebrew",
     "restartAgent": "Redémarrer l’agent",
     "runVendorUpdates": "Exécuter les mises à jour du constructeur",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Terminal distant",
     "runScript": "Exécuter un script",
     "reboot": "Redémarrer",
-    "settings": "Paramètres",
+    "editDetails": "Modifier les détails",
     "restore": "Restaurer",
     "decommission": "Retirer",
     "permanentlyDelete": "Supprimer définitivement",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} a été déplacé vers {{orgName}}",
     "failedToFetchDevice": "Impossible de récupérer l’appareil",
+    "refreshAfterEditFailed": "Enregistré, mais cette page n’a pas pu être actualisée. Rechargez-la pour voir la modification partout.",
     "online": "en ligne",
     "offline": "hors ligne",
     "rebootToSafeMode": "Redémarrer en mode sans échec",
@@ -1619,7 +1620,21 @@
     "customFields": "Champs personnalisés",
     "text2": "*",
     "edit": "Modifier",
-    "roleNotAssessed": "Rôle pas encore évalué"
+    "roleNotAssessed": "Rôle pas encore évalué",
+    "noTags": "Aucune étiquette",
+    "editTags": "Modifier les étiquettes",
+    "addTag": "Ajouter une étiquette",
+    "removeTag": "Retirer l’étiquette {{tag}}",
+    "tagsSaved": "Étiquettes enregistrées",
+    "tagsSaveFailed": "Impossible d’enregistrer les étiquettes",
+    "purchaseDate": "Date d’achat",
+    "editPurchaseDate": "Modifier la date d’achat",
+    "purchaseDateNotSet": "Non définie",
+    "purchaseDateFromVendor": "Du fabricant",
+    "purchaseDateSaved": "Date d’achat enregistrée",
+    "purchaseDateSaveFailed": "Impossible d’enregistrer la date d’achat",
+    "purchaseDateHelp": "Utilisée par le rapport sur le cycle de vie du matériel pour planifier le remplacement.",
+    "purchaseDateVendorHint": "Issue de la date d’expédition du fabricant. Saisissez une date pour la remplacer."
   },
   "deviceIpHistoryTab": {
     "true": "Vrai",
@@ -1845,7 +1860,7 @@
     "reboot": "Redémarrer",
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "wake": "Veillée",
-    "settings": "Paramètres",
+    "editDetails": "Modifier les détails",
     "enterMaintenance": "Activer la maintenance",
     "exitMaintenance": "Désactiver la maintenance",
     "restore": "Restaurer",
@@ -2500,31 +2515,6 @@
     "scanAlreadyRunning": "L'analyse est déjà en cours sur l'appareil et ne peut pas être annulée.",
     "scanAlreadyQueued": "Une analyse est déjà en file d'attente pour cet appareil."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Ajoutez une balise...",
-    "dangerZone": "Zone dangereuse",
-    "decommissionDevice": "Retirer l’appareil",
-    "decommissionWarning": "Le retrait sort cet appareil de votre parc actif. L’historique est conservé et vous pourrez le restaurer plus tard.",
-    "decommissionedDescription": "Cet appareil a été retiré. Vous pouvez le restaurer ou le supprimer définitivement.",
-    "decommissionedTitle": "Appareil retiré",
-    "displayName": "Nom d’affichage",
-    "errors": {
-      "loadSites": "Impossible de charger les sites",
-      "saveSettings": "Impossible d’enregistrer les paramètres",
-      "siteChanged": "Cet appareil a été déplacé par quelqu'un d'autre : rechargez pour voir son site actuel"
-    },
-    "hostname": "Nom d’hôte : {{hostname}}",
-    "saved": "Paramètres de l’appareil enregistrés",
-    "permanentlyDelete": "Supprimer définitivement",
-    "restoreDevice": "Restaurer l’appareil",
-    "saveChanges": "Enregistrer les modifications",
-    "site": "Site",
-    "tags": "Étiquettes",
-    "title": "Paramètres de l’appareil",
-    "purchaseDate": "Date d’achat",
-    "purchaseDateHelp": "Utilisée par le rapport de cycle de vie du matériel pour planifier le remplacement.",
-    "purchaseDateVendorHint": "Issue de la date d’expédition du fabricant. Saisissez une date pour la remplacer."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Désinstaller",
@@ -2659,7 +2649,6 @@
     "compactTitle": "Garantie",
     "endDate": "Date de fin",
     "error": "Erreur : {{error}}",
-    "expires": "Expiration",
     "lastChecked": "Dernière vérification : {{time}}",
     "loadFailed": "Impossible de charger la garantie.",
     "lookupUnavailable": "Recherche de garantie non disponible pour ce fabricant",
@@ -2700,7 +2689,11 @@
       "import": "Importé",
       "importVendorEarlier": "Importé (le fabricant indique une date de fin antérieure)",
       "provider": "API du fabricant"
-    }
+    },
+    "sectionTitle": "Garantie et achat",
+    "coverage": "Couverture",
+    "coverageStarts": "Début de la couverture",
+    "coverageEnds": "Fin de la couverture"
   },
   "devicesPage": {
     "accessDenied": "Vous n’avez pas la permission de voir les appareils.",
@@ -5208,5 +5201,27 @@
       "invalid_target_version": "La version de la fiche existante est manquante. Rouvrez le rattachement."
     },
     "stepUpHeld": "Votre vérification est toujours valable pour ce rattachement."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Données de l’appareil",
+    "serial": "Numéro de série",
+    "serialShort": "N/S",
+    "lanIp": "IP LAN",
+    "warranty": {
+      "active": "Garantie jusqu’au {{date}}",
+      "expiring": "La garantie prend fin le {{date}}",
+      "expired": "Garantie expirée le {{date}}"
+    },
+    "warrantyStatus": "Garantie : {{status}}",
+    "warrantyDetails": "Détails de la garantie",
+    "manageContacts": "Gérer les contacts",
+    "more": "{{count}} de plus",
+    "showLess": "Afficher moins",
+    "call": "Appeler {{name}}",
+    "loadFailed": "Certains détails n'ont pas pu être chargés"
+  },
+  "deviceAssetRecord": {
+    "title": "Fiche de l’actif",
+    "description": "Qui contacter, où il se trouve et qui le paie."
   }
 }

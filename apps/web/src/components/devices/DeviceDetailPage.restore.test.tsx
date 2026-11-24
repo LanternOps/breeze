@@ -17,7 +17,6 @@ vi.mock('./DeviceDetails', () => ({
     <button type="button" onClick={() => onAction('restore', device)}>Restore</button>
   ),
 }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 // The real dialog pulls in the org store, which needs more of stores/auth than this suite mocks.
 vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));

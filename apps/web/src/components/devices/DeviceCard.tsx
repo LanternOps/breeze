@@ -7,7 +7,7 @@ import {
   Terminal,
   RotateCcw,
   FileCode,
-  Settings,
+  Pencil,
   Trash2,
 } from "lucide-react";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
@@ -518,13 +518,13 @@ export default function DeviceCard({
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onAction?.("settings", device);
+                    onAction?.("edit-details", device);
                     setMenuOpen(false);
                   }}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
-                  <Settings className="h-4 w-4" />
-                  {t("deviceCard.settings")}{" "}
+                  <Pencil className="h-4 w-4" />
+                  {t("deviceCard.editDetails")}{" "}
                 </button>
                 <hr className="my-1" />
                 {device.status === "decommissioned" ? (

@@ -5,7 +5,7 @@ description: Work with the device list and device Info tab — customizable colu
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
+The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device **Details** tab, including VPN presence and battery status.
 
 ---
 
@@ -249,7 +249,7 @@ A request expires if the agent does not complete it in time. Breeze refuses a re
 
 ## Billing Coverage
 
-The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
+The device **Details** tab carries a **Billing** card, in its **Asset record** section, answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
 
 - **Covered** -- one row per active contract line that bills the device, with the contract name, the line description, and *why* it matches: **Org-wide**, **This site**, **Role: Server**, or **Group: VIP Laptops**. Two contracts can both bill the same device; both rows show.
 - **Not billed by any line** -- no active contract line reaches this device.
@@ -322,7 +322,7 @@ Hovering a VPN badge shows the full detail — interface, addresses, and DNS nam
 
 ### On the device Info tab
 
-When a device has reported at least one VPN, its **Info** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
+When a device has reported at least one VPN, its **Details** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
 
 | Field | Description |
 |-------|-------------|
@@ -383,11 +383,11 @@ The same data is available outside the UI:
 
 ---
 
-## The Device Info Tab
+## The Device Details Tab
 
 The device page header (v0.124.0) shows the display name once, with the hostname in the sub-line, and an **Offline · last seen …** pill when the device is not checking in; CPU and RAM read **—** while the device is offline or its last sample is stale. When the device belongs to an organization other than your working organization, the header says **Viewing a *Org* device** with a **Switch to *Org*** action that changes your working organization and keeps you on the record.
 
-Opening a device and selecting **Info** shows the device's identity and inventory at a glance:
+Opening a device and selecting **Details** shows the device's identity and inventory at a glance:
 
 | Section | Contents |
 |---------|----------|
@@ -400,11 +400,11 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **VPN** | Active VPN/overlay clients (only when at least one is active — see above). |
 | **Agent** | Agent, watchdog and helper (Breeze Assist) versions, status, last seen, enrollment date, system uptime, logged-in user. A warning appears here when agent updates are withheld from the device. A **Breeze Assist** row (v0.125.0+) reads **Installed**, **Not deployed**, or **Unavailable** with the reason; see [Breeze Assist availability](/agents/helper/#enabling--disabling-helper-chat). |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
-| **Tags** and **Custom Fields** | Organizational metadata, when present. |
+| **Tags** and **Custom Fields** | Organizational metadata. Tags always show (**No tags** when empty) and are edited with the **Edit tags** pencil button. |
 
-The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
+The device's **Details** tab also has a **Responsible contacts** card, in its **Asset record** section: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
 
-The device **Overview** tab also has a **Physical placement** card (v0.125.0+) for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
+The device **Details** tab also has a **Physical placement** card (v0.125.0+), in its **Asset record** section, for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
 
 ### System Restore tab
 

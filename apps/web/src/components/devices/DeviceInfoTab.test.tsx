@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceInfoTab from './DeviceInfoTab';
@@ -16,6 +16,16 @@ vi.mock('../shared/Toast', () => ({
 }));
 
 vi.mock('./time/DeviceTimeSection', () => ({ default: () => null }));
+// The warranty section fetches on its own and is tested in DeviceWarrantyCard.test.tsx.
+// Stubbed so its fetch cannot consume a mockImplementationOnce meant for a save here.
+vi.mock('./DeviceWarrantyCard', () => ({
+  default: ({ purchase, onChanged }: { purchase?: import('react').ReactNode; onChanged?: () => void }) => (
+    <section data-testid="device-warranty">
+      <dl>{purchase}</dl>
+      <button type="button" data-testid="warranty-changed" onClick={() => onChanged?.()}>Changed</button>
+    </section>
+  ),
+}));
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 
@@ -55,6 +65,16 @@ function mockInitialLoad(displayName: string | null) {
     return makeJsonResponse({}, false, 404);
   });
 }
+
+describe('DeviceInfoTab — warranty section', () => {
+  it('tells the page when a warranty lookup produced a new result, so the header chip follows', async () => {
+    mockInitialLoad(null);
+    const onWarrantyChanged = vi.fn();
+    render(<DeviceInfoTab deviceId={deviceId} onWarrantyChanged={onWarrantyChanged} />);
+    fireEvent.click(await screen.findByTestId('warranty-changed'));
+    expect(onWarrantyChanged).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('DeviceInfoTab — headings and role copy (#9030)', () => {
   beforeEach(() => {
@@ -520,7 +540,9 @@ describe('DeviceInfoTab — display name inline edit', () => {
       expect(body).toEqual({ displayName: null });
     });
 
-    await waitFor(() => expect(screen.getByText('Not set')).toBeInTheDocument());
+    // Scoped to the display-name row: the purchase-date row also says "Not set".
+    const row = screen.getByTitle('Edit display name').closest('div') as HTMLElement;
+    await waitFor(() => expect(within(row).getByText('Not set')).toBeInTheDocument());
   });
 
   it('whitespace-only input is treated as clearing (trimmed → null)', async () => {

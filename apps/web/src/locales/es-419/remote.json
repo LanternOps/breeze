@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "No se pudo resolver la herramienta remota configurada por el partner (error de configuración). Se usará el escritorio remoto integrado.",
       "emptyUrlTemplate": "La herramienta remota configurada por el partner no tiene una plantilla de URL definida. Se usará el escritorio remoto integrado.",
-      "missingIdentifier": "A este dispositivo le falta el identificador por dispositivo que necesita la herramienta remota configurada por el socio (por ejemplo, el par RustDesk ID). Recurrir al escritorio remoto integrado. Configure el identificador en Configuración del dispositivo → Campos personalizados.",
+      "missingIdentifier": "A este dispositivo le falta el identificador por dispositivo que necesita la herramienta remota configurada por el socio (por ejemplo, el par RustDesk ID). Recurrir al escritorio remoto integrado. Configure el identificador en la pestaña Detalles del dispositivo → Campos personalizados.",
       "providerDisabled": "La herramienta remota configurada por el socio para este dispositivo está actualmente deshabilitada. Recurrir al escritorio remoto integrado."
     },
     "launching": "Iniciando...",
