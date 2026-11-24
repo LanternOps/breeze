@@ -198,7 +198,7 @@ func TestWriteProviderCapRefusalsTripTheDestination(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer slog.SetDefault(prev)
 	var last error
-	for i := 0; i < destinationRefusalThreshold; i++ {
+	for i := range destinationRefusalThreshold {
 		last = p.UploadContext(t.Context(), src, objKey(fmt.Sprintf("files/f%03d", i)))
 	}
 	if !errors.Is(last, providers.ErrDestinationRefused) {
