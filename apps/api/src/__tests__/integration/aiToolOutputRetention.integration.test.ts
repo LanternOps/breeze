@@ -26,7 +26,7 @@ import { getTestDb } from './setup';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = new Date();
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * DAY_MS);
-const OPTS = { batchSize: 100, maxBatches: 10, now: NOW };
+const OPTS = { batchSize: 100, maxBatches: 10, now: NOW, enforceDiscovery: true };
 
 async function insertSession(orgId: string, sdkSessionId: string | null, createdAt = daysAgo(60)): Promise<string> {
   const [row] = await getTestDb()

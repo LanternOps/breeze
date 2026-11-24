@@ -79,6 +79,9 @@
  * days — with no live-session deferral (nothing in memory reads them). The
  * same pass blanks the ToolSearch `tool_use` input (the model's query) inside
  * aged assistant rows' `ai_messages.content_blocks`, the one other copy.
+ * REPORT-FIRST (#4342, owner decision 2026-11-24): these two passes only COUNT
+ * what they would delete or blank until `AI_TOOL_DISCOVERY_RETENTION_ENFORCE`
+ * is `true`/`1` (default false). The tool-output scrub above is not behind it.
  *
  * Not covered (spec "Out of scope"): user/assistant prose, continuation
  * summaries, screenshots, run workspaces. `ai_messages.content_blocks` holds no
@@ -102,13 +105,28 @@ import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureMessage } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
-import { parsePositiveIntEnv, utcWallTime, warnOnRetentionBacklog, type BatchedPruneResult } from './retentionBatch';
+import {
+  countEligibleRows,
+  parsePositiveIntEnv,
+  retentionEnforceFromEnv,
+  utcWallTime,
+  warnOnRetentionBacklog,
+  type BatchedPruneResult,
+} from './retentionBatch';
 
 const LOG = '[AiToolOutputRetention]';
 const QUEUE_NAME = 'ai-tool-output-retention';
 const JOB_NAME = 'ai-tool-output-retention';
 const REPEAT_JOB_ID = 'ai-tool-output-retention';
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DISCOVERY_ENFORCE_VAR = 'AI_TOOL_DISCOVERY_RETENTION_ENFORCE';
+
+/**
+ * #12421 W01, report-first (#4342; owner decision 2026-11-24): the two
+ * tool-discovery passes (delete `ai_tool_search_events`, blank ToolSearch
+ * inputs) only count until this is `true`/`1`. Read once; code default FALSE.
+ */
+export const AI_TOOL_DISCOVERY_RETENTION_ENFORCE = retentionEnforceFromEnv(LOG, DISCOVERY_ENFORCE_VAR, false);
 
 export function tombstone(at: Date): AiToolOutputTombstone {
   return { _retention: AI_TOOL_OUTPUT_SCRUBBED, at: at.toISOString() };
@@ -383,6 +401,51 @@ export async function deleteAgedSearchEvents(
 }
 
 /**
+ * #12421 W01 report mode: how many `ai_tool_search_events` rows
+ * `deleteAgedSearchEvents` would remove for this org, capped at
+ * `batchSize * maxBatches` (what one enforce run can remove). Same predicate,
+ * written against the bare table because `countEligibleRows` selects from one.
+ */
+export async function countAgedSearchEvents(
+  orgId: string,
+  retentionDays: number | null,
+  opts: ScrubOptions,
+): Promise<{ eligible: number; capped: boolean }> {
+  const now = opts.now ?? new Date();
+  const cutoffIso = new Date(now.getTime() - searchEventAgeDays(retentionDays) * DAY_MS).toISOString();
+  return countEligibleRows({
+    table: 'ai_tool_search_events',
+    where: sql`ai_tool_search_events.created_at < ${cutoffIso}::timestamptz
+      AND EXISTS (SELECT 1 FROM ai_sessions s WHERE s.id = ai_tool_search_events.session_id AND s.org_id = ${orgId})`,
+    cap: opts.batchSize * opts.maxBatches,
+    label: 'aiToolOutputRetention.count_ai_tool_search_events',
+  });
+}
+
+/** #12421 W01 report mode: the `blankAgedToolSearchInputs` predicate, counted. */
+export async function countAgedToolSearchInputs(
+  orgId: string,
+  ageDays: number,
+  opts: ScrubOptions,
+): Promise<{ eligible: number; capped: boolean }> {
+  const now = opts.now ?? new Date();
+  const cutoffIso = new Date(now.getTime() - ageDays * DAY_MS).toISOString();
+  return countEligibleRows({
+    table: 'ai_messages',
+    where: sql`ai_messages.role = 'assistant'
+      AND ai_messages.created_at < ${utcWallTime(cutoffIso)}
+      AND jsonb_typeof(ai_messages.content_blocks) = 'array'
+      AND EXISTS (SELECT 1 FROM ai_sessions s WHERE s.id = ai_messages.session_id AND s.org_id = ${orgId})
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(ai_messages.content_blocks) = 'array' THEN ai_messages.content_blocks ELSE '[]'::jsonb END) b
+         WHERE b->>'type' = 'tool_use' AND b->>'name' = 'ToolSearch' AND b->'input' <> '{}'::jsonb
+      )`,
+    cap: opts.batchSize * opts.maxBatches,
+    label: 'aiToolOutputRetention.count_tool_search_inputs',
+  });
+}
+
+/**
  * #12421 W01: blank the ToolSearch `tool_use` input (the model's search
  * query) inside one org's assistant `ai_messages.content_blocks` older than
  * `ageDays`. Every other block keeps its position and bytes
@@ -468,9 +531,18 @@ export interface RetentionRunSummary {
   searchEventsDeleted: number;
   /** #12421 W01: assistant rows whose ToolSearch input was blanked. */
   toolSearchInputsBlanked: number;
+  /** #12421 W01 report mode: rows the discovery passes WOULD remove (0 when enforcing). */
+  searchEventsEligible: number;
+  toolSearchInputsEligible: number;
+  /** Either report-mode count hit its cap, so the true figure is higher. */
+  discoveryEligibleCapped: boolean;
 }
 
-export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTranscript?: TranscriptDeleter }): Promise<RetentionRunSummary> {
+export async function runAiToolOutputRetention(opts: ScrubOptions & {
+  deleteTranscript?: TranscriptDeleter;
+  /** Tests only; production reads AI_TOOL_DISCOVERY_RETENTION_ENFORCE. */
+  enforceDiscovery?: boolean;
+}): Promise<RetentionRunSummary> {
   const startedAt = Date.now();
   const deleteTranscript = opts.deleteTranscript ?? deleteSdkTranscript;
   const summary: RetentionRunSummary = {
@@ -481,7 +553,11 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
     durationMs: 0,
     searchEventsDeleted: 0,
     toolSearchInputsBlanked: 0,
+    searchEventsEligible: 0,
+    toolSearchInputsEligible: 0,
+    discoveryEligibleCapped: false,
   };
+  const enforceDiscovery = opts.enforceDiscovery ?? AI_TOOL_DISCOVERY_RETENTION_ENFORCE;
 
   const onCleared = async (ids: string[]) => {
     summary.totals.sessions += ids.length;
@@ -512,12 +588,31 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
     let discoveryFailed = false;
     // Each pass is accounted as soon as it returns, so a later failure never
     // hides rows an earlier one already removed.
-    for (const [target, pass, add] of [
-      ['ai_tool_search_events', () => deleteAgedSearchEvents(orgId, days, opts),
-        (n: number) => { summary.searchEventsDeleted += n; }],
-      ['ai_messages.tool_search_input', () => blankAgedToolSearchInputs(orgId, searchEventAgeDays(days), opts),
-        (n: number) => { summary.toolSearchInputsBlanked += n; }],
-    ] as const) {
+    // Report mode: a count pass has the same shape as a delete pass but never
+    // reports `hasMore`, so it cannot mark the run incomplete.
+    const countPass = (count: () => Promise<{ eligible: number; capped: boolean }>, add: (n: number) => void) =>
+      async (): Promise<BatchedPruneResult> => {
+        const r = await count();
+        add(r.eligible);
+        if (r.capped) summary.discoveryEligibleCapped = true;
+        return { deleted: 0, batches: 0, hasMore: false };
+      };
+    const passes = enforceDiscovery
+      ? [
+        ['ai_tool_search_events', () => deleteAgedSearchEvents(orgId, days, opts),
+          (n: number) => { summary.searchEventsDeleted += n; }],
+        ['ai_messages.tool_search_input', () => blankAgedToolSearchInputs(orgId, searchEventAgeDays(days), opts),
+          (n: number) => { summary.toolSearchInputsBlanked += n; }],
+      ] as const
+      : [
+        ['ai_tool_search_events',
+          countPass(() => countAgedSearchEvents(orgId, days, opts), (n) => { summary.searchEventsEligible += n; }),
+          (_n: number) => {}],
+        ['ai_messages.tool_search_input',
+          countPass(() => countAgedToolSearchInputs(orgId, searchEventAgeDays(days), opts), (n) => { summary.toolSearchInputsEligible += n; }),
+          (_n: number) => {}],
+      ] as const;
+    for (const [target, pass, add] of passes) {
       if (discoveryFailed) break;
       try {
         const result = await pass();
@@ -580,6 +675,14 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
     `skipped=${summary.orgsSkipped}, failed=${summary.orgsFailed}) in ${summary.durationMs}ms; ` +
     `searchEventsDeleted=${summary.searchEventsDeleted} toolSearchInputsBlanked=${summary.toolSearchInputsBlanked}`,
   );
+  if (!enforceDiscovery) {
+    const plus = summary.discoveryEligibleCapped ? '+' : '';
+    console.log(
+      `${LOG} REPORT-ONLY: ${summary.searchEventsEligible}${plus} ai_tool_search_events rows to delete and ` +
+      `${summary.toolSearchInputsEligible}${plus} ToolSearch inputs to blank are eligible; ` +
+      `set ${DISCOVERY_ENFORCE_VAR}=true to act`,
+    );
+  }
   recordRetentionRun('ai_tool_output_retention', {
     rowsDeleted: totals.messages + totals.executions + totals.artifacts + totals.intents + summary.searchEventsDeleted,
     incomplete: summary.incomplete,

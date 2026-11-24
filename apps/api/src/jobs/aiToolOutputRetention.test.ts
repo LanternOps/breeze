@@ -110,7 +110,7 @@ describe('runAiToolOutputRetention', () => {
     });
     const deleteTranscript = vi.fn(async () => 'deleted' as const);
 
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript });
 
     expect(summary).toMatchObject({ orgsScanned: 2, orgsScrubbed: 1, orgsFailed: 1, incomplete: true });
     expect(summary.totals).toMatchObject({ messages: 2, sessions: 1 });
@@ -129,7 +129,7 @@ describe('runAiToolOutputRetention', () => {
       return rows([{ scrubbed: 0, cleared: [] }]);
     });
 
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
 
     expect(summary.totals.intents).toBe(3);
     expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 3, incomplete: false });
@@ -142,7 +142,7 @@ describe('runAiToolOutputRetention', () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
     m.execute.mockResolvedValue(rows([], 0));
 
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
 
     expect(summary.orgsFailed).toBe(1);
     expect(summary.incomplete).toBe(true);
@@ -158,7 +158,7 @@ describe('runAiToolOutputRetention', () => {
       return rows([{ scrubbed: 1, cleared: [] }]);
     });
 
-    const summary = await runAiToolOutputRetention({ batchSize: 1, maxBatches: 1, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 1, maxBatches: 1, deleteTranscript: vi.fn() });
 
     expect(summary.incomplete).toBe(true);
     expect(m.warnOnRetentionBacklog).toHaveBeenCalledWith(
@@ -181,7 +181,7 @@ describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
   it('skips an org with an unusable retention value without touching its rows, and reports it', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], [{ id: 'p', orgId: null, partnerId: PARTNER, toolOutputRetentionDays: 0 }]];
 
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
 
     expect(summary).toMatchObject({ orgsSkipped: 1, orgsScrubbed: 0, incomplete: true });
     expect(m.execute).not.toHaveBeenCalled();
@@ -191,12 +191,12 @@ describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
   it('a failed transcript delete marks the run incomplete and reports it; a throwing deleter is a failure, not a failed org', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
     quietOrg();
-    const failing = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'failed' as const) });
+    const failing = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'failed' as const) });
     expect(failing).toMatchObject({ orgsFailed: 0, incomplete: true, transcripts: { failed: 1 } });
     expect(m.captureMessage).toHaveBeenCalledTimes(1);
 
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
-    const throwing = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => { throw new Error('boom'); }) });
+    const throwing = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => { throw new Error('boom'); }) });
     expect(throwing).toMatchObject({ orgsFailed: 0, orgsScrubbed: 1, incomplete: true, transcripts: { failed: 1 } });
     expect(throwing.totals.messages).toBe(1);
   });
@@ -204,7 +204,7 @@ describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
   it('a clean run does not report to Sentry', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
     quietOrg();
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'not_found' as const) });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'not_found' as const) });
     expect(summary.incomplete).toBe(false);
     expect(m.captureMessage).not.toHaveBeenCalled();
   });
@@ -243,7 +243,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('an org with retention 30 deletes search rows older than 30 days and blanks ToolSearch inputs at the same age', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
     route({ searchRows: [4], blankRows: [2] });
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(searchStatements).toHaveLength(1);
     expect(cutoffOf(searchStatements[0]!)).toBe(iso(30));
     expect(searchStatements[0]).toContain(ORG_OK);
@@ -255,7 +255,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('an org with retention 400 uses the 180-day ceiling', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(400)];
     route();
-    await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(cutoffOf(searchStatements[0]!)).toBe(iso(180));
     expect(cutoffOf(blankStatements[0]!)).toBe(iso(180));
   });
@@ -263,7 +263,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('a keep-forever org still gets the 180-day pass while its tool outputs are skipped', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(null)];
     route({ searchRows: [3] });
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(summary).toMatchObject({ orgsKeptForever: 1, orgsScrubbed: 0, searchEventsDeleted: 3 });
     expect(cutoffOf(searchStatements[0]!)).toBe(iso(180));
     // Only the two discovery passes ran: no tool-output scrub statement.
@@ -273,7 +273,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('the search-event delete carries no live-session deferral', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
     route();
-    await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     // The tool-output scrub's quiet-window predicate reads ai_messages; this delete never does.
     expect(searchStatements[0]).not.toContain('ai_messages');
   });
@@ -281,7 +281,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('a batch cap with rows remaining sets incomplete and warns, for each of the two passes', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
     route({ searchRows: [1, 1], blankRows: [1, 1] });
-    const summary = await runAiToolOutputRetention({ batchSize: 1, maxBatches: 2, now: NOW, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 1, maxBatches: 2, now: NOW, deleteTranscript: vi.fn() });
     expect(summary.incomplete).toBe(true);
     expect(m.warnOnRetentionBacklog).toHaveBeenCalledWith(
       '[AiToolOutputRetention]', 'ai_tool_output.ai_tool_search_events', { deleted: 2, batches: 2, hasMore: true }, `org=${ORG_OK}`,
@@ -294,7 +294,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('each batch runs in its own fresh system context, labelled per pass', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
     route({ searchRows: [1, 0], blankRows: [1, 1, 0] });
-    await runAiToolOutputRetention({ batchSize: 1, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 1, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(m.systemLabels.filter((l) => l === 'aiToolOutputRetention.ai_tool_search_events')).toHaveLength(2);
     expect(m.systemLabels.filter((l) => l === 'aiToolOutputRetention.tool_search_inputs')).toHaveLength(3);
   });
@@ -302,7 +302,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
   it('an org with an unusable retention value is skipped before the discovery passes', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(0)];
     route();
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(summary.orgsSkipped).toBe(1);
     expect(m.execute).not.toHaveBeenCalled();
   });
@@ -316,7 +316,7 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
       if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
       return rows([{ scrubbed: 0, cleared: [] }]);
     });
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(summary).toMatchObject({ searchEventsDeleted: 4, orgsFailed: 1, incomplete: true });
     expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 4, incomplete: true });
   });
@@ -331,9 +331,115 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
       if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 2, cleared: [] }]);
     });
-    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
     expect(summary).toMatchObject({ orgsFailed: 1, orgsScrubbed: 1, incomplete: true });
     expect(summary.totals.messages).toBe(2);
+  });
+});
+
+// #12421 W01, owner decision 2026-11-24: report-first (#4342). Without
+// AI_TOOL_DISCOVERY_RETENTION_ENFORCE the discovery passes only COUNT what they
+// would delete or blank; the tool-output scrub itself is unchanged.
+describe('runAiToolOutputRetention: tool-discovery report-first (#12421 W01)', () => {
+  const NOW = new Date('2027-02-01T00:00:00.000Z');
+  const mutating: string[] = [];
+  const counts: string[] = [];
+  function route(eligible: { events?: number; inputs?: number } = {}) {
+    mutating.length = 0;
+    counts.length = 0;
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('AS n')) {
+        counts.push(s);
+        const n = s.includes('ai_tool_search_events') ? eligible.events ?? 0 : eligible.inputs ?? 0;
+        return rows([{ n }]);
+      }
+      if (s.includes('ai_tool_search_events') || s.includes('ToolSearch')) { mutating.push(s); return rows([], 0); }
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
+      return rows([{ scrubbed: 0, cleared: [] }]);
+    });
+  }
+  const policy = (days: number | null) => [{ id: 'p', orgId: null, partnerId: PARTNER, toolOutputRetentionDays: days }];
+  const logs: string[] = [];
+  beforeEach(() => {
+    logs.length = 0;
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+  });
+
+  it('with the flag unset nothing is deleted or blanked and the would-delete counts are reported', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route({ events: 7, inputs: 3 });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(mutating).toEqual([]);
+    expect(counts).toHaveLength(2);
+    expect(summary).toMatchObject({
+      searchEventsDeleted: 0, toolSearchInputsBlanked: 0, searchEventsEligible: 7, toolSearchInputsEligible: 3,
+    });
+    expect(logs.join('\n')).toMatch(/REPORT-ONLY.*7 ai_tool_search_events.*3 ToolSearch.*AI_TOOL_DISCOVERY_RETENTION_ENFORCE=true/s);
+    // The report never counts as deleted rows.
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 0, incomplete: false });
+  });
+
+  it('flag unset: a keep-forever org is still counted at the 180-day ceiling', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(null)];
+    route({ events: 2 });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(mutating).toEqual([]);
+    expect(summary.searchEventsEligible).toBe(2);
+  });
+
+  it('flag unset: a count capped at batchSize x maxBatches is reported with a +', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route({ events: 11 });
+    await runAiToolOutputRetention({ batchSize: 2, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(logs.join('\n')).toMatch(/10\+ ai_tool_search_events/);
+  });
+
+  it('flag unset: a failing count marks the run incomplete, and tool outputs are still scrubbed', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('AS n')) throw new Error('boom');
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
+      return rows([{ scrubbed: 2, cleared: [] }]);
+    });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(summary).toMatchObject({ orgsFailed: 1, orgsScrubbed: 1, incomplete: true });
+  });
+
+  it('with the flag true the passes delete and blank, and nothing is counted', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route();
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('AS n')) { counts.push(s); return rows([{ n: 0 }]); }
+      if (s.includes('ai_tool_search_events')) { mutating.push(s); return rows([], 4); }
+      if (s.includes('ToolSearch')) { mutating.push(s); return rows([], 2); }
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
+      return rows([{ scrubbed: 0, cleared: [] }]);
+    });
+    const summary = await runAiToolOutputRetention({ enforceDiscovery: true, batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(counts).toEqual([]);
+    expect(mutating).toHaveLength(2);
+    expect(summary).toMatchObject({ searchEventsDeleted: 4, toolSearchInputsBlanked: 2, searchEventsEligible: 0 });
+  });
+
+  it('the env flag defaults to false and only an explicit true/1 enforces', async () => {
+    const read = async (value: string | undefined) => {
+      vi.resetModules();
+      if (value === undefined) delete process.env.AI_TOOL_DISCOVERY_RETENTION_ENFORCE;
+      else process.env.AI_TOOL_DISCOVERY_RETENTION_ENFORCE = value;
+      return (await import('./aiToolOutputRetention')).AI_TOOL_DISCOVERY_RETENTION_ENFORCE;
+    };
+    try {
+      expect(await read(undefined)).toBe(false);
+      expect(await read('')).toBe(false);
+      expect(await read('yes')).toBe(false);
+      expect(await read('true')).toBe(true);
+      expect(await read('1')).toBe(true);
+    } finally {
+      delete process.env.AI_TOOL_DISCOVERY_RETENTION_ENFORCE;
+    }
   });
 });
 
