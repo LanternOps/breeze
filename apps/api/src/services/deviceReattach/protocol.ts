@@ -54,5 +54,8 @@ export type ReattachCancelReason =
   | 'restage_refused'
   | 'staged_credential_reused'
   | 'key_revoked'
-  | 'device_limit_reached';
+  | 'device_limit_reached'
+  // Wave T2: a `tpm_continuity` intent whose key evidence no longer holds
+  // (revalidation.ts). The column's CHECK is a pattern, not a list.
+  | 'evidence_changed';
 

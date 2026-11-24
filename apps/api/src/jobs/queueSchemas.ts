@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { verifiedNetworkSchema } from '@breeze/shared';
 import { EVENT_SUBSCRIBER_IDS } from '../services/eventSubscriberIds';
 
 export const desktopSessionFinalizationJobDataSchema = z.object({
@@ -240,6 +241,8 @@ export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
     hostsScanned: z.number().int().nonnegative(),
     hostsDiscovered: z.number().int().nonnegative(),
     adjacency: z.array(deviceAdjacencySchema).optional(),
+    // Learned networks (#12369): the fingerprint a guarded result proved, re-verified in the storing transaction.
+    verifiedNetwork: verifiedNetworkSchema.optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);

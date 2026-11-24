@@ -10,6 +10,15 @@
  * literal / template / conditional starting with `#` (a bare `"#"` placeholder
  * is ignored), including variable-built forms like href={`#${x}`}.
  *
+ * Second rule (#12476): an href of the form `/<hash-routed page>#…` (see
+ * HASH_ROUTED_PATHS) is the same bug whenever the click happens while that page
+ * is already open — the router pushStates the fragment without `hashchange`.
+ * Such an anchor must call `claimSamePageHashClick` from its onClick, or be
+ * exempt with the marker (e.g. it is only ever rendered on another page).
+ * Other `/path#…` links are NOT flagged: whether they are same-page depends on
+ * where the component renders, which a static check cannot know, and most are
+ * plain cross-page links.
+ *
  * Legitimate exceptions carry a `// bare-hash-anchor-exempt: <reason>` comment
  * as the last line directly above the `<a` (e.g. the element installs its own
  * click handler that sets the hash).
@@ -51,6 +60,23 @@ function startsWithHash(expr: ts.Expression): boolean {
   return false;
 }
 
+/** Pages whose view state is read from the hash via `hashchange` and that are linked to from components which can render on the page itself. */
+const HASH_ROUTED_PATHS = ['/approvals'];
+
+/** Does this expression start with `/<hash-routed page>#`? */
+function startsWithHashRoutedPath(expr: ts.Expression): boolean {
+  const lead = (text: string) => HASH_ROUTED_PATHS.some((p) => text.startsWith(`${p}#`));
+  if (ts.isStringLiteralLike(expr)) return lead(expr.text);
+  if (ts.isTemplateExpression(expr)) return lead(expr.head.text);
+  if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr)) {
+    return startsWithHashRoutedPath(expr.expression);
+  }
+  if (ts.isConditionalExpression(expr)) {
+    return startsWithHashRoutedPath(expr.whenTrue) || startsWithHashRoutedPath(expr.whenFalse);
+  }
+  return false;
+}
+
 function isExempt(src: string, el: ts.Node): boolean {
   // The marker must be the last thing before the element (only whitespace
   // may follow its line), so it can never exempt a neighbouring anchor.
@@ -70,7 +96,11 @@ export function findViolations(src: string, label = 'sample.tsx'): Violation[] {
         : ts.isJsxExpression(init) && init.expression
           ? init.expression
           : null;
-      if (value && startsWithHash(value) && !isExempt(src, el)) {
+      const claimsClick = el.attributes.properties.some(
+        (a) => ts.isJsxAttribute(a) && a.name.getText(sf) === 'onClick' && a.getText(sf).includes('claimSamePageHashClick'),
+      );
+      const flagged = value && (startsWithHash(value) || (startsWithHashRoutedPath(value) && !claimsClick));
+      if (value && flagged && !isExempt(src, el)) {
         const { line } = sf.getLineAndCharacterOfPosition(el.getStart());
         violations.push({ line: line + 1, snippet: attr.getText(sf).replace(/\s+/g, ' ').slice(0, 100) });
       }
@@ -115,6 +145,16 @@ describe('guard self-checks (AST analyzer)', () => {
     expect(findViolations(`const x = <a href="/devices#alerts">A</a>;`)).toHaveLength(0);
     expect(findViolations('const x = <a href={`/d/${id}#a`}>A</a>;')).toHaveLength(0);
     expect(findViolations(`const x = <HashLink hash="alerts">A</HashLink>;`)).toHaveLength(0);
+  });
+  it('flags a /approvals#… anchor without claimSamePageHashClick (#12476)', () => {
+    expect(findViolations('const x = <a href={`/approvals#proposal-${id}`}>A</a>;')).toHaveLength(1);
+    expect(findViolations(`const x = <a href="/approvals#proposal-x">A</a>;`)).toHaveLength(1);
+  });
+  it('accepts a /approvals#… anchor that claims the click, and ignores other cross-page links', () => {
+    const ok = 'const x = <a href={`/approvals#proposal-${id}`} onClick={(e) => { claimSamePageHashClick(e, h); }}>A</a>;';
+    expect(findViolations(ok)).toHaveLength(0);
+    expect(findViolations(`const x = <a href="/approvals">A</a>;`)).toHaveLength(0);
+    expect(findViolations(`const x = <a href="/devices#alerts">A</a>;`)).toHaveLength(0);
   });
   it('a marker exempts only the element directly below it', () => {
     const src = `

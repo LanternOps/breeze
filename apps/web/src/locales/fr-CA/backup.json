@@ -488,6 +488,8 @@
     "failedToLoadToken": "Impossible de charger le jeton",
     "failedToRefreshToken": "Impossible de rafraîchir le jeton",
     "failedToPreviewBootstrap": "Impossible de prévisualiser le bootstrap",
+    "previewUnavailableSessionActive": "L'aperçu n'est pas disponible : ce jeton a déjà une session de récupération. Un aperçu se connecte avec le jeton et ne peut pas lire une session détenue par l'assistant de récupération. Utilisez Actualiser pour suivre la restauration.",
+    "previewUnavailableNeedsRecoveryHelper": "L'aperçu n'est pas disponible : cet instantané fait référence à des fichiers stockés avec des instantanés antérieurs, que seul l'assistant de récupération peut lire. Exécutez la commande de récupération sur l'ordinateur cible.",
     "failedToRevokeToken": "Impossible de révoquer le jeton",
     "failedToCopyToClipboard": "Impossible de copier dans le presse-papiers.",
     "failedToCreateRecoveryBundle": "Impossible de créer un kit de récupération",

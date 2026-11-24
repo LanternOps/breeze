@@ -469,6 +469,13 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
     setSelectedExecution(match);
   }, [highlightExecutionId, executions]);
 
+  // Closing drops the post-run `#scripts/<executionId>` hash; left in place it
+  // reopens this dialog every time the operator comes back to the device.
+  const closeExecution = () => {
+    setSelectedExecution(null);
+    if (highlightExecutionId && selectedExecution?.id === highlightExecutionId) window.location.replace(`#${deviceScriptsViewHash(view)}`);
+  };
+
   // #5318 — one cancel path shared with ScriptExecutionsPage; the API
   // re-checks scripts:execute, so `canCancel` above is UX only.
   const handleCancel = async (execution: ScriptExecution, graceSeconds: number) => {
@@ -496,7 +503,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
   // open it pre-filled with this device and the execution's runtime values.
   const handleRunAgain = async (execution: ScriptExecution) => {
     if (!execution.scriptId) return;
-    setSelectedExecution(null);
+    closeExecution();
     setRunAgainLoading(true);
     try {
       const response = await fetchWithAuth(`/scripts/${execution.scriptId}`);
@@ -815,7 +822,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedExecution(null)}
+                onClick={closeExecution}
                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
               >
                 <X className="h-5 w-5" />
@@ -970,7 +977,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
               )}
               <button
                 type="button"
-                onClick={() => setSelectedExecution(null)}
+                onClick={closeExecution}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
                 {t('common:actions.close')}

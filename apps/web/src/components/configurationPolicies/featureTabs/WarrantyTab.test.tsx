@@ -154,8 +154,8 @@ describe('WarrantyTab', () => {
     expect(savedSettings().hpCmsl).toEqual({ enabled: false });
   });
 
-  it('Override of an inherited collecting link sends a fresh request with NO consent (#5511 D3)', () => {
-    // Override POSTs a brand-new link built from the INHERITED state, which
+  it('Change for this policy on an inherited collecting link sends a fresh request with NO consent (#5511 D3)', () => {
+    // Saving after Change for this policy POSTs a brand-new link built from the INHERITED state, which
     // carries the parent's recorded consent — the exact object the server
     // refuses with a coded 400. The new link must request collection only.
     render(
@@ -165,7 +165,9 @@ describe('WarrantyTab', () => {
         parentLink={link('link-parent', { enabled: true, warnDays: 90, criticalDays: 30, hpCmsl: { enabled: true, consent: CONSENT } })}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    clickSave();
 
     expect(saveMock).toHaveBeenCalled();
     const call = saveMock.mock.calls[0] as unknown as [string | null, { inlineSettings: Record<string, any> }];

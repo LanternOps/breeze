@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 
 const api = vi.hoisted(() => ({
   listWispConcerns: vi.fn(),
@@ -205,6 +206,23 @@ describe('WispConcernsPanel', () => {
     await mountWith([concern('a', 'high', { approvalIntentId: 'int-1' }), concern('b', 'low')]);
     expect(screen.getByTestId('wisp-concern-approval-a').getAttribute('href')).toBe('/approvals#intent-int-1');
     expect(screen.queryByTestId('wisp-concern-approval-b')).toBeNull();
+  });
+
+  it('#12476: clicking the approval link while on /approvals fires hashchange', async () => {
+    window.history.pushState({}, '', '/approvals#intent-other');
+    const standIn = installAstroClientRouterStandIn();
+    const onHashChange = vi.fn();
+    window.addEventListener('hashchange', onHashChange);
+    try {
+      await mountWith([concern('a', 'high', { approvalIntentId: 'int-1' })]);
+      fireEvent.click(screen.getByTestId('wisp-concern-approval-a'));
+      expect(window.location.hash).toBe('#intent-int-1');
+      await waitFor(() => expect(onHashChange).toHaveBeenCalledTimes(1));
+    } finally {
+      window.removeEventListener('hashchange', onHashChange);
+      standIn.uninstall();
+      window.history.pushState({}, '', '/');
+    }
   });
 
   describe('W06 T16 nudge feedback (w00 A34)', () => {

@@ -523,6 +523,22 @@ describe('heartbeatSchema — Layer A tolerance', () => {
   });
 });
 
+// Learned networks (#12369, contract C1): the report is parsed by the learner, report-locally, so the heartbeat
+// schema hands it over untouched and a malformed one never rejects the beat.
+describe('heartbeatSchema — networkAttachmentsV1', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+
+  it('passes networkAttachmentsV1 through untouched, even when malformed', () => {
+    for (const v of [{ epoch: 'x' }, 'junk', 7, null, { epoch: '9f2c1e7ab4d04c11', attachments: [], extra: true }]) {
+      expect(heartbeatSchema.parse({ ...minimal, networkAttachmentsV1: v }).networkAttachmentsV1).toEqual(v);
+    }
+  });
+
+  it('leaves the key absent when the beat carries none', () => {
+    expect('networkAttachmentsV1' in heartbeatSchema.parse(minimal)).toBe(false);
+  });
+});
+
 describe('heartbeatSchema — versioned agent health tolerance', () => {
   const minimal = {
     status: 'ok' as const,

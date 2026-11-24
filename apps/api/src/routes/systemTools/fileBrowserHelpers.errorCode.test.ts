@@ -7,9 +7,12 @@ describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
   // Network-isolation codes (#10088) ride only isolate/release results, which
   // never reach this classifier, and no pre-#4026 agent sent their prose, so
   // there is no legacy answer to stay in parity with. They are pinned below.
-  type IsolationCode = Extract<AgentCommandErrorCode, `isolation_${string}`>;
+  // The backup verification code (#11813) likewise rides only verification
+  // results; it is pinned with them.
+  type IsolationCode = Extract<AgentCommandErrorCode, `isolation_${string}`> | 'verification_queue_expired';
   type FileOpCode = Exclude<AgentCommandErrorCode, IsolationCode>;
-  const isIsolationCode = (code: AgentCommandErrorCode): code is IsolationCode => code.startsWith('isolation_');
+  const isIsolationCode = (code: AgentCommandErrorCode): code is IsolationCode =>
+    code.startsWith('isolation_') || code === 'verification_queue_expired';
   const FILE_OP_CODES = AGENT_COMMAND_ERROR_CODES.filter((code): code is FileOpCode => !isIsolationCode(code));
   const ISOLATION_CODES = AGENT_COMMAND_ERROR_CODES.filter(isIsolationCode);
 

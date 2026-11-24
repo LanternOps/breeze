@@ -14,8 +14,8 @@ import { getTicketApprovalSummary } from './ticketApproval/summary';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { isFlowPrincipal } from '../middleware/principalKind';
-import { deviceInSiteScope, ticketCounterpartScopeCondition, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
-import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
+import { deviceInSiteScope, ticketCounterpartScopeCondition, ticketListReachConditions } from '../routes/tickets/siteScope';
+import { deviceIdSiteDenied } from './aiToolsSiteScope';
 // One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
 // does not import this module, so the edge is acyclic.
 import { findAlertWithAccess } from './aiToolsAlerts';
@@ -898,22 +898,16 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── list ──────────────────────────────────────────────────────────────
       if (action === 'list') {
-        const conditions: SQL[] = [isNull(tickets.deletedAt)]; // never surface soft-deleted tickets to the AI
-        const orgCond = auth.orgCondition(tickets.orgId);
-        if (orgCond) conditions.push(orgCond);
-        // Site axis: mirror the HTTP list route (routes/tickets/tickets.ts) —
-        // a site-restricted caller must not see device-bound tickets outside
-        // their allowed sites (deviceless org-level tickets stay visible).
-        const siteCondition = ticketSiteScopeCondition(auth);
-        if (siteCondition) conditions.push(siteCondition);
-        // Exact-device axis (#6086 finding 6): a device-bound agent run must not
-        // enumerate a SIBLING device's tickets. Independent of the site axis —
-        // a device-less analysis run carries allowedDeviceIds with no
-        // allowedSiteIds, so the site condition above is undefined for it.
-        // Deviceless (org-level) tickets stay visible: they are not
-        // device-attributable (same carve-out as findTicketWithAccess).
-        const deviceCondition = deviceScopeCondition(auth, tickets.deviceId);
-        if (deviceCondition) conditions.push(or(isNull(tickets.deviceId), deviceCondition)!);
+        // Never a soft-deleted ticket; the org axis; the site axis, mirroring
+        // the HTTP list route (routes/tickets/tickets.ts): a site-restricted
+        // caller must not see device-bound tickets outside their allowed sites;
+        // and the exact-device axis (#6086 finding 6): a device-bound agent run
+        // must not enumerate a SIBLING device's tickets. The two axes are
+        // independent — a device-less analysis run carries allowedDeviceIds with
+        // no allowedSiteIds. Deviceless (org-level) tickets stay visible on both:
+        // they are not device-attributable (same carve-out as
+        // findTicketWithAccess). Shared with Wisp's standing state (#11677).
+        const conditions: SQL[] = ticketListReachConditions(auth);
         if (input.orgId) conditions.push(eq(tickets.orgId, input.orgId as string));
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));

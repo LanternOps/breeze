@@ -173,7 +173,13 @@ export type StepUpOperation =
   // to restore a removed record nobody agreed to restore. Consumed inside the
   // intent's creating transaction, after every refusal
   // (services/deviceReattach/requestIntent.ts), so a refusal never burns it.
-  | 'device_reattach';
+  | 'device_reattach'
+  // Accepting a held TPM key change as a device's new baseline (#8318 wave
+  // T2): the key a reattach compares against. Bound by resourceDigest to
+  // { deviceId, baselineVersion }, the opaque version of the exact baseline
+  // and held key the operator reviewed (services/tpmBaseline), so a grant can
+  // never accept a different key. Consumed after every refusal.
+  | 'device_tpm_baseline_accept';
 
 export interface StepUpGrant {
   id: string;
@@ -328,6 +334,22 @@ export interface DeviceReattachResource {
   targetVersion: string;
   evidenceLevel: 'hint' | 'tpm_continuity';
   restoreDecommissioned: boolean;
+}
+
+export interface DeviceTpmBaselineAcceptResource {
+  deviceId: string;
+  /** The opaque version of the baseline and the held key (services/tpmBaseline); hashed as given. */
+  baselineVersion: string;
+}
+
+/** Canonical digest for a `device_tpm_baseline_accept` grant (#8318 wave T2). */
+export function deviceTpmBaselineAcceptResourceDigest(input: DeviceTpmBaselineAcceptResource): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'device_tpm_baseline_accept',
+    deviceId: canonicalId(input.deviceId),
+    baselineVersion: input.baselineVersion,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
 /**

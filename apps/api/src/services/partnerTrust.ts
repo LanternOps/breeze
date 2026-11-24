@@ -138,6 +138,7 @@ export const GATED_COMMAND_TYPES = [
   'network_diagnostic',
   'network_diagnostic_cancel',
   'network_discovery',
+  'network_discovery_guarded',
   'network_dns_check',
   'network_http_check',
   'network_ping',

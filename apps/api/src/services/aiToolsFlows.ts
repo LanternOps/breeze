@@ -63,6 +63,17 @@ function guarded(name: string, fn: (input: Record<string, unknown>, auth: AuthCo
   };
 }
 
+/**
+ * Flows completion W01b (#12435, spec §3.2, plan Decision P7): an update
+ * without `expectedVersion` can overwrite a person's save from the editor. It
+ * is warned for one release and refused from W3. Never change this text
+ * without the W3 refusal's.
+ */
+const EXPECTED_VERSION_WARNING = {
+  code: 'expected_version_required_soon',
+  message: 'Pass expectedVersion on every update; updates without it will be refused in a later release.',
+} as const;
+
 const DOCUMENT_PROP = {
   type: 'object',
   description: 'Flow document v1: version 1, name, optional description, trigger, inputs, and steps (id, tool, input, optional when/forEach).',
@@ -92,15 +103,22 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
     },
     handler: guarded('draft_flow', async (input, auth) => {
       const { saveDraftFlow } = await import('./flows/service');
+      const flowId = str(input.flowId);
+      const expectedVersion = typeof input.expectedVersion === 'number' ? input.expectedVersion : undefined;
+      const unversionedUpdate = flowId !== undefined && expectedVersion === undefined;
+      // Counted so the W3 refusal can be sized; the fixed tool name only, never an id.
+      if (unversionedUpdate) console.warn('[draft_flow] update without expectedVersion', { tool: 'draft_flow' });
       const result = await saveDraftFlow(auth, {
         document: recordOf(input.document),
-        flowId: str(input.flowId),
-        expectedVersion: typeof input.expectedVersion === 'number' ? input.expectedVersion : undefined,
+        flowId,
+        expectedVersion,
         ownerScope: ownerScopeOf(input.ownerScope),
         orgId: str(input.orgId),
         slug: str(input.slug),
       });
-      return result.saved ? { ...result, reviewPath: `/flows/${result.flow.id}` } : result;
+      if (!result.saved) return result;
+      const saved = { ...result, reviewPath: `/flows/${result.flow.id}` };
+      return unversionedUpdate ? { ...saved, warning: EXPECTED_VERSION_WARNING } : saved;
     }),
   });
 

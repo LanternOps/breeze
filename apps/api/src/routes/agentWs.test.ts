@@ -268,6 +268,14 @@ vi.mock('../jobs/discoveryWorker', () => ({
   enqueueDiscoveryResults: vi.fn()
 }));
 
+// Learned networks (#12369 W03a): discovery results are verified under the site lock. Lock a no-op; the verifier
+// accepts (an unrestricted result on a site that is not gated) unless a test says otherwise.
+vi.mock('../services/learnedNetworks/siteLock', () => ({ lockSitesForNetworkGate: vi.fn(async () => {}) }));
+vi.mock('../services/learnedNetworks/verify', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/learnedNetworks/verify')>()),
+  verifyDiscoveryResult: vi.fn(async () => ({ ok: true, networkId: null })),
+}));
+
 vi.mock('../jobs/snmpWorker', () => ({
   enqueueSnmpPollResults: vi.fn()
 }));
@@ -516,6 +524,9 @@ import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
 import { getAgentTenantState } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
+import { verifyDiscoveryResult } from '../services/learnedNetworks/verify';
+import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
+import { GATE_FAILURE_MESSAGES } from '../services/learnedNetworks/messages';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult } from '../jobs/monitorWorker';
 import {
@@ -3143,6 +3154,115 @@ describe('agent websocket command results', () => {
     expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
   });
 
+  describe('learned networks: the direct discovery result branch (#12369 W03a)', () => {
+    const JOB_ID = '88888888-8888-4888-8888-888888888888';
+    const PROFILE_ID = '99999999-9999-4999-8999-999999999999';
+    const RECORD = { version: 1, mode: 'guarded', agentId: 'agent-123', deviceId: 'device-123',
+      allowedNetworkIds: ['6c1d2e3f-4a5b-4c6d-8e7f-001122334455'], allowedGatewayIds: ['7c1d2e3f-4a5b-4c6d-8e7f-001122334455'],
+      decidedAt: '2026-11-22T01:00:00.000Z' };
+    const VN = { networkId: '6c1d2e3f-4a5b-4c6d-8e7f-001122334455', gatewayId: '7c1d2e3f-4a5b-4c6d-8e7f-001122334455',
+      gatewayAddress: '192.168.1.1', gatewayMac: 'a4:2b:b0:11:22:9c', interfaceName: 'Ethernet' };
+    const UNVERIFIED = { code: 'network_unverified' as const, message: GATE_FAILURE_MESSAGES.network_unverified };
+    let sets: Array<Record<string, unknown>>;
+
+    async function runningDiscoveryJob() {
+      const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+      const connected = await connectedAgent('agent-123', preValidatedAgent);
+      vi.mocked(db.select).mockImplementation((() => ({
+        from: (table: unknown) => {
+          const rows = table === discoveryJobs
+            ? [{ id: JOB_ID, orgId: 'org-123', siteId: 'site-1', agentId: 'agent-123', status: 'running', profileId: PROFILE_ID, networkDispatch: RECORD }]
+            : [];
+          const tail: any = {
+            where: () => tail, innerJoin: () => tail, leftJoin: () => tail, orderBy: () => tail,
+            limit: () => Promise.resolve(rows),
+            then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej),
+          };
+          return tail;
+        },
+      })) as any);
+      sets = [];
+      vi.mocked(db.update).mockReturnValue({
+        set: (v: Record<string, unknown>) => { sets.push(v); return { where: () => Promise.resolve([]), returning: () => Promise.resolve([]) }; },
+      } as any);
+      return connected;
+    }
+
+    it('stores a guarded refusal with its code', async () => {
+      const { handlers, ws } = await runningDiscoveryJob();
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId: JOB_ID, status: 'failed', errorCode: 'network_mismatch', error: 'x',
+      }) } as any, ws as any);
+
+      expect(sets).toEqual([expect.objectContaining({
+        status: 'failed', errors: { code: 'network_mismatch', message: GATE_FAILURE_MESSAGES.network_mismatch },
+      })]);
+      expect(vi.mocked(verifyDiscoveryResult)).not.toHaveBeenCalled();
+      expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
+    });
+
+    it('stores a network_changed refusal with its code', async () => {
+      const { handlers, ws } = await runningDiscoveryJob();
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId: JOB_ID, status: 'failed', errorCode: 'network_changed', error: 'moved',
+      }) } as any, ws as any);
+
+      expect(sets).toEqual([expect.objectContaining({
+        errors: { code: 'network_changed', message: GATE_FAILURE_MESSAGES.network_changed },
+      })]);
+    });
+
+    it('discards an unverified result and enqueues nothing', async () => {
+      const { handlers, ws } = await runningDiscoveryJob();
+      vi.mocked(isRedisAvailable).mockReturnValue(true);
+      vi.mocked(verifyDiscoveryResult).mockResolvedValueOnce({ ok: false, error: UNVERIFIED });
+
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId: JOB_ID, status: 'completed',
+        result: { jobId: JOB_ID, hosts: [{ ip: '192.168.1.20', assetType: 'printer', methods: ['ping'] }], verifiedNetwork: VN },
+      }) } as any, ws as any);
+
+      expect(vi.mocked(lockSitesForNetworkGate)).toHaveBeenCalledWith(['site-1'], 'shared');
+      expect(vi.mocked(verifyDiscoveryResult)).toHaveBeenCalledWith({
+        orgId: 'org-123', siteId: 'site-1', profileId: PROFILE_ID,
+        attempt: { mode: 'guarded', allowedGatewayIds: RECORD.allowedGatewayIds }, verifiedNetwork: VN,
+      });
+      expect(sets).toEqual([expect.objectContaining({ status: 'failed', errors: UNVERIFIED })]);
+      expect(vi.mocked(enqueueDiscoveryResults)).not.toHaveBeenCalled();
+      vi.mocked(isRedisAvailable).mockReturnValue(false);
+    });
+
+    it('enqueues a verified result with its verifiedNetwork', async () => {
+      const { handlers, ws } = await runningDiscoveryJob();
+      vi.mocked(isRedisAvailable).mockReturnValue(true);
+      vi.mocked(verifyDiscoveryResult).mockResolvedValueOnce({ ok: true, networkId: VN.networkId });
+
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId: JOB_ID, status: 'completed',
+        result: { jobId: JOB_ID, hosts: [{ ip: '192.168.1.20', assetType: 'printer', methods: ['ping'] }], verifiedNetwork: VN },
+      }) } as any, ws as any);
+
+      expect(vi.mocked(enqueueDiscoveryResults)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(enqueueDiscoveryResults).mock.calls[0]![9]).toEqual(VN);
+      expect(sets).toEqual([]);
+      vi.mocked(isRedisAvailable).mockReturnValue(false);
+    });
+
+    it('passes no verifiedNetwork to the queue for an unrestricted result', async () => {
+      const { handlers, ws } = await runningDiscoveryJob();
+      vi.mocked(isRedisAvailable).mockReturnValue(true);
+
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId: JOB_ID, status: 'completed',
+        result: { jobId: JOB_ID, hosts: [{ ip: '192.168.1.20', assetType: 'printer', methods: ['ping'] }] },
+      }) } as any, ws as any);
+
+      expect(vi.mocked(enqueueDiscoveryResults)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(enqueueDiscoveryResults).mock.calls[0]![9]).toBeUndefined();
+      vi.mocked(isRedisAvailable).mockReturnValue(false);
+    });
+  });
+
   it('skips downstream processing when the command row was already completed by another result', async () => {
     const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
@@ -3222,6 +3342,36 @@ describe('agent websocket command results', () => {
       result: expect.objectContaining({ status: 'failed' }),
     }));
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // #11813: a verification the agent failed without starting it carries why
+  // in errorCode; the verification row persists it as its reasonCode.
+  it('hands a failed verification result its errorCode', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        { id: 'cmd-verify-queued', type: 'backup_verify', payload: {}, deviceId: 'device-123' },
+      ]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-verify-queued' }]) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'failed',
+        exitCode: 1,
+        error: 'verification was not started',
+        errorCode: 'verification_queue_expired',
+      })
+    } as any, ws as any);
+
+    expect(vi.mocked(processBackupVerificationResult)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(processBackupVerificationResult).mock.calls[0]![1]).toMatchObject({
+      status: 'failed',
+      errorCode: 'verification_queue_expired',
+    });
   });
 
   it('fails the backup_verifications record when verification stdout exceeds the size limit', async () => {

@@ -131,3 +131,51 @@ describe('SettingsSectionNav (#9168)', () => {
     });
   });
 });
+
+// D15 (#12469): an optional status line. The first case pins that callers who
+// pass no status render exactly as before.
+describe('SettingsSectionNav — status slot (#12469)', () => {
+  it('callers without status render as before', () => {
+    renderNav();
+    const company = screen.getByTestId('nav-tab-company');
+    expect(company).toHaveAccessibleName('Company');
+    expect(company).toHaveTextContent('Name and address');
+    expect(screen.getByTestId('nav-tab-security')).toHaveAccessibleName('Security (unsaved changes)');
+    expect(screen.getByRole('option', { name: 'Company' }).textContent).toBe('Company');
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByLabelText('Settings section').tagName).toBe('SELECT');
+  });
+
+  it('status replaces the description and joins the accessible name', () => {
+    const withStatus: SettingsNavGroup[] = [
+      {
+        label: 'Security',
+        items: [
+          { key: 'patch', hash: 'patch', label: 'Patches', description: 'Patch settings', icon: Shield, status: 'Set here' },
+          { key: 'pam', hash: 'pam', label: 'PAM', description: 'Elevation', icon: Shield, status: 'Not set', dirty: true },
+        ],
+      },
+    ];
+    render(
+      <SettingsSectionNav
+        groups={withStatus}
+        activeKey="patch"
+        onNavigate={vi.fn()}
+        selectId="rail-select"
+        testIdPrefix="rail"
+        navLabel="Policy features"
+        selectLabel="Policy feature"
+      />,
+    );
+    const patch = screen.getByTestId('rail-tab-patch');
+    expect(patch).toHaveTextContent('Set here');
+    expect(patch).not.toHaveTextContent('Patch settings');
+    expect(patch).toHaveAccessibleName('Patches, Set here');
+    expect(screen.getByTestId('rail-tab-pam')).toHaveAccessibleName('PAM (unsaved changes), Not set');
+    // Below lg the option text is all a screen reader gets.
+    expect(screen.getByRole('option', { name: 'Patches, Set here' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'PAM (unsaved changes), Not set' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Policy features');
+    expect(screen.getByLabelText('Policy feature').tagName).toBe('SELECT');
+  });
+});

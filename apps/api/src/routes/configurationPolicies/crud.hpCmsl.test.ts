@@ -26,6 +26,8 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     ...original,
     createConfigPolicy: createConfigPolicyMock,
     parentPolicyEnablesHpCmslCollection: parentPolicyEnablesHpCmslCollectionMock,
+    // The parent is readable (W03a's parent read check is covered in crud.test.ts).
+    readablePolicyIds: vi.fn(async (_auth: unknown, ids: readonly string[]) => [...ids]),
     // #11070's vendor updates door runs on the same create; crud.oemUpdates.test.ts covers it.
     parentPolicyArmsOemUpdates: vi.fn(async () => false),
   };

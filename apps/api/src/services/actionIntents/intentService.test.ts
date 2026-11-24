@@ -318,6 +318,23 @@ vi.mock('./actionLabel', async (importOriginal) => {
   return { ...actual, buildActionLabel: vi.fn(actual.buildActionLabel) };
 });
 
+// #11674: the ticket-number read has its own org-pin and projection suite
+// (approvalTicketNumber.test.ts); here it is a spy, so these tests assert what
+// createActionIntent asks for and what it stores. `argumentTicketId` stays real.
+const ticketNumberMock = vi.hoisted(() => ({
+  resolveApprovalTicketNumber: vi.fn(async (_ticketId: string, _orgId: string, _reach: unknown): Promise<string | null> => null),
+}));
+// The caller's site/device check behind the approval-label device name. The
+// real module imports the full schema index, which this harness cannot load.
+const siteScopeMock = vi.hoisted(() => ({
+  deviceInSiteScope: vi.fn(async (_auth: unknown, _deviceId: string): Promise<boolean> => true),
+}));
+vi.mock('../../routes/tickets/siteScope', () => ({ deviceInSiteScope: siteScopeMock.deviceInSiteScope }));
+vi.mock('./approvalTicketNumber', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./approvalTicketNumber')>();
+  return { ...actual, resolveApprovalTicketNumber: ticketNumberMock.resolveApprovalTicketNumber };
+});
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
@@ -408,6 +425,9 @@ function makeAuth(overrides?: {
     partnerId: overrides?.partnerId ?? null,
     scope: 'organization' as const,
     accessibleOrgIds: [ORG_ID],
+    // Every real AuthContext carries one; the approval-label reads (#11674)
+    // keep the id stub for a principal without it.
+    orgCondition: () => undefined,
     ...('allowedSiteIds' in (overrides ?? {}) ? { allowedSiteIds: overrides!.allowedSiteIds } : {}),
     ...('allowedDeviceIds' in (overrides ?? {}) ? { allowedDeviceIds: overrides!.allowedDeviceIds } : {}),
   } as unknown as Parameters<typeof createActionIntent>[0];
@@ -1969,6 +1989,28 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     expect(labels[0]).not.toContain('on device');
   });
 
+  it('keeps the stub when the device is outside the filing caller\'s site scope (#11674 review)', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-out-of-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(false);
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, restartInput());
+
+    expect(siteScopeMock.deviceInSiteScope).toHaveBeenCalledWith(auth, DEVICE_ID);
+    expect(persistedApprovalLabels()[0]).toBe(`Restart service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`);
+  });
+
+  it('names the device when it is inside the filing caller\'s site scope', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-in-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(true);
+
+    await createActionIntent(makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] }), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toContain('on KIT');
+  });
+
   it('falls back to the hostname when the device has no display name', async () => {
     dbState.selectDevicesResults.push([{ hostname: 'kit-01', displayName: null }]);
     queueFanout('intent-5363-hostname');
@@ -2005,6 +2047,101 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     const label = persistedApprovalLabels()[0];
     expect(label).toContain(`on device ${OTHER_ORG_ID.slice(0, 8)}...`);
     expect(label).not.toContain('KIT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #11674 — the stored approval label names the ticket by NUMBER
+//
+// The /approvals queue and the mobile push render `action_label`. It said
+// `ticket #<8 hex>...` while the chat card already said `ticket T-2026-0001`.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline ticket number (#11674)', () => {
+  const TICKET_ID = '2aad0601-1111-4222-8333-444455556666';
+  const OPERATIVE_TICKET_ID = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+  const NOTE_DESCRIPTION = `Post internal note on ticket #${TICKET_ID.slice(0, 8)}...`;
+
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  function guardrailSays(description: string) {
+    guardrailMock.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, description });
+  }
+
+  beforeEach(() => {
+    ticketNumberMock.resolveApprovalTicketNumber.mockReset();
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValue(null);
+  });
+
+  it('resolves this call\'s ticket in the intent org, cut to the filing caller\'s reach, and stores the number', async () => {
+    guardrailSays(NOTE_DESCRIPTION);
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0001');
+    queueFanout('intent-11674-named');
+    // Site-restricted caller: the read must get THIS auth, so the resolver can
+    // apply its site/device scope (approvalTicketNumber.test.ts covers the cut).
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'Rebooted the print server.' },
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(TICKET_ID, ORG_ID, auth);
+    const labels = persistedApprovalLabels();
+    expect(labels).toEqual(['Post internal note on ticket T-2026-0001']);
+    // The number only: never the comment text the tool input carries.
+    expect(labels[0]).not.toContain('Rebooted');
+  });
+
+  it('keeps the stub when the ticket cannot be resolved (foreign, missing, or a failed read)', async () => {
+    guardrailSays(NOTE_DESCRIPTION);
+    queueFanout('intent-11674-missing');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'x' },
+    }));
+
+    expect(persistedApprovalLabels()).toEqual([NOTE_DESCRIPTION]);
+  });
+
+  it('names the expectedTicketId of a comment edit, never a stray ticketId', async () => {
+    guardrailSays(`Edit a comment on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}... (replaces its text)`);
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0042');
+    queueFanout('intent-11674-edit');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'edit_comment', commentId: TICKET_ID, ticketId: TICKET_ID, expectedTicketId: OPERATIVE_TICKET_ID, content: 'new text' },
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledTimes(1);
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(OPERATIVE_TICKET_ID, ORG_ID, expect.anything());
+    expect(persistedApprovalLabels()).toEqual(['Edit a comment on ticket T-2026-0042 (replaces its text)']);
+  });
+
+  it('skips the read when the label carries no stub for this call\'s ticket', async () => {
+    // A caller-supplied label naming some OTHER ticket keeps its stub, and costs no read.
+    guardrailSays(NOTE_DESCRIPTION);
+    queueFanout('intent-11674-other');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'x' },
+      actionLabel: `Post internal note on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}...`,
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual([`Post internal note on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}...`]);
   });
 });
 

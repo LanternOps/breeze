@@ -73,7 +73,8 @@ function link(over: Record<string, unknown> = {}, vendor: Record<string, unknown
       schedule: { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 },
       catchUpNights: 7,
       reboot: 'overnight',
-      vendors: { dell: { enabled: true, categories: { bios: true, driver: true }, blockedUpdateIds: ['B-1'], ...vendor } },
+      // HP, not Dell: Dell cannot honour a blocklist (#12265), and these tests follow one through.
+      vendors: { hp: { enabled: true, categories: { bios: true, driver: true }, blockedUpdateIds: ['B-1'], ...vendor } },
       ...over,
     },
   } as ResolvedOemUpdatesLink;
@@ -84,7 +85,7 @@ function due(over: Partial<DueDevice> = {}): DueDevice {
     due: true,
     deviceId: D1,
     orgId: 'org-decided',
-    lane: 'dell',
+    lane: 'hp',
     timezone: 'UTC',
     status: {},
     occurrenceKey: '2027-01',
@@ -147,6 +148,23 @@ describe('runOemUpdatesTick: scheduled dispatch', () => {
     vi.mocked(resolveOemUpdatesLinkForDevice).mockResolvedValue(fresh);
     await runOemUpdatesTick(NOW);
     expect(dispatchOemUpdateRun).not.toHaveBeenCalled();
+  });
+
+  // #12265: a Dell blocklist stored before the validator refused it never becomes a
+  // Dell run that the agent would fail with blocked_ids_unsupported.
+  it('a Dell link that gained a blocklist between select and send: no command, with the reason logged', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.mocked(selectDueDevices).mockResolvedValue([due({ lane: 'dell', blockedUpdateIds: [] })]);
+    const dellBlocked = link();
+    dellBlocked.settings.vendors = { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: ['B-1'] } };
+    vi.mocked(resolveOemUpdatesLinkForDevice).mockResolvedValue(dellBlocked);
+    await runOemUpdatesTick(NOW);
+    expect(dispatchOemUpdateRun).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('[OemUpdates] scheduled dispatch', expect.objectContaining({
+      sent: 0,
+      notSent: { 'decision:blocked_ids_unsupported': 1 },
+    }));
+    log.mockRestore();
   });
 
   it('a stale selection sends what the fresh link says, not what it said', async () => {

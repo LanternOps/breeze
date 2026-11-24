@@ -3,13 +3,13 @@ import { Trans, useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { CheckCircle, Settings2, HardDriveDownload } from 'lucide-react';
 import { isDeviceAlert } from './AlertSubjectChip';
-import AlertList, { type Alert } from './AlertList';
+import AlertList, { DEFAULT_ALERT_LIST_QUERY, type Alert, type AlertListQuery, type AlertListServerMode } from './AlertList';
 import AlertDetails, { type NotificationHistory, type LinkedAlertTicket } from './AlertDetails';
 import SuppressAlertDialog from './SuppressAlertDialog';
 import { useAlertActions } from './useAlertActions';
 import AlertsSummary from './AlertsSummary';
 import AlertsTabStrip from './AlertsTabStrip';
-import type { AlertSeverity } from './alertConfig';
+import { severityOrder, type AlertSeverity } from './alertConfig';
 import { EMPTY_ALERTS_HASH, mergeAlertsHash, parseAlertsHash, type AlertsHashState } from './alertsHash';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -24,7 +24,7 @@ import { normalizeMetricAnomalyContext } from './alertMlContext';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { asList } from '@/lib/asList';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
-import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
+import { hasValidConditions } from '../../hooks/useAdvancedFilterIds';
 import { useHashState } from '@/lib/useHashState';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -79,6 +79,61 @@ function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: stri
 
 const NOTIFICATION_STATUSES = ['sent', 'failed', 'pending'] as const;
 
+// #12324 — the list is filtered and paged by GET /alerts. It used to fetch the
+// newest 50 alerts once and filter them in the browser, so any alert outside
+// that window (in the All-organizations view, a device's current alert behind
+// newer alerts from other orgs) could never be shown.
+const ALERTS_PAGE_SIZE = 25;
+const SEARCH_DEBOUNCE_MS = 300;
+const DATE_RANGE_MS: Record<string, number> = {
+  '1h': 3600_000,
+  '24h': 24 * 3600_000,
+  '7d': 7 * 24 * 3600_000,
+  '30d': 30 * 24 * 3600_000,
+};
+
+function alertsListParams(
+  query: AlertListQuery,
+  search: string,
+  deviceFilterParam: string | null,
+  hideAiNoise: boolean,
+): string {
+  const params = new URLSearchParams();
+  params.set('page', String(query.page));
+  params.set('limit', String(ALERTS_PAGE_SIZE));
+  // No status = the API's default, every status except dismissed — what the
+  // "All Status" option means.
+  if (query.status !== 'all') params.set('status', query.status);
+  if (query.severity.length > 0) params.set('severity', query.severity.join(','));
+  if (query.deviceId !== 'all') params.set('deviceId', query.deviceId);
+  const rangeMs = DATE_RANGE_MS[query.dateRange];
+  if (rangeMs) params.set('startDate', new Date(Date.now() - rangeMs).toISOString());
+  if (search) params.set('search', search);
+  if (deviceFilterParam) params.set('deviceFilter', deviceFilterParam);
+  if (hideAiNoise) params.set('hideAiNoise', 'true');
+  return params.toString();
+}
+
+/** `pagination.total` of a GET /alerts body, else the row count. */
+function readListTotal(body: unknown, rowCount: number): number {
+  const total = (body as { pagination?: { total?: unknown } } | null)?.pagination?.total;
+  const n = Number(total);
+  if (total !== undefined && total !== null && Number.isFinite(n) && n >= 0) return n;
+  // A full page with no total may hide later pages; say so rather than guess.
+  if (rowCount >= ALERTS_PAGE_SIZE) console.warn('GET /alerts returned no pagination.total; paging may be incomplete');
+  return rowCount;
+}
+
+/** GET /alerts/summary `openBySeverity` → the summary strip's counts, or null. */
+function readOpenSeverityCounts(body: unknown): { severity: AlertSeverity; count: number }[] | null {
+  const open = (body as { openBySeverity?: unknown } | null)?.openBySeverity;
+  if (!open || typeof open !== 'object') return null;
+  return severityOrder.map((severity) => {
+    const n = Number((open as Record<string, unknown>)[severity] ?? 0);
+    return { severity, count: Number.isFinite(n) ? n : 0 };
+  });
+}
+
 // Maps the `notifications` rows of GET /alerts/:id onto the drawer's shape.
 // sentAt is null until a delivery lands, so fall back to createdAt; the
 // channel columns are null once the channel is deleted.
@@ -117,6 +172,21 @@ export default function AlertsPage() {
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
+  // Filters and page of the list, all applied by GET /alerts (#12324).
+  const [listQuery, setListQuery] = useState<AlertListQuery>(DEFAULT_ALERT_LIST_QUERY);
+  const [listTotal, setListTotal] = useState(0);
+  // A filter/page refetch is in flight: the rows on screen belong to the
+  // previous filters, so row and bulk actions are held until it lands.
+  const [listRefreshing, setListRefreshing] = useState(false);
+  // The last filter/scope fetch failed; its rows were cleared.
+  const [listFailed, setListFailed] = useState(false);
+  const [openSeverityCounts, setOpenSeverityCounts] = useState<{ severity: AlertSeverity; count: number }[] | null>(null);
+  // Every alert in scope, any status (summary `total`). The default list
+  // hides dismissed alerts, so an empty list is not proof the scope has none:
+  // when this is above zero the list (and its Dismissed filter) stays on
+  // screen instead of the "All clear" state. null = unknown.
+  const [scopeAlertTotal, setScopeAlertTotal] = useState<number | null>(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
   // Bulk suppress needs a duration picker (the endpoint requires `until`), so it
@@ -147,6 +217,27 @@ export default function AlertsPage() {
     window.history.replaceState(window.history.state, '', `${window.location.pathname}${search ? `?${search}` : ''}${nextHash}`);
     setHashState(parseAlertsHash(nextHash));
   }, [setHashState]);
+  // `#status=` / `#severity=` seed the list filters, and re-seed them when the
+  // hash changes (summary-strip clicks, back/forward). A no-op when they
+  // already match, so a plain mount does not refetch.
+  const hashStatus = hashState.status[0] ?? 'all';
+  const hashSeverityKey = hashState.severity.join(',');
+  useEffect(() => {
+    setListQuery((prev) => {
+      if (prev.status === hashStatus && prev.severity.join(',') === hashSeverityKey) return prev;
+      return {
+        ...prev,
+        status: hashStatus,
+        severity: hashSeverityKey ? (hashSeverityKey.split(',') as AlertSeverity[]) : [],
+        page: 1,
+      };
+    });
+  }, [hashStatus, hashSeverityKey]);
+  useEffect(() => {
+    const trimmed = listQuery.search.trim();
+    const timer = setTimeout(() => setDebouncedSearch(trimmed), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [listQuery.search]);
   const [hashAlertId] = useHashState<string | null>(null, alertIdFromHash);
   // Last hash id already opened, so closing the drawer doesn't re-open it.
   const openedHashAlertRef = useRef<string | null>(null);
@@ -178,6 +269,22 @@ export default function AlertsPage() {
   // Fleet (All-organizations) view — the list shows an Organization column so
   // cross-org rows stay legible (mirrors the Devices list).
   const isFleetView = !currentOrgId && allOrgs;
+  const scopeKey = `${currentOrgId}:${allOrgs}`;
+  // A scope switch starts the list over at page 1, in the same render so the
+  // fetch never goes out for the old page in the new scope.
+  const [listScopeKey, setListScopeKey] = useState(scopeKey);
+  if (listScopeKey !== scopeKey) {
+    setListScopeKey(scopeKey);
+    if (listQuery.page !== 1) setListQuery((prev) => ({ ...prev, page: 1 }));
+    // The old scope's counts must not sit on screen while the new ones load.
+    setOpenSeverityCounts(null);
+    setScopeAlertTotal(null);
+  }
+  const deviceFilterParam = deviceFilter && hasValidConditions(deviceFilter) ? JSON.stringify(deviceFilter) : null;
+  const deviceOptions = useMemo(
+    () => fleetDeviceOptions.options.map((o) => ({ id: o.id, name: o.displayName || o.hostname })),
+    [fleetDeviceOptions.options],
+  );
   const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
 
   // Monotonic per-fetch request tokens. Each invocation claims a new id at the
@@ -189,28 +296,20 @@ export default function AlertsPage() {
   // and mis-drive the empty state).
   const alertsFetchId = useRef(0);
 
-  // `background` refetches (after an acknowledge/resolve/bulk action) leave
-  // `loading` alone so the list and any open drawer stay mounted (#9625);
-  // only first loads and scope changes show the full-page spinner.
-  const fetchAlerts = useCallback(async (opts?: { background?: boolean }) => {
+  // `background` refetches leave `loading` alone so the list and any open
+  // drawer stay mounted (#9625); only first loads and scope changes show the
+  // full-page spinner. `filterChange` marks a refetch for new filters or a new
+  // page: actions are held while it runs, and a failure clears the old rows,
+  // which no longer match what the filters say.
+  const fetchAlerts = useCallback(async (opts?: { background?: boolean; filterChange?: boolean }) => {
     const fetchId = ++alertsFetchId.current;
+    const replacesRows = !opts?.background || !!opts?.filterChange;
     try {
       if (!opts?.background) setLoading(true);
+      if (opts?.filterChange) setListRefreshing(true);
       setError(undefined);
-      // Ask for every status BY NAME: the API's default (no status param) hides
-      // dismissed alerts, but this page's status dropdown includes a "Dismissed"
-      // option — filtering happens client-side in AlertList, whose "All Status"
-      // view excludes dismissed so they only show when explicitly selected.
-      // hideAiNoise, unlike every other filter on this page, is NOT applied
-      // client-side — "AI noise" is a server-side classification judgment
-      // (Task 14) this component has no basis to reproduce. Appended as a
-      // literal query segment rather than via URLSearchParams so the existing
-      // comma-separated `status` value keeps going out unencoded (URLSearchParams
-      // would %2C-escape the commas — harmless server-side, but an unrelated
-      // wire-shape change this task has no reason to make).
-      const hideAiNoiseParam = hideAiNoise ? '&hideAiNoise=true' : '';
       const response = await fetchWithAuth(
-        `/alerts?status=active,acknowledged,resolved,suppressed,dismissed${hideAiNoiseParam}`
+        `/alerts?${alertsListParams(listQuery, debouncedSearch, deviceFilterParam, hideAiNoise)}`
       );
       if (fetchId !== alertsFetchId.current) return; // superseded by a newer fetch; drop
       if (!response.ok) {
@@ -224,14 +323,54 @@ export default function AlertsPage() {
       if (fetchId !== alertsFetchId.current) return;
       const raw: Record<string, unknown>[] = asList(data, 'alerts');
       setAlerts(normalizeAlertRows(raw, stableT('alertsPage.unknownDevice')));
+      setListTotal(readListTotal(data, raw.length));
+      setListFailed(false);
     } catch (err) {
       if (fetchId !== alertsFetchId.current) return;
       console.error('Failed to fetch alerts:', err);
       setError(err instanceof Error ? err.message : stableT('alertsPage.genericError'));
+      if (replacesRows) {
+        setAlerts([]);
+        setListTotal(0);
+        setListFailed(true);
+      }
     } finally {
-      if (fetchId === alertsFetchId.current) setLoading(false);
+      if (fetchId === alertsFetchId.current) {
+        setLoading(false);
+        setListRefreshing(false);
+      }
     }
-  }, [currentOrgId, hideAiNoise, stableT]);
+    // listQuery.search is deliberately absent: the debounced copy drives the
+    // fetch, so a keystroke does not refetch.
+  }, [
+    currentOrgId, hideAiNoise, stableT, deviceFilterParam, debouncedSearch,
+    listQuery.status, listQuery.severity, listQuery.deviceId, listQuery.dateRange, listQuery.page,
+  ]);
+
+  // Summary strip: open (active + acknowledged) counts by severity for the
+  // whole scope, from the server, since the loaded rows are one filtered page.
+  const summaryFetchId = useRef(0);
+  const fetchSummary = useCallback(async () => {
+    const fetchId = ++summaryFetchId.current;
+    try {
+      const response = await fetchWithAuth('/alerts/summary');
+      if (fetchId !== summaryFetchId.current) return;
+      if (!response.ok) throw new Error(`alerts summary: ${response.status}`);
+      const body = await response.json();
+      if (fetchId !== summaryFetchId.current) return;
+      const counts = readOpenSeverityCounts(body);
+      if (!counts) throw new Error('alerts summary: no openBySeverity');
+      setOpenSeverityCounts(counts);
+      const total = Number((body as { total?: unknown }).total);
+      setScopeAlertTotal(Number.isFinite(total) && total >= 0 ? total : null);
+    } catch (err) {
+      if (fetchId !== summaryFetchId.current) return;
+      // Hide the strip rather than show zeros the server never reported.
+      console.error('Failed to fetch alert summary:', err);
+      setOpenSeverityCounts(null);
+      setScopeAlertTotal(null);
+    }
+  }, [scopeKey]);
 
   // Id of the alert the drawer is currently for. Detail/ticket responses for
   // any other alert (a superseded click, or a drawer already closed) are
@@ -276,29 +415,59 @@ export default function AlertsPage() {
     }
   }, [fetchLinkedTickets, serviceManagementMode]);
 
+  // fetchAlerts changes identity when the scope or any filter changes, so
+  // this re-runs for both; each fetch's monotonic token drops any superseded
+  // in-flight response. Skip while the org scope is still resolving
+  // (#4147/sweep A3) — firing now would go out unscoped, then fire again the
+  // instant currentOrgId lands. A new scope (or the first load) shows the
+  // spinner; a filter or page change in the same scope refetches in the
+  // background so the filter controls stay mounted.
+  const fetchedScopeRef = useRef<string | null>(null);
   useEffect(() => {
-    // fetchAlerts changes identity when currentOrgId changes, so
-    // this re-runs on org switch; each fetch's monotonic token drops any
-    // superseded in-flight response. Skip while the org scope is still
-    // resolving (#4147/sweep A3) — firing now would go out unscoped, then
-    // fire again the instant currentOrgId lands.
     if (orgScopeResolving || orgIdParamPending) return;
-    void fetchAlerts();
-  }, [fetchAlerts, orgScopeResolving, orgIdParamPending]);
+    const sameScope = fetchedScopeRef.current === scopeKey;
+    fetchedScopeRef.current = scopeKey;
+    void fetchAlerts(sameScope ? { background: true, filterChange: true } : undefined);
+  }, [fetchAlerts, orgScopeResolving, orgIdParamPending, scopeKey]);
 
-  const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
-  const deviceFilterBlocked = deviceFilterLoading || deviceFilterState === 'error';
+  useEffect(() => {
+    if (orgScopeResolving || orgIdParamPending) return;
+    void fetchSummary();
+  }, [fetchSummary, orgScopeResolving, orgIdParamPending]);
+
+  // A page past the end (its last rows were just resolved or dismissed): go
+  // to the last page that has rows.
+  useEffect(() => {
+    if (loading || listRefreshing || alerts.length > 0 || listQuery.page <= 1 || listTotal === 0) return;
+    const lastPage = Math.max(1, Math.ceil(listTotal / ALERTS_PAGE_SIZE));
+    if (lastPage < listQuery.page) setListQuery((prev) => ({ ...prev, page: lastPage }));
+  }, [alerts.length, listTotal, listQuery.page, loading, listRefreshing]);
+
+  // A pending confirm or suppress picker was opened for rows of the previous
+  // filters or page; drop it rather than act on rows no longer on screen.
+  const listViewKey = JSON.stringify([listQuery, deviceFilterParam, hideAiNoise, scopeKey]);
   useEffect(() => {
     setPendingBulk(null);
     setBulkSuppressTarget(null);
-  }, [deviceFilter, currentOrgId, allOrgs]);
+  }, [listViewKey]);
 
-  const filteredAlerts = useMemo(() => {
-    if (!deviceFilterIds) return alerts;
-    return alerts.filter(alert => {
-      return isDeviceAlert(alert) && deviceFilterIds.has(alert.deviceId);
-    });
-  }, [alerts, deviceFilterIds]);
+  const actionsBlocked = listRefreshing || listFailed;
+  const filtersActive = deviceFilterParam !== null || hideAiNoise
+    || listQuery.search.trim() !== '' || listQuery.status !== 'all' || listQuery.severity.length > 0
+    || listQuery.deviceId !== 'all' || listQuery.dateRange !== 'all' || listQuery.page !== 1;
+  // The empty states make a claim about the whole scope ("All clear", "no
+  // devices"); only make it when no filter narrows the list and the scope
+  // holds no alert in any status.
+  const showEmptyState = !filtersActive && alerts.length === 0 && !(scopeAlertTotal !== null && scopeAlertTotal > 0);
+  const listServerMode = useMemo<AlertListServerMode>(
+    () => ({ query: listQuery, onQueryChange: setListQuery, total: listTotal }),
+    [listQuery, listTotal],
+  );
+
+  const handleDeviceFilterChange = (next: FilterConditionGroup | null) => {
+    setDeviceFilter(next);
+    setListQuery((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
+  };
 
   // Phase 2 wave P2-1 (alert verdicts), Task 15. Writing the hash stays with
   // the caller per CLAUDE.md's URL-state rule — useHashState only owns the
@@ -308,6 +477,7 @@ export default function AlertsPage() {
     const next = mergeAlertsHash(window.location.hash, { hideAiNoise: value });
     window.location.hash = next;
     setHashState(parseAlertsHash(next));
+    setListQuery((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
   };
 
   const handleSelect = async (alert: Alert) => {
@@ -336,14 +506,50 @@ export default function AlertsPage() {
   };
 
   // `/alerts#<alertId>` → open that alert's drawer once the list has loaded.
-  // An id that isn't in the list (other org, already purged) just leaves the
-  // page on the plain list.
+  // The list holds one filtered page, so an alert that is not on it (older,
+  // or filtered out) is loaded by id. One the caller cannot read (other org,
+  // already purged) just leaves the page on the plain list.
   useEffect(() => {
     if (!hashAlertId || loading || openedHashAlertRef.current === hashAlertId) return;
-    const target = alerts.find((a) => a.id === hashAlertId);
-    if (!target) return;
     openedHashAlertRef.current = hashAlertId;
-    void handleSelect(target);
+    const target = alerts.find((a) => a.id === hashAlertId);
+    if (target) {
+      void handleSelect(target);
+      return;
+    }
+    const alertId = hashAlertId;
+    void (async () => {
+      try {
+        const response = await fetchWithAuth(`/alerts/${alertId}`);
+        if (!response.ok) {
+          // 404 = another org or purged: the plain list is the answer. Any
+          // other failure is logged and may be retried on the next list load.
+          if (response.status !== 404 && response.status !== 401) {
+            console.error('Failed to load linked alert:', response.status);
+            if (openedHashAlertRef.current === alertId) openedHashAlertRef.current = null;
+          }
+          return;
+        }
+        const row = await response.json() as Record<string, unknown> & { device?: { hostname?: string } | null };
+        if (openedHashAlertRef.current !== alertId) return;
+        // Open only a well-formed alert row for this id; anything else leaves
+        // the plain list, as an unknown id always has.
+        if (!row || row.id !== alertId || typeof row.title !== 'string'
+          || !(severityOrder as readonly unknown[]).includes(row.severity)) return;
+        // The detail route answers for any org the caller can reach; with one
+        // org selected, open only that org's alerts (the list never showed
+        // another org's alert in that view either).
+        if (currentOrgId && row.orgId !== currentOrgId) return;
+        const [alert] = normalizeAlertRows(
+          [{ ...row, deviceHostname: row.device?.hostname }],
+          stableT('alertsPage.unknownDevice'),
+        );
+        if (alert) void handleSelect(alert);
+      } catch (err) {
+        console.error('Failed to load linked alert:', err);
+        if (openedHashAlertRef.current === alertId) openedHashAlertRef.current = null;
+      }
+    })();
     // handleSelect is recreated every render; the ref guard makes this one-shot per id.
   }, [hashAlertId, alerts, loading]);
 
@@ -351,7 +557,9 @@ export default function AlertsPage() {
     setAlerts(prev => prev.map(a => (a.id === id ? ({ ...a, ...patch } as Alert) : a)));
   }, []);
 
-  const refreshInBackground = useCallback(() => fetchAlerts({ background: true }), [fetchAlerts]);
+  const refreshInBackground = useCallback(async () => {
+    await Promise.all([fetchAlerts({ background: true }), fetchSummary()]);
+  }, [fetchAlerts, fetchSummary]);
 
   const {
     submitting: actionSubmitting,
@@ -381,7 +589,7 @@ export default function AlertsPage() {
   const submitting = actionSubmitting || bulkSubmitting;
 
   const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date | null) => {
-    if (deviceFilterBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !filteredAlerts.some(row => row.id === a.id))) return;
+    if (actionsBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !alerts.some(row => row.id === a.id))) return;
     setBulkSubmitting(true);
     try {
       // The bulk endpoint returns HTTP 200 with per-alert counts even when
@@ -400,7 +608,7 @@ export default function AlertsPage() {
         errorFallback: t('alertsPage.failedBulkAction', { action }),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-      await fetchAlerts({ background: true });
+      await refreshInBackground();
 
       const past = BULK_PAST_TENSE_KEY[action] ? t(/* i18n-dynamic */ `alertsPage.bulkPast.${BULK_PAST_TENSE_KEY[action]}`) : action;
       const updated = result?.updated ?? 0;
@@ -434,7 +642,7 @@ export default function AlertsPage() {
   };
 
   const handleBulkAction = async (action: string, selectedAlerts: Alert[]) => {
-    if (deviceFilterBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !filteredAlerts.some(row => row.id === a.id))) return;
+    if (actionsBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !alerts.some(row => row.id === a.id))) return;
     if (action === 'suppress') {
       // Open the duration picker; executeBulkAction fires on confirm with `until`.
       setBulkSuppressTarget(selectedAlerts);
@@ -459,21 +667,6 @@ export default function AlertsPage() {
     setHashState(parseAlertsHash(next));
   };
 
-  const alertCounts = alerts
-    .filter(a => a.status === 'active' || a.status === 'acknowledged')
-    .reduce(
-      (acc, alert) => {
-        const existing = acc.find(a => a.severity === alert.severity);
-        if (existing) {
-          existing.count++;
-        } else {
-          acc.push({ severity: alert.severity, count: 1 });
-        }
-        return acc;
-      },
-      [] as { severity: AlertSeverity; count: number }[]
-    );
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -485,7 +678,7 @@ export default function AlertsPage() {
     );
   }
 
-  if (error && alerts.length === 0) {
+  if (error && alerts.length === 0 && !filtersActive) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
@@ -523,19 +716,31 @@ export default function AlertsPage() {
         </div>
       )}
 
-      <AlertsSummary alerts={alertCounts} onFilterBySeverity={handleFilterBySeverity} />
+      {openSeverityCounts && <AlertsSummary alerts={openSeverityCounts} onFilterBySeverity={handleFilterBySeverity} />}
 
-      {(alerts.some(isDeviceAlert) || deviceFilter !== null) && <DeviceFilterBar
+      {(alerts.some(isDeviceAlert) || deviceFilter !== null || deviceCount > 0) && <DeviceFilterBar
         value={deviceFilter}
-        onChange={setDeviceFilter}
+        onChange={handleDeviceFilterChange}
         collapsible
         defaultExpanded={false}
       />}
 
-      {deviceFilterState === 'error' && <div role="alert" data-testid="alert-device-filter-error">
+      {listFailed && deviceFilterParam !== null && <div role="alert" data-testid="alert-device-filter-error">
         {t('devices:deviceList.advancedFilterFailed')}
-        <button type="button" onClick={retryDeviceFilter}>{t('common:actions.retry')}</button>
+        <button type="button" onClick={() => void fetchAlerts({ background: true, filterChange: true })}>{t('common:actions.retry')}</button>
       </div>}
+      {listFailed && deviceFilterParam === null && alerts.length === 0 && filtersActive && (
+        <div role="alert" data-testid="alert-list-fetch-error" className="flex items-center gap-3 text-sm">
+          <span>{t('alertsPage.failedToFetchAlerts')}</span>
+          <button
+            type="button"
+            onClick={() => void fetchAlerts({ background: true, filterChange: true })}
+            className="rounded-md border px-3 py-1.5 font-medium hover:bg-muted"
+          >
+            {t('alertsPage.tryAgain')}
+          </button>
+        </div>
+      )}
       {/* Bulk action confirmation bar */}
       {pendingBulk && (
         <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3">
@@ -576,7 +781,7 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {alerts.length === 0 && deviceStatus === 'success' && deviceCount === 0 ? (
+      {showEmptyState && deviceStatus === 'success' && deviceCount === 0 ? (
         // No devices are enrolled yet, so "all clear" would be a false health
         // signal. Point the user at enrolling their first device instead.
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -595,13 +800,13 @@ export default function AlertsPage() {
             {t('alertsPage.installYourFirstDevice')}
           </a>
         </div>
-      ) : alerts.length === 0 && deviceStatus === 'loading' ? (
+      ) : showEmptyState && deviceStatus === 'loading' ? (
         // Device status not yet known — show a neutral spinner rather than
         // flashing either "no devices" or "your fleet is healthy".
         <div className="flex items-center justify-center py-16" data-testid="alerts-device-status-loading">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
-      ) : alerts.length === 0 && deviceStatus === 'error' ? (
+      ) : showEmptyState && deviceStatus === 'error' ? (
         // The devices request failed, so we cannot prove the fleet is empty OR
         // healthy. State the one fact we have (no active alerts) and flag the
         // unknown device status instead of asserting all-clear.
@@ -614,7 +819,7 @@ export default function AlertsPage() {
             {t('alertsPage.deviceStatusUnavailable')}
           </p>
         </div>
-      ) : alerts.length === 0 ? (
+      ) : showEmptyState ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="rounded-full bg-success/10 p-4 mb-4">
             <CheckCircle className="h-8 w-8 text-success" />
@@ -633,21 +838,22 @@ export default function AlertsPage() {
         </div>
       ) : (
         <AlertList
-          alerts={filteredAlerts}
+          alerts={alerts}
           onSelect={handleSelect}
           onAcknowledge={handleAcknowledge}
           onResolve={alert => void handleSelect(alert)}
           onSuppress={handleSuppress}
           onDismiss={handleDismiss}
           onBulkAction={handleBulkAction}
-          actionsBlocked={deviceFilterBlocked}
+          actionsBlocked={actionsBlocked}
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
           showOrgColumn={isFleetView}
-          initialStatus={hashState.status[0]}
-          initialSeverity={hashState.severity}
           hideAiNoise={hideAiNoise}
           onHideAiNoiseChange={handleHideAiNoiseChange}
+          devices={deviceOptions}
+          pageSize={ALERTS_PAGE_SIZE}
+          server={listServerMode}
         />
       )}
 

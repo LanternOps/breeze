@@ -7,9 +7,11 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Automations let you define rules that execute automatically when something happens across your managed environment. A trigger — a scheduled time, a platform event, an inbound webhook from an external system, or an explicit manual request — causes the automation to run one or more actions against a set of target devices or platform services.
 
-Automations appear in the left nav as **Jobs**. Older `/automations` links redirect.
+Automations appear in the left nav as one **Automations** entry. It opens `/flows` when Flows is enabled, and `/jobs` otherwise.
 
-You manage automations from the **Jobs** page in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
+The `/flows` and `/jobs` pages show a tab strip: **Flows** (tagged Preview) and **Jobs** (with the count of Jobs not yet moved). The Flows tab appears only when Flows is enabled. Older links redirect: `/automations` goes to `/flows` (or `/jobs` when Flows is off), `/automations/new` goes to `/jobs/new`, and `/automations/<id>` goes to `/jobs/<id>`.
+
+You manage Jobs from the **Jobs** tab in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
 
 An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("Partner-wide") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
 
@@ -19,7 +21,7 @@ An automation normally belongs to a single organization, but a partner-scoped us
 
 ## Moving Jobs to Flows
 
-Jobs are moving to [Flows](/features/flows/). While Flows are on (the default), **New job** opens Flows and new Jobs can't be created; your existing Jobs keep running, unchanged, until you move them. On a deployment that sets `FLOWS_ENABLED=false`, Jobs work as before and nothing on this section applies.
+Jobs are moving to [Flows](/features/flows/), which is in preview. You can still create and edit Jobs, and your existing Jobs keep running, unchanged, until you move them. On a deployment that sets `FLOWS_ENABLED=false`, Jobs work as before and nothing on this section applies.
 
 The **Move to Flows** column on the **Jobs** page shows how each Job would move:
 
@@ -49,7 +51,7 @@ The **Move to Flows** column on the **Jobs** page shows how each Job would move:
 
 <Steps>
 
-1. **Open the Jobs page.** Navigate to **Jobs** in the sidebar. Click **New Automation** in the top-right corner. (With Flows on, this opens Flows instead; see [Moving Jobs to Flows](#moving-jobs-to-flows).)
+1. **Open the Jobs page.** Navigate to **Jobs** in the sidebar. Click **New Automation** in the top-right corner.
 
 2. **Enter a name and description.** Give the automation a descriptive name (e.g., "Daily maintenance check") and an optional description explaining its purpose.
 

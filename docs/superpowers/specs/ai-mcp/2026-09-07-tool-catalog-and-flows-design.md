@@ -43,6 +43,8 @@ This section is load-bearing. Each exclusion is a product position, not a deferr
 | Making every run an LLM run ("AI playbooks") | Cost scales with fleet not with the problem; two runs on identical input may differ; you cannot unit-test a prompt; a Tier 3 pause 400 times a night is the alternative. The existing agents cover the unstructured cases and are unchanged. |
 | A new automation UI paradigm alongside `automations` forever | Legacy automations convert mechanically to flows in the final wave (§10) and the old worker retires. Two engines is a transition, not a destination. |
 
+> **Amendment (Flows completion plan, 2026-11-21):** the visual canvas / node editor row above is unchanged and stays a non-goal. Humans may now author flows through a guided form and a JSON document editor over the same document; see the [Flows completion spec](2026-11-21-flows-completion-spec.md).
+
 > **Amendment (W6 plan, 2026-10-27; Gate B approved 2026-10-27):** **"Two engines is a transition" now names its end (Decisions 1, 19).** The follow-up feature is "Managed responses on flows" (roadmap item #10336). W6 retires standalone admission only. Monitor responses, AI-agent triage, config-policy automations, policy workflows and compliance remediation stay on the legacy engine core until that feature moves them onto flows. Only then are the worker, the `automations` queue and the tables removed.
 
 ## 4. What exists today (verified 2026-09-07)
@@ -444,6 +446,8 @@ Chat renders a **Flow card** for `draft_flow` results: name, trigger, steps with
 Web: nav item **Flows** (under Automation): list (owner badge, status, effective tier, last run), detail (read-only step list; per Tier 3 step a toggle "Pre-approve this step" shown only when §6.3 rule 4 allows it; trigger panel with webhook URL/secret reveal + rotate; inputs form for manual flows; enable / pause / disable), runs tab (checklist view), "Convert from automation" (wave 6). All mutations via `runAction`.
 
 Approvals: the existing inbox and mobile cards work unchanged; the card body gains the flow context line.
+
+> **Amendment (Flows completion plan, 2026-11-21):** humans may author flows through a guided form and a JSON document editor (the web editor at `/flows/new` and `/flows/<id>/edit`, backed by `POST/PUT/DELETE /flows` and `POST /flows/validate`). A canvas / node editor remains a non-goal. See the [Flows completion spec](2026-11-21-flows-completion-spec.md).
 
 > **Amendment (W4 plan, 2026-10-20; Gate B approved 2026-10-22):** **The W4 tool set (Decision 11).** `run_flow` (Tier 3, `automations.write`, agent human-only), `list_flow_runs` (Tier 1), `get_flow_run` (Tier 1) and `cancel_flow_run` (Tier 2, `automations.write`, agent human-only). There is no `explain_flow_run`: `get_flow_run`'s step ledger is what the model explains from. There is no `enable_flow` AI tool: enabling is the delegation decision and stays a human UI action. The chat tool-index size bound is governed by the W19 lazy tool index (#10087, `AI_TOOL_INDEX=lazy` default), which supersedes the earlier fixed index ceiling: always-on index < 2,560 B, every domain block < 2,048 B, worst page turn < 7,040 B.
 

@@ -59,6 +59,7 @@ import {
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
+import { classifyExchangeOrigin } from '../services/exchangeOrigin';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import { enforceExpiredDesktopReconnectHold, markDesktopViewerReconnectIntent } from '../services/desktopReconnectGrace';
 import { createAuditLogAsync } from '../services/auditService';
@@ -1786,6 +1787,7 @@ export function createDesktopWsRoutes(
     '/connect/exchange',
     zValidator('json', desktopConnectExchangeSchema),
     async (c) => {
+      c.header('Cache-Control', 'no-store');
       const { sessionId, code } = c.req.valid('json');
 
       const codeRecord = await consumeDesktopConnectCode(code);
@@ -1839,6 +1841,7 @@ export function createDesktopWsRoutes(
         email: codeRecord.email,
         sessionId: session.id,
         mfaSatisfied: true,
+        exchangeOrigin: classifyExchangeOrigin(c.req.header('Origin')),
       });
       const result = {
         accessToken,
@@ -2150,6 +2153,7 @@ export function createDesktopWsRoutes(
             sessionId,
             type: access.session.type,
             via: 'viewer_token',
+            exchangeOrigin: access.viewerToken.exchangeOrigin,
             startCommandId,
             promptMode,
             startGeneration: formatDesktopGeneration(startGeneration),

@@ -69,6 +69,13 @@ export interface RateLimitResult {
   allowed: boolean;
   remaining: number;
   resetAt: Date;
+  /**
+   * The members this call added to the window, when they are still there
+   * (absent on a fail-closed result and after a refund). A caller that only
+   * learns after the check that the request should not have used this
+   * bucket hands them to refundRateLimitEntries (#12566).
+   */
+  entries?: string[];
 }
 
 export interface RateLimitConfig {
@@ -200,11 +207,34 @@ export async function rateLimiter(
     return {
       allowed,
       remaining: Math.max(0, limit - effectiveCount),
-      resetAt
+      resetAt,
+      ...(refunded ? {} : { entries: zaddArgs.filter((_, i) => i % 2 === 1) as string[] }),
     };
   } catch (err) {
     console.error('[rate-limit] Redis error for key:', key, err);
     return failClosed(windowSeconds);
+  }
+}
+
+/**
+ * Give back the slots an earlier rateLimiter() call took, by the exact
+ * members it returned in `entries`. Returns whether the removal landed.
+ * Redis errors are caught (false); only the strict held-DB-context tripwire
+ * can throw, as in rateLimiter. A failure only leaves the caller charged.
+ */
+export async function refundRateLimitEntries(
+  redis: Redis | null,
+  key: string,
+  entries: readonly string[]
+): Promise<boolean> {
+  if (!redis || entries.length === 0) return false;
+  assertOutsideHeldDbContextSafe(`refundRateLimitEntries(${rateLimitBucketLabel(key)})`);
+  try {
+    await redis.zrem(key, ...entries);
+    return true;
+  } catch (err) {
+    console.error('[rate-limit] refund failed for key:', key, err);
+    return false;
   }
 }
 

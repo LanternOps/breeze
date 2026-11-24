@@ -27,6 +27,8 @@ const state = vi.hoisted(() => ({
   unreachable: new Set<string>(),
   unreachableInTx: new Set<string>(),
   versionMatches: true,
+  // What evidence.ts computes for the pair under the locks.
+  evidence: { level: 'hint', gap: 'source_no_key' } as { level: 'hint'; gap: string } | { level: 'tpm_continuity' },
 }));
 
 const tx = vi.hoisted(() => ({
@@ -89,6 +91,11 @@ vi.mock('./targetVersion', () => ({
 vi.mock('./liveness', () => ({
   readRedisLivenessSignals: vi.fn(async () => state.redis),
   decideTargetLiveness: vi.fn(() => state.liveness),
+}));
+
+vi.mock('./evidence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./evidence')>()),
+  readTpmEvidence: vi.fn(async () => { calls.push('evidence'); return state.evidence; }),
 }));
 
 vi.mock('./sourceMarker', () => ({
@@ -156,7 +163,7 @@ function input(over: Partial<RequestDeviceReattachInput> = {}): RequestDeviceRea
     actor: { userId: 'user-1' },
     sourceDeviceId: SOURCE,
     targetDeviceId: TARGET,
-    evidenceLevel: 'hint',
+    expectedEvidenceLevel: 'hint',
     restoreDecommissioned: false,
     confirmTargetName: 'PC-OLD',
     targetVersion: VERSION,
@@ -197,6 +204,7 @@ beforeEach(() => {
     unreachable: new Set<string>(),
     unreachableInTx: new Set<string>(),
     versionMatches: true,
+    evidence: { level: 'hint', gap: 'source_no_key' },
   });
 });
 
@@ -204,7 +212,7 @@ describe('requestDeviceReattach — step-up (#8318 §8)', () => {
   it('consumes a matching grant once, after every lock and check, just before the insert, and records it', async () => {
     const result = await requestDeviceReattach(input());
     expect(result.ok).toBe(true);
-    expect(calls).toEqual(['locations', 'holdingLock', 'deviceLocks', 'actorLock', 'sessionLock', 'validate', 'consume', 'insert']);
+    expect(calls).toEqual(['locations', 'holdingLock', 'deviceLocks', 'evidence', 'actorLock', 'sessionLock', 'validate', 'consume', 'insert']);
     expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, expectedBinding());
     expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expectedBinding());
     if (result.ok) expect(result.intent.stepUpGrantRef).toBe(GRANT);
@@ -335,7 +343,51 @@ describe('requestDeviceReattach — every refusal leaves the grant unspent (#831
   });
 
   it('asks for no typed name with TPM continuity evidence', async () => {
-    expect((await requestDeviceReattach(input({ evidenceLevel: 'tpm_continuity', confirmTargetName: null, stepUp: { kind: 'not_required' } }))).ok).toBe(true);
+    state.evidence = { level: 'tpm_continuity' };
+    const result = await requestDeviceReattach(input({ expectedEvidenceLevel: 'tpm_continuity', confirmTargetName: null, stepUp: { kind: 'not_required' } }));
+    expect(result.ok && result.intent.evidenceLevel).toBe('tpm_continuity');
+  });
+});
+
+describe('requestDeviceReattach — evidence computed under the locks (#8318 wave T2)', () => {
+  it('a requester shown hint proceeds as hint, with the typed name, when the pair now has TPM evidence', async () => {
+    state.evidence = { level: 'tpm_continuity' };
+    const result = await requestDeviceReattach(input());
+    expect(result.ok && result.intent.evidenceLevel).toBe('hint');
+    expect(await requestDeviceReattach(input({ confirmTargetName: null }))).toMatchObject({ ok: false, code: 'confirm_target_name_required' });
+  });
+
+  it('a requester shown tpm_continuity whose pair lost it answers evidence_changed, the grant untouched', async () => {
+    state.evidence = { level: 'hint', gap: 'target_key_changed' };
+    expect(await requestDeviceReattach(input({ expectedEvidenceLevel: 'tpm_continuity', confirmTargetName: null })))
+      .toMatchObject({ ok: false, status: 409, code: 'evidence_changed' });
+    expect(calls).not.toContain('validate');
+    expect(calls).not.toContain('consume');
+    expect(calls).not.toContain('insert');
+  });
+
+  it('judges evidence only after the access rule and the target version (no oracle)', async () => {
+    state.evidence = { level: 'hint', gap: 'keys_differ' };
+    state.access = { allowed: false, code: 'org_access_denied' };
+    expect(await requestDeviceReattach(input({ expectedEvidenceLevel: 'tpm_continuity' }))).toMatchObject({ code: 'org_access_denied' });
+    state.access = { allowed: true, fullAdmin: true };
+    state.versionMatches = false;
+    expect(await requestDeviceReattach(input({ expectedEvidenceLevel: 'tpm_continuity' }))).toMatchObject({ code: 'target_changed' });
+    expect(calls).not.toContain('evidence');
+  });
+
+  it('binds the grant to the level the requester stepped up for', async () => {
+    state.evidence = { level: 'tpm_continuity' };
+    expect((await requestDeviceReattach(input({ expectedEvidenceLevel: 'tpm_continuity', confirmTargetName: null }))).ok).toBe(true);
+    expect(vi.mocked(validateStepUpGrant)).toHaveBeenCalledWith(GRANT, expect.objectContaining({
+      resourceDigest: deviceReattachResourceDigest({
+        sourceDeviceId: SOURCE,
+        targetDeviceId: TARGET,
+        targetVersion: VERSION,
+        evidenceLevel: 'tpm_continuity',
+        restoreDecommissioned: false,
+      }),
+    }));
   });
 });
 

@@ -121,7 +121,7 @@ describe('resolvePinnedDiscoveryAgent (#7969 — no silent fallback)', () => {
   it('resolves an online pinned device in the profile site to its agent', async () => {
     selectQueue.push([ONLINE]);
     await expect(resolvePinnedDiscoveryAgent('dev-1', 'org-1', 'site-1')).resolves.toEqual({
-      ok: true, agentId: 'agent-1', label: 'scanner-01',
+      ok: true, agentId: 'agent-1', deviceId: 'dev-1', label: 'scanner-01',
     });
   });
 

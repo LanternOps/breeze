@@ -8,6 +8,15 @@
  * partnerId. A session minted with `partnerId: null` therefore cannot see any
  * partner-wide policy that governs its own org's devices.
  *
+ * Since #12462 W03a the app layer reads more narrowly than RLS: an org session
+ * lists, opens or names an MSP-managed (partner-owned) policy only when it
+ * applies to the session's organization (`policyReadCondition`, plan D14). So
+ * the partner baselines below are assigned at the partner level, which applies
+ * them to every customer org of their partner, and an unassigned partner policy
+ * checks that the narrowing is the read rule and not a lost partner: RLS still
+ * returns it, the route does not. Effective configuration does not go through
+ * the read rule; the last case resolves it for a device under the same session.
+ *
  * Real Postgres (RLS-enforced `breeze_app`) + Redis, real route handlers and
  * the real authMiddleware. Only the IdP network calls are stubbed.
  *
@@ -23,6 +32,9 @@ import { decodeJwt } from 'jose';
 import { and, eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import {
+  configPolicyAssignments,
+  configPolicyFeatureLinks,
+  configPolicyMonitoringSettings,
   configurationPolicies,
   organizations,
   organizationUsers,
@@ -38,8 +50,10 @@ import {
   assignUserToPartner,
   bootstrapAuthBinding,
   createOrganization,
+  createDevice,
   createPartner,
   createRole,
+  createSite,
   createUser,
   grantRolePermissions,
 } from './db-utils';
@@ -74,6 +88,7 @@ type Fixture = {
   ownPartnerPolicyName: string;
   otherPartnerPolicyName: string;
   orgPolicyName: string;
+  unassignedPartnerPolicyName: string;
   ownPartnerPolicyId: string;
 };
 
@@ -89,17 +104,31 @@ async function seedTenant(): Promise<Fixture> {
   const ownPartnerPolicyName = `Partner baseline ${suffix}`;
   const otherPartnerPolicyName = `Other partner baseline ${suffix}`;
   const orgPolicyName = `Org policy ${suffix}`;
+  const unassignedPartnerPolicyName = `Unassigned partner policy ${suffix}`;
   const testDb = getTestDb();
   const [ownPartnerPolicy] = await testDb
     .insert(configurationPolicies)
     .values({ orgId: null, partnerId: partner.id, name: ownPartnerPolicyName })
     .returning({ id: configurationPolicies.id });
-  await testDb
+  const [otherPartnerPolicy] = await testDb
     .insert(configurationPolicies)
-    .values({ orgId: null, partnerId: otherPartner.id, name: otherPartnerPolicyName });
+    .values({ orgId: null, partnerId: otherPartner.id, name: otherPartnerPolicyName })
+    .returning({ id: configurationPolicies.id });
   await testDb
     .insert(configurationPolicies)
     .values({ orgId: org.id, partnerId: null, name: orgPolicyName });
+  // Partner-owned, assigned nowhere, no children: hidden from an org session
+  // by the read rule (#12462 W03a) although RLS returns it.
+  await testDb
+    .insert(configurationPolicies)
+    .values({ orgId: null, partnerId: partner.id, name: unassignedPartnerPolicyName });
+  // Each baseline governs every customer org of its own partner (D14 clause
+  // 1). The other partner's baseline is assigned too, so its exclusion below
+  // is by partner, not by being unassigned.
+  await testDb.insert(configPolicyAssignments).values([
+    { configPolicyId: ownPartnerPolicy!.id, level: 'partner', targetId: partner.id, priority: 0 },
+    { configPolicyId: otherPartnerPolicy!.id, level: 'partner', targetId: otherPartner.id, priority: 0 },
+  ]);
 
   return {
     partnerId: partner.id,
@@ -109,6 +138,7 @@ async function seedTenant(): Promise<Fixture> {
     ownPartnerPolicyName,
     otherPartnerPolicyName,
     orgPolicyName,
+    unassignedPartnerPolicyName,
     ownPartnerPolicyId: ownPartnerPolicy!.id,
   };
 }
@@ -203,7 +233,10 @@ async function refresh(app: Hono, cookies: RefreshCookies, binding: string) {
   });
 }
 
-/** Partner-wide read through a real route + authMiddleware (RLS-only filter). */
+/**
+ * Partner-wide read through a real route + authMiddleware: RLS, then the W03a
+ * read rule (an MSP-managed policy must apply to the org).
+ */
 async function eligibleParentNames(app: Hono, accessToken: string, orgId: string): Promise<string[]> {
   const res = await app.request(
     `/configuration-policies/eligible-parents?ownerScope=organization&orgId=${orgId}`,
@@ -279,6 +312,9 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     const withPartner = await visibleNames(fx.partnerId);
     expect(withPartner).toContain(fx.ownPartnerPolicyName);
     expect(withPartner).not.toContain(fx.otherPartnerPolicyName);
+    // RLS does not apply the read rule: the unassigned partner policy is
+    // visible here and hidden only by the route (see the login cases).
+    expect(withPartner).toContain(fx.unassignedPartnerPolicyName);
 
     // Read-only: the SELECT branch never widens UPDATE/DELETE targeting.
     const updated = await withDbAccessContext(orgContext(fx.partnerId), () =>
@@ -323,6 +359,8 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     expect(names).toContain(fx.ownPartnerPolicyName);
     expect(names).toContain(fx.orgPolicyName);
     expect(names).not.toContain(fx.otherPartnerPolicyName);
+    // #12462 W03a: a partner policy that applies to no org is not offered.
+    expect(names).not.toContain(fx.unassignedPartnerPolicyName);
   });
 
   it('org SSO callback: the session carries the org\'s partner, reads partner-wide config, and keeps it across refresh', async () => {
@@ -355,6 +393,7 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     expect(names).toContain(fx.ownPartnerPolicyName);
     expect(names).toContain(fx.orgPolicyName);
     expect(names).not.toContain(fx.otherPartnerPolicyName);
+    expect(names).not.toContain(fx.unassignedPartnerPolicyName);
 
     // Refresh keeps every claim, and the read still works.
     const refreshRes = await refresh(app, refreshCookiesFrom(exchangeRes), binding);
@@ -430,6 +469,7 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     const names = await eligibleParentNames(app, accessToken, second.orgId);
     expect(names).toContain(second.ownPartnerPolicyName);
     expect(names).not.toContain(home.ownPartnerPolicyName);
+    expect(names).not.toContain(second.unassignedPartnerPolicyName);
 
     // Refresh stays on the provider's org, not whichever membership row a
     // user-wide lookup happens to return first.
@@ -440,6 +480,49 @@ describe('organization sessions carry their org\'s partner at every minter (#122
       const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
       expectOrgSession(refreshed.tokens.accessToken, second, user.id);
     }
+  });
+
+  it('org session resolves its device\'s effective configuration from the partner baseline', async () => {
+    // Session parity for delivery: the same org session that reads the
+    // baseline also gets it in a device's effective configuration. The
+    // resolver has its own ownership clause and does not go through the W03a
+    // read rule (resolveEffectiveConfigWithExecutor).
+    const fx = await seedTenant();
+    const testDb = getTestDb();
+    const [link] = await testDb
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: fx.ownPartnerPolicyId, featureType: 'monitors', inlineSettings: { items: [], checkIntervalSeconds: 611 } })
+      .returning();
+    await testDb.insert(configPolicyMonitoringSettings).values({ featureLinkId: link!.id, checkIntervalSeconds: 611 });
+    const site = await createSite({ orgId: fx.orgId });
+    const device = await createDevice({ orgId: fx.orgId, siteId: site!.id });
+
+    const password = 'EffectiveParity123!';
+    const user = await createUser({ partnerId: fx.partnerId, orgId: fx.orgId, email: `eff-${Date.now()}@example.com`, password });
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const binding = (await bootstrapAuthBinding()).cookie;
+    const login = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: binding },
+      body: JSON.stringify({ email: user.email, password }),
+    });
+    expect(login.status).toBe(200);
+    const { tokens } = await login.json() as { tokens: { accessToken: string } };
+    expectOrgSession(tokens.accessToken, fx, user.id);
+
+    const res = await app.request(`/configuration-policies/effective/${device.id}`, {
+      headers: { Authorization: `Bearer ${tokens.accessToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      features: Record<string, { sourcePolicyId: string; sourceLevel: string }>;
+      inheritanceChain: Array<{ policyId: string }>;
+      policyOwners: Record<string, string>;
+    };
+    expect(body.features.monitors?.sourcePolicyId).toBe(fx.ownPartnerPolicyId);
+    expect(body.features.monitors?.sourceLevel).toBe('partner');
+    expect(body.inheritanceChain.some((e) => e.policyId === fx.ownPartnerPolicyId)).toBe(true);
+    expect(body.policyOwners[fx.ownPartnerPolicyId]).toBe('partner');
   });
 });
 

@@ -82,29 +82,37 @@ const REQUIRED_GRANTS = [
   { resource: 'devices', action: 'delete' },
 ] as const;
 
+/** The checks every rule here starts with: an active member of the partner holding both grants. */
+function baseDenial(
+  actor: ReattachActorAccess | null,
+  partnerId: string,
+): { code: ReattachAccessDenial } | { membership: NonNullable<ReattachActorAccess['membership']> } {
+  if (!actor || !actor.partnerId) return { code: 'not_partner_user' };
+  if (actor.status !== 'active') return { code: 'user_inactive' };
+  if (actor.partnerId !== partnerId) return { code: 'partner_mismatch' };
+  // No partner membership means a customer-org user (or a partner user whose
+  // membership was removed): never.
+  const membership = actor.membership;
+  if (!membership) return { code: 'not_partner_user' };
+
+  for (const required of REQUIRED_GRANTS) {
+    if (!membership.grants.some((grant) => permissionGrantMatches(grant, required.resource, required.action))) {
+      return { code: 'permission_denied' };
+    }
+  }
+  if (membership.orgAccess !== 'all' && membership.orgAccess !== 'selected') return { code: 'org_access_denied' };
+  return { membership };
+}
+
 /** The §8 access rule. Pure; `actor` is null when the user no longer exists. */
 export function canActorReattach(
   actor: ReattachActorAccess | null,
   scope: ReattachAccessScope,
 ): ReattachAccessDecision {
-  if (!actor || !actor.partnerId) return { allowed: false, code: 'not_partner_user' };
-  if (actor.status !== 'active') return { allowed: false, code: 'user_inactive' };
-  if (actor.partnerId !== scope.partnerId) return { allowed: false, code: 'partner_mismatch' };
-  // No partner membership means a customer-org user (or a partner user whose
-  // membership was removed): never.
-  const membership = actor.membership;
-  if (!membership) return { allowed: false, code: 'not_partner_user' };
-
-  for (const required of REQUIRED_GRANTS) {
-    if (!membership.grants.some((grant) => permissionGrantMatches(grant, required.resource, required.action))) {
-      return { allowed: false, code: 'permission_denied' };
-    }
-  }
-
+  const base = baseDenial(actor, scope.partnerId);
+  if ('code' in base) return { allowed: false, code: base.code };
+  const { membership } = base;
   const reachable = (orgId: string) => membership.reachableOrgIds.includes(orgId);
-  if (membership.orgAccess !== 'all' && membership.orgAccess !== 'selected') {
-    return { allowed: false, code: 'org_access_denied' };
-  }
   // The target, and a real source, must be orgs the user can reach now.
   if (!reachable(scope.targetOrgId)) return { allowed: false, code: 'org_access_denied' };
 
@@ -121,6 +129,25 @@ export function canActorReattach(
   if (scope.sourceParked) return { allowed: false, code: 'full_admin_required' };
   if (!reachable(scope.sourceOrgId)) return { allowed: false, code: 'org_access_denied' };
   return { allowed: true, fullAdmin: false };
+}
+
+/**
+ * The same rule for an action on ONE device that changes what a reattach of
+ * it can prove: accepting or dismissing a held TPM key change (wave T2,
+ * services/tpmBaseline). The device's org must be reachable (a technician's
+ * selected org), and a PARKED device needs a full partner admin, as a parked
+ * reattach source does. Pure.
+ */
+export function canActorActOnReattachEvidence(
+  actor: ReattachActorAccess | null,
+  scope: { partnerId: string; orgId: string; parked: boolean },
+): ReattachAccessDecision {
+  const base = baseDenial(actor, scope.partnerId);
+  if ('code' in base) return { allowed: false, code: base.code };
+  const fullAdmin = canManagePartnerWidePolicies({ scope: 'partner', partnerOrgAccess: base.membership.orgAccess });
+  if (scope.parked) return fullAdmin ? { allowed: true, fullAdmin } : { allowed: false, code: 'full_admin_required' };
+  if (!base.membership.reachableOrgIds.includes(scope.orgId)) return { allowed: false, code: 'org_access_denied' };
+  return { allowed: true, fullAdmin };
 }
 
 /** A query handle: the ambient `db` or a transaction. */

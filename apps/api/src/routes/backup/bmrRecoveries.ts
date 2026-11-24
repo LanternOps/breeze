@@ -46,6 +46,7 @@ import {
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
+  issueRecoverySessionRenewal,
   resolveSnapshotProviderConfig,
 } from '../../services/recoveryBootstrap';
 import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
@@ -387,7 +388,9 @@ async function buildRecoveryExchangeBootstrap(
   // W09 (#6464) Task 5: the exchange handler already resolved this once for
   // capability negotiation — pass it through so this function doesn't issue
   // a SECOND resolveSnapshotProviderConfig call for the same snapshot.
-  preResolvedSnapshot?: Awaited<ReturnType<typeof resolveSnapshotProviderConfig>>
+  preResolvedSnapshot?: Awaited<ReturnType<typeof resolveSnapshotProviderConfig>>,
+  /** hashRecoveryToken of the token just minted, for its session renewal credential (#12566). */
+  tokenHash?: string
 ) {
   const resolvedSnapshot = preResolvedSnapshot !== undefined ? preResolvedSnapshot : await resolveSnapshotProviderConfig(tokenRow.snapshotId);
   const snapshot = resolvedSnapshot?.snapshot ?? null;
@@ -462,6 +465,9 @@ async function buildRecoveryExchangeBootstrap(
     grantedCapabilities: negotiated?.grantedCapabilities,
     fileIndex: negotiated?.fileIndex,
     integrity,
+    // #12566: the exchange starts the helper's download session, so it hands
+    // out the renewal credential exactly as authenticate does.
+    sessionRenewal: tokenHash ? issueRecoverySessionRenewal(tokenHash) : null,
   });
   // #7081 R19: a prefixed snapshot is recoverable only through the
   // token-mode download; never hand out a bootstrap without one.
@@ -750,7 +756,8 @@ bmrRecoveryPublicRoutes.post(
         },
         integrityOutcome.integrity,
         { grantedCapabilities: negotiation.granted, fileIndex: negotiation.fileIndex },
-        resolvedSnapshot
+        resolvedSnapshot,
+        tokenHash
       );
       if ('error' in bootstrap) {
         if (bootstrap.error === RECOVERY_REQUIRES_TOKEN_MODE.error) {

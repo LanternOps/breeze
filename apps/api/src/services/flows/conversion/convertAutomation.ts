@@ -25,9 +25,17 @@ import {
   FLEET_MAX_TARGETS,
   FLOW_RUN_LIMITS,
   LEGACY_CONDITION_TYPES,
+  emitCreateAlertStep,
+  emitDeviceItems,
+  emitFailureNoticeSteps,
+  emitRunScriptStep,
+  emitTargetsStep,
   fidelityOf,
+  flowStep,
   isStructurallyValidCron,
   type FlowConversionFidelity,
+  type ActiveSet,
+  type FleetChainSet,
   type FlowConversionFinding,
   type FlowDocumentV1,
 } from '@breeze/shared';
@@ -277,7 +285,7 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
 
   // ── 5. actions ───────────────────────────────────────────────────────────
   const onFailure = row.onFailure === 'continue' || row.onFailure === 'notify' ? row.onFailure : 'stop';
-  const chainSet: 'succeeded' | 'dispatched' = onFailure === 'continue' ? 'dispatched' : 'succeeded';
+  const chainSet: FleetChainSet = onFailure === 'continue' ? 'dispatched' : 'succeeded';
   const notice = isRecord(row.notificationTargets) ? row.notificationTargets : {};
   const failureChannels = onFailure === 'notify' && Array.isArray(notice.channelIds)
     ? (notice.channelIds as unknown[]).filter((c): c is string => typeof c === 'string')
@@ -291,26 +299,19 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
   const steps: FlowStep[] = [];
   const candidates: ConversionResult['preApprovalCandidates'] = [];
   const generated: GeneratedScriptSpec[] = [];
-  const step = (s: Omit<FlowStep, 'approval' | 'onFailure' | 'timeoutSec'> & Partial<FlowStep>): FlowStep =>
-    ({ approval: 'default', onFailure: 'continue', timeoutSec: 300, ...s }) as FlowStep;
 
-  let active: { stepId: string; kind: 'resolve' | 'fleet' } | null = null;
+  let active: ActiveSet | null = null;
   const isDeviceAction = (a: Record<string, unknown>) => a.type === 'run_script' || a.type === 'execute_command';
   if (actions.length > 0 && !isDeviceAction(actions[0]!)) {
-    steps.push(step({ id: 'targets', tool: 'resolve_targets', input: selector.input, onFailure: 'stop' }));
+    steps.push(emitTargetsStep(selector.input));
     active = { stepId: 'targets', kind: 'resolve' };
   }
   /** The for-each items (devices with hostnames) of the current active set; may add a resolve step. */
   const activeDevices = (i: number): string => {
-    if (active?.kind === 'resolve') return `steps.${active.stepId}.output.devices`;
-    if (!active) {
-      steps.push(step({ id: 'targets', tool: 'resolve_targets', input: selector.input, onFailure: 'stop' }));
-      active = { stepId: 'targets', kind: 'resolve' };
-      return 'steps.targets.output.devices';
-    }
-    const id = `a${i}_devices`;
-    steps.push(step({ id, tool: 'resolve_targets', input: { fromStep: { stepId: active.stepId, set: chainSet } } }));
-    return `steps.${id}.output.devices`;
+    const r = emitDeviceItems(i, active, selector.input, chainSet);
+    steps.push(...r.steps);
+    active = r.active;
+    return r.items;
   };
 
   let notices = 0;
@@ -321,7 +322,7 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
     if (type === 'run_script' || type === 'execute_command') {
       let scriptId: string;
       let runAs: 'system' | 'user' | undefined;
-      let kind: string;
+      let kind: 'run_script' | 'command';
       let preApprovable = false;
       if (type === 'run_script') {
         kind = 'run_script';
@@ -359,13 +360,14 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
         });
         preApprovable = true;
       }
-      const id = `a${i}_${kind}`;
       const input: Record<string, unknown> = { scriptId };
       if (type === 'run_script' && isRecord(a.parameters) && Object.keys(a.parameters).length > 0) input.parameters = a.parameters;
       if (runAs) input.runAs = runAs;
       input.whenOffline = a.whenOffline === 'skip' ? 'skip' : 'queue';
       Object.assign(input, active ? { fromStep: { stepId: active.stepId, set: chainSet } } : selector.input);
-      steps.push(step({ id, tool: 'run_script_on_targets', input, timeoutSec: 3600 }));
+      const scriptStep = emitRunScriptStep(i, kind, input);
+      const id = scriptStep.id;
+      steps.push(scriptStep);
       if (preApprovable && !isWebhook) {
         candidates.push({ stepId: id, currentTargetCount: ctx.currentTargets ? ctx.currentTargets.count : null });
       } else {
@@ -375,16 +377,7 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
       const fleetStepId = id;
       active = { stepId: fleetStepId, kind: 'fleet' };
       if (failureChannels.length > 0) {
-        const when = `length(steps.${fleetStepId}.output.failedDeviceIds) > 0`;
-        const failedId = `a${i}_failed`;
-        steps.push(step({ id: failedId, tool: 'resolve_targets', input: { fromStep: { stepId: fleetStepId, set: 'failed' } }, when }));
-        failureChannels.forEach((channelId, n) => {
-          steps.push(step({
-            id: `a${i}_failnotice_${n}`, tool: 'notify', when,
-            forEach: { items: `steps.${failedId}.output.devices`, as: 'item', maxItems: FLEET_MAX_TARGETS, concurrency: 1 },
-            input: { channelId, title: `${name} action failed`, message: `Automation ${name} action ${i + 1} failed on {{item.hostname}}: {{item.failureReason}}`, severity: 'warning' },
-          }));
-        });
+        steps.push(...emitFailureNoticeSteps(i, fleetStepId, name, failureChannels));
         if (activeCount * failureChannels.length > FLOW_RUN_LIMITS.notifyPerRunMax) {
           findings.push(finding('failure_notice_cap', i, `${failureChannels.length} channels`));
         }
@@ -405,7 +398,7 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
       if (sev !== mapped) findings.push(finding('severity_mapped', i, `${sev} → ${mapped}`));
       notices += 1;
       const items = activeDevices(i);
-      steps.push(step({
+      steps.push(flowStep({
         id: `a${i}_notify`, tool: 'notify',
         forEach: { items, as: 'item', maxItems: FLEET_MAX_TARGETS, concurrency: 1 },
         input: { channelId, title: title.slice(0, 200), message: message.slice(0, 4000), severity: mapped },
@@ -419,10 +412,10 @@ export function convertAutomation(row: AutomationRow, ctx: ConversionContext): C
       const message = alertText(str(a.alertMessage) ?? str(a.message) ?? '');
       if (title === null || message === null) findings.push(finding('text_template_unsupported', i, `actions[${i}].alertTitle / alertMessage`));
       const items = activeDevices(i);
-      steps.push(step({
-        id: `a${i}_alert`, tool: 'create_alert',
-        forEach: { items, as: 'item', maxItems: FLEET_MAX_TARGETS, concurrency: 1 },
-        input: { deviceId: '{{item.id}}', severity: sev, title: (title ?? name).slice(0, 200), message: (message ?? '-').slice(0, 4000) || '-' },
+      steps.push(emitCreateAlertStep(i, items, {
+        severity: sev,
+        title: (title ?? name).slice(0, 200),
+        message: (message ?? '-').slice(0, 4000) || '-',
       }));
       continue;
     }

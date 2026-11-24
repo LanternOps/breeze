@@ -39,7 +39,6 @@ import {
   Activity,
   Layers,
   ScrollText,
-  CalendarClock,
   Download,
   ClipboardCheck,
   ScanSearch,
@@ -76,6 +75,7 @@ import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
+import { navItemHref } from '../../lib/navGates';
 import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate, useAiOperatorTasksGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible, type NavGateContext } from '../../lib/navGates';
@@ -219,6 +219,16 @@ type NavItem = {
   requiresToolSources?: boolean;
   /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
   requiresFlows?: boolean;
+  /** #12310: the entry is shown to everyone but the feature is a preview. */
+  previewTag?: boolean;
+  /**
+   * #12437: the link target while the SERVER's FLOWS_ENABLED is on (see
+   * `navItemHref`); `href` stays the Flows-off target and the identity the
+   * active-state and section lookups use.
+   */
+  hrefWhenFlows?: string;
+  /** #12437: path prefixes that light this entry, in place of `href`'s path. */
+  activePaths?: readonly string[];
   requiresPreAssignment?: boolean;
   /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
   requiresAiOperatorTasks?: boolean;
@@ -282,9 +292,10 @@ export const topLevelNav: NavItem[] = [
   { name: 'Security Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
-  // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
-  { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
-  { name: 'Flows', labelKey: 'nav.flows', href: '/flows', icon: Workflow, requiresFlows: true, requiredPermission: { resource: 'automations', action: 'read' } },
+  // #12437 — one entry for Jobs and Flows (they are tabs of it, see
+  // AutomationsTabStrip). It opens Flows while the server has them on, else
+  // Jobs, and is lit on both sections' pages. /automations redirects here.
+  { name: 'Automations', labelKey: 'nav.automations', href: '/jobs', hrefWhenFlows: '/flows', activePaths: ['/jobs', '/flows'], icon: Workflow, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -1011,7 +1022,9 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     for (const item of candidates) {
       const hrefPath = item.href.split('#')[0];
       let matches: boolean;
-      if (item.ticketType) {
+      if (item.activePaths) {
+        matches = item.activePaths.some((p) => resolvedPath === p || resolvedPath.startsWith(p + '/'));
+      } else if (item.ticketType) {
         matches = resolvedPath === hrefPath && hashType === item.ticketType;
       } else if (hrefPath === TICKETS_PATH) {
         matches = resolvedPath === TICKETS_PATH ? hashType === null : resolvedPath.startsWith(TICKETS_PATH + '/');
@@ -1020,9 +1033,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       } else {
         matches = resolvedPath === hrefPath || resolvedPath.startsWith(hrefPath + '/');
       }
-      if (matches && hrefPath.length > bestLen) {
+      const matchLen = item.activePaths
+        ? Math.max(...item.activePaths.map((p) => p.length))
+        : hrefPath.length;
+      if (matches && matchLen > bestLen) {
         best = item.href;
-        bestLen = hrefPath.length;
+        bestLen = matchLen;
       }
     }
     return best;
@@ -1146,6 +1162,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const renderNavItem = (item: NavItem, surface: NavSurface = 'sidebar') => {
     if (!isNavItemVisible(item)) return null;
     const isActive = item.href === activeHref;
+    const linkHref = navItemHref(item, flowsEnabled);
     const labels = surface === 'sidebar' ? showLabels : true;
     const badgeCount =
       item.badgeKind === 'deletion-requests'
@@ -1159,20 +1176,23 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     // the server has it off the entry stays, locked, with the reason. The link
     // still opens /wisp, which shows the same lock.
     const lockedReason = item.lockedWhenWispOff && wispServer === 'off' ? t('nav.wispLockedServer') : null;
+    // #12310: the icon rail has no room for the Preview tag, so its tooltip and
+    // accessible name carry it.
+    const railLabel = item.previewTag ? `${label} (${t('nav.previewTag')})` : label;
     return (
       <a
         data-testid={lockedReason ? 'nav-wisp-locked' : (item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined))}
         key={item.name}
-        href={item.href}
+        href={linkHref}
         aria-current={isActive ? 'page' : undefined}
-        title={lockedReason ?? (labels ? undefined : label)}
+        title={lockedReason ?? (labels ? undefined : railLabel)}
         onClick={(event) => {
           if (surface === 'mobile') closeMobileMenu();
           // `/tickets#type=<t>` while already on /tickets: Astro's router would
           // pushState it silently (no hashchange), leaving TicketsPage's
           // useHashState filter stale (#8682 sweep). Cross-page clicks fall
           // through to the router untouched.
-          claimSamePageHashClick(event, item.href);
+          claimSamePageHashClick(event, linkHref);
         }}
         className={cn(
           'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
@@ -1188,7 +1208,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <item.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
         {/* The icon rail still names every link: the tooltip (`title`) is not
             reliably announced, and is absent on touch. */}
-        {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{label}</span>}
+        {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{railLabel}</span>}
+        {/* #12310: `currentColor` keeps the tag legible on the active (primary) row too. */}
+        {item.previewTag && labels && (
+          <span
+            data-testid="nav-preview-tag"
+            className="shrink-0 rounded border border-current px-1.5 chart-legend-xs font-medium opacity-80"
+          >
+            {t('nav.previewTag')}
+          </span>
+        )}
         {lockedReason && (
           <>
             {labels && <Lock data-testid="nav-wisp-lock-icon" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}

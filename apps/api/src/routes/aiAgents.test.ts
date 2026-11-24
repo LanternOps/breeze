@@ -30,9 +30,13 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess
 // stand-in — proves the byOrg org listing's tenancy pin is the same
 // eq/inArray shape authMiddleware actually installs on `auth.orgCondition`.
 import { buildOrgAccessClosures } from '../middleware/auth';
+// Real schema column (no DB): the open-circuit test applies the passed org
+// condition to it to prove the route forwarded the caller's own pin.
+import { aiAgentCircuitState } from '../db/schema/aiAgentCircuitState';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 // Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
 // below) — needed so a PATCH test can construct the exact instance
@@ -54,6 +58,7 @@ const {
   writeRouteAuditMock,
   getCircuitStateMock,
   resetCircuitMock,
+  listOpenCircuitsMock,
   recordVerdictFeedbackMock,
   loadImpactSummaryMock,
   enqueueImpactRollupForOrgsMock,
@@ -89,6 +94,9 @@ const {
   writeRouteAuditMock: vi.fn(),
   getCircuitStateMock: vi.fn(),
   resetCircuitMock: vi.fn(),
+  // #12347 — the list route's batched open-circuit read. Defaults to "none
+  // open" so every pre-existing GET / test keeps its old shape.
+  listOpenCircuitsMock: vi.fn(async (..._args: unknown[]) => new Map<string, unknown[]>()),
   // Carry-in B (PR-A review, feedback-route hardening) — `recordVerdictFeedback`
   // now returns a discriminated result, not a bare boolean; see
   // `RecordVerdictFeedbackResult` in services/aiAgents/alertVerdicts.ts.
@@ -274,6 +282,7 @@ vi.mock('../services/aiAgents/runService', () => ({
 vi.mock('../services/aiAgents/agentCircuit', () => ({
   getCircuitState: getCircuitStateMock,
   resetCircuit: resetCircuitMock,
+  listOpenCircuits: listOpenCircuitsMock,
 }));
 
 // Phase 2 wave P2-1 (alert verdicts), Task 8: `recordVerdictFeedback` has its
@@ -3229,6 +3238,69 @@ describe('POST /ai-agents/:id/circuit/reset', () => {
     expect(resetCircuitMock).not.toHaveBeenCalled();
   });
 
+  // #12347 Strix round 2. A circuit is keyed (org, agent) and an open one
+  // stops that agent on EVERY site in the org, so clearing it is an org-wide
+  // governance write: a caller carrying a site or exact-device ceiling is
+  // refused exactly as `assertAgentWriteAllowed` refuses every other agent
+  // write (403 + the shared ceiling message), before any state changes.
+  it.each([
+    ['a site-restricted caller', { allowedSiteIds: [SITE_ID] }],
+    ['a caller restricted to zero sites', { allowedSiteIds: [] }],
+    ['an exact-device-restricted caller', { allowedDeviceIds: [DEVICE_ID] }],
+  ])('refuses %s (403) without resetting or auditing', async (_label, overrides) => {
+    const res = await resetReq(buildApp(false, overrides));
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an automation principal (an agent cannot re-arm itself)', async () => {
+    const res = await resetReq(buildApp(false, { principal: { kind: 'ai_agent', id: AGENT_ID } }));
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'AI agents cannot manage agents' });
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  // The "All organizations" path: a partner-scope caller resets the circuit's
+  // own org. The org-owner shape (`partnerId: null`) is what keeps this a
+  // plain org write — no partner-wide right, no one-owner refusal.
+  it('lets a partner-scope caller reset the circuit of an org it reaches', async () => {
+    const res = await resetReq(
+      buildApp(false, {
+        scope: 'partner',
+        partnerId: PARTNER_ID,
+        orgId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+      }),
+      { orgId: ORG_ID, reason: 'gateway is back' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(resetCircuitMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID, USER_ID);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: ORG_ID, action: 'ai_agent.circuit_reset' }),
+    );
+  });
+
+  // The write is authorized against the CIRCUIT's owner (the org), not the
+  // agent row's: an unrestricted org admin may still reset their own org's
+  // circuit on a partner-wide baseline agent without partner-wide rights —
+  // the same org-owner shape scheduleService uses for an org override.
+  it('lets an unrestricted org caller reset its org circuit on a partner-wide agent', async () => {
+    getAgentMock.mockResolvedValue(agent({ orgId: null, partnerId: PARTNER_ID }));
+
+    const res = await resetReq(buildApp());
+
+    expect(res.status).toBe(200);
+    expect(resetCircuitMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID, USER_ID);
+  });
+
   it('resets the circuit and audits the human actor + reason', async () => {
     const res = await resetReq(buildApp(), { reason: 'confirmed false positive, patch was unrelated' });
 
@@ -4703,6 +4775,38 @@ describe('GET /ai-agents', () => {
 
     expect(res.status).toBe(200);
     expect(sqlParams(where)).toContain(ORG_ID);
+  });
+
+  // #12347 — nothing on the page said an agent's circuit was open, so a
+  // tripped agent sat skipping every run for weeks. One batched read for the
+  // whole page, pinned to the caller's org condition.
+  it('reports each agent\'s open circuits from ONE batched read pinned to the caller orgs', async () => {
+    const circuit = {
+      orgId: ORG_ID, orgName: 'Org A', openedAt: '2026-11-17T07:03:02.000Z',
+      openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+      consecutiveFailures: 3,
+    };
+    listOpenCircuitsMock.mockResolvedValueOnce(new Map([[AGENT_ID, [circuit]]]));
+    const { orgCondition } = buildOrgAccessClosures([ORG_ID]);
+
+    const res = await buildApp(false, { orgCondition }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].openCircuits).toEqual([circuit]);
+    expect(listOpenCircuitsMock).toHaveBeenCalledTimes(1);
+    const [passedCondition, passedIds] = listOpenCircuitsMock.mock.calls[0]! as [
+      (column: unknown) => unknown, string[],
+    ];
+    expect(passedIds).toEqual([AGENT_ID]);
+    // The caller's own org condition, not a widened one: applied to a column
+    // it yields the same predicate the auth context would.
+    expect(sqlParams(passedCondition(aiAgentCircuitState.orgId))).toContain(ORG_ID);
+  });
+
+  it('reports an empty openCircuits array — never omits it — when nothing is open', async () => {
+    const body = await (await buildApp().request('/ai-agents')).json();
+    expect(body.data[0].openCircuits).toEqual([]);
   });
 
   it('forwards includeDisabled to the service', async () => {

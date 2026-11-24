@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canActorReattach, type ReattachActorAccess, type ReattachAccessScope } from './access';
+import { canActorActOnReattachEvidence, canActorReattach, type ReattachActorAccess, type ReattachAccessScope } from './access';
 
 const PARTNER = '00000000-0000-4000-8000-0000000000a9';
 const OTHER_PARTNER = '00000000-0000-4000-8000-0000000000b9';
@@ -109,5 +109,38 @@ describe('canActorReattach (#8318 §8)', () => {
 
   it("org_access 'none' is refused", () => {
     expect(canActorReattach(actor({}, { orgAccess: 'none', reachableOrgIds: [ORG_A, ORG_B] }), realSource)).toEqual({ allowed: false, code: 'org_access_denied' });
+  });
+});
+
+describe('canActorActOnReattachEvidence (#8318 wave T2: reviewing a TPM key change)', () => {
+  const real = { partnerId: PARTNER, orgId: ORG_A, parked: false };
+  const parked = { partnerId: PARTNER, orgId: HOLDING, parked: true };
+
+  it('a full partner admin may review a real or a parked device', () => {
+    expect(canActorActOnReattachEvidence(actor(), real)).toEqual({ allowed: true, fullAdmin: true });
+    expect(canActorActOnReattachEvidence(actor(), parked)).toEqual({ allowed: true, fullAdmin: true });
+  });
+
+  it('a technician may review a device in one of their orgs, never a parked one', () => {
+    const tech = actor({}, { orgAccess: 'selected', reachableOrgIds: [ORG_A] });
+    expect(canActorActOnReattachEvidence(tech, real)).toEqual({ allowed: true, fullAdmin: false });
+    expect(canActorActOnReattachEvidence(tech, { ...real, orgId: ORG_B })).toEqual({ allowed: false, code: 'org_access_denied' });
+    expect(canActorActOnReattachEvidence(tech, parked)).toEqual({ allowed: false, code: 'full_admin_required' });
+  });
+
+  it('a full admin still needs the org to be reachable now (a draining org grants nothing)', () => {
+    expect(canActorActOnReattachEvidence(actor({}, { reachableOrgIds: [ORG_B] }), real)).toEqual({ allowed: false, code: 'org_access_denied' });
+  });
+
+  it.each<[string, ReattachActorAccess | null, string]>([
+    ['no user', null, 'not_partner_user'],
+    ['an inactive user', actor({ status: 'disabled' }), 'user_inactive'],
+    ['another partner', actor({ partnerId: OTHER_PARTNER }), 'partner_mismatch'],
+    ['no membership', actor({}, null), 'not_partner_user'],
+    ['no devices:delete', actor({}, { grants: [{ resource: 'devices', action: 'write' }] }), 'permission_denied'],
+    ['org access none', actor({}, { orgAccess: 'none' }), 'org_access_denied'],
+  ])('refuses %s, as the reattach rule does', (_name, who, code) => {
+    expect(canActorActOnReattachEvidence(who, real)).toEqual({ allowed: false, code });
+    expect(canActorActOnReattachEvidence(who, parked)).toEqual({ allowed: false, code });
   });
 });

@@ -9535,7 +9535,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
   // delegations (so it can verify the signed `rebind` directive) and, while
   // the device is the source of an open reattach intent, the directive.
   const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
-    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
+    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind', 'configUpdate'],
     watchdog: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
   };
   const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
@@ -9673,9 +9673,12 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       for (const key of Object.keys(body)) {
         expect(PARKED_ALLOWED_KEYS[role]).toContain(key);
       }
-      for (const key of role === 'watchdog' ? [...FORBIDDEN_KEYS, ...TRUST_KEYS] : FORBIDDEN_KEYS) {
+      for (const key of role === 'watchdog' ? [...FORBIDDEN_KEYS, ...TRUST_KEYS] : FORBIDDEN_KEYS.filter((k) => k !== 'configUpdate')) {
         expect(body).not.toHaveProperty(key);
       }
+      // #8318 wave T2: the main agent's parked beat carries the TPM
+      // attestation switch, and nothing else of the config.
+      if (role === 'agent') expect(body.configUpdate).toEqual({ tpm_attestation_enabled: false });
     });
 
     it(`${role}: claims only self_uninstall`, async () => {
@@ -9734,6 +9737,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
   }
 
+  const PARKED_CONFIG = { configUpdate: { tpm_attestation_enabled: false } };
   const PARKED_TRUST = {
     manifestTrustKeys: [{ keyId: 'k-1', publicKeyB64: 'AAA=', validFrom: '2026-01-01T00:00:00.000Z' }],
     manifestKeyDelegations: [{ keyId: 'k-1' }],
@@ -9743,7 +9747,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
+    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9753,7 +9757,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
@@ -9802,7 +9806,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST, ...PARKED_CONFIG });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),

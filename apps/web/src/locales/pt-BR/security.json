@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Endpoint da API do Pi-hole + chave de API. Use o nome de host roteável pela LAN.",
         "apiKeyPlaceholder": "chave de API do Pi-hole em /admin",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Escolha a versão principal do seu Pi-hole. A v6 autentica com uma senha de aplicativo.",
+        "appPasswordPlaceholder": "senha de aplicativo de Configurações → Interface web / API"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "ID da conta (opcional)",
       "apiEndpoint": "Endpoint da API",
       "httpBasicUsername": "Usuário HTTP Basic",
-      "httpBasicPassword": "Senha HTTP Basic"
+      "httpBasicPassword": "Senha HTTP Basic",
+      "piholeVersion": "Versão do Pi-hole",
+      "appPassword": "Senha de aplicativo"
     },
     "placeholders": {
       "displayName": "ex.: Gateway da sede Acme",
@@ -1693,6 +1697,10 @@
       "createFailed": "Falha ao criar integração",
       "createSuccess": "Integração {{provider}} \"{{name}}\" adicionada",
       "networkError": "Erro de rede"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (API de administração legada)",
+      "v6": "Pi-hole v6 (API de sessão)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "Armazenar tráfego permitido",
       "helpOff": "Somente consultas bloqueadas e redirecionadas são armazenadas. As consultas permitidas costumam ser quase todo o tráfego, e seu provedor de DNS as mantém nos próprios relatórios.",
       "helpOn": "As consultas permitidas também são armazenadas, o que costuma significar cerca de 100 vezes mais linhas. Desativar depois não exclui as consultas permitidas já armazenadas; a retenção as remove."
+    },
+    "piholeVersion": {
+      "label": "Versão do Pi-hole",
+      "v5": "Pi-hole v5 (API de administração legada)",
+      "v6": "Pi-hole v6 (API de sessão)",
+      "help": "Altera como o Breeze se comunica com este Pi-hole. Para a v6, recrie a integração com uma senha de aplicativo se a chave armazenada for um token v5."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
