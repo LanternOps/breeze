@@ -15,6 +15,11 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
+let canWrite = true;
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ can: (_r: string, a: string) => (a === 'write' ? canWrite : false) }),
+}));
+
 const fetchMock = vi.mocked(fetchWithAuth);
 
 const json = (payload: unknown, status = 200): Response =>
@@ -97,6 +102,7 @@ const mergeCalls = () => fetchMock.mock.calls.filter(([u, i]) => String(u) === '
 
 beforeEach(() => {
   vi.clearAllMocks();
+  canWrite = true;
 });
 
 describe('MergeTicketDialog — picker', () => {
@@ -389,5 +395,101 @@ describe('MergeTicketDialog — review follow-ups', () => {
     await waitFor(() => expect(previewCalls()).toHaveLength(2));
     await waitFor(() => expect(screen.getByTestId('ticket-merge-confirm')).toBeEnabled());
     expect(screen.getByTestId('ticket-merge-notify')).not.toBeChecked();
+  });
+});
+
+
+describe('MergeTicketDialog — resolved and closed targets (#12256)', () => {
+  const RESOLVED = row('tk-res', 'T-2026-0002', '2026-02-01T00:00:00.000Z', { status: 'resolved' });
+  const CLOSED = row('tk-closed', 'T-2026-0003', '2026-02-02T00:00:00.000Z', { status: 'closed' });
+
+  const includeClosedFetches = () => fetchMock.mock.calls
+    .map(([u]) => String(u))
+    .filter((u) => u.startsWith('/tickets?') && !new URLSearchParams(u.split('?')[1]).has('statusGroup'));
+
+  it('lists resolved and closed tickets with their status once the toggle is on', async () => {
+    mockApi({ list: [OLDER, RESOLVED, CLOSED] });
+    renderDialog();
+    await screen.findByTestId('ticket-merge-option-tk-old');
+    expect(includeClosedFetches()).toHaveLength(0);
+    fireEvent.click(screen.getByTestId('ticket-merge-include-closed'));
+    await waitFor(() => expect(includeClosedFetches().length).toBeGreaterThan(0));
+    expect(await screen.findByTestId('ticket-merge-option-tk-res')).toHaveTextContent(/resolved/i);
+    expect(screen.getByTestId('ticket-merge-option-tk-closed')).toHaveTextContent(/closed/i);
+  });
+
+  it('a resolved target is previewed and merges (the API accepts it)', async () => {
+    mockApi({ list: [OLDER, RESOLVED] });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    await pick('tk-res');
+    expect(screen.queryByTestId('ticket-merge-reopen-first')).toBeNull();
+    expect(previewCalls()).toHaveLength(1);
+  });
+
+  it('a closed target explains reopen-first and never previews or merges', async () => {
+    mockApi({ list: [CLOSED] });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    expect(await screen.findByTestId('ticket-merge-reopen-first')).toBeInTheDocument();
+    expect(previewCalls()).toHaveLength(0);
+    expect(screen.getByTestId('ticket-merge-confirm')).toBeDisabled();
+    expect(mergeCalls()).toHaveLength(0);
+  });
+
+  it('reopen posts the status change, then previews the now-open target', async () => {
+    mockApi({ list: [CLOSED] });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/tickets/tk-closed/status' && init?.method === 'POST') return json({ data: { id: 'tk-closed', status: 'open' } });
+      return base(input, init);
+    });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-reopen'));
+    await screen.findByTestId('ticket-merge-preview');
+    const post = fetchMock.mock.calls.find(([u]) => String(u) === '/tickets/tk-closed/status')!;
+    expect(JSON.parse(String(post[1]!.body))).toEqual({ status: 'open' });
+    expect(screen.queryByTestId('ticket-merge-reopen-first')).toBeNull();
+    expect(mergeCalls()).toHaveLength(0);
+  });
+
+  it('without tickets:write the reopen action is not offered', async () => {
+    canWrite = false;
+    mockApi({ list: [CLOSED] });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    await screen.findByTestId('ticket-merge-reopen-first');
+    expect(screen.queryByTestId('ticket-merge-reopen')).toBeNull();
+  });
+
+  it('a failed reopen keeps the closed notice and never previews', async () => {
+    mockApi({ list: [CLOSED] });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/tickets/tk-closed/status' && init?.method === 'POST') return json({ error: 'nope' }, 500);
+      return base(input, init);
+    });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-reopen'));
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect(screen.getByTestId('ticket-merge-reopen-first')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-merge-reopen')).not.toBeDisabled();
+    expect(previewCalls()).toHaveLength(0);
+  });
+
+  it('unticking the toggle clears a selected closed target', async () => {
+    mockApi({ list: [CLOSED] });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    await screen.findByTestId('ticket-merge-reopen-first');
+    fireEvent.click(screen.getByTestId('ticket-merge-include-closed'));
+    await waitFor(() => expect(screen.queryByTestId('ticket-merge-reopen-first')).toBeNull());
   });
 });
