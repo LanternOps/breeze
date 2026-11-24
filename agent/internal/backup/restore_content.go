@@ -174,9 +174,16 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 	// Without this a verified download that the coordinator had not yet
 	// installed when the session-lost answer arrived was thrown away, and
 	// how many files a run reported restored depended on timing.
+	//
+	// It decides on the one observation of ctx.Err() below. Calling
+	// checkCancelled while ctx still looked live was a race: a session-lost
+	// cancel landing between the two reads ended the run without settling.
 	stop := func() bool {
-		if ctx == nil || ctx.Err() == nil {
+		if ctx == nil {
 			return c.checkCancelled()
+		}
+		if ctx.Err() == nil {
+			return false
 		}
 		if sessionLostCause(ctx) != nil && (c.callerCtx == nil || c.callerCtx.Err() == nil) {
 			for inflight > 0 {
