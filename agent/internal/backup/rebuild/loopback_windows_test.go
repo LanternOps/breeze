@@ -173,7 +173,7 @@ func TestRun_WindowsVhdxRealSystem(t *testing.T) {
 	}
 	// The restored bytes are on the VHDX's root volume, read back through a
 	// fresh attach (the run's own attach is gone).
-	vols, err := sys.WaitForVolumes(context.Background(), diskNumber, 3)
+	vols, err := sys.WaitForVolumes(context.Background(), diskNumber, []int{1, 3, 4})
 	if err != nil {
 		t.Fatalf("WaitForVolumes after re-attach: %v", err)
 	}
