@@ -1,6 +1,10 @@
-import { and, sql, eq, type SQL } from 'drizzle-orm';
+import { and, asc, sql, eq, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { FleetFilter, FleetFilterGroupBy } from '@breeze/shared';
 import { db } from '../db';
-import { devices } from '../db/schema';
+import { devices, sites } from '../db/schema';
+import { buildGroupSQL } from './filterEngine';
+import { compileFleetFilter } from './fleetFilter';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { logShippingFailingPredicate } from './logShippingFailingPredicate';
 
@@ -44,17 +48,32 @@ export function techFacingDeviceConditions(): SQL[] {
 }
 
 /**
- * Exact fleet-wide device counts by status, computed in SQL.
- *
- * Shared by GET /devices/stats and the `get_fleet_device_stats` AI tool so the
- * two cannot drift. The caller supplies ONLY the tenant/site/device narrowing
- * (`scope`); the exclusions common to every tech-facing count are applied here
- * via `techFacingDeviceConditions`.
+ * The compiled typed fleet filter (#12418), rendered by the filter engine's
+ * own SQL builder. `undefined` when there is nothing to narrow by, so an
+ * unfiltered caller sends exactly today's WHERE.
  */
-export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceStats> {
-  const conditions: SQL[] = techFacingDeviceConditions();
-  if (scope) conditions.push(scope);
+export function fleetFilterWhere(filter: FleetFilter | undefined): SQL | undefined {
+  if (!filter) return undefined;
+  const group = compileFleetFilter(filter);
+  if (group.conditions.length === 0) return undefined;
+  return buildGroupSQL(group);
+}
 
+/**
+ * The one condition list every fleet count, grouped breakdown and device page
+ * evaluates: the tech-facing exclusions, then the caller's tenant/site/device
+ * scope, then the typed filter. Exported so the fleet step of a flow (#12418
+ * W02) freezes its set from the same WHERE the model's count came from.
+ */
+export function fleetConditions(scope: SQL | undefined, filter: FleetFilter | undefined): SQL[] {
+  const conditions = techFacingDeviceConditions();
+  if (scope) conditions.push(scope);
+  const where = fleetFilterWhere(filter);
+  if (where) conditions.push(where);
+  return conditions;
+}
+
+async function countByStatus(conditions: SQL[]): Promise<DeviceStats> {
   const rows = await db
     .select({
       status: devices.status,
@@ -82,4 +101,137 @@ export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceSt
   }
   const online = byStatus.online ?? 0;
   return { total, online, offline: total - online, byStatus, migrationRequiredCount, logShippingFailingCount };
+}
+
+/**
+ * Exact fleet-wide device counts by status, computed in SQL.
+ *
+ * Shared by GET /devices/stats and the `get_fleet_device_stats` AI tool so the
+ * two cannot drift. The caller supplies ONLY the tenant/site/device narrowing
+ * (`scope`); the exclusions common to every tech-facing count are applied here
+ * via `techFacingDeviceConditions`.
+ */
+export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceStats> {
+  return countByStatus(fleetConditions(scope, undefined));
+}
+
+/** Rows kept in a grouped breakdown; the remainder is summed into `otherCount`. */
+export const FLEET_GROUP_ROW_LIMIT = 50;
+const UNKNOWN_GROUP_KEY = 'unknown';
+
+/**
+ * The device column each `groupBy` value reads. Raw stored values: an
+ * `architecture` breakdown shows what the agent reported (e.g. `amd64`), not
+ * the filter engine's `x64` projection.
+ */
+const GROUP_BY_COLUMN: Record<FleetFilterGroupBy, PgColumn> = {
+  status: devices.status,
+  osType: devices.osType,
+  osVersion: devices.osVersion,
+  siteId: devices.siteId,
+  agentVersion: devices.agentVersion,
+  deviceRole: devices.deviceRole,
+  architecture: devices.architecture,
+};
+
+export interface FleetGroupRow {
+  key: string;
+  /** The site name, when grouped by `siteId`. */
+  label?: string;
+  count: number;
+}
+
+export interface FleetDeviceStats extends DeviceStats {
+  groups?: { by: FleetFilterGroupBy; rows: FleetGroupRow[]; otherCount: number };
+}
+
+async function groupCounts(conditions: SQL[], by: FleetFilterGroupBy): Promise<NonNullable<FleetDeviceStats['groups']>> {
+  const column = GROUP_BY_COLUMN[by];
+  let raw: Array<{ key: unknown; label?: unknown; count: unknown }>;
+  if (by === 'siteId') {
+    // LEFT JOIN so a device whose site row is not readable still counts:
+    // the grouped rows always sum to the filtered total.
+    raw = await db
+      .select({ key: devices.siteId, label: sites.name, count: sql<number>`count(*)` })
+      .from(devices)
+      .leftJoin(sites, eq(sites.id, devices.siteId))
+      .where(and(...conditions))
+      .groupBy(devices.siteId, sites.name);
+  } else {
+    raw = await db
+      .select({ key: column, count: sql<number>`count(*)` })
+      .from(devices)
+      .where(and(...conditions))
+      .groupBy(column);
+  }
+
+  // NULL renders as "unknown"; merge it with a literal "unknown" value so a
+  // key appears once.
+  const merged = new Map<string, FleetGroupRow>();
+  for (const r of raw) {
+    const key = r.key === null || r.key === undefined || r.key === '' ? UNKNOWN_GROUP_KEY : String(r.key);
+    const count = Number(r.count);
+    const existing = merged.get(key);
+    if (existing) {
+      existing.count += count;
+    } else {
+      const row: FleetGroupRow = { key, count };
+      if (typeof r.label === 'string' && r.label.length > 0) row.label = r.label;
+      merged.set(key, row);
+    }
+  }
+  const sorted = [...merged.values()].sort((a, b) => b.count - a.count || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const rows = sorted.slice(0, FLEET_GROUP_ROW_LIMIT);
+  const otherCount = sorted.slice(FLEET_GROUP_ROW_LIMIT).reduce((n, r) => n + r.count, 0);
+  return { by, rows, otherCount };
+}
+
+/**
+ * `queryDeviceStats` over the typed filter, plus an optional one-dimension
+ * breakdown. Without `filter` and `groupBy` it returns exactly what
+ * `queryDeviceStats(scope)` returns.
+ */
+export async function queryFleetDeviceStats(p: {
+  scope: SQL | undefined;
+  filter?: FleetFilter;
+  groupBy?: FleetFilterGroupBy;
+}): Promise<FleetDeviceStats> {
+  const conditions = fleetConditions(p.scope, p.filter);
+  const stats: FleetDeviceStats = await countByStatus(conditions);
+  if (p.groupBy) stats.groups = await groupCounts(conditions, p.groupBy);
+  return stats;
+}
+
+export interface FleetDevicePageRow {
+  id: string;
+  hostname: string;
+  displayName: string | null;
+  status: string;
+  osType: string;
+  siteId: string;
+  lastSeenAt: Date | null;
+}
+
+/** One page of the filtered set, in a stable `hostname, id` order. */
+export async function pageFleetDevices(p: {
+  scope: SQL | undefined;
+  filter?: FleetFilter;
+  limit: number;
+  offset: number;
+}): Promise<FleetDevicePageRow[]> {
+  return db
+    .select({
+      id: devices.id,
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+      status: devices.status,
+      osType: devices.osType,
+      siteId: devices.siteId,
+      lastSeenAt: devices.lastSeenAt,
+    })
+    .from(devices)
+    .where(and(...fleetConditions(p.scope, p.filter)))
+    .orderBy(asc(devices.hostname), asc(devices.id))
+    .limit(p.limit)
+    .offset(p.offset);
 }

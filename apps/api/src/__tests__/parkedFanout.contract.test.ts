@@ -139,7 +139,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/connectionHealth/sources/backupDestination.ts': 'read model: the backup_destination health verdict (#11772) counts the job outcomes of devices on one backup config; reads backup_jobs.device_id only to group them, selects no device targets and runs nothing',
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
-  'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
+  'services/deviceStats.ts': 'read model: fleet device counts by status, the typed-filter count, group-by and device page (GET /devices/stats and get_fleet_device_stats) over one shared condition list (fleetConditions); excludes parked devices',
   'services/wisp/standingLoop.ts': 'read model (#11677): the Wisp standing state counts and names offline devices through deviceListReachConditions (query_devices\' own reach, parked and Quick Support devices out) for the per-turn prompt; selects no targets and runs nothing',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
