@@ -1625,9 +1625,11 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
   }
 
   // #12613 — an OPTIONAL secret (`required: false`), through the dispatch
-  // chokepoint every launcher shares. Run for the manual and the scheduled
-  // trigger: "not defined" omits the secret entirely (no `secretEnv` key, so
-  // the agent sets no BREEZE_VAR_* at all); "unreadable" still fails.
+  // chokepoint both launchers share. Run for a manual run and for `automation`
+  // (what a SCHEDULED automation dispatches as; nothing on the server emits
+  // `scheduled`): "not defined" omits the secret entirely (no `secretEnv` key,
+  // so the agent sets no BREEZE_VAR_* at all); "unreadable" still fails. The
+  // real launchers are covered in scriptSecretDelivery.integration.test.ts.
   describe('optional secret (#12613)', () => {
     const optionalSecretScript = (required: boolean) =>
       savedScript({
@@ -1637,7 +1639,7 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
         ],
       });
 
-    for (const triggerType of ['manual', 'scheduled'] as const) {
+    for (const triggerType of ['manual', 'automation'] as const) {
       describe(`triggerType ${triggerType}`, () => {
         it('optional + not defined: queues the script with the secret ABSENT, nothing sealed or preflighted', async () => {
           const r = await dispatchScriptToDevice({
