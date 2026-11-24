@@ -121,6 +121,17 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A frame acquired by CaptureTexture is still held (the GPU path releases
+	// it after encoding, with c.mu released in between). AcquireNextFrame now
+	// would fail with DXGI_ERROR_INVALID_CALL, which the recovery below reads
+	// as a lost duplication and answers by tearing the device down under the
+	// encoder (#12624). Report "no frame" and touch nothing, not even the
+	// desktop-switch check, which can re-initialise DXGI too. The capture loop
+	// never gets here with a frame held; only a call from another goroutine can.
+	if c.textureFrameAcquired {
+		return nil, nil
+	}
+
 	// Sample cursor from capture thread (correct desktop context)
 	c.sampleCursorForCrossThread()
 
