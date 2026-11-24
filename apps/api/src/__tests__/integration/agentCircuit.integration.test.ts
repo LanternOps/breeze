@@ -20,12 +20,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 
-const { publishEventMock } = vi.hoisted(() => ({
+const { publishEventMock, pendingAudits } = vi.hoisted(() => ({
   publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
+  pendingAudits: [] as Promise<void>[],
 }));
 vi.mock('../../services/eventBus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/eventBus')>();
   return { ...actual, publishEvent: publishEventMock };
+});
+// `recordRunTerminal` fires its audit write without awaiting it, on its own
+// connection, so the row can commit after `transitionRunStatus` has returned.
+// The REAL write still runs; its promise is only kept so `settleAudits` can
+// wait for it.
+vi.mock('../../services/auditService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/auditService')>();
+  return {
+    ...actual,
+    createAuditLogAsync: (...args: Parameters<typeof actual.createAuditLogAsync>) => {
+      const write = actual.createAuditLogAsync(...args);
+      pendingAudits.push(write);
+      return write;
+    },
+  };
 });
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
@@ -125,7 +141,18 @@ function expectCreated(result: CreateAgentRunResult) {
   return result.run;
 }
 
+/** Waits for every audit write started so far to finish its first attempt. */
+async function settleAudits(): Promise<void> {
+  await Promise.all(pendingAudits.splice(0));
+}
+
+/**
+ * Settles pending audit writes first, so a count is never read ahead of a row
+ * still being written: neither a missing row nor a late duplicate can be
+ * hidden by timing.
+ */
 async function circuitOpenedAuditCount(orgId: string, agentId: string): Promise<number> {
+  await settleAudits();
   const rows = await withSystemDbAccessContext(() =>
     db
       .select({ id: auditLogs.id })
@@ -137,6 +164,39 @@ async function circuitOpenedAuditCount(orgId: string, agentId: string): Promise<
       )),
   );
   return rows.length;
+}
+
+/** A run admitted before the circuit opened (simulated: inserted `running`, bypassing admission). */
+async function insertInFlightRun(t: Tenant): Promise<string> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .insert(aiAgentRuns)
+      .values({
+        agentId: t.agent.id,
+        orgId: t.org.id,
+        deviceId: t.device.id,
+        triggerKind: 'manual',
+        dedupeKey: `manual:${randomUUID()}`,
+        modeAtStart: 'shadow',
+        policySnapshot: {
+          schemaVersion: 4, agentId: t.agent.id, kind: 'triage',
+          effective: {}, provenance: {}, resolvedAt: new Date().toISOString(),
+        } as never,
+        status: 'running',
+      })
+      .returning({ id: aiAgentRuns.id }),
+  );
+  return row!.id;
+}
+
+async function runStatus(runId: string): Promise<{ status: string; errorCode: string | null }> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({ status: aiAgentRuns.status, errorCode: aiAgentRuns.errorCode })
+      .from(aiAgentRuns)
+      .where(eq(aiAgentRuns.id, runId)),
+  );
+  return row!;
 }
 
 let enqueued: string[] = [];
@@ -152,7 +212,10 @@ beforeEach(() => {
   registerAgentRunEnqueuer(enqueuer);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Not every test reads the audit rows; leave no write to race the next
+  // test's TRUNCATE.
+  await settleAudits();
   registerAgentRunEnqueuer(null);
   vi.unstubAllEnvs();
 });
@@ -333,7 +396,7 @@ describe('per-org circuit breaker against real Postgres (#3828)', () => {
 
     const runA = expectCreated(await createAndEnqueueAgentRun(triggerInput(a)));
     await transitionRunStatus(runA.id, ['queued', 'running'], 'failed', {
-      errorCode: 'llm_unavailable', finishedAt: new Date(),
+      errorCode: 'max_turns_exceeded', finishedAt: new Date(),
     });
     // Open org B's circuit for the same partner-wide agent directly.
     await withSystemDbAccessContext(() =>
@@ -353,7 +416,7 @@ describe('per-org circuit breaker against real Postgres (#3828)', () => {
     );
     const listed = unpinned.get(a.agent.id) ?? [];
     expect(listed.map((row) => row.orgId)).toEqual([a.org.id]);
-    expect(listed[0]!.openedReason).toBe('1 consecutive terminal failures (threshold 1); last failure: llm_unavailable');
+    expect(listed[0]!.openedReason).toBe('1 consecutive terminal failures (threshold 1); last failure: max_turns_exceeded');
     expect(listed[0]!.orgName).toEqual(expect.any(String));
 
     // The partner sees both; the app-layer pin narrows to the orgs it names.
@@ -369,5 +432,89 @@ describe('per-org circuit breaker against real Postgres (#3828)', () => {
       listOpenCircuits((column: PgColumn) => eq(column, b.id), [a.agent.id]),
     );
     expect((pinned.get(a.agent.id) ?? []).map((row) => row.orgId)).toEqual([b.id]);
+  });
+});
+
+// #12347 (owner decision 2026-11-24): `llm_unavailable` — the model provider
+// down, overloaded or rate-limiting, or the agent's model egress unavailable —
+// is the platform failing the agent, so it must never move the breaker. The
+// run itself is still recorded `failed` with its real code.
+describe('provider outages (llm_unavailable) never move the circuit (#12347)', () => {
+  it('N consecutive llm_unavailable failures leave the circuit closed, and every run stays recorded failed', async () => {
+    const threshold = 2;
+    const t = await seedTenant(threshold);
+
+    const runIds: string[] = [];
+    for (let i = 0; i < threshold + 2; i++) {
+      const run = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+      await transitionRunStatus(run.id, ['queued', 'running'], 'failed', {
+        errorCode: 'llm_unavailable', finishedAt: new Date(),
+      });
+      runIds.push(run.id);
+    }
+
+    expect(await isCircuitOpen(t.org.id, t.agent.id)).toBe(false);
+    expect(await getCircuitState(t.org.id, t.agent.id)).toMatchObject({ state: 'closed', consecutiveFailures: 0 });
+    expect(await circuitOpenedAuditCount(t.org.id, t.agent.id)).toBe(0);
+    for (const id of runIds) {
+      expect(await runStatus(id)).toEqual({ status: 'failed', errorCode: 'llm_unavailable' });
+    }
+    // Admission is still open.
+    expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+  });
+
+  it('a mix trips on the real failures only, and llm_unavailable does not reset the streak between them', async () => {
+    const t = await seedTenant(2);
+
+    const real1 = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    await transitionRunStatus(real1.id, ['queued', 'running'], 'failed', {
+      errorCode: 'sdk_error', finishedAt: new Date(),
+    });
+    expect(await getCircuitState(t.org.id, t.agent.id)).toMatchObject({ state: 'closed', consecutiveFailures: 1 });
+
+    const outage = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    await transitionRunStatus(outage.id, ['queued', 'running'], 'failed', {
+      errorCode: 'llm_unavailable', finishedAt: new Date(),
+    });
+    // Neither incremented nor reset: still one real failure, still closed.
+    expect(await getCircuitState(t.org.id, t.agent.id)).toMatchObject({
+      state: 'closed', consecutiveFailures: 1, lastRunId: real1.id,
+    });
+    expect(await runStatus(outage.id)).toEqual({ status: 'failed', errorCode: 'llm_unavailable' });
+
+    const real2 = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    await transitionRunStatus(real2.id, ['queued', 'running'], 'failed', {
+      errorCode: 'sdk_error', finishedAt: new Date(),
+    });
+    const opened = await getCircuitState(t.org.id, t.agent.id);
+    expect(opened).toMatchObject({
+      state: 'open',
+      consecutiveFailures: 2,
+      openedReason: '2 consecutive terminal failures (threshold 2); last failure: sdk_error',
+    });
+    expect(await circuitOpenedAuditCount(t.org.id, t.agent.id)).toBe(1);
+  });
+
+  it('an already-open circuit is untouched by an in-flight run failing llm_unavailable', async () => {
+    const t = await seedTenant(1);
+
+    const run1 = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    await transitionRunStatus(run1.id, ['queued', 'running'], 'failed', {
+      errorCode: 'sdk_error', finishedAt: new Date(),
+    });
+    const before = await getCircuitState(t.org.id, t.agent.id);
+    expect(before).toMatchObject({ state: 'open', consecutiveFailures: 1 });
+
+    const inFlightId = await insertInFlightRun(t);
+    await transitionRunStatus(inFlightId, 'running', 'failed', {
+      errorCode: 'llm_unavailable', finishedAt: new Date(),
+    });
+
+    // Byte-for-byte the same circuit row: no count change, no lastRunId or
+    // transition bump, no re-open, no second audit row.
+    expect(await getCircuitState(t.org.id, t.agent.id)).toEqual(before);
+    expect(await circuitOpenedAuditCount(t.org.id, t.agent.id)).toBe(1);
+    expect(await runStatus(inFlightId)).toEqual({ status: 'failed', errorCode: 'llm_unavailable' });
+    expect(await createAndEnqueueAgentRun(triggerInput(t))).toEqual({ created: false, skipped: 'circuit_open' });
   });
 });
