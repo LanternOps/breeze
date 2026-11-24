@@ -893,6 +893,7 @@
         "continueHelp": "As ações seguintes também são executadas nos dispositivos aos quais o script não pôde ser enviado.",
         "notify": "Notificar",
         "notifyHelp": "Envia um aviso aos canais abaixo para cada dispositivo ao qual o script não pôde ser enviado. No máximo 20 avisos são enviados por execução.",
+        "notifySummaryHelp": "Envia um aviso aos canais abaixo para cada script que não pôde ser enviado a todos os dispositivos, com quantos dispositivos tiveram sucesso e quantos falharam.",
         "noChannels": "Adicione um canal de notificação para usar Notificar."
       }
     },

@@ -13,6 +13,7 @@ import {
 } from './editorState';
 
 const SCRIPT = '33333333-3333-4333-8333-333333333333';
+const CHANNEL = '55555555-5555-4555-8555-555555555555';
 const formValues: FlowFormValues = {
   name: 'Nightly cleanup',
   trigger: { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' },
@@ -27,6 +28,23 @@ describe('editorState', () => {
     expect(s.formValues).toEqual(formValues);
     expect(s.formLocked).toBeNull();
     expect(JSON.parse(s.text)).toEqual(compileFlowForm(formValues));
+  });
+
+  it('a loaded per-device on-failure notice (a flow moved from a Job) is kept on every form change, never rewritten to a summary', () => {
+    const perDevice: FlowFormValues = { ...formValues, onFailure: { mode: 'notify', channelIds: [CHANNEL], notice: 'perDevice' } };
+    const loaded = editorFromDocument(compileFlowForm(perDevice));
+    expect(loaded.formValues?.onFailure).toEqual({ mode: 'notify', channelIds: [CHANNEL], notice: 'perDevice' });
+    const renamed = withFormValues(loaded, { ...loaded.formValues!, name: 'Renamed' });
+    const saved = JSON.parse(renamed.text) as { steps: Array<{ id: string }> };
+    expect(saved.steps.map((s) => s.id)).toEqual(['a0_run_script', 'a0_failed', 'a0_failnotice_0']);
+    expect(sameFlowDocument(saved, compileFlowForm({ ...perDevice, name: 'Renamed' }))).toBe(true);
+  });
+
+  it('a loaded summary notice reopens as a summary', () => {
+    const summary: FlowFormValues = { ...formValues, onFailure: { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' } };
+    const loaded = editorFromDocument(compileFlowForm(summary));
+    expect(loaded.formValues?.onFailure).toEqual(summary.onFailure);
+    expect((JSON.parse(loaded.text) as { steps: Array<{ id: string }> }).steps.map((s) => s.id)).toEqual(['a0_run_script', 'a0_failsummary_0']);
   });
 
   it('a document with limits opens with the form locked', () => {

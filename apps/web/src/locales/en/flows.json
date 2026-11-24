@@ -893,6 +893,7 @@
         "continueHelp": "Later actions still run on the devices the script couldn't be sent to.",
         "notify": "Notify",
         "notifyHelp": "Send a notice to the channels below for each device the script couldn't be sent to. At most 20 notices are sent per run.",
+        "notifySummaryHelp": "Send one notice to the channels below for each script that couldn't be sent to every device, with how many devices succeeded and failed.",
         "noChannels": "Add a notification channel to use Notify."
       }
     },

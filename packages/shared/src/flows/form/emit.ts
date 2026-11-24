@@ -24,6 +24,16 @@ export function flowStep(s: Omit<FlowStep, 'approval' | 'onFailure' | 'timeoutSe
   return { approval: 'default', onFailure: 'continue', timeoutSec: 300, ...s } as FlowStep;
 }
 
+/**
+ * The line a one-per-run notice appends after a script step: that step's
+ * succeeded and failed device counts (`FlowFleetStepOutput`). The form's notify
+ * action and its on-failure summary both end with it; `decodeFlowForm` strips
+ * exactly this from a notify action's message.
+ */
+export function deviceCountsSuffix(scriptStepId: string): string {
+  return `\n\nDevices: {{steps.${scriptStepId}.output.succeededCount}} succeeded, {{steps.${scriptStepId}.output.failedCount}} failed.`;
+}
+
 /** The `targets` step: resolve the selector to devices. Stops the flow when it fails. */
 export function emitTargetsStep(selectorInput: Record<string, unknown>): FlowStep {
   return flowStep({ id: 'targets', tool: 'resolve_targets', input: selectorInput, onFailure: 'stop' });
@@ -97,4 +107,27 @@ export function emitFailureNoticeSteps(i: number, fleetStepId: string, flowName:
     }));
   });
   return steps;
+}
+
+/**
+ * The guided form's on-failure block after a fleet step (#12596): one notice
+ * per channel for the whole step, sent only when at least one device failed,
+ * with the step's succeeded and failed counts. Its size does not grow with
+ * the number of failed devices, unlike the per-device shape above, which a
+ * large failure can push past the per-run notify cap (20). No for-each and no
+ * resolve step. Empty for no channels. The converter does not emit this shape.
+ */
+export function emitFailureSummarySteps(i: number, fleetStepId: string, flowName: string, channelIds: string[]): FlowStep[] {
+  const when = `length(steps.${fleetStepId}.output.failedDeviceIds) > 0`;
+  return channelIds.map((channelId, n) => flowStep({
+    id: `a${i}_failsummary_${n}`,
+    tool: 'notify',
+    when,
+    input: {
+      channelId,
+      title: `${flowName} action failed`,
+      message: `Automation ${flowName} action ${i + 1} could not be sent to every device.${deviceCountsSuffix(fleetStepId)}`,
+      severity: 'warning',
+    },
+  }));
 }
