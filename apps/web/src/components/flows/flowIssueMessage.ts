@@ -43,7 +43,7 @@ function friendly(t: TFunction, issue: FlowIssue): string {
       if (pointer === '/trigger/cron') return t('flowEditor.validation.cron');
       if (pointer === '/trigger/timezone') return t('flowEditor.validation.timezone');
       if (pointer === '/trigger/event') return t('flowEditor.validation.event');
-      if (pointer === '/trigger/filter' || pointer.startsWith('/trigger/filter/')) return t('flowEditor.validation.eventFilter');
+      if (pointer.startsWith('/trigger/filter/')) return t('flowEditor.validation.eventFilter');
       if (pointer === '/trigger/orgResolver' || pointer.startsWith('/trigger/orgResolver/')) return t('flowEditor.validation.orgResolver');
       break;
     case 'input_invalid':

@@ -99,6 +99,22 @@ const COVERAGE: Record<string, Coverage> = {
   'flow-form-onfailure-channel-ID': { cannotBeInvalid: 'the list is never empty (the form refuses to untick the last channel); a channel the owner cannot use is notify_channel_not_owned' },
 };
 
+/** The sentence each invalid-able field must show, so a pointer routed to the wrong sentence fails. */
+const SAYS: Record<string, RegExp> = {
+  'flow-form-name': /Give the flow a name/,
+  'flow-form-cron': /valid cron expression/,
+  'flow-form-timezone': /time zone/,
+  'flow-form-event': /Choose the event/,
+  'flow-form-filter-N-key': /event filter field name/,
+  'flow-form-webhook-resolver-path': /organization lookup/,
+  'flow-form-webhook-resolver-system': /organization lookup/,
+  'flow-form-action-N-script': /Choose a script/,
+  'Parameter name': /script parameter/,
+  'flow-form-action-N-channel': /Choose a notification channel/,
+  'flow-form-action-N-title': /Give this action a title/,
+  'flow-form-action-N-message': /Write a message/,
+};
+
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 function controlKey(el: Element): string {
   const id = el.getAttribute('data-testid');
@@ -132,7 +148,7 @@ describe('flow form fields and their validation sentences (#12614)', () => {
     const seen = new Set<string>();
     for (const [i, values] of everything.entries()) {
       const { container, unmount } = render(<FlowFormView values={values} onChange={vi.fn()} partnerWide={i === 2} issues={[]} />);
-      await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(0));
+      await waitFor(() => expect(screen.getAllByRole('option', { name: /^Ops/ })[0]).toBeTruthy());
       container.querySelectorAll('input, select, textarea').forEach((el) => seen.add(controlKey(el)));
       unmount();
     }
@@ -148,8 +164,23 @@ describe('flow form fields and their validation sentences (#12614)', () => {
       expect(row.textContent, `${issue.code} ${issue.pointer}`).not.toContain(RAW);
       expect(row.textContent, `${issue.code} ${issue.pointer}`).not.toMatch(GENERIC);
       expect(row.textContent).toContain(issue.pointer);
+      expect(row.textContent, `${issue.code} ${issue.pointer}`).toMatch(SAYS[_key]);
       unmount();
     }
+  });
+
+  it('names the expected sentence for exactly the fields that can be invalid', () => {
+    const invalidKeys = Object.entries(COVERAGE).filter(([, c]) => 'invalid' in c).map(([k]) => k);
+    expect(Object.keys(SAYS).sort()).toEqual(invalidKeys.sort());
+  });
+
+  it('shows the target sentence for a target the form cannot build', () => {
+    render(<FlowIssuesPanel issues={[inputIssue('/steps/0/input/target/groupIds')]} />);
+    expect(screen.getByTestId('flow-issue-input_invalid').textContent).toMatch(/Choose which devices/);
+  });
+
+  it("accepts a description at the form's 2000-character bound", () => {
+    expect(schemaIssues({ ...base, description: 'x'.repeat(2000) })).toEqual([]);
   });
 });
 
@@ -180,6 +211,11 @@ describe('an empty value is not also "not owned" (#12614)', () => {
   it('keeps a reference_not_owned that stands alone, on another pointer or with none', () => {
     render(<FlowIssuesPanel issues={[inputIssue('/steps/0/input/scriptId'), notOwned('/steps/1/input/scriptId'), notOwned()]} />);
     expect(screen.getAllByTestId('flow-issue-reference_not_owned')).toHaveLength(2);
+  });
+
+  it('keeps it when the other issue on the pointer is not an input_invalid', () => {
+    render(<FlowIssuesPanel issues={[{ code: 'schema', severity: 'error', message: RAW, pointer: '/steps/0/input/scriptId' }, notOwned('/steps/0/input/scriptId')]} />);
+    expect(screen.getByTestId('flow-issue-reference_not_owned')).toBeTruthy();
   });
 
   it('keeps a lone reference_not_owned', () => {
