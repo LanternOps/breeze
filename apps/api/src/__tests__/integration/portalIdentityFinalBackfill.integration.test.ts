@@ -1,6 +1,6 @@
 /**
  * Portal registration W10 (#11387) PR-A, plan D3: the final identity backfill
- * at the release-N boundary (2027-01-28-210000-portal-identity-final-backfill.sql).
+ * at the release-N boundary (2027-01-30-140000-portal-identity-final-backfill.sql).
  *
  * Every case runs inside ONE superuser postgres.js transaction that is always
  * rolled back (template: portalAccessPolicyMigration.integration.test.ts), so
@@ -32,7 +32,7 @@ import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
 
-const MIGRATION = '2027-01-28-210000-portal-identity-final-backfill.sql';
+const MIGRATION = '2027-01-30-140000-portal-identity-final-backfill.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 type Tx = postgres.TransactionSql<Record<string, unknown>>;
 class Rollback extends Error { constructor() { super('intentional rollback'); } }

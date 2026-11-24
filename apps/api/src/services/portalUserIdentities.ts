@@ -16,7 +16,7 @@
  * Release C (W10 #11387): the legacy `portal_users.entra_*` columns are neither
  * read nor written (the W3 D4 writer fence, the legacy refusals and the daily
  * drift report are gone); the final backfill
- * (2027-01-28-210000-portal-identity-final-backfill.sql) gave every legacy pair
+ * (2027-01-30-140000-portal-identity-final-backfill.sql) gave every legacy pair
  * its identity row, and the drop migration ships one release later.
  *
  * W8 (#11385, plan D1/D3): an identity can be DISABLED (blockers), never

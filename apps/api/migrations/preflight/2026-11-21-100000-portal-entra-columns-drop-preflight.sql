@@ -16,7 +16,7 @@
 --   Only against v0.130 do the buckets mean "the identity table holds every
 --   legacy pair". Any non-zero count: stop and escalate. `drift_samples` names
 --   the rows. A missingIdentity row is also repaired by PR-A's final backfill
---   (2027-01-28-210000-portal-identity-final-backfill.sql), but it still means
+--   (2027-01-30-140000-portal-identity-final-backfill.sql), but it still means
 --   a writer bypassed the fence, so it is investigated first.
 --
 -- G2 PASS = `sanity` is not blind AND `drift_counts.half_populated` = 0 AND

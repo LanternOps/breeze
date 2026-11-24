@@ -71,7 +71,7 @@ PR-A and PR-B must not ship in the same release. G1 can only be met against v0.1
 - Schema: drop `entraOid` / `entraTenantId` from `portalUsers` and `.default('none')` from `browserAccess`. Red: tsc.
 
 **Task 2 — the final backfill (D3).**
-- Create `apps/api/migrations/2027-01-28-210000-portal-identity-final-backfill.sql`. It runs the W3 §4 insert, then `RAISE WARNING` counts for the left-over buckets (`mismatched`, `halfPopulated`, and a still-missing pair blocked by an identity key held elsewhere). Then it raises `RAISE EXCEPTION` for an unreserved complete pair (D8).
+- Create `apps/api/migrations/2027-01-30-140000-portal-identity-final-backfill.sql`. It runs the W3 §4 insert, then `RAISE WARNING` counts for the left-over buckets (`mismatched`, `halfPopulated`, and a still-missing pair blocked by an identity key held elsewhere). Then it raises `RAISE EXCEPTION` for an unreserved complete pair (D8).
 - Test `__tests__/integration/portalIdentityFinalBackfill.integration.test.ts` (rolled-back transaction, notices captured). It covers:
   - a never-backfilled pair is inserted `migrated`, and the identity lookup reaches the disabled original;
   - a pair whose `(issuer, subject)` is held elsewhere is skipped with a WARNING;
