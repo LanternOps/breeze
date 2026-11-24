@@ -526,6 +526,21 @@ func TestServeScreenshotRequest_CapturerErrorEndsRequest(t *testing.T) {
 	}
 }
 
+// A session stopped before its loop ever started (peer never connected) must
+// not have the capturer driven while it is being closed.
+func TestCaptureScreenshot_BeforeLoopStopsOnceSessionDone(t *testing.T) {
+	cap := newHeldFrameCapturer(false, false)
+	m, s := newLoopTestSession(t, cap, &stubEncoder{})
+	close(s.done)
+	_, _, _, err := m.CaptureScreenshot(0)
+	if !errors.Is(err, errScreenshotSessionStopped) {
+		t.Fatalf("err = %v, want errScreenshotSessionStopped", err)
+	}
+	if n := cap.captures.Load(); n != 0 {
+		t.Fatalf("Capture() called %d times on a stopped session, want none", n)
+	}
+}
+
 // lostConnCapturer reports its own lost display connection as
 // ErrNoActiveSession, as the Linux X11 capturer does.
 type lostConnCapturer struct{ staticTestCapturer }

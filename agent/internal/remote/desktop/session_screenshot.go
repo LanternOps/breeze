@@ -212,6 +212,13 @@ func (s *Session) captureScreenshotBeforeLoop() screenshotResult {
 	}
 	forceDesktopRepaint()
 	for attempt := 1; ; attempt++ {
+		// A session stopped before its loop ever started is being torn
+		// down; do not drive a capturer that is about to be closed.
+		select {
+		case <-s.done:
+			return screenshotResult{err: errScreenshotSessionStopped}
+		default:
+		}
 		img, err := cap.Capture()
 		if err != nil {
 			return screenshotResult{err: err}
