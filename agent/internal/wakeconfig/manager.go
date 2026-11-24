@@ -31,14 +31,24 @@ type Settings struct {
 	// held in memory only, and lapses observeGrantTTL after the last
 	// heartbeat that carried it.
 	Observe biosconfig.VendorSet
+	// FirmwareWrites is the delivered firmware_writes: the vendors whose
+	// firmware settings may be written. Like Observe it is held in memory
+	// only and lapses firmwareGrantTTL after the last heartbeat that carried
+	// it. It reaches a firmware adapter only once writesActivated is true.
+	FirmwareWrites biosconfig.VendorSet
 }
+
+// firmwareGrantTTL is how long a firmware_writes grant outlives the last
+// heartbeat that carried it.
+const firmwareGrantTTL = 24 * time.Hour
 
 // observeGrantTTL is how long an observe grant outlives the last heartbeat
 // that carried it.
 const observeGrantTTL = 24 * time.Hour
 
 // policyFingerprint identifies the delivered policy for the write limiter: a
-// change resets the per-setting failure history.
+// change resets the per-setting failure history. firmware_writes is left out,
+// so toggling the server's firmware switch cannot buy more attempts.
 func policyFingerprint(s Settings) string {
 	return fmt.Sprintf("v1|enabled=%t|configure=%t", s.Enabled, s.ConfigureSettings)
 }
@@ -67,6 +77,11 @@ type Options struct {
 	BootID func() (string, error)
 	// Observe reads a granted vendor's interface; nil means never observe.
 	Observe ObserveFunc
+	// BitLockerState and BitLockerProtectors are the BitLocker guard's
+	// readers, consulted only right before a firmware write. Both nil means
+	// the machine's own (SystemBitLockerReaders).
+	BitLockerState      func() (string, error)
+	BitLockerProtectors func(ctx context.Context) (string, error)
 
 	// testAllowWrites stands in for writesActivated in this package's tests.
 	// It is unexported so no other package can enable writes.
@@ -88,8 +103,10 @@ type Manager struct {
 	started   bool
 	// grantAt is when the last settings carrying an observe grant arrived.
 	grantAt time.Time
-	cancel  context.CancelFunc
-	done    chan struct{}
+	// fwGrantAt is when the last settings carrying firmware_writes arrived.
+	fwGrantAt time.Time
+	cancel    context.CancelFunc
+	done      chan struct{}
 
 	sig chan struct{} // buffered(1): settings changed
 }
@@ -117,6 +134,9 @@ func (m *Manager) ApplySettings(s Settings) {
 	m.settings = s
 	if s.Observe != 0 {
 		m.grantAt = m.opts.Now()
+	}
+	if s.FirmwareWrites != 0 {
+		m.fwGrantAt = m.opts.Now()
 	}
 	fp := policyFingerprint(s)
 	if m.haveFP && fp != m.lastFP {
@@ -167,6 +187,25 @@ func (m *Manager) observeGrant(now time.Time) biosconfig.VendorSet {
 		return 0
 	}
 	return m.settings.Observe
+}
+
+// firmwareGrant is the delivered firmware_writes while the policy is enabled
+// and the grant is fresh. It authorizes nothing by itself: writes also need
+// configure_settings and the activation switch (writesAllowed).
+func (m *Manager) firmwareGrant(now time.Time) biosconfig.VendorSet {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.settings.Enabled || m.settings.FirmwareWrites == 0 || now.Sub(m.fwGrantAt) > firmwareGrantTTL {
+		return 0
+	}
+	return m.settings.FirmwareWrites
+}
+
+func (m *Manager) bitLockerReaders() BitLockerReaders {
+	if m.opts.BitLockerState == nil && m.opts.BitLockerProtectors == nil {
+		return SystemBitLockerReaders()
+	}
+	return BitLockerReaders{State: m.opts.BitLockerState, Protectors: m.opts.BitLockerProtectors}
 }
 
 // observe runs the observer under its own deadline and recover: a panic in a
@@ -324,6 +363,10 @@ func (m *Manager) cycle(ctx context.Context) bool {
 		st.Apply.Limiter.resetFailures()
 	}
 	if in.Windows != nil {
+		var fwVendor biosconfig.VendorSet
+		if in.Firmware != nil {
+			fwVendor = biosconfig.VendorBit(in.Firmware.Vendor)
+		}
 		rep := Apply(ctx, ApplyInputs{
 			Configure:         m.writesAllowed(settings),
 			PolicyFingerprint: policyFingerprint(settings),
@@ -337,9 +380,17 @@ func (m *Manager) cycle(ctx context.Context) bool {
 			StillAllowed:      func() bool { return m.writesAllowed(m.currentSettings()) },
 			BootID:            m.opts.BootID,
 			Now:               now,
-			activated:         writesActivated || m.opts.testAllowWrites,
+			Firmware:          in.Firmware,
+			FirmwareAdapter:   in.FirmwareAdapter,
+			FirmwareWrites:    m.firmwareGrant(now).Has(fwVendor),
+			FirmwareStillAllowed: func() bool {
+				return m.firmwareGrant(m.opts.Now()).Has(fwVendor)
+			},
+			BitLocker: m.bitLockerReaders(),
+			activated: writesActivated || m.opts.testAllowWrites,
 		})
 		in.Windows = rep.Readings
+		in.Firmware = rep.Firmware
 		status := rep.Status
 		in.Apply = &status
 	}

@@ -8,6 +8,7 @@ import { commandsRoutes } from './commands';
 import { networkIsolationRoutes } from './networkIsolation';
 import { forceRebootRoutes } from './forceReboot';
 import { reattachRoutes } from './reattach';
+import { tpmBaselineRoutes } from './tpmBaseline';
 import { oemUpdatesRoutes } from './oemUpdates';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
@@ -111,6 +112,8 @@ deviceRoutes.route('/', moveOrgRoutes);
 deviceRoutes.route('/', forceRebootRoutes);
 // #8318 wave 2-2: GET /:id/reinstall-candidates and POST /:id/reattach.
 deviceRoutes.route('/', reattachRoutes);
+// #8318 wave T2: GET /:id/tpm-baseline and POST /:id/tpm-baseline/mismatch.
+deviceRoutes.route('/', tpmBaselineRoutes);
 deviceRoutes.route('/', networkIsolationRoutes);
 
 // Mount the network arm of the unified Devices list (#1322) BEFORE core

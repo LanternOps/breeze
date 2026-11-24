@@ -53,7 +53,7 @@ function policy(code: 'drift' | 'binding_drift' | 'reference_not_owned', message
 
 function emptyOutput(warnings: string[]): FlowValue {
   const output: FlowFleetStepOutput = {
-    dispatchedDeviceIds: [], succeededDeviceIds: [], failedDeviceIds: [], skippedOfflineDeviceIds: [], count: 0, warnings,
+    dispatchedDeviceIds: [], succeededDeviceIds: [], failedDeviceIds: [], skippedOfflineDeviceIds: [], count: 0, succeededCount: 0, failedCount: 0, warnings,
   };
   return output as unknown as FlowValue;
 }

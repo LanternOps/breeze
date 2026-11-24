@@ -1,8 +1,9 @@
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AiChatMessages from './AiChatMessages';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 
 // The streamed-content children are irrelevant to scroll-anchoring behavior.
 vi.mock('react-markdown', () => ({
@@ -467,6 +468,30 @@ describe('script proposal link after a run (#7918)', () => {
       { id: 'r1', role: 'tool_result', content: '', toolName: 'propose_script', toolUseId: 't1', toolOutput: { proposalId: PROPOSAL, status: 'reviewed' } },
     ] as never);
     expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  // #12476: on /approvals the router's fragment-only shortcut pushStates
+  // without hashchange, so ApprovalsInbox kept the old proposal on screen.
+  it('fires hashchange when clicked while already on /approvals', async () => {
+    const OTHER = '11111111-2222-4333-8444-555555555555';
+    window.history.pushState({}, '', `/approvals#proposal-${OTHER}`);
+    const standIn = installAstroClientRouterStandIn();
+    const onHashChange = vi.fn();
+    window.addEventListener('hashchange', onHashChange);
+    try {
+      const { getByTestId } = renderWithMessages([
+        { id: 'u1', role: 'tool_use', content: '', toolName: 'propose_script', toolUseId: 't1', toolInput: {} },
+        { id: 'r1', role: 'tool_result', content: '', toolName: 'propose_script', toolUseId: 't1', toolOutput: { proposalId: PROPOSAL, status: 'reviewed' } },
+      ] as never);
+      fireEvent.click(getByTestId('ai-script-proposal-link'));
+      expect(window.location.hash).toBe(`#proposal-${PROPOSAL}`);
+      // jsdom dispatches hashchange asynchronously.
+      await waitFor(() => expect(onHashChange).toHaveBeenCalledTimes(1));
+    } finally {
+      window.removeEventListener('hashchange', onHashChange);
+      standIn.uninstall();
+      window.history.pushState({}, '', '/');
+    }
   });
 
   it('renders no link for a library run_script { scriptId }', () => {

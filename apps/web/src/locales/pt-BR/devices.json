@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Política vinculada:",
     "notEnforced": "Não obrigatório",
     "usingBreezeDefaults": "— usando os padrões do Breeze",
-    "inheritanceChain": "Cadeia de herança",
-    "policiesAreResolvedUsingClosestWins": "As políticas são resolvidas pela prioridade da atribuição mais próxima. Atribuições mais específicas (no nível do dispositivo) substituem as mais abrangentes (no nível da organização).",
+    "inheritanceChain": "Precedência",
     "priority": "Prioridade",
     "level": "Nível",
     "policy2": "Política",
     "features": "Recursos",
-    "inheritedFrom": "Herdado de {{name}}",
+    "inheritedFrom": "Baseada em {{name}}",
     "patchApproval": {
       "label": "aprovação",
       "byRing": "definida pelo anel de atualização vinculado",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Destinos adicionais durante o isolamento",
       "invalid": "As configurações de contenção desta política não são válidas. Por isso, o isolamento usa os padrões fixos, sem destinos adicionais."
     },
-    "chainResolutionRule": "O nível decide primeiro: Dispositivo vence Grupo de dispositivos, depois Site, Organização e Parceiro. A prioridade (vence o menor número) só desempata políticas do mesmo nível. Recursos riscados foram substituídos por uma política mais próxima.",
-    "featureOverriddenBy": "Substituído por {{policy}}"
+    "featureOverriddenBy": "Substituído por {{policy}}",
+    "viaLevel": "via {{level}}",
+    "managedByYourMsp": "Gerenciada pelo seu MSP",
+    "precedenceLegend": "O mais específico vence, por recurso: Dispositivo › Grupo de dispositivos › Local › Organização › Todas as organizações. Uma política mais próxima substitui o recurso inteiro; não há mesclagem.",
+    "lostClause": "Substituída para {{features}} por {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "ela é definida em um nível mais específico",
+      "lower_priority_number": "mesmo nível, número de prioridade menor",
+      "assigned_earlier": "mesmo nível e prioridade, atribuída antes"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Falha ao buscar as atividades",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "Nenhum grupo corresponde a este filtro.",
     "managedByPartner": "Gerenciado pelo seu provedor de serviços. As regras de associação não são exibidas; você vê os dispositivos da sua organização.",
     "partnerDynamicType": "Dinâmico · Todas as org.",
-    "partnerDeleteWarning": "Isso remove o grupo de todas as organizações e exclui suas atribuições de políticas."
+    "partnerDeleteWarning": "Isso remove o grupo de todas as organizações e exclui suas atribuições de políticas.",
+    "policyRefusedForGroup": "Nada foi aplicado. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Falha ao buscar o inventário de hardware",
@@ -3249,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Mover para outra organização",
-    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico, tickets e políticas vão junto, e o agente reconecta sob a nova organização.",
+    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico e tickets vão junto, e o agente reconecta sob a nova organização.",
     "targetOrgLabel": "Organização de destino",
     "targetOrgPlaceholder": "Escolha uma organização",
     "targetSiteLabel": "Local de destino",
@@ -3261,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} lançamentos de tempo não faturados e {{parts}} peças não faturadas mantêm a moeda original após a movimentação.",
     "currencyMismatchAccept": "Entendi — mover o dispositivo e manter essas linhas na moeda original",
     "currencyMismatchNoPermission": "Aceitar isso exige permissão de escrita em faturas. Peça a um administrador de faturamento para faturar ou resolver o trabalho pendente primeiro.",
+    "policyAssignmentsHeading": "Políticas de configuração removidas deste dispositivo",
+    "policyAssignmentsDetail": "Estas políticas estão atribuídas diretamente a este dispositivo e não podem ser aplicadas na nova organização. A movimentação remove as atribuições. As políticas em si não são alteradas.",
     "stepUpHeading": "Confirme que é você",
     "stepUpIntro": "Mover um dispositivo entre organizações exige um segundo fator.",
     "stepUpCodeLabel": "Código do autenticador",

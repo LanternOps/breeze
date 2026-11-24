@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { LIST_PAGE_SIZE, type StatusFilter } from "./policyListQuery";
 import {
   Layers,
   Search,
@@ -6,12 +7,22 @@ import {
   ChevronRight,
   Pencil,
   Trash2,
-  Building2,} from "lucide-react";
+  AlertTriangle,
+  Copy,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FilterSelect } from "../shared/FilterSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { FEATURE_META, type FeatureType } from "./featureTabs/types";
+import {
+  appliesToState,
+  formatAppliesToTargets,
+  notAppliedTone,
+  parseAppliesTo,
+} from "./appliesToSummary";
+import ReachCount from "./appliesTo/ReachCount";
+import { fetchReach, type ConfigPolicyReach } from "./appliesTo/appliesToApi";
 export type ConfigPolicyStatus = "active" | "inactive" | "archived";
 export type ConfigPolicy = {
   id: string;
@@ -25,10 +36,12 @@ export type ConfigPolicy = {
   parentPolicyId?: string | null;
   // Owning org's name, joined in by the list API for org-owned policies.
   orgName?: string | null;
-  // #9565: true only when a partner-owned policy has a partner-level ("all
-  // organizations") assignment. A partner policy without one applies to no
-  // organization until it is assigned, so it must not read as partner-wide.
+  // Still sent by the API; no longer read. The Applies to column below shows
+  // where a policy applies from `appliesTo` instead (#12306).
   hasPartnerWideAssignment?: boolean;
+  // Where the policy applies (#12306), parsed per row with parseAppliesTo.
+  // Absent when the API is a release behind: the row then claims nothing.
+  appliesTo?: unknown;
   createdAt?: string;
   updatedAt?: string;
   featureLinks?: {
@@ -36,11 +49,42 @@ export type ConfigPolicy = {
     featureType: string;
   }[];
 };
+// What the filter row shows. `org` is the select's value: "all" or an org id.
+export type ListViewFilters = {
+  search: string;
+  status: StatusFilter;
+  notApplied: boolean;
+  org: string;
+};
+const DEFAULT_VIEW_FILTERS: ListViewFilters = {
+  search: "",
+  status: "all",
+  notApplied: false,
+  org: "all",
+};
+const SEARCH_DEBOUNCE_MS = 300;
 type ConfigPolicyListProps = {
+  // The rows of the current server page.
   policies: ConfigPolicy[];
+  // The server's total for the current filters (not the rows held here).
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  filters?: ListViewFilters;
+  // The organization select shows only with more than one org to choose from.
+  orgOptions?: { id: string; name: string }[];
+  onFiltersChange?: (patch: Partial<ListViewFilters>) => void;
+  onPageChange?: (page: number) => void;
+  /**
+   * The filters are at rest: nothing the user chose narrows the list. An org
+   * filter that only follows the org switcher is at rest. Absent = judged from
+   * `filters`.
+   */
+  filtersAtRest?: boolean;
   onEdit?: (policy: ConfigPolicy) => void;
   onDelete?: (policy: ConfigPolicy) => void;
-  pageSize?: number;
+  /** Opens Copy for a row (#12309). Omitted = no Copy control. */
+  onCopy?: (policy: ConfigPolicy) => void;
 };
 const createStatusConfig = (): Record<
   ConfigPolicyStatus,
@@ -69,6 +113,88 @@ const createStatusConfig = (): Record<
 function featureTypeLabel(featureType: string): string {
   return FEATURE_META[featureType as FeatureType]?.label ?? featureType;
 }
+type AppliesTo = ReturnType<typeof parseAppliesTo>;
+
+// The first targets and +N, from the API's unfiltered count (#12306). An absent
+// or malformed summary is unknown: an em dash, never "Not applied". The device
+// count follows when the page's reach read answered (#12467).
+function AppliesToCell({ summary, reach }: { summary: AppliesTo; reach?: ConfigPolicyReach }) {
+  const state = summary ? appliesToState(summary) : null;
+  if (!summary || state !== "applied") {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="text-muted-foreground" aria-hidden="true">
+          &mdash;
+        </span>
+        {reach && state === "in_use_through_children" && (
+          <ReachCount reach={reach} count="throughChildren" testId="config-policy-applies-to-reach" />
+        )}
+      </div>
+    );
+  }
+  const { shown, more } = formatAppliesToTargets(summary);
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {shown.map((target) => (
+          <span
+            key={target.key}
+            className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-foreground"
+          >
+            {target.text}
+          </span>
+        ))}
+        {more > 0 && (
+          <span className="text-xs font-medium text-muted-foreground">+{more}</span>
+        )}
+      </div>
+      {reach && <ReachCount reach={reach} count="direct" testId="config-policy-applies-to-reach" />}
+    </div>
+  );
+}
+
+// One state chip beside the status: Not applied (a warning only when active)
+// or In use through N policies for a parent with no rows of its own.
+function AppliesToStateChip({
+  status,
+  summary,
+}: {
+  status: ConfigPolicyStatus;
+  summary: AppliesTo;
+}) {
+  if (!summary) return null;
+  const state = appliesToState(summary);
+  if (state === "in_use_through_children") {
+    return (
+      <span
+        className="inline-flex items-center rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
+        data-testid="config-policy-in-use-badge"
+      >
+        <Layers className="mr-1 h-3 w-3" aria-hidden="true" />
+        {i18n.t("policies:configurationPolicies.configPolicyList.inUseChip", {
+          count: summary.childPolicyCount,
+        })}
+      </span>
+    );
+  }
+  const tone = notAppliedTone(status, state);
+  if (!tone) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+        tone === "warning"
+          ? "border-warning/30 bg-warning/15 text-warning"
+          : "bg-muted/60 text-muted-foreground",
+      )}
+      data-testid="config-policy-not-applied-badge"
+      data-tone={tone}
+    >
+      {tone === "warning" && <AlertTriangle className="mr-1 h-3 w-3" aria-hidden="true" />}
+      {i18n.t("policies:configurationPolicies.configPolicyList.notAppliedChip")}
+    </span>
+  );
+}
 function formatDate(dateString?: string): string {
   if (!dateString) return "\u2014";
   const date = new Date(dateString);
@@ -77,9 +203,17 @@ function formatDate(dateString?: string): string {
 }
 export default function ConfigPolicyList({
   policies,
+  total = policies.length,
+  page = 1,
+  pageSize = LIST_PAGE_SIZE,
+  filters = DEFAULT_VIEW_FILTERS,
+  orgOptions = [],
+  onFiltersChange,
+  onPageChange,
+  filtersAtRest,
   onEdit,
   onDelete,
-  pageSize = 10,
+  onCopy,
 }: ConfigPolicyListProps) {
   useTranslation("policies");
   const statusConfig = createStatusConfig();
@@ -88,62 +222,81 @@ export default function ConfigPolicyList({
   // another's, which a bare "Edit" cannot.
   const editLabel = i18n.t("common:actions.edit");
   const deleteLabel = i18n.t("common:actions.delete");
+  const copyLabel = i18n.t("policies:configurationPolicies.copyPolicy.action");
   // Dedicated pagination keys rather than actions.back/actions.next: those are
   // navigation verbs ("Back"/"Retour"/"Zurück"), which is the wrong thing to
   // announce for a pager control.
   const previousPageLabel = i18n.t("common:actions.previousPage");
   const nextPageLabel = i18n.t("common:actions.nextPage");
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [currentPage, setCurrentPage] = useState(1);
-  const filteredPolicies = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return policies.filter((policy) => {
-      const matchesQuery =
-        normalizedQuery.length === 0 ||
-        policy.name.toLowerCase().includes(normalizedQuery);
-      const matchesStatus =
-        statusFilter === "all" || policy.status === statusFilter;
-      return matchesQuery && matchesStatus;
-    });
-  }, [policies, query, statusFilter]);
+
+  // Paging, search and the filters all run on the server: this component only
+  // renders the rows it is handed and reports what the user changed.
+  const paginatedPolicies = policies;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(page, 1), totalPages);
+  const hasActiveFilters =
+    filters.search.trim().length > 0 ||
+    filters.status !== "all" ||
+    filters.notApplied ||
+    filters.org !== "all";
   // "No results" and "nothing exists yet" are different states and need
-  // different copy. Keyed off the UNFILTERED list plus the search and status
-  // controls being at rest, so a search that happens to match nothing still
-  // gets the adjust-your-search message.
-  //
-  // Deliberately NOT a claim that the tenant is new: the list can be
-  // org-scoped, and a malformed HTTP 200 is coerced to [] upstream. It only
-  // distinguishes "the list is empty and the filters are untouched".
-  const hasNoPoliciesAtAll =
-    policies.length === 0 && query.trim().length === 0 && statusFilter === "all";
-  // Floor of 1 so an empty list reads as Page 1 of 1 rather than Page 1 of 0,
-  // and `safePage` below cannot land on 0. (The negative `startIndex` that a
-  // page of 0 produces is harmless against an empty array — it is the page
-  // COUNT that would be wrong, and it is what the pager renders.)
-  const totalPages = Math.max(1, Math.ceil(filteredPolicies.length / pageSize));
-  // Render from a clamped page rather than trusting the stored one. Search and
-  // status changes reset the page, but nothing reconciled it with the row
-  // count, so deleting the only row on the last page (the page refetches and
-  // hands down a shorter array) left the user on a page that no longer exists:
-  // no rows, the adjust-your-search copy over an untouched search box, and —
-  // because `totalPages` had dropped below the stored page — no pager to get
-  // back (#4008). Clamping during render rather than in an effect means the
-  // dead page never paints.
-  const safePage = Math.min(currentPage, totalPages);
-  const startIndex = (safePage - 1) * pageSize;
-  const paginatedPolicies = filteredPolicies.slice(
-    startIndex,
-    startIndex + pageSize,
-  );
-  // Retire the out-of-range value so it cannot come back. Without this the
-  // clamp above is purely cosmetic: a later create + refetch that grows the
-  // list past the stored page would teleport the user forward to a page they
-  // had already been bounced off. Renders the same output either way, so it
-  // costs a state write and no visible frame.
+  // different copy. The server's total is 0 AND nothing narrows the list. This
+  // does not claim the tenant is new: it only says the list is empty with the
+  // filters at rest.
+  const hasNoPoliciesAtAll = total === 0 && (filtersAtRest ?? !hasActiveFilters);
+  const firstShown = total === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const lastShown = Math.min(total, (safePage - 1) * pageSize + policies.length);
+
+  // The search box types into a local draft; the parent hears about it once the
+  // user pauses, so each keystroke is not a request. A search that changed from
+  // outside (the hash, back/forward) replaces the draft.
+  const [searchDraft, setSearchDraft] = useState(filters.search);
+  const emittedSearch = useRef(filters.search);
   useEffect(() => {
-    if (currentPage !== safePage) setCurrentPage(safePage);
-  }, [currentPage, safePage]);
+    if (filters.search !== emittedSearch.current) {
+      emittedSearch.current = filters.search;
+      setSearchDraft(filters.search);
+    }
+  }, [filters.search]);
+  useEffect(() => {
+    if (searchDraft === emittedSearch.current) return;
+    const timer = setTimeout(() => {
+      emittedSearch.current = searchDraft;
+      onFiltersChange?.({ search: searchDraft });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchDraft, onFiltersChange]);
+
+  // Device counts for the rows shown, one reach read per page (#12467).
+  // A failed read leaves the counts out; the list stays usable. An id absent
+  // from the answer is unknown, never 0.
+  const pageIdsKey = paginatedPolicies.map((p) => p.id).join(",");
+  const [reachById, setReachById] = useState<Record<string, ConfigPolicyReach>>({});
+  useEffect(() => {
+    if (!pageIdsKey) return;
+    let cancelled = false;
+    const ids = pageIdsKey.split(",");
+    // The newest read owns this page's counts: an id it leaves out, or a read
+    // that fails, shows no count rather than an older one.
+    const replacePage = (reach: Record<string, ConfigPolicyReach>) =>
+      setReachById((prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return Object.assign(next, reach);
+      });
+    fetchReach(ids)
+      .then((reach) => {
+        if (!cancelled) replacePage(reach);
+      })
+      .catch((err: unknown) => {
+        // Counts are an addition to the row; without them the row still reads.
+        console.warn("[configuration policies] reach read failed", err);
+        if (!cancelled) replacePage({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pageIdsKey]);
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -161,10 +314,14 @@ export default function ConfigPolicyList({
             Interpolating also keeps word order translatable, which glueing the
             fragments back together with spaces would not.
           */}
-          <p className="text-sm text-muted-foreground">
-            {i18n.t("policies:configurationPolicies.configPolicyList.summary", {
-              filtered: filteredPolicies.length,
-              total: policies.length,
+          <p
+            className="text-sm text-muted-foreground"
+            data-testid="config-policy-range-summary"
+          >
+            {i18n.t("policies:configurationPolicies.configPolicyList.rangeSummary", {
+              from: firstShown,
+              to: lastShown,
+              total,
             })}
           </p>
         </div>
@@ -176,11 +333,8 @@ export default function ConfigPolicyList({
               placeholder={i18n.t(
                 "policies:configurationPolicies.configPolicyList.searchPolicies",
               )}
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setCurrentPage(1);
-              }}
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
             />
           </div>
@@ -188,12 +342,12 @@ export default function ConfigPolicyList({
             label={i18n.t(
               "policies:configurationPolicies.configPolicyList.statusFilterLabel",
             )}
-            value={statusFilter}
-            onChange={(event) => {
-              setStatusFilter(event.target.value);
-              setCurrentPage(1);
-            }}
+            value={filters.status}
+            onChange={(event) =>
+              onFiltersChange?.({ status: event.target.value as StatusFilter })
+            }
             className="w-full sm:w-36"
+            data-testid="config-policy-status-filter"
           >
             <option value="all">
               {i18n.t(
@@ -208,6 +362,42 @@ export default function ConfigPolicyList({
               )}
             </option>
           </FilterSelect>
+          {orgOptions.length > 1 && (
+            <FilterSelect
+              label={i18n.t(
+                "policies:configurationPolicies.configPolicyList.organizationFilterLabel",
+              )}
+              value={filters.org}
+              onChange={(event) => onFiltersChange?.({ org: event.target.value })}
+              className="w-full sm:w-48"
+              data-testid="config-policy-org-filter"
+            >
+              <option value="all">
+                {i18n.t(
+                  "policies:configurationPolicies.configPolicyList.allOrganizations",
+                )}
+              </option>
+              {orgOptions.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </FilterSelect>
+          )}
+          <label className="inline-flex h-10 items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={filters.notApplied}
+              onChange={(event) =>
+                onFiltersChange?.({ notApplied: event.target.checked })
+              }
+              className="h-4 w-4 rounded border"
+              data-testid="config-policy-not-applied-filter"
+            />
+            {i18n.t(
+              "policies:configurationPolicies.configPolicyList.notAppliedFilterLabel",
+            )}
+          </label>
         </div>
       </div>
 
@@ -216,6 +406,11 @@ export default function ConfigPolicyList({
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3">{i18n.t("common:labels.name")}</th>
+              <th className="px-4 py-3">
+                {i18n.t(
+                  "policies:configurationPolicies.configPolicyList.appliesToHeader",
+                )}
+              </th>
               <th className="px-4 py-3">{i18n.t("common:labels.status")}</th>
               <th className="px-4 py-3">
                 {i18n.t(
@@ -232,7 +427,7 @@ export default function ConfigPolicyList({
             {paginatedPolicies.length === 0 ? (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="px-4 py-6 text-center text-sm text-muted-foreground"
                 >
                   {hasNoPoliciesAtAll ? (
@@ -265,7 +460,9 @@ export default function ConfigPolicyList({
                 </td>
               </tr>
             ) : (
-              paginatedPolicies.map((policy) => (
+              paginatedPolicies.map((policy) => {
+                const appliesTo = parseAppliesTo(policy.appliesTo);
+                return (
                 <tr
                   key={policy.id}
                   className="text-sm"
@@ -273,51 +470,32 @@ export default function ConfigPolicyList({
                   data-policy-id={policy.id}
                 >
                   <td className="px-4 py-3 font-medium text-foreground">
-                    <div className="flex items-center gap-2">
-                      <span>{policy.name}</span>
-                      {policy.orgId === null && policy.hasPartnerWideAssignment === true && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                          title={i18n.t(
-                            "policies:configurationPolicies.configPolicyList.partnerWidePolicyAppliesToEveryOrganization",
-                          )}
-                          data-testid="partner-wide-badge"
-                        >
-                          <Layers className="h-3 w-3" />
-                          {i18n.t(
-                            "policies:configurationPolicies.configPolicyList.allOrgs",
-                          )}
-                        </span>
-                      )}
-                      {policy.orgId === null && policy.hasPartnerWideAssignment !== true && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                          title={i18n.t(
-                            "policies:configurationPolicies.configPolicyList.partnerPolicyAppliesOnlyWhereAssigned",
-                          )}
-                          data-testid="partner-policy-badge"
-                        >
-                          <Layers className="h-3 w-3" />
-                          {i18n.t(
-                            "policies:configurationPolicies.configPolicyList.partnerPolicy",
-                          )}
-                        </span>
-                      )}
-                      {policy.orgId !== null && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                          title={i18n.t("policies:configurationPolicies.configPolicyList.organizationPolicyTitle", { organization: policy.orgName ?? i18n.t("policies:configurationPolicies.configPolicyList.itsOwningOrganization") })}
-                          data-testid="org-badge"
-                        >
-                          <Building2 className="h-3 w-3" />
-                          {policy.orgName ??
-                            i18n.t("common:labels.organization")}
-                        </span>
-                      )}
-                    </div>
+                    <span>{policy.name}</span>
+                    {/* Only an org-managed row names its manager; an
+                        MSP-managed row is the default and says nothing. */}
+                    {policy.orgId !== null && (
+                      <p
+                        className="mt-0.5 text-xs font-normal text-muted-foreground"
+                        data-testid="config-policy-managed-by"
+                      >
+                        {i18n.t(
+                          "policies:configurationPolicies.configPolicyList.managedByOrganization",
+                          {
+                            organization:
+                              policy.orgName ??
+                              i18n.t(
+                                "policies:configurationPolicies.configPolicyList.itsOwningOrganization",
+                              ),
+                          },
+                        )}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3" data-testid="config-policy-applies-to-cell">
+                    <AppliesToCell summary={appliesTo} reach={reachById[policy.id]} />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span
                         className={cn(
                           "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
@@ -326,6 +504,7 @@ export default function ConfigPolicyList({
                       >
                         {statusConfig[policy.status].label}
                       </span>
+                      <AppliesToStateChip status={policy.status} summary={appliesTo} />
                       {policy.parentPolicyId && (
                         <span
                           className="inline-flex items-center rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -394,6 +573,18 @@ export default function ConfigPolicyList({
                       >
                         <Pencil className="h-4 w-4" aria-hidden="true" />
                       </button>
+                      {onCopy && (
+                        <button
+                          type="button"
+                          onClick={() => onCopy(policy)}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+                          title={copyLabel}
+                          aria-label={`${copyLabel}: ${policy.name}`}
+                          data-testid="config-policy-copy-button"
+                        >
+                          <Copy className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onDelete?.(policy)}
@@ -407,7 +598,8 @@ export default function ConfigPolicyList({
                     </div>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
@@ -424,7 +616,7 @@ export default function ConfigPolicyList({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setCurrentPage(Math.max(safePage - 1, 1))}
+              onClick={() => onPageChange?.(Math.max(safePage - 1, 1))}
               disabled={safePage === 1}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
               title={previousPageLabel}
@@ -435,7 +627,7 @@ export default function ConfigPolicyList({
             </button>
             <button
               type="button"
-              onClick={() => setCurrentPage(Math.min(safePage + 1, totalPages))}
+              onClick={() => onPageChange?.(Math.min(safePage + 1, totalPages))}
               disabled={safePage === totalPages}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
               title={nextPageLabel}

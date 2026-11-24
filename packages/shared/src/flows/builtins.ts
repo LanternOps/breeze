@@ -83,6 +83,14 @@ export interface FlowFleetStepOutput {
    */
   devices?: { id: string; hostname: string; name: string; failureReason?: string }[];
   count: number;
+  /**
+   * How many devices succeeded and failed (the lengths of `succeededDeviceIds` and
+   * `failedDeviceIds`), so a one-per-run notice can template
+   * `{{steps.<id>.output.succeededCount}}` (templates are paths only, never expressions).
+   * `resolve_targets` reports every resolved device as succeeded.
+   */
+  succeededCount: number;
+  failedCount: number;
   warnings: string[];
 }
 

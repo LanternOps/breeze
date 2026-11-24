@@ -162,6 +162,9 @@ function selectChain<T>(rows: T) {
   return chain;
 }
 
+const { keepReadableMock } = vi.hoisted(() => ({ keepReadableMock: vi.fn() }));
+vi.mock('../services/configPolicyReadable', () => ({ keepReadablePolicies: keepReadableMock }));
+
 vi.mock('../db', () => ({
   db: { select: selectMock },
   hasDbAccessContext: () => true,
@@ -540,6 +543,25 @@ describe('PATCH /monitor-definitions/:id', () => {
 });
 
 describe('GET /monitor-definitions/:id', () => {
+  it('names only the attaching policies the caller may read (W03a)', async () => {
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'att-1', configPolicyId: 'p-mine', policyOrgId: null, policyName: 'Mine', enabled: true, overrides: {} },
+      { id: 'att-2', configPolicyId: 'p-hidden', policyOrgId: null, policyName: 'Hidden', enabled: true, overrides: {} },
+    ]));
+    keepReadableMock.mockImplementation(async (_auth: unknown, rows: Array<{ configPolicyId: string }>, pick: (r: unknown) => unknown) => {
+      expect(pick(rows[0])).toEqual({ id: 'p-mine', orgId: null });
+      return rows.filter((r) => r.configPolicyId === 'p-mine');
+    });
+
+    const res = await jsonRequest(buildApp(), 'GET', `/${MONITOR_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attachments).toEqual([
+      { id: 'att-1', configPolicyId: 'p-mine', policyName: 'Mine', enabled: true, overrides: {} },
+    ]);
+  });
+
   it('returns 404 { error: Monitor not found } when the service returns null', async () => {
     getMonitorDefinitionMock.mockResolvedValue(null);
 

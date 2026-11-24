@@ -14,7 +14,10 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import StorageKeyRevocationCard from "./StorageKeyRevocationCard";
+import { useFeatureReadOnly } from "./featureEditing";
 import BackupDestinationSection, {
   emptyConfigForm,
   capabilitySummary,
@@ -579,7 +582,6 @@ export default function BackupTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
   orgId,
 }: FeatureTabProps) {
@@ -591,7 +593,9 @@ export default function BackupTab({
   const osPresets = createOsPresets();
   const exclusionGroups = createExclusionGroups();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  const readOnly = useFeatureReadOnly();
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const meta = FEATURE_META.backup;
   // Partner-wide ("all organizations") policy: destinations are per-org, so
@@ -1313,30 +1317,6 @@ export default function BackupTab({
     if (ok) onLinkChanged(null, "backup");
   };
 
-  const handleOverride = async () => {
-    clearError();
-    const full = buildInlineSettings(settings, backupMode, targets);
-    const explicitDestination =
-      selectedConfigId && selectedConfigId !== ORG_DEFAULT_DESTINATION
-        ? selectedConfigId
-        : null;
-    const result = await save(null, {
-      featureType: "backup",
-      featurePolicyId: sourceMode === "profile" ? selectedProfileId : null,
-      inlineSettings:
-        sourceMode === "profile"
-          ? {
-              schedule: full.schedule,
-              retention: full.retention,
-              ...(explicitDestination ? { destinationConfigId: explicitDestination } : {}),
-            }
-          : {
-              ...full,
-              ...(explicitDestination ? { destinationConfigId: explicitDestination } : {}),
-            },
-    });
-    if (result) onLinkChanged(result, "backup");
-  };
 
   const handleRevert = async () => {
     if (!existingLink) return;
@@ -1431,14 +1411,9 @@ export default function BackupTab({
       saveDisabled={destinationPrefixInvalid}
       error={combinedError}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {/* ════════════════════════════════════════════════════════════════════
@@ -2060,6 +2035,7 @@ export default function BackupTab({
               <button
                 type="button"
                 onClick={() => void fetchConfigs()}
+                data-feature-dirty-ignore
                 className="mt-2 text-xs text-primary hover:underline"
               >
                 {i18n.t(
@@ -2328,7 +2304,8 @@ export default function BackupTab({
                 aria-hidden
               />
             </button>
-            {advancedOpen && (
+            {/* A read-only viewer's toggle is disabled (fieldset), so show it open (#12469). */}
+            {(advancedOpen || readOnly) && (
               <div className="space-y-5 border-t px-4 py-4">
                 <div>
                   <h4 className="text-xs font-medium">
@@ -2533,10 +2510,12 @@ export default function BackupTab({
               <p className="mt-1 text-xs text-amber-900/80">
                 {capabilitySummary(selectedConfig)}
               </p>
+              {!readOnly && (
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={handleTestConnection}
+                  data-feature-dirty-ignore
                   disabled={!selectedConfigId || testStatus === "testing"}
                   className="rounded-md border border-amber-600/40 bg-background px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
                 >
@@ -2557,6 +2536,7 @@ export default function BackupTab({
                   )}
                 </button>
               </div>
+              )}
             </div>
           )}
 

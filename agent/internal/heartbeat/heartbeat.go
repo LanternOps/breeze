@@ -448,6 +448,11 @@ type Command struct {
 	ID      string         `json:"id"`
 	Type    string         `json:"type"`
 	Payload map[string]any `json:"payload"`
+	// receivedAt is when a backup verification command reached this agent,
+	// stamped by both dispatch sites before it joins its pool's queue
+	// (stampVerificationReceipt). Zero for every other command and for a
+	// handler reached any other way, which then deducts no wait (#11813).
+	receivedAt time.Time
 }
 
 // helperLifecycleController is the subset of *sessionbroker.HelperLifecycleManager
@@ -722,6 +727,9 @@ type Heartbeat struct {
 	pamDeclineCheckerInstalled atomic.Bool
 	// pamWithdrawKick wakes the withdraw drain right after a decline.
 	pamWithdrawKick chan struct{}
+	// userHelperTaskKick wakes the Windows user-helper logon task repair
+	// (#12580) once the helper reconcile has put a missing executable back.
+	userHelperTaskKick chan struct{}
 	// pamDeclineWait bounds how long an apply waits for an open dialog's
 	// answer. Zero means pamDialogTimeout + pamDismissTimeout; tests shrink it.
 	pamDeclineWait time.Duration
@@ -1293,6 +1301,13 @@ type Heartbeat struct {
 	// stop, proceed" rather than calling a method on a nil broker.
 	backupHelperStopIfIdle func() bool
 
+	// backupForwarderOverride replaces the session broker for
+	// forwardToBackupHelper, and verificationClock time.Now for a
+	// verification's receipt stamp and its lane wait. Test seams; nil in
+	// production.
+	backupForwarderOverride backupHelperForwarder
+	verificationClock       func() time.Time
+
 	// backupHelperInstallMu serializes installBackupBinary so the periodic
 	// reconcile and any future manual dev-push surface for this component
 	// can't race on the shared install path, mirroring userHelperInstallMu.
@@ -1376,13 +1391,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
 		// Memory-only until SetStatePath gives it a file.
-		pamDeclines:     pamdecline.NewStore("", nil),
-		pamWithdrawKick: make(chan struct{}, 1),
-		metricsCol:      collectors.NewMetricsCollector(),
-		hardwareCol:     collectors.NewHardwareCollector(),
-		softwareCol:     collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol:    collectors.NewInventoryCollector(),
-		vpnCol:          collectors.NewVPNCollector(),
+		pamDeclines:        pamdecline.NewStore("", nil),
+		pamWithdrawKick:    make(chan struct{}, 1),
+		userHelperTaskKick: make(chan struct{}, 1),
+		metricsCol:         collectors.NewMetricsCollector(),
+		hardwareCol:        collectors.NewHardwareCollector(),
+		softwareCol:        collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:       collectors.NewInventoryCollector(),
+		vpnCol:             collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -2433,6 +2449,8 @@ func (h *Heartbeat) Start() {
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startWake()
+	// #12580: keep the Windows user-helper logon task registered.
+	h.startUserHelperTaskRepair()
 	h.startPamReconciliationRetryLoop()
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
@@ -7938,6 +7956,9 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 		return h.runTrackedCommand(cmd), true
 	}
 
+	// Before the pool: a verification's wait in its lane comes out of its
+	// budget (#11813).
+	cmd = h.stampVerificationReceipt(cmd)
 	pool := h.commandPoolFor(cmd.Type)
 	if pool == nil {
 		return h.executeCommand(cmd), true
@@ -9096,6 +9117,9 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	}
 	log.Info("user-helper reconciliation: installed missing helper binary",
 		"path", helperPath, "version", h.agentVersion)
+	// The task that starts it may have gone with it (#12580): check now
+	// rather than at the next scheduled check.
+	h.kickUserHelperTaskCheck()
 }
 
 // userHelperReconcilePersistentThreshold is the consecutive-failure count at

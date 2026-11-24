@@ -282,12 +282,14 @@ while IFS= read -r path; do
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;
     agent/*) qemu_gate_hit "${path}" && agent=true ;;
   esac
-  # Go readers: wire/limits_test.go, websocket/server_error_frame_test.go,
-  # macosuninstall/script_test.go and tools/agentsim/sim/budget_contract_test.go.
+  # Go readers: wire/limits_test.go, wire/critical_result_limits_test.go,
+  # websocket/server_error_frame_test.go, macosuninstall/script_test.go and
+  # tools/agentsim/sim/budget_contract_test.go.
   # Kept separate from the app-area cases: uninstall.sh must still set both web
   # and api as well as the agent area.
   case "${path}" in
     apps/api/src/routes/agents/schemas.ts|\
+    apps/api/src/services/agentCommandResultValidation.ts|\
     apps/api/src/routes/agentWs.ts|\
     apps/web/public/scripts/uninstall.sh|\
     apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts) agent_code=true ;;

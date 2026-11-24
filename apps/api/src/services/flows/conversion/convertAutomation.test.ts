@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FLOW_BUILTIN_STEPS, flowDocumentV1Schema, isStructurallyValidCron, type FlowConversionFindingCode, type FlowDocumentV1 } from '@breeze/shared';
+import { compileFlowForm, FLOW_BUILTIN_STEPS, flowDocumentV1Schema, recognizeFlowForm, sameFlowDocument, isStructurallyValidCron, type FlowConversionFindingCode, type FlowDocumentV1 } from '@breeze/shared';
 import { isCronDue } from '../../cronDue';
 import { latestCronOccurrence } from '../../aiAgents/sweepOccurrence';
 import { automationSourceDigest, convertAutomation } from './convertAutomation';
@@ -178,6 +178,17 @@ describe('convertAutomation — actions', () => {
     // notify narrows like stop
     const two = convertAutomation(row({ actions: [script, script], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL] } }), ctx());
     expect(stepsOf(two).find((x) => x.id === 'a1_run_script')).toMatchObject({ input: { fromStep: { stepId: 'a0_run_script', set: 'succeeded' } } });
+  });
+
+  it('a converted on-failure notice opens in the editor form as per-device, and saves back to the same document (#12596)', () => {
+    const r = convertAutomation(row({ actions: [script, script], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL, CHANNEL_PD] } }), ctx());
+    const doc = r.document!;
+    expect(doc.steps.map((x) => x.id)).toContain('a1_failnotice_1');
+    const recognized = recognizeFlowForm(doc);
+    expect(recognized.formShaped).toBe(true);
+    if (!recognized.formShaped) return;
+    expect(recognized.values.onFailure).toEqual({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_PD], notice: 'perDevice' });
+    expect(sameFlowDocument(compileFlowForm(recognized.values), doc)).toBe(true);
   });
 
   it('a notification before any script resolves the targets once', () => {

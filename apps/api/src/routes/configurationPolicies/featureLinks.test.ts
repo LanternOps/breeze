@@ -123,6 +123,23 @@ const STUB_POLICY_WITH_PAM_LINK = {
 };
 
 describe('featureLinks routes', () => {
+  describe('reader per route (W03a)', () => {
+    it('GET /:id/features reads with the read predicate; the link writes keep the write-side reader', async () => {
+      vi.clearAllMocks();
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      listFeatureLinksMock.mockResolvedValue([]);
+      const app = buildApp();
+      const res = await app.request(`/${POLICY_ID}/features`);
+      expect(res.status).toBe(200);
+      expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything(), { access: 'read' });
+
+      getConfigPolicyMock.mockClear();
+      getConfigPolicyMock.mockResolvedValue(null);
+      await app.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+      for (const call of getConfigPolicyMock.mock.calls) expect(call).toHaveLength(2);
+    });
+  });
+
   describe('MFA boundary for every feature-link mutation', () => {
     beforeEach(() => {
       vi.clearAllMocks();

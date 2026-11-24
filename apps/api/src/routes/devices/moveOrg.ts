@@ -360,7 +360,7 @@ moveOrgRoutes.post(
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
 
-    const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome } = moved!;
+    const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome, removedConfigPolicyAssignments } = moved!;
 
     // #7900 W02: notes on tickets that lost a link to one of this device's
     // tickets. Registered here, once the move is final, and run only after
@@ -437,6 +437,10 @@ moveOrgRoutes.post(
         ? { customFieldValues: customFieldRehome }
         : {}),
     } as const;
+    // #12491: device-level config policy assignments the move removed. The
+    // policies belong to the source org, so their names stay in its feed; the
+    // target org gets only a count.
+    const removedCount = removedConfigPolicyAssignments.length;
 
     writeRouteAudit(c, {
       orgId: sourceOrgId,
@@ -444,7 +448,7 @@ moveOrgRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: updated?.hostname ?? device.hostname,
-      details: auditDetails,
+      details: removedCount > 0 ? { ...auditDetails, removedConfigPolicyAssignments } : auditDetails,
     });
     writeRouteAudit(c, {
       orgId: targetOrgId,
@@ -452,7 +456,7 @@ moveOrgRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: updated?.hostname ?? device.hostname,
-      details: auditDetails,
+      details: removedCount > 0 ? { ...auditDetails, removedConfigPolicyAssignmentCount: removedCount } : auditDetails,
     });
 
     return c.json({

@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Discard unsaved changes?",
+      "message": "You have unsaved changes to this ring. Closing the editor discards them.",
+      "confirm": "Discard"
+    },
     "validation": {
       "selectCategory": "Select a category",
       "selectSeverity": "Select at least one severity for auto-approval.",

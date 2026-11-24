@@ -87,6 +87,8 @@ export async function executeResolveTargets(input: ResolveTargetsInput, ctx: Bui
     skippedOfflineDeviceIds: [],
     devices: found,
     count: ids.length,
+    succeededCount: ids.length,
+    failedCount: 0,
     warnings,
   };
   return { kind: 'completed', output: output as unknown as FlowValue, truncated: false };

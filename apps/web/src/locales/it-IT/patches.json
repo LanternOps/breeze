@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Scartare le modifiche non salvate?",
+      "message": "Questo anello ha modifiche non salvate. Chiudendo l’editor verranno scartate.",
+      "confirm": "Scarta"
+    },
     "validation": {
       "selectCategory": "Seleziona una categoria",
       "selectSeverity": "Seleziona almeno una gravità per l'approvazione automatica.",

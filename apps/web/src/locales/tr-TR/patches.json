@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Kaydedilmemiş değişiklikler atılsın mı?",
+      "message": "Bu halkada kaydedilmemiş değişiklikler var. Düzenleyiciyi kapatmak bunları atar.",
+      "confirm": "At"
+    },
     "validation": {
       "selectCategory": "Bir kategori seçin",
       "selectSeverity": "Otomatik onay için en az bir önem derecesi seçin.",

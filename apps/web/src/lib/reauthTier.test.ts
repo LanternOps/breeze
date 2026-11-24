@@ -45,6 +45,13 @@ describe('useReauthTier', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('counts a backup authenticator the parent reports (#10650), without reading', async () => {
+    // A passkey-primary account whose passkeys are all gone, with TOTP as its backup.
+    const { result } = renderHook(() => useReauthTier(0, 'passkey', true));
+    expect(result.current.tier).toBe('totp');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('reads them on the first step-up, reports a failure, and forgets them on reset', async () => {
     const { result } = renderHook(() => useReauthTier(undefined, undefined));
     expect(result.current.tier).toBeNull();

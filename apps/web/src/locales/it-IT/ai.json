@@ -24,7 +24,9 @@
       "publicTo": "Risposta visibile al cliente per {{recipient}}",
       "publicNoRecipient": "Risposta visibile al cliente (inviata via email al richiedente)",
       "publicNoEmail": "Risposta visibile al cliente (nessuna email del richiedente registrata, quindi non viene inviata alcuna email)",
-      "internal": "Nota interna (non visibile al cliente)"
+      "internal": "Nota interna (non visibile al cliente)",
+      "editReplaces": "Sostituisce il testo di un commento esistente con:",
+      "deleteNotice": "Un commento esistente su questo ticket verrà eliminato."
     },
     "memory": {
       "heading": "Wisp ricorderà",
@@ -535,6 +537,8 @@
     "createTicket": "Crea ticket"
   },
   "scriptProposal": {
+    "unavailable": "Questa proposta non è più disponibile. Potrebbe essere stata decisa, essere scaduta o appartenere a un’altra organizzazione.",
+    "loadFailed": "Impossibile caricare questa proposta. Riprova tra un momento.",
     "title": "Script creato dall'IA",
     "goal": "Obiettivo",
     "expectedEffect": "Effetto previsto",

@@ -21,6 +21,8 @@ const AI_KEYS = [
   'overrideSave','overrideSaveNotice',
   'overrideErrorExpired','overrideErrorState','overrideErrorNotSoleApprover','overrideErrorStepUp',
   'overrideErrorNoDevice','overrideErrorPolicy','overrideErrorStrict',
+  // #12557: load failures shown instead of the raw API code.
+  'unavailable','loadFailed',
 ];
 const SCRIPT_KEYS = [
   'origin','originHuman','originAiProposal','originImported','originSystem','reviewed','editedSinceReview',

@@ -63,6 +63,7 @@ import { extractRowCount } from '../db/rowCount';
 import { buildRepoint, keyExpr } from './orgMergeExecutors';
 import { moveBindings, resolveBindingMerge } from './callerVerification/merge';
 import { expireUnactuatedElevationRequests } from './pamDeviceMoveGuard';
+import { learnedNetworkFoldDropCount, resolveLearnedNetworks } from './learnedNetworks/orgMerge';
 
 export interface MergeTableOutcome {
   moved: number;
@@ -236,6 +237,13 @@ const resolveDiscoveredAssets: CustomMergeExecutor = async (loser, survivor) => 
 /** discovered_assets, MOVE half — whatever the resolve pass left behind. */
 const moveDiscoveredAssets: CustomMergeExecutor = async (loser, survivor) => ({
   moved: await run(buildRepoint('discovered_assets', loser, survivor)),
+  dropped: 0,
+  notes: [],
+});
+
+/** learned_networks (#12369 W01a), MOVE half — every network the resolve fold kept under the loser. */
+const moveLearnedNetworks: CustomMergeExecutor = async (loser, survivor) => ({
+  moved: await run(buildRepoint('learned_networks', loser, survivor)),
   dropped: 0,
   notes: [],
 });
@@ -2098,6 +2106,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   api_keys: mergeApiKeys,
   enrollment_keys: mergeEnrollmentKeys,
   discovered_assets: moveDiscoveredAssets,
+  learned_networks: moveLearnedNetworks,
   plugin_installations: mergePluginInstallations,
   playbook_definitions: mergePlaybookDefinitions,
   custom_field_definitions: mergeCustomFieldDefinitions,
@@ -2140,6 +2149,9 @@ export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecut
   // move pass repoints, so the canonical partial unique indexes cannot 23505.
   caller_verification_subject_bindings: resolveBindingMerge,
   discovered_assets: resolveDiscoveredAssets,
+  // Must run in resolve: identical fingerprints are folded while every row is still under the loser, so the
+  // move-phase repoint of learned_network_gateways cannot hit its (org_id, gateway_mac, gateway_address) unique.
+  learned_networks: resolveLearnedNetworks,
   ticket_drafts: resolveTicketDrafts,
   // Must run in resolve, not move: ai_agents is a PARENT of ai_operator_tasks
   // and would otherwise repoint first. See fenceAiOperatorTasks' header.
@@ -2225,6 +2237,8 @@ export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, s
   m365_ca_policies: (loser) => sql`SELECT count(*)::int AS n FROM m365_ca_policies WHERE org_id = ${uuid(loser)}`,
   m365_license_skus: (loser) => sql`SELECT count(*)::int AS n FROM m365_license_skus WHERE org_id = ${uuid(loser)}`,
   discovered_assets: collidingRowCount('discovered_assets', DISCOVERED_ASSET_KEY),
+  // Folded gateways plus merged networks, from the same fingerprint pairing resolveLearnedNetworks uses.
+  learned_networks: learnedNetworkFoldDropCount,
   plugin_installations: collidingRowCount('plugin_installations', ['catalog_id']),
   playbook_definitions: collidingRowCount('playbook_definitions', ['lower({name})']),
   // Without this entry previewOrgMerge would report `custom_field_definitions:

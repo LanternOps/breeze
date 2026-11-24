@@ -3,6 +3,8 @@ import { Loader2, X } from "lucide-react";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { useFeatureDirty } from "./featureEditing";
+import MspTradeNote from "./MspTradeNote";
 type PolicyOption = {
   id: string;
   name: string;
@@ -25,6 +27,7 @@ export default function PolicyLinkSelector({
   excludeId,
 }: PolicyLinkSelectorProps) {
   useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [options, setOptions] = useState<PolicyOption[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -91,11 +94,15 @@ export default function PolicyLinkSelector({
     );
   }
   return (
+    <>
     <div className="flex items-center gap-2">
       <select
         data-testid="policy-link-selector"
         value={selectedId ?? ""}
-        onChange={(e) => onSelect(e.target.value || null)}
+        onChange={(e) => {
+          markDirty();
+          onSelect(e.target.value || null);
+        }}
         className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       >
         <option value="">
@@ -116,7 +123,10 @@ export default function PolicyLinkSelector({
       {selectedId && (
         <button
           type="button"
-          onClick={() => onSelect(null)}
+          onClick={() => {
+            markDirty();
+            onSelect(null);
+          }}
           className="inline-flex h-10 w-10 items-center justify-center rounded-md border text-muted-foreground hover:bg-muted"
           title={i18n.t(
             "policies:configurationPolicies.featureTabs.policyLinkSelector.clearSelection",
@@ -126,5 +136,7 @@ export default function PolicyLinkSelector({
         </button>
       )}
     </div>
+    <MspTradeNote />
+    </>
   );
 }

@@ -777,7 +777,7 @@ Run a hardware maker's own update tool, or hand its schedule back. Windows only,
 | `trigger` | string | `scheduled` or `on_demand` |
 | `occurrenceKey` | string or null | The monthly occurrence a scheduled run counts toward |
 | `categories` | string[] | 1-4 unique values from `bios`, `firmware`, `driver`, `application` |
-| `blockedUpdateIds` | string[] | Up to 200 update IDs the tool must skip |
+| `blockedUpdateIds` | string[] | Up to 200 update IDs the tool must skip. Not supported for `dell`: the agent refuses a Dell run with any blocked ID (`blocked_ids_unsupported`), and Breeze sends Dell runs with an empty list |
 | `rebootControlled` | bool | Whether Breeze will schedule the restart. BIOS and firmware are skipped when `false` |
 | `notAfter` | string (RFC 3339) | Latest time the run may start |
 | `escrowedProtectorIds` | string[] | BitLocker protector IDs whose recovery keys Breeze holds (up to 16) |

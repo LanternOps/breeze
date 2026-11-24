@@ -36,7 +36,7 @@ wakeStatusRoutes.get(
     const { id } = c.req.valid('param');
     const { page, limit, state } = c.req.valid('query');
 
-    const policy = await getConfigPolicy(id, auth);
+    const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
     const result = await listWakeStatusForPolicy({

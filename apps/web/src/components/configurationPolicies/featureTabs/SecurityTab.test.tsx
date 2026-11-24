@@ -92,10 +92,10 @@ describe('SecurityTab inheritance (#5080)', () => {
     onLinkChanged.mockClear();
   });
 
-  it('shows Configured (inherited) and seeds the form from parentLink when only a parent link exists', () => {
+  it('shows From parent and seeds the form from parentLink when only a parent link exists', () => {
     render(<SecurityTab {...baseProps} parentLink={parentLinkWith({ autoQuarantine: false })} />);
 
-    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    expect(screen.getByText('From parent')).toBeTruthy();
     // autoQuarantine defaults to true; the parent link's distinctive override
     // (false) must be reflected, read-only, in the form.
     const toggle = screen.getByText('Auto-quarantine').closest('div')?.parentElement
@@ -103,10 +103,12 @@ describe('SecurityTab inheritance (#5080)', () => {
     expect(toggle?.className).not.toContain('bg-emerald-500/80');
   });
 
-  it('Override saves a copy of the inherited settings as the policy\'s own link', () => {
+  it('Change for this policy saves a copy of the inherited settings as the policy\'s own link', () => {
     render(<SecurityTab {...baseProps} parentLink={parentLinkWith({ autoQuarantine: false })} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     expect(saveMock).toHaveBeenCalled();
     const [existingId, payload] = saveMock.mock.calls[0] as unknown as [
@@ -134,7 +136,7 @@ describe('SecurityTab inheritance (#5080)', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     // #5314: Revert to Parent now asks for confirmation first.
     fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
 
@@ -298,10 +300,14 @@ describe('SecurityTab rule-set picker (#6267 W04-4)', () => {
     expect(savedRuleSetIds()).toEqual([]);
   });
 
-  it('keeps an inherited parent value (no preselect) and Override saves it at once when nothing blocks', async () => {
+  it('keeps an inherited parent value (no preselect) and Change for this policy + Save saves it when nothing blocks', async () => {
     render(<SecurityTab {...baseProps} orgId={ORG_A} parentLink={parentLinkWith({ ruleSetIds: [SET_A1] })} />);
     await settle();
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    await settle();
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(false);
+    fireEvent.click(saveButton());
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     expect(saveMock.mock.calls[0][0]).toBeNull();
     expect(savedRuleSetIds()).toEqual([SET_A1]);
@@ -330,11 +336,11 @@ describe('SecurityTab rule-set picker (#6267 W04-4)', () => {
     expect(savedRuleSetIds()).toEqual([SET_A1]);
   });
 
-  it('override draft: an inherited unavailable id makes Override open an editable draft instead of saving', async () => {
+  it('an inherited unavailable id: Change for this policy unlocks with a banner and Save stays blocked until it is removed', async () => {
     render(<SecurityTab {...baseProps} orgId={ORG_A} parentLink={parentLinkWith({ ruleSetIds: [SET_A1, SET_B1] })} />);
     await settle();
 
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
     await settle();
     expect(saveMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('security-override-draft-banner')).toBeInTheDocument();
@@ -353,7 +359,7 @@ describe('SecurityTab rule-set picker (#6267 W04-4)', () => {
     const parentLink = parentLinkWith({ ruleSetIds: [SET_A1, SET_B1] });
     const { rerender } = render(<SecurityTab {...baseProps} orgId={ORG_A} parentLink={parentLink} />);
     await settle();
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
     await settle();
     expect(screen.getByTestId('security-override-draft-banner')).toBeInTheDocument();
 
@@ -365,7 +371,7 @@ describe('SecurityTab rule-set picker (#6267 W04-4)', () => {
     await settle();
 
     expect(screen.queryByTestId('security-override-draft-banner')).toBeNull();
-    expect(screen.getByRole('button', { name: /override/i })).toBeInTheDocument();
+    expect(screen.getByTestId('feature-tab-change-for-policy')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull();
   });
 

@@ -215,9 +215,10 @@ function extractArray(payload: unknown): unknown[] {
 function extractPageState(payload: unknown): { page: number; totalPages: number | null; hasNext: boolean } {
   const root = asRecord(payload);
   if (!root) return { page: 0, totalPages: null, hasNext: false };
-  const page = firstNumber(root, ['page', 'number', 'pageNumber']) ?? 0;
-  const totalPages = firstNumber(root, ['totalPages', 'pageCount', 'total_pages']);
-  const last = root.last;
+  const meta = nestedRecord(root, 'page') ?? root;
+  const page = firstNumber(meta, ['page', 'number', 'pageNumber']) ?? 0;
+  const totalPages = firstNumber(meta, ['totalPages', 'pageCount', 'total_pages']);
+  const last = meta.last ?? root.last;
   const hasNext = typeof last === 'boolean' ? !last : totalPages !== null ? page + 1 < totalPages : false;
   return { page, totalPages, hasNext };
 }
@@ -310,7 +311,7 @@ function normalizeProduct(value: unknown): Pax8ProductRecord | null {
     pax8ProductId: id,
     name,
     vendorName: firstString(record, ['vendorName', 'vendor_name']) ?? (vendor ? firstString(vendor, ['name', 'vendorName']) : null),
-    vendorSku: firstString(record, ['vendorSku', 'vendor_sku', 'vendorSkuId', 'sku', 'skuId']),
+    vendorSku: firstString(record, ['sku', 'skuId', 'vendorSku', 'vendor_sku', 'vendorSkuId']),
     shortDescription: firstString(record, ['shortDescription', 'short_description', 'description']),
     raw: record,
   };

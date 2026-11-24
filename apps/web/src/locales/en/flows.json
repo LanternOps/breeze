@@ -3,7 +3,9 @@
   "subtitle": "Multi-step automations that chain tools together.",
   "empty": {
     "title": "No flows yet",
-    "body": "Ask Breeze AI to draft a flow, then review it here."
+    "body": "A flow is a saved list of steps that Breeze follows the same way on every run. It can start on a schedule, on an event, from a webhook, or when you start it. Use a flow when the work has several steps, needs an approval, or calls other tools. It uses no AI unless a step asks for it. To run a script on a schedule, a job is simpler.",
+    "how": "Build one with New automation, ask Breeze AI to draft it, or move an existing job from the Jobs page.",
+    "jobsLink": "Go to Jobs"
   },
   "list": {
     "name": "Name",
@@ -41,7 +43,15 @@
     "version": "Version {{version}}",
     "createdInChat": "Created in Breeze AI",
     "movedFromJob": "Moved from Job",
-    "movedFromJobReverted": "(moved back)"
+    "movedFromJobReverted": "(moved back)",
+    "shadowingNotice": "This flow is shadowing the job {{name}}. It goes live when you switch from the job.",
+    "shadowingLink": "Open the job's Move dialog",
+    "edit": "Edit",
+    "delete": "Delete draft",
+    "deleteConfirmTitle": "Delete this draft?",
+    "deleteConfirmMessage": "The draft is removed permanently. This cannot be undone.",
+    "deleteHasHistory": "This flow has been enabled or moved from a job, so it can no longer be deleted. Disable it instead.",
+    "deleteHasHistoryLink": "Open the job"
   },
   "step": {
     "tool": "Tool",
@@ -121,7 +131,9 @@
     "enableFailed": "Could not enable the flow.",
     "disableFailed": "Could not disable the flow.",
     "runFailed": "Could not start the run.",
-    "cancelFailed": "Could not cancel the run."
+    "cancelFailed": "Could not cancel the run.",
+    "saveFailed": "Could not save the flow.",
+    "deleteFailed": "Could not delete the draft."
   },
   "tabs": {
     "overview": "Overview",
@@ -174,6 +186,7 @@
     "generic": "Could not enable the flow.",
     "webhookSecretMissing": "Create a webhook secret before you enable this flow.",
     "aiBudgetUnavailable": "This organization has no AI budget to spend, so a flow with an AI step cannot be enabled.",
+    "conversionNotSwitched": "This flow is shadowing a job, so it goes live when you switch from the job, not from here.",
     "webhookSecretInvalidated": "Enabling this version cleared the webhook secret, because the secret was created for an older draft. Every request is refused until you create a new secret and give it to the sender."
   },
   "run": {
@@ -328,7 +341,9 @@
     "enabled": "Flow enabled",
     "disabled": "Flow disabled",
     "runStarted": "Run started",
-    "runCancelled": "Run cancelled"
+    "runCancelled": "Run cancelled",
+    "draftSaved": "Draft saved",
+    "draftDeleted": "Draft deleted"
   },
   "disable": {
     "title": "Disable flow",
@@ -766,12 +781,153 @@
     "migration": {
       "banner": {
         "r1": "Jobs are moving to Flows.",
-        "r1Body": "New jobs are made in Flows. Move each job when its shadow matches; you can move it back."
+        "r1Body": "You can still create and edit jobs here. Move a job when its shadow matches; you can move it back."
       },
       "convertAll": "Start shadow for all convertible",
       "converting": "Starting…",
       "bulkSummary": "Started {{created}}, skipped {{skipped}}.",
       "newJobOpensFlows": "New flow"
     }
+  },
+  "flowEditor": {
+    "titleNew": "New automation",
+    "titleEdit": "Edit {{name}}",
+    "subtitle": "Build the flow with the form, or edit its document directly. Both tabs edit the same document.",
+    "backToFlow": "Back to the flow",
+    "tabs": {
+      "form": "Form",
+      "document": "Document"
+    },
+    "owner": {
+      "title": "Owner",
+      "organization": "This organization only",
+      "partner": "All organizations"
+    },
+    "enabledReadOnly": "This flow is enabled, so it can't be edited. Disable it to make changes, then enable it again.",
+    "disableAndEdit": "Disable and edit",
+    "disableMessage": "Disabling cancels queued and waiting runs and pending approvals. Runs already in progress stop at their next checkpoint. You can enable the flow again after you edit it.",
+    "notFormShaped": "The form can't show everything in this document, so it is read-only here. Edit the document instead.",
+    "openDocument": "Open the document",
+    "validateFailed": "Could not check the document: {{message}}",
+    "conflict": "Someone else saved this flow while you were editing. Your changes are still here. Reload to get the latest version; reloading discards your changes.",
+    "reload": "Reload",
+    "saveInvalid": "The flow was not saved because the document has errors. Fix the issues listed and save again.",
+    "notDraft": "This flow is enabled, so it can't be saved. Disable it first.",
+    "webhookNext": "Saved. Webhook flows are enabled from the flow page: create the webhook secret there, give it to the sender, then enable the flow.",
+    "webhookTabLink": "Open the Webhook tab",
+    "limits": "Each run reaches at most {{devices}} devices and sends at most {{notices}} notifications. A flow has at most {{steps}} steps.",
+    "save": "Save",
+    "saveAndEnable": "Save and enable",
+    "shadow": {
+      "title": "Reset the comparison?",
+      "message": "This flow was moved from a job and is still being compared with it. Saving a change resets the comparison evidence, and the comparison starts again."
+    },
+    "document": {
+      "loading": "Loading editor…",
+      "loadError": "The editor failed to load. Refresh the page to try again.",
+      "parseError": "The document is not valid JSON"
+    },
+    "form": {
+      "name": "Name",
+      "description": "Description",
+      "remove": "Remove",
+      "listsFailed": "Could not load your scripts and notification channels. Refresh the page to try again.",
+      "trigger": {
+        "title": "When it runs",
+        "timezone": "Time zone",
+        "eventDeviceHelp": "The actions run on the device that raised the event.",
+        "eventNoDeviceNoRun": "If an alert arrives without a device, no run starts.",
+        "eventNoDeviceFails": "If an event arrives without a device, the run fails.",
+        "filter": "Only when the event matches",
+        "filterHelp": "Each field must equal its value exactly. Leave empty to run on every event of this type.",
+        "filterKey": "Event field",
+        "filterValue": "Value",
+        "filterAdd": "Add a condition",
+        "resolverHelp": "A flow for all organizations finds the organization from the request body: name the body field that holds the organization's identifier, and the system that identifier comes from.",
+        "resolverPath": "Body field",
+        "resolverSystem": "System",
+        "webhookHelp": "Save the flow, then create the webhook secret and enable the flow on its Webhook tab.",
+        "manualHelp": "The flow runs only when someone starts it.",
+        "resolverKind": "Identifier comes from",
+        "resolverKindSystem": "An external system",
+        "resolverKindBreezeOrg": "A Breeze organization ID"
+      },
+      "target": {
+        "title": "Devices",
+        "triggerDevice": "The device that raised the event.",
+        "choose": "Choose which devices the actions run on. All devices is only the starting point.",
+        "keep": "Use all devices",
+        "partnerWide": "A flow for all organizations can target all devices or a filter, not specific devices or groups."
+      },
+      "actions": {
+        "title": "Actions",
+        "empty": "Add at least one action.",
+        "position": "Action {{n}}",
+        "runScript": "Run a script",
+        "notify": "Send a notification",
+        "alert": "Raise an alert",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "runAsDefault": "The script's setting",
+        "runAsSystem": "System",
+        "runAsUser": "Signed-in user",
+        "parameters": "Parameters",
+        "parameterName": "Parameter name",
+        "parameterValue": "Parameter value",
+        "parameterAdd": "Add a parameter",
+        "severityInfo": "Info",
+        "severityWarning": "Warning",
+        "severityCritical": "Critical",
+        "title_": "Title",
+        "notifyHelp": "One message is sent each run, not one per device.",
+        "countsHelp": "The number of devices that succeeded and failed is added to the end of the message.",
+        "alertHelp": "An alert is raised on each device the actions reached.",
+        "commandHint": "To run a command, save it as a script first.",
+        "scriptsLink": "Go to Scripts"
+      },
+      "onFailure": {
+        "title": "If the script can't be sent to a device",
+        "stop": "Stop",
+        "stopHelp": "Later actions skip the devices the script couldn't be sent to.",
+        "continue": "Continue",
+        "continueHelp": "Later actions still run on the devices the script couldn't be sent to.",
+        "notify": "Notify",
+        "notifyHelp": "Send a notice to the channels below for each device the script couldn't be sent to. At most 20 notices are sent per run.",
+        "notifySummaryHelp": "Send one notice to the channels below for each script that couldn't be sent to every device, with how many devices succeeded and failed.",
+        "noChannels": "Add a notification channel to use Notify."
+      }
+    },
+    "disableWebhookNote": "This flow has a webhook trigger. Enabling it again after you edit it clears the webhook secret, and the sender will need the new secret.",
+    "shadowLine": "This flow is shadowing a job. It goes live from the job's Switch, not from here.",
+    "validation": {
+      "name": "Give the flow a name (up to 120 characters).",
+      "steps": "A flow needs at least one action, and no more than the limit.",
+      "cron": "The schedule is not a valid cron expression. Use five fields, for example 0 2 * * *.",
+      "timezone": "That time zone is not recognized. Use a name such as UTC or America/Chicago.",
+      "script": "Choose a script for this action.",
+      "channel": "Choose a notification channel for this action.",
+      "channels": "Choose at least one notification channel.",
+      "duplicateStepId": "Two actions have the same id. Give each action its own id.",
+      "unknownStepReference": "This refers to an action that does not exist. Check the action id.",
+      "forwardReference": "This uses the result of an action that runs later. Move that action earlier or remove the reference.",
+      "eventUnknown": "The system does not know that event type. Pick one from the list.",
+      "toolNotFound": "That action is not available to this flow. Pick another one.",
+      "channelNotOwned": "That notification channel does not belong to this flow's owner. Choose one of your own.",
+      "referenceNotOwned": "This refers to something that does not belong to this flow's owner.",
+      "deviceNotOwned": "That device does not belong to this flow's organization.",
+      "resolverRequired": "A flow for all organizations needs the body field that names the customer organization.",
+      "resolverNotAllowed": "An organization's webhook flow always runs in that organization. Remove the organization lookup.",
+      "documentTooLarge": "The document is too large. Remove some actions or text.",
+      "secretInDocument": "The document contains what looks like a secret. Remove it from the document.",
+      "event": "Choose the event that starts this flow.",
+      "eventFilter": "An event filter field name is not valid. Use letters, numbers, dots and underscores, starting with a letter.",
+      "orgResolver": "The organization lookup is not valid. Give the body field as body.name and, for an outside system, its name.",
+      "title": "Give this action a title (up to 200 characters).",
+      "message": "Write a message for this action (up to 4000 characters).",
+      "parameters": "A script parameter is not valid. Give each parameter a name.",
+      "target": "Choose which devices this flow runs on.",
+      "inputInvalid": "This value is not valid. Check the field at the path shown."
+    },
+    "enableOpenFailed": "The draft was saved, but the enable dialog could not open. Open the flow to enable it."
   }
 }
