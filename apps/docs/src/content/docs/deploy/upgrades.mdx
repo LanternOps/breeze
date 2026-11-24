@@ -124,7 +124,7 @@ Breeze is tested on PostgreSQL 16, 17 and 18 (see [Supported PostgreSQL versions
 
 **Before you start:**
 
-- Your `docker-compose.yml` must come from a release that has `PGDATA` and `POSTGRES_DATA_VOLUME` on the `postgres` service: `grep -n 'POSTGRES_DATA_VOLUME' docker-compose.yml` prints a line. If it prints nothing, merge the [Compose file changes](#unreleased--postgresql-data-directory-pinned-and-a-second-data-volume) first.
+- Your `docker-compose.yml` must come from a release that has `PGDATA` and `POSTGRES_DATA_VOLUME` on the `postgres` service: `grep -n 'POSTGRES_DATA_VOLUME' docker-compose.yml` prints a line. If it prints nothing, merge the [Compose file changes](#v01300--postgresql-data-directory-pinned-and-a-second-data-volume) first.
 - Free disk of at least 1.5 times the database size (the dump plus the new cluster).
 - Copies of `.env` and your Compose files kept off the host.
 - Run the long steps (dump, restore) under `nohup`, `tmux` or `screen`, so a dropped SSH session does not kill them.
@@ -407,7 +407,13 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
-### Unreleased — PostgreSQL data directory pinned and a second data volume
+### Unreleased — browser remote desktop rollout flag mapped
+
+| Change | Required action |
+|---|---|
+| New `api` mapping `BREEZE_BROWSER_DESKTOP_ENABLED` (`${VAR:-false}`) in both Compose files. | Nothing. Leave it unset. |
+
+### v0.130.0 — PostgreSQL data directory pinned and a second data volume
 
 The `postgres` service in `docker-compose.yml` gains `PGDATA` and a selectable data volume. PostgreSQL 17 and 18 are now tested and supported; the default image stays 16.
 
@@ -418,13 +424,7 @@ The `postgres` service in `docker-compose.yml` gains `PGDATA` and a selectable d
 | The `postgres` mount becomes `${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data`, and a second volume, `postgres_data_alt`, is declared. | Nothing. Unset keeps `postgres_data`. Only the [PostgreSQL 16 to 18](#postgresql-16-to-18) procedure sets `POSTGRES_DATA_VOLUME`, and any other volume name makes `docker compose` fail. Never set it to a path, which Compose would bind-mount. |
 | `guided-setup.sh` local-storage mode rewrites either mount form to `./data/postgres`, and treats both volumes as existing data. | Nothing. Fetch the current `guided-setup.sh` as usual. |
 
-### Unreleased — browser remote desktop rollout flag mapped
-
-| Change | Required action |
-|---|---|
-| New `api` mapping `BREEZE_BROWSER_DESKTOP_ENABLED` (`${VAR:-false}`) in both Compose files. | Nothing. Leave it unset. |
-
-### Unreleased — report-only observation retention settings mapped
+### v0.130.0 — report-only observation retention settings mapped
 
 Both Compose files gain 8 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
 
@@ -433,15 +433,21 @@ Both Compose files gain 8 optional `api` mappings (`${VAR:-}`). Leaving them out
 | New `api` mappings for the hourly observation retention job: `AGENT_HEALTH_OBSERVATION_RETENTION_*` and `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_*`, each with `_DAYS` (defaults: 30 for health, 90 for software inventory), `_BATCH_SIZE`, `_MAX_BATCHES` and `_ENFORCE`. | Nothing. The job only counts eligible rows and deletes nothing until you set the matching `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 | New index on `received_at` for `agent_health_observations` and `software_inventory_observations`, built `CONCURRENTLY` on upgrade. | Nothing. Writes continue during the build; on a large install the migration step takes longer than usual. |
 
-### Unreleased — local backup destinations on the API server
+### v0.130.0 — directory deprovisioning, groundwork switches, ticket import limits, snapshot cleanup, worker metrics route
 
-Both Compose files gain one optional mapping, `BACKUP_LOCAL_ROOT` (`${BACKUP_LOCAL_ROOT:-}`), shared by `api` and `worker`.
+The [v0.130.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.130.0/docker-compose.yml) add these optional `api` mappings to both `docker-compose.yml` and `deploy/docker-compose.prod.yml`, alongside the PostgreSQL and retention entries above. Leaving any of them out of `.env` keeps the built-in default. No mapping was removed.
 
 | Change | Required action |
 |---|---|
-| The API and worker no longer read a local backup destination from its **Local Path** setting. They read it only from `<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/`. | Nothing, unless you use server-side features on local destinations (connectivity test, file-level browse, server-side verification, storage sweep, recovery downloads, recovery media). If you do, follow [Upgrading an install that uses API-side local storage](/backup/storage/#upgrading-an-install-that-uses-api-side-local-storage) before relying on them. Until then they are unavailable and the storage sweep deletes nothing from those destinations. Without `BACKUP_LOCAL_ROOT`, the connectivity test now reports local destinations as **Not tested here** instead of testing the Local Path on the server. |
+| `PORTAL_DIRECTORY_DEPROVISION_ENFORCE` (unset = report-only). | Nothing. Directory deprovisioning records and reports only until you set `true`. See [Directory deprovisioning](/features/portal-directory-deprovisioning/). |
+| `TPM_ATTESTATION_ENABLED` (`false`), `BREEZE_VENDOR_CANARY_PARTNER_IDS` and `BREEZE_VENDOR_CANARY_DISABLED` (empty). | Nothing. Leave them unset; they are groundwork and canary switches. See [Feature Flags](/deploy/environment/#feature-flags). |
+| `TICKET_IMPORT_MAX_TICKET_ARTICLES` (10000) and `TICKET_IMPORT_MAX_TICKET_READ_BYTES` (256 MiB). | Nothing for the defaults. A ticket over either limit fails on its own as "ticket too large". See [Ticket Import](/features/ticket-import/). |
+| `BACKUP_SNAPSHOT_CLEANUP_CRON` (`27 2,8,14,20 * * *` UTC; `off` stops it) and `BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS` (4 hours). | Nothing. Expired-snapshot cleanup now runs on its own bounded schedule and resumes where it stopped. |
+| `BACKUP_GC_LIVE_SET_MAX_BYTES` and `BACKUP_GC_MAX_DELETES_PER_RUN` are now mapped. | If you set either in `.env` before, it had no effect; it now takes effect once you take the new Compose file. |
+| `PARTNER_TRUST_FRAUD_FLAGS_ENABLED` (`false`) and three `IP_CLASSIFY_*_URL` overrides. | Nothing. These serve the hosted service; leave them unset on a self-hosted install. |
+| `docker/Caddyfile.prod` routes `/metrics/worker` to the worker role's metrics, behind the same scrape token. | Nothing unless you scrape the worker from outside the Docker network. See [Worker Split](/deploy/worker-split/#monitoring-the-worker). |
 
-### Unreleased — count-only history retention windows mapped
+### v0.130.0 — count-only history retention windows mapped
 
 Both Compose files gain 10 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
 
@@ -449,7 +455,16 @@ Both Compose files gain 10 optional `api` mappings (`${VAR:-}`). Leaving them ou
 |---|---|
 | New `api` mappings for the count-only targets of the history retention job: `SSO_SESSION_RETENTION_DAYS`, `C2C_CONSENT_SESSION_RETENTION_DAYS`, `TUNNEL_SESSION_RETENTION_DAYS`, `UNIFI_SYNC_RUN_RETENTION_DAYS`, `FLEET_REMEDIATION_RUN_RETENTION_DAYS`, `TICKET_IMPORT_RUN_RETENTION_DAYS`, `TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS`, `AUDIT_BASELINE_RESULT_RETENTION_DAYS`, `PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS`, `ML_FEEDBACK_EVENT_RETENTION_DAYS`. | Nothing. These targets only count eligible rows. They have no `_ENFORCE` variable and delete nothing. See [Count-only retention targets](/deploy/environment/#count-only-retention-targets). |
 
-### Unreleased — history retention settings mapped
+
+### v0.129.0 — local backup destinations on the API server
+
+Both Compose files gain one optional mapping, `BACKUP_LOCAL_ROOT` (`${BACKUP_LOCAL_ROOT:-}`), shared by `api` and `worker`.
+
+| Change | Required action |
+|---|---|
+| The API and worker no longer read a local backup destination from its **Local Path** setting. They read it only from `<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/`. | Nothing, unless you use server-side features on local destinations (connectivity test, file-level browse, server-side verification, storage sweep, recovery downloads, recovery media). If you do, follow [Upgrading an install that uses API-side local storage](/backup/storage/#upgrading-an-install-that-uses-api-side-local-storage) before relying on them. Until then they are unavailable and the storage sweep deletes nothing from those destinations. Without `BACKUP_LOCAL_ROOT`, the connectivity test now reports local destinations as **Not tested here** instead of testing the Local Path on the server. |
+
+### v0.129.0 — history retention settings mapped
 
 Both Compose files gain 26 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
 
@@ -458,7 +473,7 @@ Both Compose files gain 26 optional `api` mappings (`${VAR:-}`). Leaving them ou
 | New `api` mappings for the report-only history retention job: `HISTORY_RETENTION_BATCH_SIZE`, `HISTORY_RETENTION_MAX_BATCHES`, and a `_DAYS` and `_ENFORCE` pair for each of `AI_AGENT_RUN_RETENTION_*`, `PATCH_JOB_RESULT_RETENTION_*`, `SECURITY_POSTURE_SNAPSHOT_RETENTION_*`, `CIS_BASELINE_RESULT_RETENTION_*`, `AUTOMATION_RUN_RETENTION_*`, `REPORT_RUN_RETENTION_*`, `USER_NOTIFICATION_READ_RETENTION_*`, `USER_NOTIFICATION_RETENTION_*`, `REMOTE_SESSION_RETENTION_*`, `SUPPORT_SESSION_RETENTION_*`, `AUTH_SESSION_RETENTION_*`, `NETWORK_CHANGE_EVENT_RETENTION_*`. | Nothing. Each target only counts eligible rows and deletes nothing until you set its own `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 | The network baseline worker no longer handles the `prune-change-events` job type. Nothing ever scheduled it. | Nothing. Change-event cleanup moves to `NETWORK_CHANGE_EVENT_RETENTION_*`. |
 
-### Unreleased — report-only script execution retention settings mapped
+### v0.129.0 — report-only script execution retention settings mapped
 
 Both Compose files gain 5 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
 
@@ -466,7 +481,7 @@ Both Compose files gain 5 optional `api` mappings (`${VAR:-}`). Leaving them out
 |---|---|
 | New `api` mappings for the report-only script execution retention job: `SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_BATCH_SIZE`, `SCRIPT_EXECUTION_RETENTION_MAX_BATCHES` and `SCRIPT_EXECUTION_RETENTION_ENFORCE`. | Nothing. The job only counts eligible rows and changes nothing until you set `SCRIPT_EXECUTION_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 
-### Next release — closed-alert retention settings
+### v0.129.0 — closed-alert retention settings
 
 Both Compose files gain the same lines under the `api` environment. Every new mapping is optional; leaving it out of `.env` keeps the default.
 
@@ -474,7 +489,7 @@ Both Compose files gain the same lines under the `api` environment. Every new ma
 |---|---|
 | New `api` mappings `ALERT_RETENTION_DAYS`, `ALERT_RETENTION_BATCH_SIZE`, `ALERT_RETENTION_MAX_BATCHES` and `ALERT_RETENTION_ENFORCE` (`${VAR:-}`). | Nothing for the defaults (365 days, 1000 rows, 100 batches). The job is report-only until you set `ALERT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 
-### Unreleased — report-only AI transcript retention
+### v0.129.0 — report-only AI transcript retention
 
 Both Compose files gain 3 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default. The release also runs a migration that sets the new technician transcript window to 365 days on every existing partner AI data policy row (a partner with no row already gets 365 by default).
 
@@ -482,7 +497,7 @@ Both Compose files gain 3 optional `api` mappings (`${VAR:-}`). Leaving them out
 |---|---|
 | New `api` mappings for the report-only AI transcript retention job: `AI_TRANSCRIPT_RETENTION_BATCH_SIZE`, `AI_TRANSCRIPT_RETENTION_MAX_BATCHES` and `AI_TRANSCRIPT_RETENTION_ENFORCE`. | Nothing. The job only counts conversations past their window and changes nothing until you set `AI_TRANSCRIPT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 
-### Unreleased — report-only retention settings mapped
+### v0.129.0 — report-only retention settings mapped
 
 Both Compose files gain 16 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
 
@@ -652,6 +667,92 @@ Changing an existing network's IPAM/subnet requires recreating that network duri
 Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify that `TRUSTED_PROXY_CIDRS` matches the proxy that directly connects to the API. That release's TRANSPORT-001 enforcement only honors forwarded HTTPS headers from trusted peers; a stale address can cause repeated `308` redirects for the UI and agents while `/health` still returns `200`. After restarting, check public sign-in and agent check-ins as well as API logs for `[proxy-trust]` or `[force-https]` warnings (available from v0.104.0).
 
 ## Version-specific notes
+
+### v0.130.0 — ticket import wizard, reinstall reattach, portal Entra SCIM, remote desktop fixes, PostgreSQL 17 and 18
+
+No breaking changes. Several defaults changed (see Behaviour changes below), and many fixes need the 0.130.0 agent.
+
+<Aside type="caution" title="First boot builds six indexes concurrently">
+  Three of this release's migrations build six indexes with `CREATE INDEX CONCURRENTLY` on tables that grow with history: `agent_health_observations`, `software_inventory_observations`, `device_boot_metrics`, `device_hardware_events`, `spc_results` and `alerts`. Reads and writes continue during the builds, but on an install with a long history the first boot can take minutes, and the database needs free disk for the new indexes.
+
+  **Do not restart the API mid-migration.** If a build is interrupted, the next start stops with `INVALID index(es): <name>`. Run `DROP INDEX CONCURRENTLY public.<name>;` for each index it names, then start the API again; the migration rebuilds it.
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Back up the database, or note a point-in-time recovery point. A rollback to v0.129.0 was not tested (see Migrations below).
+2. Check free disk on the database volume for the new indexes.
+3. Upgrade the server. Check how your install pins its images with `grep '^BREEZE_API_IMAGE_REF=' .env`:
+   - **Digest-pinned** (the value ends in `@sha256:…`; every `guided-setup.sh` install since v0.112.0): fetch the current `guided-setup.sh` from `main`, then run `bash guided-setup.sh --upgrade 0.130.0`. It also copies the verified release manifest pair into the binaries volume. Don't edit only `BREEZE_VERSION` on a digest-pinned install; that re-pulls the images you already run.
+   - **Tag-form** (the value ends in `:${BREEZE_VERSION}`): set `BREEZE_VERSION=0.130.0`, then run `docker compose pull api web portal && docker compose up -d`. If you run the optional `worker` container, pull and restart it too.
+
+   **Update the API, web, portal and worker containers together.** After the migration, an API still on v0.129.0 fails portal-user disable and reactivate, so every API instance must run 0.130.0 before an MSP uses either. The ticket import wizard, the SCIM panel, the reattach dialog and the Wake-on-LAN tab call routes the old API does not have.
+4. `--upgrade` does not change your `docker-compose.yml`. To pick up this release's mappings and the `postgres` service changes, take the v0.130.0 Compose files or add the lines yourself (see [Compose file changes](#v01300--postgresql-data-directory-pinned-and-a-second-data-volume)). A value only in `.env` does not reach the container. **Already on PostgreSQL 18 with your volume at `/var/lib/postgresql`:** read [Already running 18 with the upstream volume layout](#already-running-18-with-the-upstream-volume-layout) before you take the new `postgres` block.
+5. Watch the API start log for `[auto-migrate] Applied 25 migration(s)` (from v0.129.0). Let the index builds finish.
+6. Update agents in stages, and install the new Breeze Viewer. The remote desktop fixes, network filter detection, Wake-on-LAN readiness, the OS-disk usage column and the backup and agent fixes need the 0.130.0 agent; several remote desktop fixes also need the new Viewer. With `AGENT_AUTO_PROMOTE=false`, the new agent release is registered but not promoted.
+</Steps>
+
+**Air-gapped or `BINARY_SOURCE=local` installs without `guided-setup.sh`** must stage `release-artifact-manifest.json` and its `.ed25519` signature at the root of the binaries volume. This was already required; the API now names the missing file and links [Binaries](/deploy/binaries/) when it is absent.
+
+#### PostgreSQL 17 and 18
+
+PostgreSQL 17 and 18 are now tested and supported; the default image stays 16. Do not change the major version by editing `POSTGRES_IMAGE_REF` on an existing install. Follow [PostgreSQL 16 to 18](#postgresql-16-to-18), which restores into the second data volume and keeps the old one as the rollback. A new install may set a reviewed pg17 or pg18 image before its first start.
+
+#### Behaviour changes and feature flags
+
+- **Cmd+K searches every customer by default** and ranks the header-selected customer first. **This customer only** restores the old filter.
+- **AI and MCP tools refuse arguments they do not define**, naming the unknown key. An integration that sends extra or misspelled keys now gets an error.
+- **MCP and API-key callers with `ENABLE_2FA` on** get `MFA_REQUIRED` for MFA-gated actions, and fully gated tools leave `tools/list`. The highest-risk AI tool tier is refused instead of offered for approval.
+- **Bounded AI device notes and run-mode check-ins no longer raise approval cards.** Actions a check-in proposes still need approval. Device notes written over MCP, unattended grants or flow steps are capped at 200 characters, 30-day expiry and 8 active per device.
+- **Integration Test** stores nothing and is rate limited (`429` with `Retry-After` past 5 tests a minute per user or 10 per organization). Discord accepts only `discord.com` webhook URLs.
+- **Reports:** the Executive Summary health score is the share of devices seen in the last 7 days; a Security Posture GOOD or STRONG score is held at FAIR while critical patches or vulnerabilities are open or a device is unprotected; report PDFs follow the partner's document page size and date format; devices with no data are "not assessed".
+- **Tickets:** the autoresponse cap is 5 per sender per partner per hour (it was 1 per sender per day, shared across partners). Reply-header threading matches only public links from inbound mail and the Outlook add-in. With `EMAIL_PROVIDER=mailgun`, cc recipients start to receive mail.
+- **Compliance:** registry and config checks a device is not probed for are **Not assessed** and raise no alert or remediation. The heartbeat probe list now includes active configuration-policy compliance rules.
+- **Backup:** online-only OneDrive placeholders are skipped with a job warning. Verification results carry `filesUnchecked` and a `storage_session_lost` reason. Status views add an `overdue` bucket.
+- **Windows agent uninstall** reports its result after the teardown finishes, not when it starts.
+- **macOS agents below a release's minimum macOS (currently 12.0)** stay on their current agent, and the pkg refuses to install below the floor. From v0.131.0, macOS agent assets without a signed minimum-OS value are refused at sync; the [self-host signing template](/deploy/sign-your-own-packages/) already includes it.
+- **Network proxy tunnels** queue a burst for up to 5 seconds (96 waiters), then answer `429` with `Retry-After`.
+- **`BINARY_SOURCE=github`:** boot sync retries transient network failures in the background for about 15.5 minutes, then logs the manual `sync-github` command. During a read-only database episode, `/health/ready` reports `binarySyncPending: true` until the sync can run.
+- **Database-only restores:** boot creates `breeze_audit_admin` and `breeze_search` if missing. On managed Postgres without the privilege, it logs the `GRANT` to run.
+- **New partners** get their region's document page size (Letter for the US and Canada, A4 elsewhere). Existing partners keep their stored size.
+- **Customer portal:** directory deprovisioning is report-only until `PORTAL_DIRECTORY_DEPROVISION_ENFORCE=true`. Reactivating a portal user who has no usable credential answers `409 PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST`.
+- **Wake-on-LAN:** devices with no Wake-on-LAN policy are unchanged. See [Wake-on-LAN policy and readiness](/features/remote-access/#wake-on-lan-policy-and-readiness-v01300).
+- **Groundwork stays off:** TPM attestation (`TPM_ATTESTATION_ENABLED=false`), network isolation release tokens (leave `NETWORK_ISOLATION_TOKEN_SIGNING_KEY` unset), and the read-only vendor observe steps (`BREEZE_VENDOR_CANARY_PARTNER_IDS` empty). The vendor-updates observe step needs the 0.131.0 agent.
+- **Wisp** stays Breeze Cloud only (`BREEZE_WISP_ENABLED`, default `false`).
+- **No flag in this release has to be turned on.**
+
+#### Environment variables
+
+**No new required variables.** The config validator refuses to boot only when one of `TPM_ATTESTATION_ENABLED`, `NETWORK_ISOLATION_TOKEN_SIGNING_KEY`, `BREEZE_VENDOR_CANARY_PARTNER_IDS`, `BREEZE_VENDOR_CANARY_DISABLED` or `PARTNER_TRUST_FRAUD_FLAGS_ENABLED` is set to a malformed value. New optional variables are listed in [Compose file changes](#v01300--directory-deprovisioning-groundwork-switches-ticket-import-limits-snapshot-cleanup-worker-metrics-route), and the retention ones in [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). Nothing in the retention set deletes rows until you set its `_ENFORCE=true`; [Reclaiming disk after retention](/deploy/reclaiming-disk-after-retention/) covers `pg_repack` once you do.
+
+#### Migrations
+
+25 idempotent migrations apply on boot when upgrading from v0.129.0 (`[auto-migrate] Applied 25 migration(s)`). No shipped migration was modified, renamed or removed, and none needs superuser or extra privileges.
+
+- **Concurrent index builds** (see the caution above): `2027-01-25-110000-observation-retention-indexes`, `2027-01-27-140000-export-dataset-reliability-indexes` and `2027-01-27-150000-export-dataset-alert-index`.
+- **A plain index build:** `2027-01-27-130000-ai-analysis-run-lineage` builds two partial indexes on `ai_agent_runs` without `CONCURRENTLY` and holds an exclusive lock on that table for the whole file. On a large `ai_agent_runs` table, upgrade at a quiet time.
+- **Rows rewritten:** `2027-01-24-230000-vulnerabilities-severity-lowercase` lowercases `severity` on the CVE catalog in one `UPDATE` and logs the row count. `2027-01-24-200000-portal-directory-deprovisioning` marks already-disabled portal users as disabled by the MSP.
+- **Constraint validation scans** (writes continue): the `remote_sessions` end-reason CHECK and four CHECKs on `device_hardware`.
+- **Short locks under a 5-second lock timeout** on `device_disks` and `partners`. If a long transaction holds a conflicting lock, the migration fails, the API exits, and the file runs cleanly on the next start.
+- **New tables** `portal_scim_tokens`, `portal_directory_runs`, `portal_directory_actions` and `partner_billing_fraud_flags` enable and force row-level security in the file that creates them.
+- **Other additions** are nullable columns, columns with a constant default, CHECK changes and one enum value (`config_feature_type` gains `wake_on_lan`, which a rollback cannot remove). `partners.document_page_size` becomes nullable with no default.
+- **Rolling back.** Not tested. A v0.129.0 API on the upgraded database fails MSP portal-user disable and reactivate. Rolling forward is the supported path; restore the pre-upgrade backup if you must go back.
+
+#### Known gaps
+
+Not verified on real hardware or accounts before this release:
+
+- **macOS:** the Apple Silicon upgrade-in-place leg (Intel passed with no permission prompt); remote desktop double-click; Breeze Assist labels in Portuguese; the HiDPI half of mid-session resolution changes; the helper's self-restart on a stale Screen Recording grant. The Local Network prompt on update is still open.
+- **Windows:** agent self-uninstall, sign-in screen capture, the YARA rule-cache exclusion, OneDrive placeholder files with a Microsoft account, and the agent half of several remote desktop and Breeze Viewer fixes. Viewer clipboard passed most cases; one case is intermittent.
+- **Hardware vendors:** the HP, Lenovo and Surface observe steps.
+- **Linux:** Wayland capture (still unsupported) and read-only root filesystems.
+- **Built-in H.264 encoder fallback** ([#11639](https://github.com/LanternOps/breeze/issues/11639)): a fix landed; picture quality after a burst on a static screen is unconfirmed.
+- **External accounts:** Entra SCIM, directory deprovisioning against live Entra or Google directories, Zammad import against a live instance, TD SYNNEX price-file staleness and Microsoft 365 Admin actions. Start with a dry run and a test user.
+- **Portal Sign in with Google** ships switched off.
+- **The [PostgreSQL 16 to 18](#postgresql-16-to-18) runbook** was not run on a real self-hosted volume. Rehearse it on a copy first.
+
+See the [v0.130.0 release notes](https://github.com/LanternOps/breeze/releases/tag/v0.130.0) for the full list of changes.
 
 ### v0.128.0 — customer portal sign-up options, remote access tool alerts, Wisp check-ins, partner-wide installers
 
