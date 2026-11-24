@@ -458,11 +458,14 @@ func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
 // conflict with the WebRTC session's capture pipeline (destroying shared global
 // C state on Close()).
 //
-// The frame is taken by the session's capture loop, on its own thread, between
-// frames (#12624): calling the capturer from this goroutine raced the loop's
-// held DXGI frame and tore the device down under the encoder. Only a
-// LatestFrameProvider (macOS SCStream), whose CaptureLatest reads the frame
-// the stream already has, is still read here directly.
+// While the capture loop runs, the frame is taken by the loop, on its own
+// thread, between frames (#12624): calling the capturer from this goroutine
+// raced the loop's held DXGI frame and tore the device down under the
+// encoder. Before the loop has started (peer still connecting) the frame is
+// captured here, with the loop's start held off until it is done (see
+// session_screenshot.go). A LatestFrameProvider (macOS SCStream), whose
+// CaptureLatest reads the frame the stream already has, is always read here
+// directly.
 //
 // Returns ErrNoActiveSession if no session is currently streaming. Any other
 // error means a session is live but did not serve the frame.

@@ -50,9 +50,10 @@ type heldFrameCapturer struct {
 	gpu       atomic.Bool  // CaptureTexture delivers frames (else: idle screen)
 	panicNow  atomic.Bool  // next Capture() panics (models a capture-loop crash)
 
-	// gate, when set, makes Capture() report entry on entered and then wait
-	// until gate is closed.
+	// gate, when set, makes the first Capture() report entry on entered and
+	// then wait until gate is closed. Later calls pass straight through.
 	gate, entered chan struct{}
+	gateUsed      atomic.Bool
 }
 
 func newHeldFrameCapturer(tight, gpu bool) *heldFrameCapturer {
@@ -67,7 +68,7 @@ func (c *heldFrameCapturer) Capture() (*image.RGBA, error) {
 	if gid := c.loopGID.Load(); gid != 0 && goroutineID() != gid {
 		c.offThread.Add(1)
 	}
-	if c.gate != nil {
+	if c.gate != nil && c.gateUsed.CompareAndSwap(false, true) {
 		c.entered <- struct{}{}
 		<-c.gate
 	}
