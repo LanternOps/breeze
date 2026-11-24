@@ -472,10 +472,11 @@ export function createMicrosoftGraphClient(
   }
 
   /**
-   * The token fallback (#12085). Runs only after Graph answered the
-   * appRoleAssignments read with a plain 403 (an authorization denial, i.e. no
-   * Application.Read.All) — never on a timeout, 429, 5xx, 401, 404, license
-   * 403, or malformed response, which stay "unavailable".
+   * The token roles (#12085). Runs only after a plain 403 (an authorization
+   * denial, i.e. no Application.Read.All) on the appRoleAssignments read (the
+   * token fallback) or on the first resource lookup (input to the manifest-id
+   * cross-check) — never on a timeout, 429, 5xx, 401, 404, license 403, or
+   * malformed response, which stay "unavailable".
    */
   function tokenRoles(tenantId: string, accessToken: OpaqueAccessToken):
   | { graphTokenRoles: readonly string[] }

@@ -43,8 +43,7 @@ type ConnectionStatus = (typeof STATUSES)[number];
 // granting it by hand is itself unexpected drift). The executor falls back to
 // its token and the manifest's fixed role ids, but when those cannot verify the
 // grants a tenant reports `grant_reconciliation_unavailable` here too (#12085)
-// and it needs
-// its own explanation rather than the generic `unknown` copy.
+// and it needs its own explanation rather than the generic `unknown` copy.
 const STABLE_ERROR_CODES = [
   "consent_expired",
   "consent_state_mismatch",
