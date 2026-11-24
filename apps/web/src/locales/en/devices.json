@@ -1046,11 +1046,10 @@
     "refresh": "Refresh",
     "from": "From:",
     "linkedPolicy": "Linked policy:",
-    "inheritedFrom": "Inherited from {{name}}",
+    "inheritedFrom": "Based on {{name}}",
     "notEnforced": "Not enforced",
     "usingBreezeDefaults": "— using Breeze Defaults",
-    "inheritanceChain": "Inheritance Chain",
-    "policiesAreResolvedUsingClosestWins": "Policies are resolved using closest-wins priority. More specific assignments (device level) override broader ones (organization level).",
+    "inheritanceChain": "Precedence",
     "priority": "Priority",
     "level": "Level",
     "policy2": "Policy",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Extra destinations while isolated",
       "invalid": "This policy’s containment settings are not valid, so isolation uses the fixed defaults with no extra destinations."
     },
-    "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
-    "featureOverriddenBy": "Overridden by {{policy}}"
+    "featureOverriddenBy": "Overridden by {{policy}}",
+    "viaLevel": "via {{level}}",
+    "managedByYourMsp": "Managed by your MSP",
+    "precedenceLegend": "Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.",
+    "lostClause": "Replaced for {{features}} by {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "it is set at a more specific level",
+      "lower_priority_number": "same level, lower priority number",
+      "assigned_earlier": "same level and priority, assigned earlier"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "No groups match this filter.",
     "managedByPartner": "Managed by your service provider. Membership rules are not shown; you see the devices from your organization.",
     "partnerDynamicType": "Dynamic · All orgs",
-    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments."
+    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments.",
+    "policyRefusedForGroup": "Nothing was applied. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Failed to fetch hardware inventory",
@@ -1429,6 +1437,8 @@
   "deviceInfoTab": {
     "updateStuck": "Agent update to {{target}} appears stuck: {{attempts}} attempts since {{since}} and the device is still on its old version. The updater retries on every heartbeat; check the agent logs, or the device itself if it is shipping none.",
     "updateOfferWithheld": "Update offers are withheld from this device (since {{since}}): its agent build cannot be confirmed to accept the edition this server serves, so it stays on its current version. Recover it with an installer of the served edition or an agent release that reports its edition.",
+    "updateOfferWithheldOs": "Agent updates are on hold for this device (since {{since}}): its macOS version is below the minimum the current agent release requires, so it stays on its installed agent version. Upgrade macOS to resume agent updates.",
+    "updateOfferWithheldOsUnknown": "Agent updates are on hold for this device (since {{since}}): its macOS version could not be determined, and the current agent release requires a minimum macOS version, so it stays on its installed agent version until it reports its macOS version.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
       "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
@@ -1870,6 +1880,8 @@
     "updateStuck": "Update stuck",
     "updateStuckTooltip": "This device has been retrying its agent update to {{target}} for over an hour without converging.",
     "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
+    "updateWithheldTooltipOs": "Updates are on hold because this device's macOS version is below the minimum the current agent release requires.",
+    "updateWithheldTooltipOsUnknown": "Updates are on hold because this device's macOS version could not be determined and the current agent release requires a minimum macOS version.",
     "helperNotInstalled": "Not installed",
     "helperUnavailable": "Assist unavailable",
     "helperInstallIssueTooltip": {
@@ -3245,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Move to another organization",
-    "description": "Moves {{hostname}} out of {{orgName}}. Its history, tickets and policies move with it, and the agent reconnects under the new organization.",
+    "description": "Moves {{hostname}} out of {{orgName}}. Its history and tickets move with it, and the agent reconnects under the new organization.",
     "targetOrgLabel": "Target organization",
     "targetOrgPlaceholder": "Choose an organization",
     "targetSiteLabel": "Target site",
@@ -3257,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} unbilled time entries and {{parts}} unbilled parts keep their original currency after the move.",
     "currencyMismatchAccept": "I understand — move the device and keep those rows in their original currency",
     "currencyMismatchNoPermission": "Accepting this needs invoice write permission. Ask a billing administrator to bill or clear the open work first.",
+    "policyAssignmentsHeading": "Configuration policies removed from this device",
+    "policyAssignmentsDetail": "These policies are assigned directly to this device and cannot apply in the new organization. The move removes the assignments. The policies themselves are not changed.",
     "stepUpHeading": "Confirm it's you",
     "stepUpIntro": "Moving a device between organizations requires a second factor.",
     "stepUpCodeLabel": "Authenticator code",
@@ -5016,7 +5030,8 @@
       "noOpenCategories": "Nothing can run with this choice. BIOS and firmware are all that is available here: choose Reboot when finished.",
       "decommissioned": "This device is decommissioned, so nothing can be sent to it.",
       "cancelledAtClaim": "The run was cancelled before it reached the device. Try again."
-    }
+    },
+    "observeQueued": "Read-only vendor check started on {{hostname}}. Nothing is installed."
   },
   "vendorUpdates": {
     "title": "Vendor updates",
@@ -5101,7 +5116,16 @@
       "byUnknown": "Unknown",
       "range": "{{from}}-{{to}} of {{total}}",
       "previousPage": "Previous",
-      "nextPage": "Next"
+      "nextPage": "Next",
+      "observed": "Observed",
+      "observedTools": "Tools found: {{tools}}",
+      "observedNoTools": "No vendor tools found",
+      "observedVerdict": {
+        "observed": "{{vendor}}: read-only check finished",
+        "observedWithErrors": "{{vendor}}: read-only check finished with some reads failing",
+        "platformUnsupported": "{{vendor}}: this model is not supported by the vendor's business tools",
+        "invalid": "{{vendor}}: the check result could not be read"
+      }
     }
   },
   "reinstalledBadge": {

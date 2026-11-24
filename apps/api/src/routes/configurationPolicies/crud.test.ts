@@ -11,6 +11,8 @@ const {
   assignPolicyMock,
   dbSelectMock,
   listEligibleParentPoliciesMock,
+  loadAppliesToSummariesMock,
+  readablePolicyIdsMock,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
   createConfigPolicyMock: vi.fn(),
@@ -20,6 +22,8 @@ const {
   assignPolicyMock: vi.fn(),
   dbSelectMock: vi.fn(),
   listEligibleParentPoliciesMock: vi.fn(),
+  loadAppliesToSummariesMock: vi.fn(),
+  readablePolicyIdsMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -35,8 +39,15 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     deleteConfigPolicy: deleteConfigPolicyMock,
     assignPolicy: assignPolicyMock,
     listEligibleParentPolicies: listEligibleParentPoliciesMock,
+    readablePolicyIds: readablePolicyIdsMock,
   };
 });
+
+// The applies-to read model has its own unit + integration suites; here only
+// the route's wiring is under test (which ids it asks for, where it merges).
+vi.mock('../../services/configPolicyAppliesTo', () => ({
+  loadAppliesToSummaries: loadAppliesToSummariesMock,
+}));
 
 // crud.ts uses db.select only for the system-scope org-existence check. The
 // real db/schema module loads fine (importOriginal of the service needs its
@@ -91,6 +102,7 @@ import {
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
+const EMPTY_APPLIES_TO = { assignmentCount: 0, allOrganizations: false, targets: [], childPolicyCount: 0 };
 
 function makeAuth(overrides: Record<string, unknown> = {}): any {
   return {
@@ -135,6 +147,9 @@ describe('configurationPolicies CRUD routes', () => {
     assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
     deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
     listEligibleParentPoliciesMock.mockResolvedValue([]);
+    readablePolicyIdsMock.mockImplementation(async (_auth: unknown, ids: readonly string[]) => [...ids]);
+    loadAppliesToSummariesMock.mockImplementation(async (_auth: unknown, ids: readonly string[]) =>
+      new Map(ids.map((id) => [id, { ...EMPTY_APPLIES_TO }])));
     authOverride = null;
     mockOrgExists(true); // default: system-scope org-existence check passes
     app = new Hono();
@@ -223,6 +238,52 @@ describe('configurationPolicies CRUD routes', () => {
       expect(json.data).toHaveLength(1);
     });
 
+    it('GET / merges appliesTo into every row', async () => {
+      const OTHER_ID = '33333333-3333-3333-3333-333333333333';
+      listConfigPoliciesMock.mockResolvedValue({
+        data: [
+          { id: POLICY_ID, name: 'A', status: 'active', hasPartnerWideAssignment: false },
+          { id: OTHER_ID, name: 'B', status: 'inactive', hasPartnerWideAssignment: true },
+        ],
+        pagination: { page: 1, limit: 25, total: 2 },
+      });
+      const applied = {
+        assignmentCount: 2,
+        allOrganizations: true,
+        targets: [{ assignmentId: 'asg-1', level: 'partner', targetId: PARTNER_ID, name: null, roleFilter: null, osFilter: null }],
+        childPolicyCount: 0,
+      };
+      loadAppliesToSummariesMock.mockResolvedValue(new Map([
+        [POLICY_ID, applied],
+        [OTHER_ID, { ...EMPTY_APPLIES_TO, childPolicyCount: 3 }],
+      ]));
+
+      const res = await app.request('/');
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data[0]).toMatchObject({ id: POLICY_ID, appliesTo: applied });
+      expect(json.data[1]).toMatchObject({ id: OTHER_ID, appliesTo: { ...EMPTY_APPLIES_TO, childPolicyCount: 3 } });
+      // Additive: the existing field stays for older web builds.
+      expect(json.data[1].hasPartnerWideAssignment).toBe(true);
+      expect(json.pagination).toEqual({ page: 1, limit: 25, total: 2 });
+    });
+
+    it("GET / asks for the page's ids only", async () => {
+      const OTHER_ID = '33333333-3333-3333-3333-333333333333';
+      listConfigPoliciesMock.mockResolvedValue({
+        data: [{ id: POLICY_ID, name: 'A' }, { id: OTHER_ID, name: 'B' }],
+        pagination: { page: 2, limit: 2, total: 9 },
+      });
+
+      const res = await app.request('/?page=2&limit=2');
+      expect(res.status).toBe(200);
+      expect(loadAppliesToSummariesMock).toHaveBeenCalledTimes(1);
+      expect(loadAppliesToSummariesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: ORG_ID }),
+        [POLICY_ID, OTHER_ID],
+      );
+    });
+
     it('passes pagination parameters', async () => {
       listConfigPoliciesMock.mockResolvedValue({ data: [], total: 0, page: 2, limit: 10 });
 
@@ -264,6 +325,28 @@ describe('configurationPolicies CRUD routes', () => {
   // ============================================
   // POST / — create
   // ============================================
+
+  describe('GET / list filters (W03a)', () => {
+    beforeEach(() => {
+      listConfigPoliciesMock.mockResolvedValue({ data: [], pagination: { page: 1, limit: 25, total: 0 } });
+    });
+
+    it('passes appliesToOrgId and notApplied to the service, and orgId unchanged', async () => {
+      const res = await app.request(`/?appliesToOrgId=${ORG_ID}&notApplied=true&orgId=${ORG_ID}`);
+      expect(res.status).toBe(200);
+      expect(listConfigPoliciesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ appliesToOrgId: ORG_ID, notApplied: true, orgId: ORG_ID }),
+        expect.anything(),
+      );
+    });
+
+    it('appliesToOrgId refuses an org the caller cannot access', async () => {
+      const res = await app.request('/?appliesToOrgId=55555555-5555-4555-8555-555555555555');
+      expect(res.status).toBe(403);
+      expect(listConfigPoliciesMock).not.toHaveBeenCalled();
+    });
+  });
 
   describe('POST /', () => {
     it('creates a policy with organization scope (uses auth.orgId)', async () => {
@@ -638,6 +721,46 @@ describe('configurationPolicies CRUD routes', () => {
       const res = await app.request(`/${POLICY_ID}`);
       expect(res.status).toBe(404);
     });
+
+    it('GET /:id carries appliesTo', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'My Policy', status: 'active', featureLinks: [] });
+      const applied = {
+        assignmentCount: 4,
+        allOrganizations: false,
+        targets: [{ assignmentId: 'asg-1', level: 'site', targetId: 'site-1', name: 'Main office', roleFilter: null, osFilter: ['windows'] }],
+        childPolicyCount: 1,
+      };
+      loadAppliesToSummariesMock.mockResolvedValue(new Map([[POLICY_ID, applied]]));
+
+      const res = await app.request(`/${POLICY_ID}`);
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toMatchObject({ id: POLICY_ID, name: 'My Policy', appliesTo: applied });
+      expect(loadAppliesToSummariesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }), [POLICY_ID]);
+    });
+
+    it('GET /:id reads with the read predicate and returns access', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Own', orgId: ORG_ID, status: 'active' });
+      const res = await app.request(`/${POLICY_ID}`);
+      expect(res.status).toBe(200);
+      expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything(), { access: 'read' });
+      expect((await res.json()).access).toEqual({ canEdit: true, reason: null });
+    });
+
+    it('GET /:id explains an MSP-managed policy is read-only to an org user', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Baseline', orgId: null, partnerId: PARTNER_ID, status: 'active' });
+      const res = await app.request(`/${POLICY_ID}`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).access).toEqual({ canEdit: false, reason: 'msp_managed_org_user' });
+    });
+
+    it('GET /:id returns 404 without loading a summary when the policy is not visible', async () => {
+      getConfigPolicyMock.mockResolvedValue(null);
+
+      const res = await app.request(`/${POLICY_ID}`);
+      expect(res.status).toBe(404);
+      expect(loadAppliesToSummariesMock).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================
@@ -801,6 +924,33 @@ describe('configurationPolicies CRUD routes', () => {
         expect.anything(),
         expect.objectContaining({ details: expect.objectContaining({ parentPolicyId: PARENT_ID }) }),
       );
+    });
+
+    it('POST refuses a parent the caller may not read with the same 400, before any parent gate or write', async () => {
+      readablePolicyIdsMock.mockResolvedValue([]);
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'INVALID_PARENT_POLICY' });
+      expect(readablePolicyIdsMock).toHaveBeenCalledWith(expect.anything(), [PARENT_ID]);
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+      // The parent gates read the parent's links; none of them ran.
+      expect(dbSelectMock).not.toHaveBeenCalled();
+    });
+
+    it('PATCH reads the current policy through the write-side reader', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P', orgId: ORG_ID, status: 'inactive', featureLinks: [] });
+      updateConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'P', orgId: ORG_ID, status: 'active' });
+      const res = await app.request(`/${POLICY_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      });
+      expect(res.status).toBe(200);
+      expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything());
     });
 
     it('POST maps InvalidParentPolicyError to 400 INVALID_PARENT_POLICY', async () => {

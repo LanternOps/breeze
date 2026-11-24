@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
@@ -129,6 +129,12 @@ export const devices = pgTable('devices', {
   // agent's heartbeat instead (#7067).
   lastLogAt: timestamp('last_log_at', { withTimezone: true }),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
+  // #8318 wave T2: when the CURRENT install enrolled. enrolled_at is the row's
+  // first enrollment and never moves; a re-enroll onto this row (the agent
+  // presented the row's own token) sets this. NULL on rows from before the
+  // column (read as enrolled_at). TPM reattach evidence counts only a key
+  // proof made after it (services/deviceReattach/evidence.ts).
+  installEnrolledAt: timestamp('install_enrolled_at', { withTimezone: true }).defaultNow(),
   // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
   // a recovery. recoveredFromSnapshotId is a soft reference to
   // backup_snapshots.id (no FK, like possibleReplacementOfDeviceId above) —
@@ -436,6 +442,14 @@ export const devices = pgTable('devices', {
   // assignment, so no wrong-site suggestion is computed. Cleared by the
   // breeze_devices_site_assignment_confirmation_reset trigger on any site/org change; no expiry.
   siteAssignmentConfirmedAt: timestamp('site_assignment_confirmed_at', { withTimezone: true }),
+  // Learned networks (#12369, spec §6): the last accepted network-attachment report — its install epoch and
+  // sequence, a digest of its normalized content plus WAN address, and when the server last saw it confirmed.
+  // Cleared, with the device's learned_network_devices rows, by the BEFORE UPDATE OF org_id trigger
+  // breeze_learned_networks_device_moved on a cross-org move (2027-01-29-100000-learned-networks.sql).
+  networkAttachmentEpoch: varchar('network_attachment_epoch', { length: 16 }),
+  networkAttachmentSequence: bigint('network_attachment_sequence', { mode: 'number' }),
+  networkAttachmentDigest: varchar('network_attachment_digest', { length: 64 }),
+  networkAttachmentsConfirmedAt: timestamp('network_attachments_confirmed_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
@@ -504,9 +518,26 @@ export const deviceHardware = pgTable('device_hardware', {
   memoryMaxCapacityMb: integer('memory_max_capacity_mb'),
   memorySoldered: boolean('memory_soldered'),
   memoryObservedAt: timestamp('memory_observed_at'),
+  // #8318 T1 (§12.2): the TPM endorsement-key baseline. tpmEkPubSha256 is the
+  // SHA-256 of the EK's SubjectPublicKeyInfo, written ONLY by the attestation
+  // route after a proof of possession, and only as the FIRST baseline: a
+  // different proven EK lands in tpmEkMismatch* for an operator's review and
+  // never replaces it. Never set by the inventory writer, never returned by
+  // generic reads (DEVICE_HARDWARE_READ_COLUMNS). tpmAvailable is what the
+  // hardware report says. Migration 2027-01-28-190000.
+  tpmEkPubSha256: varchar('tpm_ek_pub_sha256', { length: 64 }),
+  tpmAttestedAt: timestamp('tpm_attested_at', { withTimezone: true }),
+  tpmEkMismatchSha256: varchar('tpm_ek_mismatch_sha256', { length: 64 }),
+  tpmEkMismatchAt: timestamp('tpm_ek_mismatch_at', { withTimezone: true }),
+  tpmAvailable: boolean('tpm_available'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
-});
+}, (table) => [
+  check('device_hardware_tpm_ek_pub_sha256_chk', sql`${table.tpmEkPubSha256} IS NULL OR ${table.tpmEkPubSha256} ~ '^[0-9a-f]{64}$'`),
+  check('device_hardware_tpm_baseline_shape_chk', sql`(${table.tpmEkPubSha256} IS NULL) = (${table.tpmAttestedAt} IS NULL)`),
+  check('device_hardware_tpm_ek_mismatch_sha256_chk', sql`${table.tpmEkMismatchSha256} IS NULL OR ${table.tpmEkMismatchSha256} ~ '^[0-9a-f]{64}$'`),
+  check('device_hardware_tpm_ek_mismatch_shape_chk', sql`(${table.tpmEkMismatchSha256} IS NULL) = (${table.tpmEkMismatchAt} IS NULL) AND (${table.tpmEkMismatchSha256} IS NULL OR ${table.tpmEkPubSha256} IS NOT NULL)`),
+]);
 
 // Resource-specific material fingerprints for reconstruction exports. Deferred
 // database triggers refresh these only when the final durable child state has

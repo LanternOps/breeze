@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "lane": "lenovo",
+  "agentVersion": "0.131.0",
+  "nativeArch": "amd64",
+  "osBuild": "10.0.22631.4460",
+  "smbios": {
+    "manufacturer": "LENOVO",
+    "model": "21K5000AUS",
+    "systemSku": "LENOVO_MT_21K5_BU_Think_FM_ThinkPad T14 Gen 5",
+    "family": "ThinkPad T14 Gen 5",
+    "baseboardProduct": "21K5000AUS"
+  },
+  "bios": { "version": "N47ET21W (1.10 )", "releaseDate": "2026-05-02" },
+  "chassis": "laptop",
+  "power": { "acLine": "unknown", "batteryFlag": null, "batteryPercent": null },
+  "bitlocker": { "protection": "suspended", "pcr7Bound": null, "activeProtectorEscrowed": false },
+  "pendingReboot": null,
+  "tools": [
+    {
+      "name": "lenovo_system_update",
+      "version": "5.08.03.59",
+      "publisher": "Lenovo",
+      "signatureValid": true,
+      "location": "program_files"
+    }
+  ],
+  "conflicts": [{ "name": "lenovo_commercial_vantage", "version": null }],
+  "errors": [],
+  "truncated": false,
+  "lenovo": {
+    "machineType": "21K5",
+    "family": "thinkpad",
+    "catalog": {
+      "status": 200,
+      "windows": "11",
+      "packageCount": 16,
+      "categories": [
+        { "name": "Software and Utilities", "count": 7 },
+        { "name": "Camera and Card Reader", "count": 7 },
+        { "name": "BIOS UEFI", "count": 1 },
+        { "name": "Product Firmware", "count": 1 }
+      ],
+      "biosListed": true,
+      "truncated": false
+    }
+  }
+}

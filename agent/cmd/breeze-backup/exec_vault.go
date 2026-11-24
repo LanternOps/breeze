@@ -186,7 +186,7 @@ func emitVaultAutoSyncResult(conn *ipc.Conn, snapshotID string, syncResult *back
 	// errors.Join(<one entry per failed file>), so a vault sync over the same
 	// 123k-file set that produced the original 64 MB result yields a
 	// multi-megabyte Stderr and the identical "message too large" drop.
-	_ = sendBackupResult(conn, result.CommandID, result)
+	_ = sendBackupResult(conn, result.CommandID, "vault_sync", result)
 }
 
 // autoSyncToVault parses the backup_run result to extract the snapshot ID and

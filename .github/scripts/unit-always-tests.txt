@@ -162,6 +162,7 @@ apps/api/src/__tests__/integration/topology-foundation.integration.test.ts
 apps/api/src/__tests__/integration/topology-rollout.integration.test.ts
 apps/api/src/__tests__/integration/topologyExclusionsRls.integration.test.ts
 apps/api/src/__tests__/integration/topologyExecutePermission.integration.test.ts
+apps/api/src/__tests__/integration/tpmAttestation.integration.test.ts
 apps/api/src/__tests__/integration/webhookRetryBudget.integration.test.ts
 apps/api/src/__tests__/integration/wispConcernsReadinessSubjectMigration.integration.test.ts
 apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts
@@ -184,6 +185,7 @@ apps/api/src/__tests__/processLocalCaches.contract.test.ts
 apps/api/src/__tests__/rolePermissionsReaders.contract.test.ts
 apps/api/src/__tests__/singleTableCorrelatedSubquery.contract.test.ts
 apps/api/src/__tests__/site-ceiling-write-coverage.test.ts
+apps/api/src/__tests__/tpmBaselineWriters.contract.test.ts
 apps/api/src/__tests__/unassignedPoolContracts.test.ts
 apps/api/src/__tests__/unassignedPoolVisibility.contract.test.ts
 apps/api/src/__tests__/zodUnitLength.contract.test.ts
@@ -215,6 +217,7 @@ apps/api/src/config/extensionBundledDependencies.test.ts
 apps/api/src/config/monitoringPrometheusScrapeConfig.test.ts
 apps/api/src/config/perfWorkflowContract.test.ts
 apps/api/src/config/portalDevE2eWorkflowContract.test.ts
+apps/api/src/config/postgresDataDirCompose.test.ts
 apps/api/src/config/productionReadinessWiring.test.ts
 apps/api/src/config/proxyTrustCompose.test.ts
 apps/api/src/config/releaseBuildReuse.test.ts
@@ -350,6 +353,7 @@ apps/api/src/routes/agentWs.rejectionFrame.test.ts
 apps/api/src/routes/agents/agentRoleCoverage.test.ts
 apps/api/src/routes/agents/download.test.ts
 apps/api/src/routes/agents/isolationVerify.test.ts
+apps/api/src/routes/agents/logs.test.ts
 apps/api/src/routes/agents/schemas.commandResult.test.ts
 apps/api/src/routes/agents/token.conflictCodes.test.ts
 apps/api/src/routes/agents/yaraRuleSets.test.ts
@@ -360,6 +364,8 @@ apps/api/src/routes/alerts/correlations.ephemeralOrg.contract.test.ts
 apps/api/src/routes/analytics.test.ts
 apps/api/src/routes/autopay/mount.test.ts
 apps/api/src/routes/configurationPolicies/index.test.ts
+apps/api/src/routes/configurationPolicies/precedence.test.ts
+apps/api/src/routes/configurationPolicies/reach.test.ts
 apps/api/src/routes/connectedApps.authorityBoundary.test.ts
 apps/api/src/routes/contracts/adopt.test.ts
 apps/api/src/routes/contracts/deliverables.test.ts
@@ -372,6 +378,7 @@ apps/api/src/routes/devices/manual.test.ts
 apps/api/src/routes/devices/moveOrg.coverage.test.ts
 apps/api/src/routes/devices/network.test.ts
 apps/api/src/routes/endpointMessages/conversations.test.ts
+apps/api/src/routes/flows.drafts.test.ts
 apps/api/src/routes/invoices/evidence.test.ts
 apps/api/src/routes/mcpServer.deviceProjection.test.ts
 apps/api/src/routes/mobile.resolveCas.test.ts
@@ -405,6 +412,7 @@ apps/api/src/services/accounting/neutralCore.guard.test.ts
 apps/api/src/services/actionIntents/secretBearingTools.contract.test.ts
 apps/api/src/services/agentEditionCompat.test.ts
 apps/api/src/services/agentOrgRateLimit.test.ts
+apps/api/src/services/agentOsFloor.test.ts
 apps/api/src/services/aiAgent.authz.test.ts
 apps/api/src/services/aiAgentDiagnosisPrompt.test.ts
 apps/api/src/services/aiAgentSdk.inlineReleaseOrdering.test.ts
@@ -520,6 +528,7 @@ apps/api/src/services/connectionHealth/sources/fixLinks.contract.test.ts
 apps/api/src/services/connectionHealth/sources/webhook.test.ts
 apps/api/src/services/controlPlaneBlockHealth.test.ts
 apps/api/src/services/corsPolicy.test.ts
+apps/api/src/services/deviceHardwareColumns.test.ts
 apps/api/src/services/deviceInstallBoundary/orgMoveParity.test.ts
 apps/api/src/services/deviceNoteWriteCallers.contract.test.ts
 apps/api/src/services/diagnosticAccess/classification.test.ts
@@ -549,6 +558,7 @@ apps/api/src/services/exchangeRateBoundary.test.ts
 apps/api/src/services/expoPush.test.ts
 apps/api/src/services/featureConfigResolver.test.ts
 apps/api/src/services/featureLinkReaders.contract.test.ts
+apps/api/src/services/flows/conversion/convertAutomation.golden.test.ts
 apps/api/src/services/flows/flowIntentTerminalWriters.contract.test.ts
 apps/api/src/services/ianaEnterprise.test.ts
 apps/api/src/services/inboundEmail/commentNotificationPortalHref.test.ts
@@ -556,6 +566,7 @@ apps/api/src/services/incidentContainmentResults.registration.test.ts
 apps/api/src/services/invoiceTerms.test.ts
 apps/api/src/services/ipClassifyOffline.test.ts
 apps/api/src/services/laborAmount.routing.test.ts
+apps/api/src/services/learnedNetworks/scanCommand.contract.test.ts
 apps/api/src/services/llm/llmEgressProxy.test.ts
 apps/api/src/services/llm/providerFidelityHarness.test.ts
 apps/api/src/services/llm/sdkPermissionMode.contract.test.ts
@@ -569,6 +580,8 @@ apps/api/src/services/networkIsolation/lifecycleRefusals.test.ts
 apps/api/src/services/networkIsolation/networkIsolation.issuers.contract.test.ts
 apps/api/src/services/networkIsolation/releaseToken.test.ts
 apps/api/src/services/networkIsolation/stateMachine.test.ts
+apps/api/src/services/oemUpdates/history.test.ts
+apps/api/src/services/oemUpdates/observe.test.ts
 apps/api/src/services/oemUpdates/toolManifest.test.ts
 apps/api/src/services/offlineAlertEffects.test.ts
 apps/api/src/services/orgMergeCustomExecutors.test.ts
@@ -624,6 +637,7 @@ apps/api/src/services/toolSources/openapiSpec.test.ts
 apps/api/src/services/topology/aiPresenceIsolation.test.ts
 apps/api/src/services/topology/diagnosticPlanner.test.ts
 apps/api/src/services/topology/presenceNoAutoSiteMove.test.ts
+apps/api/src/services/tpmAttestation/makeCredential.test.ts
 apps/api/src/services/userSession.callers.test.ts
 apps/api/src/services/versionInfo.test.ts
 apps/api/src/services/versionMismatch.test.ts
@@ -695,6 +709,7 @@ apps/portal/src/styles/tokenPresence.test.ts
 apps/web/src/components/ai-risk/tierConfig.systemCleanup.test.ts
 apps/web/src/components/aiOperator/OperatorWorkspace.test.tsx
 apps/web/src/components/auth/signupPrices.guard.test.ts
+apps/web/src/components/automations/AutomationsRedirect.imports.test.ts
 apps/web/src/components/backup/backupDashboardHelpers.test.ts
 apps/web/src/components/billing/InvoiceDocument.parity.test.tsx
 apps/web/src/components/billing/quotes/QuoteDocument.parity.test.tsx
@@ -811,8 +826,11 @@ packages/shared/src/utils/scriptSecurityPatterns.test.ts
 packages/shared/src/utils/yaraBundle.test.ts
 packages/shared/src/utils/yaraIocImport.test.ts
 packages/shared/src/validators/backupDestinationPrefix.test.ts
+packages/shared/src/validators/hpWarrantyObserve.test.ts
+packages/shared/src/validators/oemObserve.test.ts
 packages/shared/src/validators/oemUpdates.test.ts
 packages/shared/src/validators/queryParams.test.ts
 packages/shared/src/validators/softwareDownloadPolicy.parity.test.ts
+packages/shared/src/validators/wakeStatus.observation.test.ts
 packages/shared/src/zodJitlessEntry.test.ts
 packages/shared/src/zodJitlessShim.test.ts

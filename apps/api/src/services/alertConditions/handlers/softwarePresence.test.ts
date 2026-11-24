@@ -19,7 +19,9 @@ vi.mock('../../../db/schema', () => ({
   },
 }));
 
+import { interpolateAlertTemplate } from '@breeze/shared';
 import { softwarePresenceHandler } from './softwarePresence';
+import { softwarePresenceKind } from '../../monitors/kinds/softwarePresence';
 
 const DEVICE_ID = 'device-1';
 
@@ -191,6 +193,42 @@ describe('softwarePresenceHandler', () => {
           'cond'
         )
       ).toEqual([]);
+    });
+  });
+  // The kind templates are '{{name}} on {{deviceName}}' and
+  // '{{ruleName}}: {{name}} on {{deviceName}}'. The handler must hand {{name}}
+  // back on every branch, or the alert title stays literal "{{name}} on PC-1".
+  describe('template values for the kind templates', () => {
+    it.each([
+      ['not_installed', [], undefined],
+      ['installed', [{ name: 'TeamViewer', version: '15.0' }], undefined],
+      ['version_below', [{ name: 'TeamViewer', version: '14.0' }], '15.0'],
+      ['version_below', [], '15.0'],
+      ['version_below', [{ name: 'TeamViewer', version: 'abc' }], '15.0'],
+    ] as const)('%s (rows: %j) supplies name for {{name}}', async (presence, rows, version) => {
+      setRows([...rows]);
+
+      const result = await softwarePresenceHandler.evaluate(
+        { type: 'software_presence', name: 'TeamViewer', presence, ...(version ? { version } : {}) },
+        DEVICE_ID
+      );
+
+      expect(result.templateValues).toEqual({ name: 'TeamViewer' });
+    });
+
+    it('renders the kind title and message with no {{ left', async () => {
+      setRows([]);
+
+      const result = await softwarePresenceHandler.evaluate(
+        { type: 'software_presence', name: 'TeamViewer', presence: 'not_installed' },
+        DEVICE_ID
+      );
+      const ctx = { ...result.templateValues, deviceName: 'PC-1', ruleName: 'TeamViewer missing' };
+
+      expect(interpolateAlertTemplate(softwarePresenceKind.titleTemplate, ctx)).toBe('TeamViewer on PC-1');
+      expect(interpolateAlertTemplate(softwarePresenceKind.messageTemplate, ctx)).toBe(
+        'TeamViewer missing: TeamViewer on PC-1'
+      );
     });
   });
 });

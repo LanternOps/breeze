@@ -2,8 +2,6 @@ package oemupdates
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -37,39 +35,6 @@ func dellPlan(t *testing.T, l *dellLane, cats, blocked []string) FilterPlan {
 	}
 	plan.WorkDir = t.TempDir()
 	return plan
-}
-
-func TestDellArgv(t *testing.T) {
-	l := testDellLane(t, nil)
-	plan, err := l.Filter([]string{CategoryDriver, CategoryBIOS}, []string{"AB12C", "CD34E"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.WorkDir = `C:\ProgramData\Breeze Agent\oemupdates\work`
-	got := l.argv(plan)
-	want := []string{
-		"/applyUpdates", "-silent", "-reboot=disable", "-autoSuspendBitLocker=enable",
-		`-outputLog=C:\ProgramData\Breeze Agent\oemupdates\work` + string(filepath.Separator) + "dcu-apply.log",
-		"-updateType=bios,driver",
-		"-localblockedswb=AB12C,CD34E",
-	}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("argv =\n%q\nwant\n%q", got, want)
-	}
-	for _, a := range got {
-		if strings.HasPrefix(a, "-outputLog=") && !strings.Contains(a, "Breeze Agent") {
-			t.Fatal("a path with spaces was split")
-		}
-	}
-	none := l.argv(FilterPlan{Categories: []string{CategoryApplication}, WorkDir: `C:\w`})
-	for _, a := range none {
-		if strings.HasPrefix(a, "-localblockedswb") {
-			t.Fatal("an empty blocklist must not be passed")
-		}
-		if strings.HasPrefix(a, "/configure") || strings.HasPrefix(a, "-reboot=enable") {
-			t.Fatalf("unexpected argument %q", a)
-		}
-	}
 }
 
 func TestDellFilterRefusesUnsafeBlockedIDs(t *testing.T) {
@@ -157,112 +122,6 @@ func TestDellGateQuietWhenAbsent(t *testing.T) {
 	}
 }
 
-func applyWithLog(t *testing.T, logBody []byte, code int64) RunResult {
-	t.Helper()
-	l := testDellLane(t, nil)
-	plan := dellPlan(t, l, []string{CategoryBIOS, CategoryFirmware, CategoryDriver, CategoryApplication}, nil)
-	ex := &fakeExec{run: func(ctx context.Context, spec ExecSpec) (ExecResult, error) {
-		if logBody != nil {
-			if err := os.WriteFile(filepath.Join(plan.WorkDir, dellLogName), logBody, 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return ExecResult{ExitCode: code}, nil
-	}}
-	r, err := l.Apply(context.Background(), ToolState{Present: true, Path: dcu64, Version: "5.7.2"}, plan, ex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
-}
-
-func TestDellParsesDocDerivedLog(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("testdata", "dell", "doc-derived", "apply-success.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := applyWithLog(t, body, 1)
-	want := []Item{
-		{Title: "Dell Latitude System BIOS", Category: CategoryBIOS, Version: "1.21.0", Result: ItemInstalled},
-		{Title: "Dell Thunderbolt Controller Firmware", Category: CategoryFirmware, Version: "1.0.4", Result: ItemInstalled},
-		{Title: "Dell Wireless Network Driver", Category: CategoryDriver, Version: "23.40.0.4", Result: ItemInstalled},
-		{Title: "Dell Display Manager", Category: CategoryApplication, Version: "2.3.1", Result: ItemSkipped},
-		{Title: "Realtek Audio Driver", Category: CategoryDriver, Version: "6.0.9", Result: ItemFailed},
-	}
-	if len(r.Items) != len(want) {
-		t.Fatalf("items = %+v", r.Items)
-	}
-	for i := range want {
-		if r.Items[i] != want[i] {
-			t.Errorf("item %d = %+v, want %+v", i, r.Items[i], want[i])
-		}
-	}
-	if r.Outcome != OutcomeSuccessRebootRequired || r.ErrorCode != nil {
-		t.Fatalf("outcome %s errorCode %v", r.Outcome, r.ErrorCode)
-	}
-}
-
-func TestDellNoUpdatesLogHasNoItemsAndNoError(t *testing.T) {
-	body, _ := os.ReadFile(filepath.Join("testdata", "dell", "doc-derived", "apply-no-updates.txt"))
-	r := applyWithLog(t, body, 500)
-	if r.Outcome != OutcomeNoUpdates || len(r.Items) != 0 || r.ErrorCode != nil {
-		t.Fatalf("result = %+v", r)
-	}
-}
-
-func TestDellReportParseFailureDoesNotFailRun(t *testing.T) {
-	r := applyWithLog(t, nil, 0) // the tool wrote no log
-	if r.Outcome != OutcomeSuccess || len(r.Items) != 0 || errCode(r) != "report_unavailable" {
-		t.Fatalf("result = %+v", r)
-	}
-	big := []byte(strings.Repeat("x", maxDellLogBytes+1))
-	if r := applyWithLog(t, big, 0); r.Outcome != OutcomeSuccess || errCode(r) != "report_unavailable" {
-		t.Fatalf("oversize log: %+v", r)
-	}
-}
-
-func TestDellStaleLogIsNotParsed(t *testing.T) {
-	l := testDellLane(t, nil)
-	plan := dellPlan(t, l, []string{CategoryDriver}, nil)
-	stale := "[x] : ZZ99Z: Old Driver - Driver - 1.0 -- Installed\n"
-	_ = os.WriteFile(filepath.Join(plan.WorkDir, dellLogName), []byte(stale), 0o600)
-	r, _ := l.Apply(context.Background(), ToolState{Present: true, Path: dcu64, Version: "5.7.2"}, plan, &fakeExec{})
-	if len(r.Items) != 0 {
-		t.Fatal("a previous run's log was reported as this run's items")
-	}
-}
-
-func TestDellItemsCappedAt200(t *testing.T) {
-	var b strings.Builder
-	for i := 0; i < 260; i++ {
-		b.WriteString("[t] : ")
-		b.WriteString(strings.ToUpper(strings.Repeat(string(rune('A'+i%26)), 2)))
-		b.WriteString(string(rune('0' + i/26%10)))
-		b.WriteString(string(rune('0' + i%10)))
-		b.WriteString("X: Driver - Driver - 1.0 -- Installed\n")
-	}
-	r := applyWithLog(t, []byte(b.String()), 0)
-	if len(r.Items) != maxItems {
-		t.Fatalf("items = %d, want %d", len(r.Items), maxItems)
-	}
-}
-
-func TestDellNonUtf8TitleSanitized(t *testing.T) {
-	line := append([]byte("[t] : AB12C: Bad "), 0xff, 0xfe)
-	line = append(line, []byte("\x1b[31m Title - Driver - 1.0 -- Installed\r\n")...)
-	r := applyWithLog(t, line, 0)
-	if len(r.Items) != 1 {
-		t.Fatalf("items = %+v", r.Items)
-	}
-	title := r.Items[0].Title
-	if hasControl(title) || !strings.Contains(title, "\uFFFD") || !strings.HasPrefix(title, "Bad ") {
-		t.Fatalf("title = %q", title)
-	}
-	if err := (RunResult{Lane: LaneDell, Outcome: OutcomeSuccess, Items: r.Items}).Validate(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestDellInstallerArgs(t *testing.T) {
 	l := testDellLane(t, nil)
 	got := l.InstallArgs(`C:\x\tool.exe`, `C:\x\install.log`)
@@ -311,13 +170,18 @@ func TestRunNowChangesNoToolSettings(t *testing.T) {
 		t.Fatal("no outcome")
 	}
 	calls := f.exec.Calls()
-	if len(calls) != 1 || calls[0].Path != dcu64 || calls[0].Args[0] != "/applyUpdates" {
-		t.Fatalf("calls = %+v, want exactly one /applyUpdates", calls)
+	if len(calls) != 2 || calls[0].Args[0] != "/scan" || calls[1].Args[0] != "/applyUpdates" {
+		t.Fatalf("calls = %+v, want a read-only /scan then one /applyUpdates", calls)
 	}
-	for _, a := range calls[0].Args {
-		for _, banned := range []string{"/configure", "-exportSettings", "-importSettings", "-scheduleManual", "-lockSettings"} {
-			if strings.EqualFold(a, banned) || strings.HasPrefix(strings.ToLower(a), strings.ToLower(banned)) {
-				t.Fatalf("on-demand run changed tool settings with %q", a)
+	for _, c := range calls {
+		if c.Path != dcu64 {
+			t.Fatalf("ran %q", c.Path)
+		}
+		for _, a := range c.Args {
+			for _, banned := range []string{"/configure", "-exportSettings", "-importSettings", "-scheduleManual", "-lockSettings"} {
+				if strings.EqualFold(a, banned) || strings.HasPrefix(strings.ToLower(a), strings.ToLower(banned)) {
+					t.Fatalf("on-demand run changed tool settings with %q", a)
+				}
 			}
 		}
 	}

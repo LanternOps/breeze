@@ -1451,11 +1451,19 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
             role="status"
             className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
           >
-            {t("deviceInfoTab.updateOfferWithheld", {
-              since: info.updateOfferWithheldSince
+            {(() => {
+              const since = info.updateOfferWithheldSince
                 ? new Date(info.updateOfferWithheldSince).toLocaleDateString()
-                : "—",
-            })}
+                : "—";
+              switch (info.updateOfferWithheldReason) {
+                case "os_below_minimum":
+                  return t("deviceInfoTab.updateOfferWithheldOs", { since });
+                case "os_version_unknown":
+                  return t("deviceInfoTab.updateOfferWithheldOsUnknown", { since });
+                default:
+                  return t("deviceInfoTab.updateOfferWithheld", { since });
+              }
+            })()}
           </div>
         ) : null}
         <InfoRow

@@ -22,6 +22,7 @@ vi.mock('@/lib/runAction', async () => {
 });
 
 import WakeStatusPanel from './WakeStatusPanel';
+import { FeatureReadOnlyContext } from './featureEditing';
 
 const row = (over: Record<string, unknown> = {}) => ({
   deviceId: 'dev-1', hostname: 'host-1', osType: 'windows', status: 'offline',
@@ -58,6 +59,32 @@ describe('WakeStatusPanel', () => {
       expect.stringContaining('WakeStatusPanel'), expect.objectContaining({ message: 'status 500' }),
     ));
     consoleError.mockRestore();
+  });
+
+  // Observe-first amendment §2: "Observing (vendor)" with interface and code.
+  it('shows Observing with the vendor, interface and error code, and no values', async () => {
+    load(page([
+      row({
+        deviceId: 'a', hostname: 'host-a', state: 'unproven', reasonCodes: ['vendor_observe_only'], vendor: 'hp',
+        observation: { vendor: 'hp', interface: 'absent', errorCode: '0x8004100E' },
+      }),
+      row({ deviceId: 'b', hostname: 'host-b', vendor: 'lenovo', observation: { vendor: 'lenovo', interface: 'present', errorCode: null } }),
+      row({ deviceId: 'c', hostname: 'host-c', observation: null }),
+      row({ deviceId: 'd', hostname: 'host-d' }),
+    ]));
+    render(<WakeStatusPanel policyId="p1" />);
+    await screen.findByText('host-a');
+    const a = screen.getByTestId('wake-observing-a').textContent ?? '';
+    expect(a).toContain('Observing');
+    expect(a).toContain('HP');
+    expect(a).toContain('interface not present');
+    expect(a).toContain('0x8004100E');
+    const b = screen.getByTestId('wake-observing-b').textContent ?? '';
+    expect(b).toContain('Lenovo');
+    expect(b).toContain('interface present');
+    expect(screen.queryByTestId('wake-observing-c')).toBeNull();
+    expect(screen.queryByTestId('wake-observing-d')).toBeNull();
+    expect(document.body.textContent).toContain('Observing vendor firmware (read only)');
   });
 
   it('says "came online", never "woke"', async () => {
@@ -137,5 +164,26 @@ describe('WakeStatusPanel', () => {
       const urls = m.fetch.mock.calls.map((c) => String(c[0]));
       expect(urls.some((u) => u.includes('state=unproven'))).toBe(true);
     });
+  });
+
+  it('a read-only viewer gets no wake action controls (#12469)', async () => {
+    const rows = [
+      row({ deviceId: 'a', hostname: 'host-a', state: 'unproven', mode: 'verified', show: false, testWakeAllowed: true, consecutiveTimeouts: 3 }),
+    ];
+    load(page(rows));
+    const editable = render(<WakeStatusPanel policyId="p1" />);
+    await screen.findByText('host-a');
+    expect(screen.getByTestId('wake-test-a')).toBeTruthy();
+    expect(screen.getByTestId('wake-allow-a')).toBeTruthy();
+    editable.unmount();
+
+    render(
+      <FeatureReadOnlyContext.Provider value={true}>
+        <WakeStatusPanel policyId="p1" />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    await screen.findByText('host-a');
+    expect(screen.queryByTestId('wake-test-a')).toBeNull();
+    expect(screen.queryByTestId('wake-allow-a')).toBeNull();
   });
 });

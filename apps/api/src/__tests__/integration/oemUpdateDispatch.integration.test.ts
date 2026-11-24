@@ -117,7 +117,9 @@ describe('vendor update seam against real PostgreSQL', () => {
     const [row] = await commandRows(deviceId);
     expect(row!.submittedOrgId).toBe(org.id);
     expect(Math.abs(row!.deliverBy!.getTime() - notAfter.getTime())).toBeLessThan(5000);
-    expect(row!.payload).toMatchObject({ lane: 'dell', categories: ['driver'], tool: null, occurrenceKey: '2027-01' });
+    expect(row!.payload).toMatchObject({ lane: 'dell', categories: ['driver'], occurrenceKey: '2027-01' });
+    // Dell's tool is pinned (W10): the payload names it, so a device without DCU can install it.
+    expect((row!.payload as { tool?: { version?: string } }).tool?.version).toBe('5.7.2');
 
     const status = await statusRow(deviceId);
     expect(status).toMatchObject({
@@ -128,6 +130,37 @@ describe('vendor update seam against real PostgreSQL', () => {
       occurrenceKey: '2027-01',
       returnDeadlineAt: null,
     });
+  });
+
+  // #12266: a Run Now must not use up the night's scheduled attempt, nor erase one.
+  runDb('only a scheduled dispatch records the scheduled attempt; a later Run Now leaves it as it was', async () => {
+    const { org, deviceId } = await seed();
+
+    const scheduled = await dispatchOemUpdateRun(runInput(deviceId, org.id, { trigger: 'scheduled', occurrenceKey: '2027-01' }));
+    expect(scheduled.ok).toBe(true);
+    const afterScheduled = await statusRow(deviceId);
+    expect(afterScheduled!.lastScheduledAttemptAt).toBeInstanceOf(Date);
+    expect(afterScheduled!.lastScheduledAttemptAt!.getTime()).toBe(afterScheduled!.lastAttemptAt!.getTime());
+
+    // Settle it so the seam allows the next run.
+    await withSystemDbAccessContext(() => db.update(deviceCommands)
+      .set({ status: 'completed', completedAt: new Date() })
+      .where(eq(deviceCommands.id, (scheduled as { commandId: string }).commandId)));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const runNow = await dispatchOemUpdateRun(runInput(deviceId, org.id));
+    expect(runNow.ok).toBe(true);
+    const afterRunNow = await statusRow(deviceId);
+    expect(afterRunNow!.lastAttemptAt!.getTime()).toBeGreaterThan(afterScheduled!.lastAttemptAt!.getTime());
+    expect(afterRunNow!.lastScheduledAttemptAt!.getTime()).toBe(afterScheduled!.lastScheduledAttemptAt!.getTime());
+  });
+
+  runDb('a Run Now on a device that never had a scheduled run records no scheduled attempt', async () => {
+    const { org, deviceId } = await seed();
+    await expect(dispatchOemUpdateRun(runInput(deviceId, org.id))).resolves.toMatchObject({ ok: true });
+    const status = await statusRow(deviceId);
+    expect(status!.lastAttemptAt).toBeInstanceOf(Date);
+    expect(status!.lastScheduledAttemptAt).toBeNull();
   });
 
   runDb('refuses at the seam with the flag off, and queues nothing', async () => {

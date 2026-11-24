@@ -2,7 +2,9 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, eq, getTableColumns } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
+// Type only: the registry itself is imported dynamically below.
+import type { CommandResultAfterCommit } from '../../services/commandResultHandlers';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../../services/commandCasDiagnostics';
 import { deviceCommands } from '../../db/schema';
@@ -96,12 +98,14 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // Vendor updates (#11065): both transports reach the same handler.
   'oem_update_run',
   'oem_update_release',
+  'oem_observe',
   // Disk Cleanup v2 W04. Listed here because this route has NO inline block
   // for it — the handler is registry-only precisely so both transports run
   // exactly the same code.
   'system_cleanup_run',
   'file_delete',
   'network_discovery',
+  'network_discovery_guarded',
   'hyperv_backup',
   'mssql_backup',
   'snmp_poll',
@@ -545,6 +549,8 @@ commandsRoutes.post(
         ? commandPayload.drExecutionId
         : null;
     let pamAcknowledgement: PamResultAcknowledgement | undefined;
+    // #12502: queue work a handler owes once the request transaction commits.
+    let afterCommit: CommandResultAfterCommit | undefined;
 
     let finalized: 'stale' | 'queue_ack' | 'rejected' | 'recorded';
     try {
@@ -660,6 +666,7 @@ commandsRoutes.post(
             status: normalizedData.status,
             stdout,
             error: normalizedData.error,
+            errorCode: normalizedData.errorCode,
           });
         }
 
@@ -730,6 +737,7 @@ commandsRoutes.post(
               resolvedDeviceId: command.deviceId,
               stdout,
             });
+            if (outcome && outcome.kind === 'afterCommit') afterCommit = outcome;
             if (PAM_COMMAND_TYPES.has(command.type)) {
               if (!outcome || outcome.kind !== 'pam') {
                 throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
@@ -783,6 +791,12 @@ commandsRoutes.post(
       return c.json({ success: true });
     }
     if (finalized === 'queue_ack') return c.json({ success: true });
+
+    // #12502: registered only now that the savepoint returned 'recorded' (a work item registered inside a
+    // savepoint that rolls back would still run when the request commits). It starts after the request
+    // transaction commits, so a lock the handler took is released before its queue I/O, and it is dropped if
+    // the request rolls back. The agent's answer does not wait for it; a failure is recorded on the job.
+    if (afterCommit) runAfterDbContextCommit(afterCommit.label, afterCommit.run);
 
     // #4757 W06: terminalise the restore-point ledger only after the CAS won
     // (a losing duplicate returned 'stale' above), outside the savepoint so a

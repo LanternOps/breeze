@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OEM_UPDATE_MIN_AGENT_VERSION } from '@breeze/shared';
+import { OEM_OBSERVE_MIN_AGENT_VERSION, OEM_UPDATE_MIN_AGENT_VERSION } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { OEM_RUN_QUEUED_EVENT } from './vendorUpdatesApi';
 
@@ -199,6 +199,38 @@ describe('DeviceActions — Run vendor updates (#11065)', () => {
     const action = await screen.findByTestId('device-action-run-vendor-updates');
     expect(action.getAttribute('aria-disabled')).toBe('true');
     expect(action.getAttribute('title')).toBe("Vendor updates are not available yet for this device's manufacturer.");
+    await userEvent.click(action);
+    expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
+  });
+
+  // #12227: observe lanes (surface, hp, lenovo) close every gate by design; the API
+  // accepts the read-only check only from agents at OEM_OBSERVE_MIN_AGENT_VERSION.
+  const answerObserve = (lane: string) => vi.mocked(fetchWithAuth).mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ ...statusBody(lane, 'closed'), observe: true }),
+  } as Response);
+
+  it('enabled when every gate is closed but the lane is in observe mode (read-only check)', async () => {
+    h.granted.add('devices:execute');
+    answerObserve('lenovo');
+    render(<DeviceActions device={{ ...dell, agentVersion: OEM_OBSERVE_MIN_AGENT_VERSION }} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    await waitFor(() => expect(action.getAttribute('aria-disabled')).not.toBe('true'));
+    await userEvent.click(action);
+    expect(await screen.findByTestId('run-vendor-updates-dialog')).toBeInTheDocument();
+  });
+
+  it('observe mode below the observe minimum agent: disabled with the observe upgrade hint', async () => {
+    h.granted.add('devices:execute');
+    answerObserve('lenovo');
+    // Above the run minimum, below the observe minimum: the API refuses agent_too_old.
+    render(<DeviceActions device={{ ...dell, agentVersion: '0.130.9' }} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    await waitFor(() => expect(action.getAttribute('title')).toContain(OEM_OBSERVE_MIN_AGENT_VERSION));
+    expect(action.getAttribute('aria-disabled')).toBe('true');
     await userEvent.click(action);
     expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
   });

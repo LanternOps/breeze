@@ -196,11 +196,11 @@ func TestStorageSessionWiring_CoreCommands(t *testing.T) {
 		}, checkRestored(files)},
 		{"restore via dispatcher", viaExecute("backup_restore"), checkRestored(files)},
 		{"verify direct", func(_ *brokeredEnv, mgr *backup.BackupManager, payload json.RawMessage) backupipc.BackupCommandResult {
-			return execBackupVerifyContext(context.Background(), "c2", payload, mgr, &vaultManagerRef{}, nil)
+			return execBackupVerifyContext(context.Background(), "c2", payload, mgr, &vaultManagerRef{}, nil, 0)
 		}, checkStatus("passed")},
 		{"verify via dispatcher", viaExecute("backup_verify"), checkStatus("passed")},
 		{"test restore direct", func(_ *brokeredEnv, mgr *backup.BackupManager, payload json.RawMessage) backupipc.BackupCommandResult {
-			return execBackupTestRestoreContext(context.Background(), "c3", payload, mgr, &vaultManagerRef{}, nil)
+			return execBackupTestRestoreContext(context.Background(), "c3", payload, mgr, &vaultManagerRef{}, nil, 0)
 		}, checkStatus("passed")},
 		{"test restore via dispatcher", viaExecute("backup_test_restore"), checkStatus("passed")},
 	}

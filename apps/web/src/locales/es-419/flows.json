@@ -3,7 +3,9 @@
   "subtitle": "Automatizaciones de varios pasos que encadenan herramientas.",
   "empty": {
     "title": "Aún no hay flujos",
-    "body": "Pide a Breeze AI que redacte un flujo y luego revísalo aquí."
+    "body": "Un flujo es una lista guardada de pasos que Breeze sigue de la misma forma en cada ejecución. Puede iniciarse según una programación, ante un evento, desde un webhook o cuando tú lo inicias. Usa un flujo cuando la tarea tenga varios pasos, necesite una aprobación o llame a otras herramientas. No usa IA a menos que un paso la pida. Para ejecutar un script según una programación, un trabajo es más sencillo.",
+    "how": "Crea uno con Nueva automatización, pide a Breeze AI que lo redacte o mueve un trabajo existente desde la página Trabajos.",
+    "jobsLink": "Ir a Trabajos"
   },
   "list": {
     "name": "Nombre",
@@ -41,7 +43,15 @@
     "version": "Versión {{version}}",
     "createdInChat": "Creado en Breeze AI",
     "movedFromJob": "Movido desde un trabajo",
-    "movedFromJobReverted": "(devuelto)"
+    "movedFromJobReverted": "(devuelto)",
+    "shadowingNotice": "Este flujo está en modo sombra del trabajo {{name}}. Se activa cuando cambia desde el trabajo.",
+    "shadowingLink": "Abrir el diálogo Mover del trabajo",
+    "edit": "Editar",
+    "delete": "Eliminar borrador",
+    "deleteConfirmTitle": "¿Eliminar este borrador?",
+    "deleteConfirmMessage": "El borrador se elimina de forma permanente. No se puede deshacer.",
+    "deleteHasHistory": "Este flujo se habilitó o se movió desde un trabajo, por lo que ya no se puede eliminar. Deshabilítalo en su lugar.",
+    "deleteHasHistoryLink": "Abrir el trabajo"
   },
   "step": {
     "tool": "Herramienta",
@@ -121,7 +131,9 @@
     "enableFailed": "No se pudo habilitar el flujo.",
     "disableFailed": "No se pudo deshabilitar el flujo.",
     "runFailed": "No se pudo iniciar la ejecución.",
-    "cancelFailed": "No se pudo cancelar la ejecución."
+    "cancelFailed": "No se pudo cancelar la ejecución.",
+    "saveFailed": "No se pudo guardar el flujo.",
+    "deleteFailed": "No se pudo eliminar el borrador."
   },
   "tabs": {
     "overview": "Resumen",
@@ -174,6 +186,7 @@
     "generic": "No se pudo activar el flujo.",
     "webhookSecretMissing": "Crea un secreto de webhook antes de activar este flujo.",
     "aiBudgetUnavailable": "Esta organización no tiene presupuesto de IA, por lo que no se puede activar un flujo con un paso de IA.",
+    "conversionNotSwitched": "Este flujo está en modo sombra de un trabajo, así que se activa al cambiar desde el trabajo, no desde aquí.",
     "webhookSecretInvalidated": "Al activar esta versión se borró el secreto del webhook, porque se creó para un borrador anterior. Se rechazarán todas las solicitudes hasta que crees un secreto nuevo y se lo entregues al remitente."
   },
   "run": {
@@ -328,7 +341,9 @@
     "enabled": "Flujo habilitado",
     "disabled": "Flujo deshabilitado",
     "runStarted": "Ejecución iniciada",
-    "runCancelled": "Ejecución cancelada"
+    "runCancelled": "Ejecución cancelada",
+    "draftSaved": "Borrador guardado",
+    "draftDeleted": "Borrador eliminado"
   },
   "disable": {
     "title": "Desactivar flujo",
@@ -766,12 +781,153 @@
     "migration": {
       "banner": {
         "r1": "Los trabajos se están moviendo a Flujos.",
-        "r1Body": "Los trabajos nuevos se crean en Flujos. Mueve cada trabajo cuando su sombra coincida; puedes devolverlo."
+        "r1Body": "Aquí todavía puedes crear y editar trabajos. Mueve un trabajo cuando su sombra coincida; puedes devolverlo."
       },
       "convertAll": "Iniciar sombra para todos los convertibles",
       "converting": "Iniciando…",
       "bulkSummary": "Iniciados {{created}}, omitidos {{skipped}}.",
       "newJobOpensFlows": "Flujo nuevo"
     }
+  },
+  "flowEditor": {
+    "titleNew": "Nueva automatización",
+    "titleEdit": "Editar {{name}}",
+    "subtitle": "Crea el flujo con el formulario o edita su documento directamente. Ambas pestañas editan el mismo documento.",
+    "backToFlow": "Volver al flujo",
+    "tabs": {
+      "form": "Formulario",
+      "document": "Documento"
+    },
+    "owner": {
+      "title": "Propietario",
+      "organization": "Solo esta organización",
+      "partner": "Todas las organizaciones"
+    },
+    "enabledReadOnly": "Este flujo está habilitado, por lo que no se puede editar. Deshabilítalo para hacer cambios y vuelve a habilitarlo después.",
+    "disableAndEdit": "Deshabilitar y editar",
+    "disableMessage": "Al deshabilitar se cancelan las ejecuciones en cola y en espera, y las aprobaciones pendientes. Las ejecuciones que ya están en curso se detienen en su siguiente punto de control. Puedes volver a habilitar el flujo después de editarlo.",
+    "notFormShaped": "El formulario no puede mostrar todo lo de este documento, así que aquí es de solo lectura. Edita el documento en su lugar.",
+    "openDocument": "Abrir el documento",
+    "validateFailed": "No se pudo comprobar el documento: {{message}}",
+    "conflict": "Otra persona guardó este flujo mientras lo editabas. Tus cambios siguen aquí. Recarga para obtener la versión más reciente; al recargar se descartan tus cambios.",
+    "reload": "Recargar",
+    "saveInvalid": "El flujo no se guardó porque el documento tiene errores. Corrige los problemas indicados y vuelve a guardar.",
+    "notDraft": "Este flujo está habilitado, por lo que no se puede guardar. Deshabilítalo primero.",
+    "webhookNext": "Guardado. Los flujos con webhook se habilitan desde la página del flujo: crea allí el secreto del webhook, entrégaselo al remitente y luego habilita el flujo.",
+    "webhookTabLink": "Abrir la pestaña Webhook",
+    "limits": "Cada ejecución llega como máximo a {{devices}} dispositivos y envía como máximo {{notices}} notificaciones. Un flujo tiene como máximo {{steps}} pasos.",
+    "save": "Guardar",
+    "saveAndEnable": "Guardar y habilitar",
+    "shadow": {
+      "title": "¿Restablecer la comparación?",
+      "message": "Este flujo se movió desde un trabajo y aún se está comparando con él. Al guardar un cambio se restablece la evidencia de la comparación y esta vuelve a empezar."
+    },
+    "document": {
+      "loading": "Cargando el editor…",
+      "loadError": "No se pudo cargar el editor. Actualiza la página para intentarlo de nuevo.",
+      "parseError": "El documento no es un JSON válido"
+    },
+    "form": {
+      "name": "Nombre",
+      "description": "Descripción",
+      "remove": "Quitar",
+      "listsFailed": "No se pudieron cargar tus scripts y canales de notificación. Actualiza la página para intentarlo de nuevo.",
+      "trigger": {
+        "title": "Cuándo se ejecuta",
+        "timezone": "Zona horaria",
+        "eventDeviceHelp": "Las acciones se ejecutan en el dispositivo que generó el evento.",
+        "eventNoDeviceNoRun": "Si llega una alerta sin dispositivo, no se inicia ninguna ejecución.",
+        "eventNoDeviceFails": "Si llega un evento sin dispositivo, la ejecución falla.",
+        "filter": "Solo cuando el evento coincida",
+        "filterHelp": "Cada campo debe ser exactamente igual a su valor. Déjalo vacío para ejecutar con cada evento de este tipo.",
+        "filterKey": "Campo del evento",
+        "filterValue": "Valor",
+        "filterAdd": "Agregar una condición",
+        "resolverHelp": "Un flujo para todas las organizaciones encuentra la organización a partir del cuerpo de la solicitud: indica el campo del cuerpo que contiene el identificador de la organización y el sistema del que proviene ese identificador.",
+        "resolverPath": "Campo del cuerpo",
+        "resolverSystem": "Sistema",
+        "webhookHelp": "Guarda el flujo y luego crea el secreto del webhook y habilita el flujo en su pestaña Webhook.",
+        "manualHelp": "El flujo se ejecuta solo cuando alguien lo inicia.",
+        "resolverKind": "El identificador proviene de",
+        "resolverKindSystem": "Un sistema externo",
+        "resolverKindBreezeOrg": "Un ID de organización de Breeze"
+      },
+      "target": {
+        "title": "Dispositivos",
+        "triggerDevice": "El dispositivo que generó el evento.",
+        "choose": "Elige en qué dispositivos se ejecutan las acciones. Todos los dispositivos es solo el punto de partida.",
+        "keep": "Usar todos los dispositivos",
+        "partnerWide": "Un flujo para todas las organizaciones puede apuntar a todos los dispositivos o a un filtro, no a dispositivos o grupos específicos."
+      },
+      "actions": {
+        "title": "Acciones",
+        "empty": "Agrega al menos una acción.",
+        "position": "Acción {{n}}",
+        "runScript": "Ejecutar un script",
+        "notify": "Enviar una notificación",
+        "alert": "Generar una alerta",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "runAsDefault": "La configuración del script",
+        "runAsSystem": "Sistema",
+        "runAsUser": "Usuario con sesión iniciada",
+        "parameters": "Parámetros",
+        "parameterName": "Nombre del parámetro",
+        "parameterValue": "Valor del parámetro",
+        "parameterAdd": "Agregar un parámetro",
+        "severityInfo": "Información",
+        "severityWarning": "Advertencia",
+        "severityCritical": "Crítica",
+        "title_": "Título",
+        "notifyHelp": "Se envía un mensaje por ejecución, no uno por dispositivo.",
+        "countsHelp": "El número de dispositivos que tuvieron éxito y fallaron se agrega al final del mensaje.",
+        "alertHelp": "Se genera una alerta en cada dispositivo al que llegaron las acciones.",
+        "commandHint": "Para ejecutar un comando, guárdalo primero como script.",
+        "scriptsLink": "Ir a Scripts"
+      },
+      "onFailure": {
+        "title": "Si el script no se puede enviar a un dispositivo",
+        "stop": "Detener",
+        "stopHelp": "Las acciones posteriores omiten los dispositivos a los que no se pudo enviar el script.",
+        "continue": "Continuar",
+        "continueHelp": "Las acciones posteriores también se ejecutan en los dispositivos a los que no se pudo enviar el script.",
+        "notify": "Notificar",
+        "notifyHelp": "Envía un aviso a los canales de abajo por cada dispositivo al que no se pudo enviar el script. Se envían como máximo 20 avisos por ejecución.",
+        "notifySummaryHelp": "Envía un aviso a los canales de abajo por cada script que no se pudo enviar a todos los dispositivos, con cuántos dispositivos tuvieron éxito y cuántos fallaron.",
+        "noChannels": "Agrega un canal de notificación para usar Notificar."
+      }
+    },
+    "disableWebhookNote": "Este flujo tiene un disparador de webhook. Si lo vuelves a habilitar después de editarlo, se borra el secreto del webhook y el remitente necesitará el nuevo secreto.",
+    "shadowLine": "Este flujo está en modo sombra para un trabajo. Entra en vivo desde el cambio del trabajo, no desde aquí.",
+    "validation": {
+      "name": "Ponle un nombre al flujo (hasta 120 caracteres).",
+      "steps": "Un flujo necesita al menos una acción y no más que el límite.",
+      "cron": "La programación no es una expresión cron válida. Usa cinco campos, por ejemplo 0 2 * * *.",
+      "timezone": "No se reconoce esa zona horaria. Usa un nombre como UTC o America/Mexico_City.",
+      "script": "Elige un script para esta acción.",
+      "channel": "Elige un canal de notificación para esta acción.",
+      "channels": "Elige al menos un canal de notificación.",
+      "duplicateStepId": "Dos acciones tienen el mismo id. Dale a cada acción su propio id.",
+      "unknownStepReference": "Esto se refiere a una acción que no existe. Revisa el id de la acción.",
+      "forwardReference": "Esto usa el resultado de una acción que se ejecuta después. Mueve esa acción antes o quita la referencia.",
+      "eventUnknown": "El sistema no reconoce ese tipo de evento. Elige uno de la lista.",
+      "toolNotFound": "Esa acción no está disponible para este flujo. Elige otra.",
+      "channelNotOwned": "Ese canal de notificación no pertenece al propietario de este flujo. Elige uno propio.",
+      "referenceNotOwned": "Esto se refiere a algo que no pertenece al propietario de este flujo.",
+      "deviceNotOwned": "Ese dispositivo no pertenece a la organización de este flujo.",
+      "resolverRequired": "Un flujo para todas las organizaciones necesita el campo del cuerpo que nombra la organización del cliente.",
+      "resolverNotAllowed": "El flujo de webhook de una organización siempre se ejecuta en esa organización. Quita la búsqueda de organización.",
+      "documentTooLarge": "El documento es demasiado grande. Quita algunas acciones o texto.",
+      "secretInDocument": "El documento contiene algo que parece un secreto. Quítalo del documento.",
+      "event": "Elige el evento que inicia este flujo.",
+      "eventFilter": "El nombre de un campo del filtro de eventos no es válido. Usa letras, números, puntos y guiones bajos, y empieza con una letra.",
+      "orgResolver": "La búsqueda de la organización no es válida. Indica el campo del cuerpo como body.nombre y, para un sistema externo, su nombre.",
+      "title": "Ponle un título a esta acción (hasta 200 caracteres).",
+      "message": "Escribe un mensaje para esta acción (hasta 4000 caracteres).",
+      "parameters": "Un parámetro del script no es válido. Ponle un nombre a cada parámetro.",
+      "target": "Elige en qué dispositivos se ejecuta este flujo.",
+      "inputInvalid": "Este valor no es válido. Revisa el campo en la ruta indicada."
+    },
+    "enableOpenFailed": "El borrador se guardó, pero no se pudo abrir el diálogo de habilitación. Abre el flujo para habilitarlo."
   }
 }

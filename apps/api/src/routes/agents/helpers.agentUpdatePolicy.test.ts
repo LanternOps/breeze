@@ -113,6 +113,7 @@ vi.mock('../../db/schema', () => ({
     isLatest: 'av.is_latest',
     createdAt: 'av.created_at',
     edition: 'av.edition',
+    minOsVersion: 'av.min_os_version',
   },
 }));
 
@@ -162,6 +163,7 @@ import {
   agentAcceptsServedEdition,
   __resetMalformedWindowWarnCache,
 } from './helpers';
+import { __resetUnknownDeviceOsWarnings } from '../../services/agentOsFloor';
 import { resolveAgentUpdateConfig } from '../../services/agentUpdateConfig';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { withSystemDbAccessContext } from '../../db';
@@ -520,7 +522,12 @@ describe('getOrgAgentUpdateConfigCached (#8053)', () => {
 // platform/arch (issue #2124).
 // ---------------------------------------------------------------------------
 describe('resolvePinnedUpgradeTarget', () => {
-  const base = { component: 'agent', platform: 'windows', architecture: 'amd64' as const };
+  const base = {
+    component: 'agent',
+    platform: 'windows',
+    architecture: 'amd64' as const,
+    deviceOs: { platform: 'windows', reportedOsVersion: '10.0.19045', storedOsVersion: null },
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -611,7 +618,12 @@ describe('resolvePinnedUpgradeTarget', () => {
 // fails checksum verification on every attempt.
 // ---------------------------------------------------------------------------
 describe('resolvers withhold targets the local build cannot serve (#7516)', () => {
-  const base = { component: 'agent', platform: 'windows', architecture: 'amd64' as const };
+  const base = {
+    component: 'agent',
+    platform: 'windows',
+    architecture: 'amd64' as const,
+    deviceOs: { platform: 'windows', reportedOsVersion: '10.0.19045', storedOsVersion: null },
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -649,6 +661,7 @@ describe('resolvers withhold targets the local build cannot serve (#7516)', () =
     const targets = await resolvePinnedUpgradeTargets({
       platform: 'windows',
       architecture: 'amd64',
+      deviceOs: base.deviceOs,
       requests: [
         { component: 'agent', pin: null },
         { component: 'helper', pin: null },
@@ -771,5 +784,103 @@ describe('resolveAgentUpdateConfig (pure core, #9170)', () => {
     for (const junk of [null, undefined, 'x', 5, []]) {
       expect(resolveAgentUpdateConfig(junk, junk)).toEqual({ settings: { policy: 'staged', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #12169 — minimum-OS gate. Both resolvers read agent_versions.min_os_version
+// in the SAME statement and hold a target the device's macOS is below.
+// ---------------------------------------------------------------------------
+describe('resolvers hold a target above the device macOS floor (#12169)', () => {
+  const macOs = (version: string | null) => ({ platform: 'macos', reportedOsVersion: version, storedOsVersion: null });
+  const base = { component: 'agent', platform: 'macos', architecture: 'arm64' as const };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetUnknownDeviceOsWarnings();
+  });
+
+  it('macOS 12 device is not offered a 13.0 agent and onOsHold reports it', async () => {
+    dbMock._setResult([{ version: '0.140.0', minOsVersion: '13.0' }]);
+    const onOsHold = vi.fn();
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: null, deviceOs: macOs('darwin 12.7.6'), onOsHold }),
+    ).resolves.toBeNull();
+    expect(onOsHold).toHaveBeenCalledWith({
+      component: 'agent',
+      blockedVersion: '0.140.0',
+      reason: 'os_below_minimum',
+      requiredOs: '13.0',
+      reportedOs: '12.7.6',
+    });
+  });
+
+  it('macOS 13 device is offered it', async () => {
+    dbMock._setResult([{ version: '0.140.0', minOsVersion: '13.0' }]);
+    const onOsHold = vi.fn();
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: null, deviceOs: macOs('darwin 13.0'), onOsHold }),
+    ).resolves.toBe('0.140.0');
+    expect(onOsHold).not.toHaveBeenCalled();
+  });
+
+  it('NULL floor offers', async () => {
+    dbMock._setResult([{ version: '0.129.0', minOsVersion: null }]);
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: null, deviceOs: macOs('darwin 11.0') }),
+    ).resolves.toBe('0.129.0');
+  });
+
+  it('unknown OS is held (fail closed) with its own reason', async () => {
+    dbMock._setResult([{ version: '0.140.0', minOsVersion: '13.0' }]);
+    const onOsHold = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: null, deviceOs: macOs('darwin'), onOsHold }),
+    ).resolves.toBeNull();
+    expect(onOsHold).toHaveBeenCalledWith(expect.objectContaining({ reason: 'os_version_unknown', reportedOs: null }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('pinned version above the floor is held too', async () => {
+    dbMock._setResult([{ version: '0.140.0', minOsVersion: '13.0' }]);
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: '0.140.0', deviceOs: macOs('darwin 12.7.6') }),
+    ).resolves.toBeNull();
+  });
+
+  it('watchdog component is gated the same way, in the batch resolver', async () => {
+    dbMock._setResult([
+      { component: 'agent', version: '0.140.0', isLatest: true, minOsVersion: '13.0' },
+      { component: 'helper', version: '0.140.0', isLatest: true, minOsVersion: null },
+      { component: 'watchdog', version: '0.140.0', isLatest: true, minOsVersion: '13.0' },
+    ]);
+    const onOsHold = vi.fn();
+    const targets = await resolvePinnedUpgradeTargets({
+      platform: 'macos',
+      architecture: 'arm64',
+      deviceOs: macOs('darwin 12.7.6'),
+      onOsHold,
+      requests: [
+        { component: 'agent', pin: null },
+        { component: 'helper', pin: null },
+        { component: 'watchdog', pin: null },
+      ],
+    });
+    expect(targets.get('agent')).toBeNull();
+    expect(targets.get('helper')).toBe('0.140.0');
+    expect(targets.get('watchdog')).toBeNull();
+    expect(onOsHold.mock.calls.map((c) => c[0].component).sort()).toEqual(['agent', 'watchdog']);
+  });
+
+  it('a target the server cannot serve is withheld without reporting an OS hold', async () => {
+    isUpgradeTargetServableMock.mockImplementationOnce(async () => false);
+    dbMock._setResult([{ version: '0.140.0', minOsVersion: '13.0' }]);
+    const onOsHold = vi.fn();
+    await expect(
+      resolvePinnedUpgradeTarget({ ...base, pin: null, deviceOs: macOs('darwin 12.7.6'), onOsHold }),
+    ).resolves.toBeNull();
+    expect(onOsHold).not.toHaveBeenCalled();
   });
 });

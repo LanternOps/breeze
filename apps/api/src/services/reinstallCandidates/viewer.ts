@@ -35,6 +35,7 @@ import { siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { OPEN_REATTACH_INTENT_STATES } from '../deviceReattach/protocol';
 import { reattachTargetVersion } from '../deviceReattach/targetVersion';
+import { readTpmEvidence, type ReattachEvidenceLevel, type TpmEvidenceGap } from '../deviceReattach/evidence';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { rankReinstallCandidatesFor, readReinstallSource } from './index';
 import type { RankedCandidate } from './ranking';
@@ -46,6 +47,14 @@ export type CandidatesViewer = Pick<
 
 /** The evidence wording the dialog shows beside every candidate (§8 "Confirmation"). */
 export const HINT_EVIDENCE_NOTICE = 'Hardware identifiers reported by the device. Not verified.';
+
+/**
+ * The wording beside a `tpm_continuity` candidate (wave T2): key continuity,
+ * never "the same TPM" or "a genuine TPM" (§12.2; the EK certificate is not
+ * validated until wave T3).
+ */
+export const TPM_EVIDENCE_NOTICE = 'The new install proved the same TPM endorsement key this record proved before. '
+  + 'This shows key continuity, not that the TPM is genuine hardware: a cloned virtual TPM carries its keys.';
 
 /** The comparison fields of one side, all reported by the device itself. */
 export interface ReattachComparisonFields {
@@ -71,12 +80,18 @@ export interface ReattachCandidateView extends ReattachComparisonFields {
   orgName: string | null;
   siteId: string;
   siteName: string | null;
-  /** What matched, strongest first: `system_uuid` > `serial` > `hostname`. */
+  /** What matched, strongest first: `tpm_ek` > `system_uuid` > `serial` > `hostname`. */
   evidence: RankedCandidate['evidence'];
-  /** The flag reason the evidence records (`hardware` | `hostname`). */
+  /** The flag reason the evidence records (`tpm` | `hardware` | `hostname`). */
   reason: RankedCandidate['reason'];
-  /** The §4.3 evidence level a reattach onto this candidate is requested with. */
-  evidenceLevel: 'hint';
+  /**
+   * The §4.3 evidence level a reattach onto this candidate is requested with
+   * (deviceReattach/evidence.ts, read now; the request re-reads it under the
+   * row locks). Sent back as `expectedEvidenceLevel`.
+   */
+  evidenceLevel: ReattachEvidenceLevel;
+  /** Why it is `hint` when the key evidence falls short; never which key. Absent for `tpm_continuity`. */
+  evidenceGap?: TpmEvidenceGap;
   /** The candidate the source's `possible_replacement_of_device_id` names. */
   flagged: boolean;
   /** The two installs report different operating systems: the request needs `acknowledgeOsChange`. */
@@ -103,6 +118,8 @@ export interface ReinstallCandidatesView {
   /** The source's open reattach, when its target is in an org this viewer reaches. */
   openIntent: { intentId: string; state: string; targetDeviceId: string; expiresAt: string } | null;
   evidenceNotice: string;
+  /** Shown beside a `tpm_continuity` candidate instead of `evidenceNotice`. */
+  tpmEvidenceNotice: string;
 }
 
 /** The same site rule as `routes/devices/helpers.ts` (#11729): the auth
@@ -253,6 +270,12 @@ export async function readReinstallCandidatesForViewer(input: {
     for (const candidate of visible) {
       const row = rows.get(candidate.target.id);
       if (!row || !row.agentId || row.installIncarnation === null) continue;
+      const evidence = await readTpmEvidence(db, {
+        partnerId: source.partnerId,
+        sourceDeviceId: source.id,
+        sourceInstallStartedAt: source.installStartedAt,
+        targetDeviceId: candidate.target.id,
+      });
       candidates.push({
         deviceId: candidate.target.id,
         orgId: candidate.target.orgId,
@@ -262,7 +285,8 @@ export async function readReinstallCandidatesForViewer(input: {
         ...comparisonFields(row),
         evidence: candidate.evidence,
         reason: candidate.reason,
-        evidenceLevel: 'hint',
+        evidenceLevel: evidence.level,
+        ...(evidence.level === 'hint' ? { evidenceGap: evidence.gap } : {}),
         flagged: source.storedTargetId === candidate.target.id,
         osChanged: row.osType !== sourceRow.osType,
         requiresRestore: row.status === 'decommissioned',
@@ -298,6 +322,7 @@ export async function readReinstallCandidatesForViewer(input: {
       reviewPending: visible.length < ranked.length,
       openIntent,
       evidenceNotice: HINT_EVIDENCE_NOTICE,
+      tpmEvidenceNotice: TPM_EVIDENCE_NOTICE,
     };
   }));
 }

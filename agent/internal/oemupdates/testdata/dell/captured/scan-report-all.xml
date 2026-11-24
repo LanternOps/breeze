@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<updates xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" version="5.7.2" schemaVersion="1.2">
+  <update>
+    <release>DF8CW</release>
+    <name>Dell Security Advisory Update - DSA-2021-088</name>
+    <version>2.1.0</version>
+    <date>May 11, 2021</date>
+    <urgency>Urgent</urgency>
+    <type>Application</type>
+    <category>Security</category>
+    <file>FOLDER07338430M/3/Dell-Security-Advisory-Update-DSA-2021-088_DF8CW_WIN_2.1.0_A02_02.EXE</file>
+    <bytes>10422624</bytes>
+  </update>
+  <update>
+    <release>MWYXY</release>
+    <name>Dell OptiPlex 7060 System BIOS</name>
+    <version>1.32.0</version>
+    <date>November 08, 2024</date>
+    <urgency>Urgent</urgency>
+    <type>BIOS</type>
+    <category>BIOS</category>
+    <file>FOLDER12077034M/1/OptiPlex_7060_1.32.0.exe</file>
+    <bytes>28177832</bytes>
+  </update>
+  <update>
+    <release>NP58K</release>
+    <name>Intel Management Engine Components Installer</name>
+    <version>2514.7.16.0</version>
+    <date>August 11, 2025</date>
+    <urgency>Recommended</urgency>
+    <type>Driver</type>
+    <category>Chipset</category>
+    <file>FOLDER13002406M/4/Intel-Management-Engine-Components-Installer_NP58K_WIN64_2514.7.16.0_A16_03.EXE</file>
+    <bytes>323653568</bytes>
+  </update>
+  <update>
+    <release>VP20T</release>
+    <name>Intel PCIe Ethernet Network Driver</name>
+    <version>24.1.0.0</version>
+    <date>November 12, 2019</date>
+    <urgency>Urgent</urgency>
+    <type>Driver</type>
+    <category>Network</category>
+    <file>FOLDER05877897M/5/Intel-PCIe-Ethernet-Network-Driver_VP20T_WIN_24.1.0.0_A13_04.EXE</file>
+    <bytes>32179632</bytes>
+  </update>
+  <update>
+    <release>YV0M0</release>
+    <name>Dell SupportAssist OS Recovery Plugin for Dell Update</name>
+    <version>5.5.17.0</version>
+    <date>October 29, 2026</date>
+    <urgency>Recommended</urgency>
+    <type>Application</type>
+    <category>Application</category>
+    <file>FOLDER15178808M/1/Dell-SupportAssist-OS-Recovery-Plugin-for-Dell-Update_YV0M0_WIN64_5.5.17.0_A00.EXE</file>
+    <bytes>25296400</bytes>
+  </update>
+  <update>
+    <release>GPXYY</release>
+    <name>Intel UHD/Iris Plus Graphics Driver</name>
+    <version>31.0.101.2114</version>
+    <date>May 15, 2024</date>
+    <urgency>Urgent</urgency>
+    <type>Driver</type>
+    <category>Video</category>
+    <file>FOLDER11477764M/1/Intel-UHD-Iris-Plus-Graphics-Driver_GPXYY_WIN64_31.0.101.2114_A00.EXE</file>
+    <bytes>1109275032</bytes>
+  </update>
+</updates>

@@ -8,6 +8,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+const orgState = vi.hoisted(() => ({ currentOrgId: null as string | null }));
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: (selector: (s: typeof orgState) => unknown) => selector(orgState),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, ok = true): Response {
@@ -19,6 +24,7 @@ function makeResponse(payload: unknown, ok = true): Response {
 
 describe('LogSearch', () => {
   beforeEach(() => {
+    orgState.currentOrgId = null;
     fetchWithAuthMock.mockReset();
     fetchWithAuthMock.mockResolvedValue(
       makeResponse({ results: [], total: 0 }),
@@ -63,6 +69,28 @@ describe('LogSearch', () => {
     fireEvent.change(screen.getByLabelText('Saved queries'), { target: { value: '' } });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save Query' })).toBeEnabled());
     expect(JSON.parse(String(fetchWithAuthMock.mock.lastCall?.[1]?.body))).toMatchObject({ limit: 100, offset: 0 });
+  });
+
+  // #12297: a partner user with several orgs has no implicit org, so the API
+  // refuses to save unless the body names the org picked in the switcher.
+  it.each([
+    ['sends the selected organization', 'org-b', { orgId: 'org-b' }],
+    ['sends no organization when none is selected', null, {}],
+  ])('Save Query %s (#12297)', async (_label, currentOrgId, expectedOrg) => {
+    orgState.currentOrgId = currentOrgId;
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Service failures');
+    render(<LogSearch />);
+    const save = screen.getByRole('button', { name: 'Save Query' });
+    await waitFor(() => expect(save).toBeEnabled());
+
+    fireEvent.click(save);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/logs/queries', expect.objectContaining({ method: 'POST' })));
+    const post = fetchWithAuthMock.mock.calls.find(([url, options]) => url === '/logs/queries' && options?.method === 'POST')!;
+    const body = JSON.parse(String(post[1]?.body));
+    expect(body).toMatchObject({ name: 'Service failures', ...expectedOrg });
+    if (!currentOrgId) expect(body).not.toHaveProperty('orgId');
+    prompt.mockRestore();
   });
 
   it('keeps custom search available when listing saved queries fails', async () => {

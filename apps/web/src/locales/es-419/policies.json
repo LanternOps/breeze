@@ -1,50 +1,17 @@
 {
   "configurationPolicies": {
     "assignmentsTab": {
-      "deviceGroup": "Grupo de dispositivos",
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "failedToFetchAssignments": "No se pudieron recuperar las tareas",
-      "thisPolicyHasNoOrganizationSoAssignment": "Esta política no tiene organización, por lo que no se pueden enumerar los objetivos de asignación.",
-      "failedToAddAssignment": "No se pudo agregar la tarea",
-      "failedToRemoveAssignment": "No se pudo eliminar la tarea",
-      "assignmentAdded": "Tarea agregada",
-      "assignmentRemoved": "Tarea eliminada",
       "roleFilter": "Filtro de roles",
       "optional": "(opcional)",
       "noRestrictionAppliesToAllDeviceRoles": "Sin restricciones: se aplica a todas las funciones del dispositivo",
       "oSFilter": "OS Filtro",
       "optional2": "(opcional)",
       "noRestrictionAppliesToAllOperatingSystems": "Sin restricciones: se aplica a todos los sistemas operativos",
-      "priority": "Prioridad",
-      "currentAssignments": "Asignaciones actuales",
-      "noAssignmentsYetAssignThisPolicyTo": "Aún no hay asignaciones. Asigne esta política a los objetivos anteriores.",
-      "level": "Nivel",
-      "target": "Objetivo",
-      "priority2": "Prioridad",
-      "filters": "Filtros",
-      "allOrganizations": "Todas las organizaciones",
       "allDevices": "Todos los dispositivos",
-      "addAssignment": "Agregar tarea",
-      "level2": "Nivel",
-      "target2": "Objetivo",
-      "target3": "Objetivo",
-      "search": "Buscar...",
-      "loading": "Cargando...",
-      "restrictThisAssignmentToDevicesWithSpecific": "Restrinja esta asignación a dispositivos con roles específicos. Déjelo vacío para aplicar a todos los roles.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Los valores más bajos anulan los más altos cuando varias políticas apuntan al mismo dispositivo en el mismo nivel.",
-      "partner": "socio",
-      "scopeOfTheAssignmentMoreSpecificLevels": "Alcance del encargo. Los niveles más específicos (dispositivo) tienen prioridad sobre los más amplios (organización).",
-      "organization": "organización",
-      "anOrganizationPolicyAlwaysTargetsItsOwn": "La política de una organización siempre apunta a su propia organización. Elija un nivel más limitado (sitio, grupo de dispositivos, dispositivo) para ampliar su alcance.",
-      "thisOrganization": "esta organización",
-      "selectATarget": "Seleccione un objetivo...",
-      "noTargetsAvailable": "No hay objetivos disponibles",
-      "noMatchesFound": "No se encontraron coincidencias",
-      "assigning": "Asignando...",
-      "assign": "Asignar",
-      "failedToLoadTargetsHttp": "No se pudieron cargar los objetivos (HTTP {{status}})"
+      "restrictThisAssignmentToDevicesWithSpecific": "Restrinja esta asignación a dispositivos con roles específicos. Déjelo vacío para aplicar a todos los roles."
     },
     "breezeDefaultsPage": {
       "receivedAnInvalidResponseFromTheServer": "Recibí una respuesta no válida del servidor.",
@@ -72,74 +39,38 @@
       "notCollectedProbeLimit": "No recopilado (límite de sondeos)",
       "notCollectedProbeLimitHint": "La lista de sondeos de cumplimiento de esta organización está llena, por lo que al menos una comprobación de aquí no se recopila. No se evalúa, no genera alertas ni se corrige hasta que la lista tenga espacio."
     },
-    "configPolicyCreatePage": {
-      "selectAnOrganizationForThisPolicy": "Seleccione una organización para esta política.",
-      "failedToCreatePolicy": "No se pudo crear la política",
-      "configurationPolicies": "Políticas de configuración",
-      "newPolicy": "Nueva política",
-      "newConfigurationPolicy": "Nueva política de configuración",
-      "howWouldYouLikeToConfigureThis": "¿Cómo le gustaría configurar esta política?",
-      "configureNew": "Configurar nuevo",
-      "startFreshWithCustomSettingsForEach": "Comience de nuevo con configuraciones personalizadas para cada función",
-      "linkToExisting": "Enlace a existente",
-      "useAnotherPolicyAsTheMasterBaseline": "Utilice otra política como línea base maestra",
-      "newConfigurationPolicy2": "Nueva política de configuración",
-      "masterPolicy": "Política maestra",
-      "selectTheConfigurationPolicyToUseAs": "Seleccione la política de configuración que se utilizará como base. Puede anular la configuración individual por función.",
-      "policyDetails": "Detalles de la política",
-      "eGStandardWorkstationPolicy": "p.ej. Política de estación de trabajo estándar",
-      "optionalDescriptionOfWhatThisPolicyConfigures": "Descripción opcional de lo que configura esta política",
-      "scope": "Alcance",
-      "partnerLibrary": "Biblioteca asociada",
-      "assignToOrganizationsAfterCreating": "(asignar a organizaciones después de crear)",
-      "aSpecificOrganization": "Una organización específica",
-      "selectAnOrganization": "Seleccione una organización",
-      "createAReusablePolicyOwnedByYour": "Cree una política reutilizable propiedad de su socio. No se aplica a ninguna organización hasta que la asigne en la pestaña Organizaciones de la política. La configuración de copia de seguridad no está disponible en políticas propiedad de socios.",
-      "new": "nuevo",
-      "linked": "vinculado",
-      "createAPolicyLinkedToAnExisting": "Cree una política vinculada a un maestro existente.",
-      "createANewConfigurationPolicyToBundle": "Cree una nueva política de configuración para agrupar la configuración de funciones.",
-      "name": "nombre",
-      "description": "descripción",
-      "status": "estado",
-      "partner": "socio",
-      "organization": "organización",
-      "policyOwnerOrgSelect": "policy-owner-org-select",
-      "creating": "Creando...",
-      "createPolicy": "Crear política",
-      "policyCreated": "Política creada"
-    },
     "configPolicyDetailPage": {
       "archived": "Archivado",
       "failedToFetchPolicy": "No se pudo recuperar la política",
       "failedToFetchFeatures": "No se pudieron recuperar las funciones",
       "failedToUpdatePolicy": "No se pudo actualizar la política",
-      "overview": "Descripción general",
       "complianceStatus": "Estado de cumplimiento",
-      "assignments": "Asignaciones",
       "loadingPolicy": "Cargando política...",
       "backToList": "volver a la lista",
       "configurationPolicies": "Políticas de configuración",
       "policyDetails": "Detalles de la política",
-      "archived2": "Archivado",
-      "inheritingFrom": "Heredando de",
-      "overrideIndividualTabsToCustomizeSettings": "— Anula pestañas individuales para personalizar la configuración",
-      "isnTAvailableOnPartnerWidePolicies": "no está disponible en políticas en todo el socio",
-      "configureThisFeatureOnAnOrganizationScoped": "Configure esta característica en una política con ámbito de organización.",
+      "inheritingFrom": "Basada en",
       "thisPolicyStillCarriesAnExisting": "Esta política todavía conlleva una",
       "configurationThatWillNeverBeApplied": "configuración que nunca se aplicará.",
       "policy": "Política",
-      "overview2": "descripción general",
       "saving": "Guardando...",
       "saveChanges": "Guardar cambios",
-      "parentPolicy": "política de padres",
       "removing": "Eliminando...",
       "removeConfiguration": "Eliminar configuración",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "asignaciones",
       "managedByYourMsp": "Administrado por su MSP",
-      "inheritedByPolicies_one": "Heredado por {{count}} política",
-      "inheritedByPolicies_other": "Heredado por {{count}} políticas"
+      "inheritedByPolicies_one": "Principal de {{count}} política",
+      "inheritedByPolicies_other": "Principal de {{count}} políticas",
+      "appliesToDrawerTitle": "Se aplica a",
+      "detailsSaved": "Detalles de la política guardados",
+      "refreshAppliesToFailed": "No se pudo actualizar dónde se aplica esta política. Vuelva a cargar la página para verlo.",
+      "appliesToCloseBlocked": "Primero aplique o descarte sus cambios.",
+      "gatedFeatureUnavailable": "{{feature}} no está disponible en esta política",
+      "gatedFeatureReason": "{{feature}} trabaja con las cuentas y los servicios propios de una organización, así que solo una política administrada por esa organización puede definirlo. Esta política la administra su MSP.",
+      "unsavedLeaveConfirm": "Tiene cambios sin guardar en esta política. ¿Salir y descartarlos?",
+      "discardChangesTitle": "¿Descartar los cambios sin guardar?",
+      "discardChangesMessage": "Sus cambios en {{feature}} no están guardados. Descártelos o quédese y guárdelos primero.",
+      "discardChanges": "Descartar",
+      "stayOnFeature": "Quedarse"
     },
     "configPolicyList": {
       "archived": "Archivado",
@@ -151,22 +82,26 @@
       "archived2": "Archivado",
       "features": "Características",
       "noPoliciesFoundTryAdjustingYourSearch": "No se encontraron políticas. Intente ajustar su búsqueda.",
-      "noPoliciesYet": "Aún no hay políticas de configuración. Cree una y luego asígnela a organizaciones, sitios o dispositivos.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Política en todo el socio: se aplica a todas las organizaciones",
-      "allOrgs": "En todo el socio",
+      "noPoliciesYet": "Aún no hay políticas de configuración. Cree una y luego elija dónde se aplica.",
       "page": "Página",
       "of2": "de",
       "itsOwningOrganization": "su organización propietaria",
-      "organizationPolicyTitle": "Política de la organización: se aplica solo a {{organization}}",
-      "summary": "{{filtered}} de {{total}} políticas",
+      "rangeSummary": "{{from}}-{{to}} de {{total}} políticas",
+      "organizationFilterLabel": "Organización",
+      "allOrganizations": "Todas las organizaciones",
+      "notAppliedFilterLabel": "No aplicada",
       "inheritsBadge": "Hereda",
       "statusFilterLabel": "Estado",
-      "partnerPolicy": "Socio",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Política del socio: solo se aplica donde está asignada. Asígnela a todas las organizaciones para que aplique en todo el socio."
+      "appliesToHeader": "Se aplica a",
+      "managedByOrganization": "Administrada por {{organization}}",
+      "notAppliedChip": "No aplicada",
+      "inUseChip_one": "En uso mediante {{count}} política",
+      "inUseChip_other": "En uso mediante {{count}} políticas"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "No se pudieron recuperar las políticas de configuración",
       "failedToDeletePolicy": "No se pudo eliminar la política",
+      "orgFilterForbidden": "No puede usar esta organización como filtro. Elija otra organización.",
       "loadingConfigurationPolicies": "Cargando políticas de configuración...",
       "tryAgain": "Intentar otra vez",
       "configurationPolicies": "Políticas de configuración",
@@ -180,31 +115,6 @@
       "delete": "borrar",
       "deleting": "Eliminando...",
       "deleteBlockedByChildren": "Elimine primero las políticas que heredan de esta:"
-    },
-    "organizationScopePanel": {
-      "failedToLoadAssignments": "No se pudieron cargar las tareas",
-      "failedToLoadOrganizations": "No se pudieron cargar las organizaciones",
-      "failedToRemove": "No se pudo eliminar",
-      "failedToRemove2": "No se pudo eliminar",
-      "failedToAssignAllOrgs": "No se pudieron asignar todas las organizaciones",
-      "failedToRemove3": "No se pudo eliminar",
-      "failedToNarrow": "No se pudo reducir",
-      "failedToAssignOrg": "No se pudo asignar la organización",
-      "organizations": "Organizaciones",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Esta política de biblioteca asociada se aplica solo a las organizaciones que seleccione.",
-      "filtersApplyOnAssign": "Estos filtros se aplican al asignar abajo. Vacío significa todos los roles y sistemas operativos. Para cambiar los filtros de una asignación, desactívela y vuelva a activarla.",
-      "allOrganizationsPartnerWide": "Todas las organizaciones (en todo el socio)",
-      "allOrganizationsPartnerWide2": "Todas las organizaciones (en todo el socio)",
-      "assigned": "Asignado",
-      "searchOrganizations": "Buscar organizaciones...",
-      "searching": "Buscando…",
-      "noOrganizationsMatchYourSearch": "Ninguna organización coincide con su búsqueda.",
-      "appliedToAllOrganizationsUncheckAllOrganizations": "Aplicado a todas las organizaciones. Desmarque \"Todas las organizaciones\" para elegir un subconjunto.",
-      "polite": "educado",
-      "loading": "Cargando…",
-      "loadMoreOrganizations": "Cargar más organizaciones",
-      "appliedToAllOrgs": "La política ahora se aplica a todas las organizaciones",
-      "removedFromAllOrgs": "La política ya no se aplica a todas las organizaciones"
     },
     "featureTabs": {
       "automationTab": {
@@ -692,15 +602,25 @@
         "providerLimit": "{{total}} de {{max}} proveedores adicionales"
       },
       "featureTabShell": {
-        "override": "Anular",
-        "revertToParent": "Volver a padre",
+        "unlockAction": "Cambiar para esta política",
+        "unlockedHint": "Cambiando para esta política. No se guarda nada hasta que haga clic en Guardar.",
+        "revertToParent": "Restablecer a la política principal",
         "saving": "Guardando...",
         "notSaved": "No se guardó: {{reason}}",
         "saveBlocked": "No se guardó. Corrige el problema resaltado e inténtalo de nuevo.",
-        "revertConfirmTitle": "¿Volver a la política principal?",
-        "revertConfirmMessage": "Esto elimina la anulación de {{feature}} en esta política. Su configuración se pierde y se aplica la configuración de la política principal a todos los dispositivos que usan esta política. No se puede deshacer.",
+        "revertConfirmTitle": "¿Restablecer a la política principal?",
+        "revertConfirmMessage": "Esto elimina la configuración propia de {{feature}} de esta política, y se aplica en su lugar la de la política principal. Esta acción no se puede deshacer.",
         "removeConfirmTitle": "¿Quitar esta configuración?",
-        "removeConfirmMessage": "Esto elimina la configuración de {{feature}} de esta política. Su configuración se pierde y la función deja de aplicarse a todos los dispositivos que usan esta política. No se puede deshacer."
+        "removeConfirmMessage": "Esto elimina la configuración de {{feature}} de esta política, y la función vuelve a Sin definir. Esta acción no se puede deshacer.",
+        "badgeSavedNotDeployed": "Guardada (sin implementar)",
+        "saveWithReach": "Guardar · {{reach}}",
+        "removeImpactReaches": "Esta política llega a {{devices}}: esta política ya no define {{feature}} en ellos.",
+        "removeImpactInUse": "Las políticas basadas en esta dejan de heredar {{feature}} de ella, salvo que definan la suya: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Esta política llega a {{devices}}: en su lugar, reciben la configuración de {{feature}} de la política principal.",
+        "resetImpactInUse": "Las políticas basadas en esta reciben en su lugar, a través de ella, la configuración de {{feature}} de la política principal, salvo que definan la suya: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Ningún dispositivo cambia por ahora: esta política no está activa y ninguna política se basa en ella.",
+        "fromParentPolicy": "De {{policy}}",
+        "openParent": "Abrir"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implementar Breeze Assist en dispositivos",
@@ -818,6 +738,7 @@
         "overridesLabel": "Anulaciones:",
         "failedToLoadMonitors": "Error al cargar los monitores",
         "createMonitor": "Crear monitor",
+        "helpText": "Las definiciones de monitores están en Alertas > Monitores. Aquí eliges qué monitores se aplican a esta política y puedes anular el valor de un monitor.",
         "notAttachable": "Este monitor no se puede asociar a esta política. Las políticas del partner solo pueden usar monitores a nivel de partner.",
         "monitorDeleted": "Monitor eliminado",
         "recommended": {
@@ -864,7 +785,6 @@
         "failedToLoadUpdateRings": "No se pudieron cargar los anillos de actualización",
         "patchSettingsSaved": "Configuración del parche guardada",
         "patchSettingsRemoved": "Configuración de parche eliminada",
-        "patchSettingsOverridden": "Configuración de parche anulada",
         "revertedToInheritedPatchSettings": "Revertido a la configuración de parche heredada",
         "approvalRing": "Anillo de aprobación",
         "selectWhichUpdateRingGovernsPatchApprovals": "Seleccione qué anillo de actualización rige las aprobaciones de parches para esta política. Déjelo vacío para aprobaciones solo manuales.",
@@ -1266,7 +1186,16 @@
             "nic_unreadable": "Hay un adaptador cableado, pero no se pudo leer",
             "nic_cmdlets_unavailable": "No se pueden leer los ajustes del adaptador de red en este dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet activado",
-            "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware"
+            "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware",
+            "nic_eee_unknown": "Estado de Energy-Efficient Ethernet desconocido",
+            "firmware_wake_on_lan_not_lan_only": "Wake on LAN del BIOS no está configurado como solo LAN",
+            "firmware_deep_sleep_enabled": "El control de suspensión profunda del BIOS está activado",
+            "firmware_setting_unrecognised": "No se reconoció en este modelo una configuración del BIOS que Breeze revisa",
+            "firmware_value_not_allowed": "Este modelo no permite el valor del BIOS que Breeze necesita",
+            "firmware_value_unrecognised": "No se reconoció un valor del BIOS que Breeze revisa",
+            "firmware_unreadable": "No se pudo leer la configuración del BIOS",
+            "firmware_interface_unavailable": "Este modelo no expone la configuración del BIOS a Windows",
+            "vendor_observe_only": "Observando el firmware del fabricante (solo lectura)"
           },
           "attempts": {
             "pending": "Pendiente",
@@ -1276,6 +1205,14 @@
             "timed_out": "Tiempo agotado",
             "unknown": "Desconocido",
             "refused": "Rechazado"
+          },
+          "observing": "Observando {{vendor}}: {{interface}}",
+          "observingWithCode": "Observando {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interfaz presente",
+            "absent": "interfaz no presente",
+            "access_denied": "acceso denegado",
+            "error": "error de lectura"
           }
         }
       },
@@ -1370,6 +1307,8 @@
         "blockedLabel": "Actualizaciones bloqueadas",
         "blockedPlaceholder": "ID de actualización, separados por comas",
         "blockedHelp": "Breeze nunca instala una actualización incluida aquí.",
+        "blockedUnsupported": "{{vendor}} no admite bloquear actualizaciones individuales. Para detener sus actualizaciones, desactiva la categoría o el fabricante.",
+        "blockedStoredUnsupported": "Esta política bloquea las actualizaciones de {{vendor}} {{ids}}, algo que {{vendor}} no admite, por lo que no se ejecuta ninguna actualización de {{vendor}} con ella. Al guardar, se quitan las actualizaciones bloqueadas.",
         "executeRequired": "Activar las actualizaciones de fabricante, agregar una categoría, activar los reinicios nocturnos o desbloquear una actualización requiere el permiso devices.execute y MFA. Pide a alguien que lo tenga que guarde este cambio.",
         "gateClosedRefusal": "Una de las categorías de actualización seleccionadas aún no está disponible, por lo que no se guardó el criterio. Quítala y guarda de nuevo.",
         "invalid": "Revisa la programación: la ventana es de 1 a 8 horas completas, la recuperación es de 0 a 14 noches y la hora de inicio tiene el formato HH:MM.",
@@ -1432,19 +1371,333 @@
         "body": "Estas condiciones existen como monitor adjunto y también como regla o vigilancia heredada: {{names}}"
       }
     },
-    "partnerGroupAssignment": {
-      "title": "Grupos de dispositivos (todas las org.)",
-      "description": "Selecciona un grupo de dispositivos de todo el socio como destino. Una asignación de grupo se aplica a nivel de grupo de dispositivos, por lo que tiene prioridad sobre las asignaciones de otras políticas a nivel de organización y sitio.",
-      "selectGroup": "Selecciona un grupo de dispositivos",
-      "assign": "Asignar",
-      "remove": "Quitar",
-      "assigned": "Grupo de dispositivos asignado",
-      "removed": "Asignación del grupo de dispositivos eliminada",
-      "failedToLoad": "No se pudieron cargar los grupos de dispositivos",
-      "failedToAssign": "No se pudo asignar el grupo de dispositivos",
-      "failedToRemove": "No se pudo eliminar la asignación del grupo de dispositivos",
-      "empty": "Aún no hay grupos de dispositivos de todo el socio. Crea uno en Grupos de dispositivos → Todas las org.",
-      "loading": "Cargando grupos de dispositivos…"
+    "featureNames": {
+      "patch": {
+        "label": "Parches"
+      },
+      "monitors": {
+        "label": "Monitores"
+      },
+      "backup": {
+        "label": "Respaldo"
+      },
+      "security": {
+        "label": "Seguridad"
+      },
+      "maintenance": {
+        "label": "Mantenimiento"
+      },
+      "compliance": {
+        "label": "Cumplimiento"
+      },
+      "automation": {
+        "label": "Automatizaciones"
+      },
+      "event_log": {
+        "label": "Registros de eventos"
+      },
+      "software_policy": {
+        "label": "Política de software"
+      },
+      "sensitive_data": {
+        "label": "Descubrimiento de datos"
+      },
+      "peripheral_control": {
+        "label": "Control de periféricos"
+      },
+      "warranty": {
+        "label": "Garantía"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Acceso remoto"
+      },
+      "pam": {
+        "label": "Acceso privilegiado"
+      },
+      "vulnerability": {
+        "label": "Análisis de vulnerabilidades"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Ciclo de vida del dispositivo"
+      },
+      "hardware_monitoring": {
+        "label": "Monitoreo de hardware"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Todas las organizaciones"
+      },
+      "organization": {
+        "label": "Organización"
+      },
+      "site": {
+        "label": "Sitio"
+      },
+      "device_group": {
+        "label": "Grupo de dispositivos"
+      },
+      "device": {
+        "label": "Dispositivo"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Se aplica a",
+      "unknownState": "Desconocido",
+      "notAppliedWarning": "No se aplica a ningún dispositivo. Esta política no se aplica a nada hasta que elija dónde se aplica.",
+      "notAppliedNeutral": "Aún no se aplica",
+      "inUseCount_one": "En uso mediante {{count}} política",
+      "inUseCount_other": "En uso mediante {{count}} políticas",
+      "moreTargets_one": "{{count}} destino más",
+      "moreTargets_other": "{{count}} destinos más",
+      "assignButton": "Asignar"
+    },
+    "appliesToPanel": {
+      "loadFailed": "No se pudo cargar dónde se aplica esta política",
+      "applyFailed": "No se pudieron aplicar los cambios",
+      "applied": "Cambios aplicados",
+      "loading": "Cargando dónde se aplica esta política",
+      "retry": "Reintentar",
+      "unnamedTarget": "Destino {{id}}",
+      "rowStateAdded": "Nuevo",
+      "rowStateChanged": "Modificado",
+      "rowStateRemoved": "Se quitará",
+      "undoRemove": "Deshacer",
+      "removeTarget": "Quitar {{name}}",
+      "advanced": "Avanzado",
+      "priorityLabel": "Prioridad",
+      "priorityHint": "En el mismo nivel, gana el número más bajo.",
+      "entryRefused": "Este cambio fue rechazado.",
+      "conflictFallback": "Dónde se aplica esta política cambió desde que la abrió. No se aplicó nada.",
+      "lockedOrganization": "Administrada por {{organization}}. Se aplica solo dentro de esa organización.",
+      "scopeLegend": "Se aplica a",
+      "scopeAllOrganizations": "Todas las organizaciones",
+      "scopeAllOrganizationsHint": "Todas las organizaciones que administra su MSP, incluidas las que se agreguen después.",
+      "scopeSpecificTargets": "Destinos específicos",
+      "scopeSpecificTargetsHint": "Solo las organizaciones, sitios, grupos de dispositivos y dispositivos que se enumeran abajo.",
+      "targetsHeading": "Destinos",
+      "noTargets": "Aún no hay destinos. Agregue uno abajo.",
+      "hiddenRows_one": "Se aplica {{count}} destino más al que no tiene acceso. Aplicar lo deja como está.",
+      "hiddenRows_other": "Se aplican {{count}} destinos más a los que no tiene acceso. Aplicar los deja como están.",
+      "addTargetHeading": "Agregar destino",
+      "precedenceLegend": "Gana el más específico, por función: Dispositivo › Grupo de dispositivos › Sitio › Organización › Todas las organizaciones. Una política más cercana reemplaza la función completa; no se combinan.",
+      "reload": "Recargar",
+      "zeroMatching": "0 dispositivos coincidentes. Después de este cambio, la política no llega a ningún dispositivo que usted pueda ver.",
+      "counting": "Contando dispositivos…",
+      "countUnavailable": "No se pudieron contar los dispositivos que afecta este cambio.",
+      "estimateNote": "Estimación: hay demasiados destinos para contarlos con exactitud.",
+      "discard": "Descartar cambios",
+      "discardConfirmQuestion": "¿Descartar los cambios preparados?",
+      "discardConfirm": "Descartar",
+      "keepEditing": "Seguir editando",
+      "applying": "Aplicando…",
+      "applyButton": "Aplicar",
+      "applyWithDelta_one": "Aplicar · agrega {{added}} dispositivo, quita {{removed}}",
+      "applyWithDelta_other": "Aplicar · agrega {{added}} dispositivos, quita {{removed}}",
+      "applyWithEstimate_one": "Aplicar · agrega unos {{added}} dispositivo, quita unos {{removed}}",
+      "applyWithEstimate_other": "Aplicar · agrega unos {{added}} dispositivos, quita unos {{removed}}"
+    },
+    "targetPicker": {
+      "levelGroupLabel": "Nivel de destino",
+      "searchPlaceholder": "Buscar",
+      "loading": "Cargando…",
+      "loadFailed": "No se pudieron cargar los destinos",
+      "noResults": "Sin coincidencias",
+      "alreadyListed": "Ya está en la lista",
+      "changeOrganization": "Cambiar organización",
+      "chooseOrganizationFirst": "Primero elija la organización.",
+      "lockedOrganizationHint": "Una política administrada por la organización se aplica solo dentro de su propia organización.",
+      "mspGroupsHeading": "Grupos de dispositivos de todas las organizaciones"
+    },
+    "reachCount": {
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivos",
+      "atLeastDevices_one": "Al menos {{count}} dispositivo",
+      "atLeastDevices_other": "Al menos {{count}} dispositivos",
+      "noneVisible": "Ningún dispositivo que usted pueda ver"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Definido aquí"
+      },
+      "from_parent": {
+        "label": "De la política principal"
+      },
+      "changed_from_parent": {
+        "label": "Cambiado aquí"
+      },
+      "not_set": {
+        "label": "Sin definir"
+      },
+      "unavailable": {
+        "label": "No disponible en esta política"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Funciones de la política",
+      "selectLabel": "Función de la política",
+      "groups": {
+        "updates_software": {
+          "label": "Actualizaciones y software"
+        },
+        "monitoring": {
+          "label": "Supervisión"
+        },
+        "security": {
+          "label": "Seguridad"
+        },
+        "backup": {
+          "label": "Respaldo"
+        },
+        "access_end_user": {
+          "label": "Acceso y usuario final"
+        },
+        "lifecycle": {
+          "label": "Ciclo de vida"
+        },
+        "results": {
+          "label": "Resultados"
+        }
+      },
+      "statusOutranked_one": "{{state}} · Superada en {{count}} dispositivo",
+      "statusOutranked_other": "{{state}} · Superada en {{count}} dispositivos"
+    },
+    "policyHeader": {
+      "editDetails": "Editar detalles",
+      "managedByOrganization": "Administrada por {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Solo lectura. Su MSP administra esta política, así que solo su MSP puede cambiarla."
+        },
+        "msp_managed_limited_access": {
+          "message": "Solo lectura. Su MSP administra esta política y su acceso abarca solo algunas organizaciones."
+        },
+        "site_restricted": {
+          "message": "Solo lectura. Su acceso se limita a algunos sitios y esta política llega más allá de ellos."
+        },
+        "no_write_permission": {
+          "message": "Solo lectura. Su rol puede ver las políticas de configuración, pero no cambiarlas."
+        },
+        "not_editable": {
+          "message": "Solo lectura. Puede ver esta política, pero no cambiarla."
+        },
+        "unexplained": {
+          "message": "Solo lectura."
+        }
+      }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivos",
+      "atLeastDeviceCount_one": "al menos {{count}} dispositivo",
+      "atLeastDeviceCount_other": "al menos {{count}} dispositivos",
+      "noVisibleDevices": "ningún dispositivo que usted pueda ver",
+      "policyCount_one": "{{count}} política",
+      "policyCount_other": "{{count}} políticas",
+      "reaches": "llega a {{devices}}",
+      "inUseThrough": "en uso mediante {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Activar",
+      "activateWithReach": "Activar · {{reach}}",
+      "deactivateAction": "Desactivar",
+      "archiveAction": "Archivar",
+      "restoreAction": "Restaurar",
+      "restoreHint": "Restaura la política como Inactiva.",
+      "deactivateConfirmTitle": "¿Desactivar esta política?",
+      "deactivateConfirmMessage": "Deja de aplicar su configuración a los dispositivos a los que se dirige directamente. Puede activarla de nuevo más adelante.",
+      "deactivateImpactDirect": "Se dirige directamente a {{devices}}: dejan de recibir su configuración.",
+      "deactivateImpactNoneVisible": "No se dirige directamente a ningún dispositivo que puedas ver.",
+      "deactivateImpactChildren": "Las políticas basadas en ella conservan su configuración: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "Activar esta política habilita las actualizaciones de proveedores en los dispositivos a los que se aplica. Para eso se necesitan el permiso devices.execute y MFA. Pida a alguien que lo tenga que active esta política.",
+      "changeFailed": "No se cambió el estado de la política.",
+      "activatedToast": "Política activada",
+      "deactivatedToast": "Política desactivada",
+      "archivedToast": "Política archivada",
+      "restoredToast": "Política restaurada como Inactiva"
+    },
+    "policyCreate": {
+      "title": "Nueva política de configuración",
+      "startsInactive": "Una política nueva comienza inactiva y no llega a ningún dispositivo hasta que la active. Puede configurar todas las funciones antes de guardar nada.",
+      "namePlaceholder": "p. ej., Estaciones de trabajo estándar",
+      "descriptionPlaceholder": "Opcional: para qué sirve esta política",
+      "nameRequired": "Ponga un nombre a la política antes de guardarla.",
+      "organizationRequired": "Elija la organización que administra esta política.",
+      "createFailed": "No se pudo crear la política.",
+      "invalidParent": "Esa política no puede ser la política principal de esta.",
+      "managedByLabel": "Administrada por",
+      "managedByMspOption": "Su MSP (puede aplicarse a cualquiera de sus organizaciones)",
+      "chooseOrganizationOption": "Elegir una organización",
+      "managedByOrganization": "Administrada por {{organization}}",
+      "managedByOwnOrgFallback": "Administrada por su organización",
+      "mspTrade": "Una política administrada por el MSP no puede vincular elementos propios de un cliente (software, seguridad o respaldo) ni un destino de respaldo específico, y no puede incluir OneDrive Helper.",
+      "mspTradePicker": "Esta política la administra el MSP: solo puede vincular elementos compartidos entre sus organizaciones, no los propios de un cliente.",
+      "orgManagedHint": "Administrada por una organización: se aplica solo a los dispositivos de esa organización y puede vincular los elementos propios de esa organización.",
+      "startFromLegend": "Comenzar desde",
+      "startFromBlank": "En blanco",
+      "startFromParent": "Basada en una política principal",
+      "parentNeedsOrganization": "Elija primero la organización. Se muestran las políticas principales que puede usar.",
+      "parentHint": "Las funciones que esta política no define provienen de la política principal.",
+      "parentReadFailed": "No se pudieron leer las funciones de la política principal, por lo que la lista de funciones no muestra lo que define. Al guardar, esta política se basará igualmente en ella.",
+      "fixedAtFirstSave": "«Administrada por» y «Basada en» se fijan al guardar la política por primera vez.",
+      "fixedNote": "«Administrada por» y «Basada en» se fijaron al guardar esta política por primera vez.",
+      "firstSaveFailed": "La política se guardó como Inactiva y no se aplica a ningún dispositivo, pero no se guardó {{feature}}. Corrija el problema que se indica abajo y guarde de nuevo.",
+      "savedInactiveToast": "Guardada como Inactiva. Aún no se aplica a ningún dispositivo."
+    },
+    "activation": {
+      "drawerTitle": "Activar esta política",
+      "activateWithReach": "Activar · {{reach}}",
+      "needsDecision": "Para activar se necesita al menos un destino. También puede elegir «No aplicar todavía» y la política permanecerá inactiva.",
+      "dontApplyYet": "No aplicar todavía",
+      "dontApplyHint": "Mantiene la política inactiva y sin aplicarse en ningún lado.",
+      "applyFailedStaysInactive": "No se aplicaron los destinos, así que no se activó nada. La política sigue inactiva.",
+      "activateFailedAfterApply": "Se aplicaron los destinos, pero la política sigue inactiva: {{reason}}"
+    },
+    "outranked": {
+      "line_one": "Superada en {{count}} dispositivo",
+      "line_other": "Superada en {{count}} dispositivos",
+      "detail": "Allí prevalece una política más específica o de mayor prioridad para esta función. De los dispositivos que puede ver, esta política alcanza {{reached}}.",
+      "capped": "Hay demasiados dispositivos para contar dónde prevalece otra política para esta función.",
+      "openDevice": "Abra la pestaña Configuración de un dispositivo para ver qué política se le aplica."
+    },
+    "copyPolicy": {
+      "action": "Copiar",
+      "title": "Copiar política",
+      "defaultName": "{{name}} (copia)",
+      "startsInactive": "La copia comienza inactiva y no se aplica a ningún dispositivo hasta que la aplique y la active. Los elementos que vincula, como los anillos de actualización y los monitores, se comparten con la original, no se duplican.",
+      "checking": "Comprobando qué se puede copiar…",
+      "carriedHeading": "Copiado",
+      "carriedNone": "Esta política no configura ninguna función propia.",
+      "droppedHeading": "No copiado",
+      "reasons": {
+        "org_only_feature": "solo una política administrada por una organización puede configurar esta función.",
+        "linked_item_unavailable": "usa un elemento que el nuevo propietario no puede usar.",
+        "settings_not_valid": "su configuración guardada ya no supera las validaciones actuales."
+      },
+      "noticesHeading": "Copiado con un cambio",
+      "notices": {
+        "consent_required": "«Recopilar la garantía HP desde el dispositivo» se copia desactivado: una copia nunca acepta la licencia de HP en nombre de nadie. Márquelo en la copia para volver a aceptar la licencia."
+      },
+      "confirm": "Copiar política",
+      "copying": "Copiando…",
+      "copiedToast": "Política copiada. Está inactiva hasta que la active.",
+      "failed": "No se pudo copiar la política.",
+      "previewFailed": "No se pudo comprobar qué se puede copiar. Inténtelo de nuevo.",
+      "invalidParent": "Esa política principal no se puede usar con el propietario que eligió. Elija otra política principal o ninguna.",
+      "executeRequired": "Esta política activa funciones que instalan software o mueven archivos en los dispositivos, por lo que copiarla requiere el permiso devices:execute.",
+      "mfaRequired": "Confirme su identidad con MFA para copiar esta política.",
+      "copyToOrganization": "Copiar a una organización",
+      "changeWithCopy": "Copiar con otro propietario o política principal",
+      "droppedSincePreview": "Se copió, pero estas funciones no se copiaron porque algo cambió desde la comprobación: {{features}}."
     }
   },
   "software": {

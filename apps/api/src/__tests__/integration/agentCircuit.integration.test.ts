@@ -18,6 +18,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 
 const { publishEventMock } = vi.hoisted(() => ({
   publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
@@ -27,7 +28,7 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
   return { ...actual, publishEvent: publishEventMock };
 });
 
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents, auditLogs, devices } from '../../db/schema';
 import { aiAgentCircuitState } from '../../db/schema/aiAgentCircuitState';
 import {
@@ -38,7 +39,7 @@ import {
   type CreateAgentRunInput,
   type CreateAgentRunResult,
 } from '../../services/aiAgents/runService';
-import { getCircuitState, isCircuitOpen, resetCircuit } from '../../services/aiAgents/agentCircuit';
+import { getCircuitState, isCircuitOpen, listOpenCircuits, resetCircuit } from '../../services/aiAgents/agentCircuit';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
 
@@ -320,5 +321,53 @@ describe('per-org circuit breaker against real Postgres (#3828)', () => {
         .where(and(eq(aiAgentCircuitState.orgId, t.org.id), eq(aiAgentCircuitState.agentId, t.agent.id))),
     );
     expect(rows).toHaveLength(0);
+  });
+
+  // #12347 — the settings list's read. Runs under the CALLER's RLS context,
+  // not system scope, so an org-scoped caller must never learn about another
+  // org's open circuit even with no app-layer pin at all; and the stored
+  // reason now names what failed.
+  it('listOpenCircuits returns only the caller org\'s open circuits, with the failure code in the reason', async () => {
+    const a = await seedTenant(1);
+    const b = await createOrganization({ partnerId: a.partner.id });
+
+    const runA = expectCreated(await createAndEnqueueAgentRun(triggerInput(a)));
+    await transitionRunStatus(runA.id, ['queued', 'running'], 'failed', {
+      errorCode: 'llm_unavailable', finishedAt: new Date(),
+    });
+    // Open org B's circuit for the same partner-wide agent directly.
+    await withSystemDbAccessContext(() =>
+      db.insert(aiAgentCircuitState).values({
+        orgId: b.id, agentId: a.agent.id, partnerId: a.partner.id,
+        consecutiveFailures: 1, state: 'open', openedAt: new Date(), openedReason: 'org b fixture',
+      }),
+    );
+
+    const orgACtx: DbAccessContext = {
+      scope: 'organization', orgId: a.org.id, accessibleOrgIds: [a.org.id],
+      accessiblePartnerIds: [], userId: a.user.id,
+    };
+    // No app-layer pin: RLS alone must hide org B's row.
+    const unpinned = await withDbAccessContext(orgACtx, () =>
+      listOpenCircuits(() => undefined, [a.agent.id]),
+    );
+    const listed = unpinned.get(a.agent.id) ?? [];
+    expect(listed.map((row) => row.orgId)).toEqual([a.org.id]);
+    expect(listed[0]!.openedReason).toBe('1 consecutive terminal failures (threshold 1); last failure: llm_unavailable');
+    expect(listed[0]!.orgName).toEqual(expect.any(String));
+
+    // The partner sees both; the app-layer pin narrows to the orgs it names.
+    const partnerCtx: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [a.org.id, b.id],
+      accessiblePartnerIds: [a.partner.id], userId: a.user.id,
+    };
+    const both = await withDbAccessContext(partnerCtx, () =>
+      listOpenCircuits(() => undefined, [a.agent.id]),
+    );
+    expect((both.get(a.agent.id) ?? []).map((row) => row.orgId).sort()).toEqual([a.org.id, b.id].sort());
+    const pinned = await withDbAccessContext(partnerCtx, () =>
+      listOpenCircuits((column: PgColumn) => eq(column, b.id), [a.agent.id]),
+    );
+    expect((pinned.get(a.agent.id) ?? []).map((row) => row.orgId)).toEqual([b.id]);
   });
 });

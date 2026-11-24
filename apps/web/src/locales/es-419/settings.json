@@ -2945,7 +2945,8 @@
         "not_found": "no es un script que el propietario de este agente pueda ver",
         "not_in_partner_baseline": "no está en la línea base del partner",
         "run_script_not_allowed": "\"Ejecutar un script\" no está permitido para este agente"
-      }
+      },
+      "circuitOpen": "El disyuntor de este agente está abierto para esta organización, así que no se inició ninguna ejecución. Restablécelo desde la fila del agente para volver a ejecutarlo."
     },
     "actions": {
       "add": "Nuevo agente",
@@ -5119,6 +5120,27 @@
           "hint": "Límite total de gasto por día entre todas las ejecuciones de este agente."
         }
       }
+    },
+    "circuit": {
+      "badge": "Disyuntor abierto",
+      "openedSince": "En pausa en {{org}} desde {{at}}.",
+      "opened": "En pausa en {{org}}.",
+      "reason": "Motivo: {{reason}}",
+      "reset": "Restablecer",
+      "dialog": {
+        "title": "¿Restablecer el disyuntor?",
+        "message": "{{agent}} volverá a ejecutarse en {{org}}. Si no se corrige lo que lo hizo fallar, se pausará otra vez tras la misma cantidad de fallas.",
+        "reasonLabel": "Motivo (se guarda en el registro de auditoría)",
+        "reasonPlaceholder": "Por ejemplo: la puerta de enlace del modelo volvió a funcionar",
+        "confirm": "Restablecer disyuntor"
+      },
+      "toasts": {
+        "reset": "Disyuntor restablecido. El agente puede volver a ejecutarse.",
+        "resetFailed": "No se pudo restablecer el disyuntor."
+      },
+      "errors": {
+        "mfaRequired": "Para restablecer un disyuntor se necesita una sesión iniciada con autenticación de dos factores. Vuelve a iniciar sesión con tu segundo factor."
+      }
     }
   },
   "apiKeyForm": {
@@ -5906,7 +5928,8 @@
   "settingsSectionNav": {
     "settingsSection": "Sección de configuración",
     "settingsSections": "Secciones de configuración",
-    "unsavedChanges": "{{label}} (cambios no guardados)"
+    "unsavedChanges": "{{label}} (cambios no guardados)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "El nombre del proveedor es obligatorio.",

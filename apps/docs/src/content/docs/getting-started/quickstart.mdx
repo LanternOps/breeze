@@ -314,7 +314,7 @@ Two ways out:
 | `breeze-api` | 3001 (internal) | Hono API server |
 | `breeze-web` | 4321 (internal) | Astro SSR dashboard |
 | `breeze-portal` | 4322 (internal) | Customer portal, served under `/portal` |
-| `breeze-postgres` | 5432 (internal) | PostgreSQL 16 database |
+| `breeze-postgres` | 5432 (internal) | PostgreSQL database (16 by default; 17 and 18 supported) |
 | `breeze-redis` | 6379 (internal) | Redis 8 (BullMQ + caching) |
 | `worker` (no fixed container name) | — (internal) | Background job workers, split out from the API process (only with `--profile worker-split`) |
 | `breeze-coturn` | 3478 (host) | TURN relay for WebRTC remote desktop (only with `--profile turn`) |

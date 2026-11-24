@@ -199,8 +199,8 @@ vi.mock('./helpers', () => ({
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
-  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
-  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] })),
+  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslOptedIn: false })),
+  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a
@@ -234,12 +234,17 @@ vi.mock('./helpers', () => ({
   resolvePinnedUpgradeTargets: async (args: {
     platform: string; architecture: string; agentId?: string;
     requests: Array<{ component: string; pin: string | null }>;
+    // #12169 — forwarded so a test can drive the minimum-OS gate through the
+    // single-resolver mock.
+    deviceOs: import('../../services/agentOsFloor').DeviceOsFacts;
+    onOsHold?: (hold: import('./helpers').UpgradeOsHold) => void;
   }) => {
     const helpers = await import('./helpers');
     const out = new Map<string, string | null>();
     for (const r of args.requests) {
       out.set(r.component, await helpers.resolvePinnedUpgradeTarget({
         component: r.component, platform: args.platform, architecture: args.architecture, pin: r.pin, agentId: args.agentId,
+        deviceOs: args.deviceOs, onOsHold: args.onOsHold,
       }));
     }
     return out;

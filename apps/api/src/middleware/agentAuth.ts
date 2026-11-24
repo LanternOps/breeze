@@ -496,6 +496,13 @@ const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [strin
   // run inside the request-long org transaction (#1105); its DB read is one
   // short system context keyed by the authenticated device's org.
   ['prompt-identity', 'logo'],
+  // #8318 T1: TPM attestation. The challenge runs a per-device rate limit
+  // and stores the challenge in Redis; the completion consumes it (GETDEL)
+  // before opening its own short org-scoped transaction for the baseline and
+  // its audit row (routes/agents/attestation.ts, services/tpmAttestation). No
+  // Redis round-trip may run inside the request-long wrap (#1105).
+  ['attestation', 'challenge'],
+  ['attestation', 'complete'],
 ];
 
 /**

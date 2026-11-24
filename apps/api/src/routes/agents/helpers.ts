@@ -44,6 +44,7 @@ import {
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { releaseFilesystemScanGenerationForCommand } from '../../services/filesystemScanGenerationRelease';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
+import { VENDOR_STAGES, vendorStage } from '../../services/vendorCanary';
 import {
   claimFilesystemScanGeneration,
   setFilesystemScanGeneration,
@@ -88,6 +89,7 @@ import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy
 import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
+import { evaluateOsFloor, noteOsFloorHold, type DeviceOsFacts, type OsFloorHoldReason } from '../../services/agentOsFloor';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
@@ -3232,8 +3234,15 @@ export async function resolvePinnedUpgradeTarget(args: {
   architecture: string;
   pin: string | null;
   agentId?: string;
+  /**
+   * #12169: the device's OS, judged against the target row's
+   * min_os_version. Required so every offer path is gated (tsc finds them).
+   */
+  deviceOs: DeviceOsFacts;
+  /** Called when the minimum-OS gate holds the target (the resolver returns null). */
+  onOsHold?: (hold: UpgradeOsHold) => void;
 }): Promise<string | null> {
-  const { component, platform, architecture, pin, agentId } = args;
+  const { component, platform, architecture, pin, agentId, deviceOs, onOsHold } = args;
 
   if (pin === null) {
     // LOCKSTEP (#3499): this promoted-row query is duplicated by
@@ -3244,7 +3253,7 @@ export async function resolvePinnedUpgradeTarget(args: {
     // whose bytes get served, agents are told to upgrade to something that
     // fails checksum verification on arrival.
     const [latest] = await db
-      .select({ version: agentVersions.version })
+      .select({ version: agentVersions.version, minOsVersion: agentVersions.minOsVersion })
       .from(agentVersions)
       .where(
         and(
@@ -3261,11 +3270,13 @@ export async function resolvePinnedUpgradeTarget(args: {
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
       .limit(1);
-    return servableTargetOrNull(component, platform, architecture, latest?.version ?? null);
+    return gatedTargetOrNull(
+      component, platform, architecture, latest?.version ?? null, latest?.minOsVersion ?? null, deviceOs, onOsHold,
+    );
   }
 
   const [pinned] = await db
-    .select({ version: agentVersions.version })
+    .select({ version: agentVersions.version, minOsVersion: agentVersions.minOsVersion })
     .from(agentVersions)
     .where(
       and(
@@ -3289,7 +3300,48 @@ export async function resolvePinnedUpgradeTarget(args: {
     warnMissingPinnedBuild(component, platform, architecture, pin, agentId);
     return null;
   }
-  return servableTargetOrNull(component, platform, architecture, pinned.version);
+  return gatedTargetOrNull(component, platform, architecture, pinned.version, pinned.minOsVersion, deviceOs, onOsHold);
+}
+
+/**
+ * A target the minimum-OS gate held (#12169): the device's OS is below the
+ * release's floor (`os_below_minimum`), or cannot be read while the release
+ * has one (`os_version_unknown`). The device stays on its installed version.
+ */
+export interface UpgradeOsHold {
+  component: string;
+  blockedVersion: string;
+  reason: OsFloorHoldReason;
+  requiredOs: string;
+  reportedOs: string | null;
+}
+
+/**
+ * The servability check (#7516), then the minimum-OS gate (#12169). Pins get
+ * no exception: a pinned version above the device's OS floor is held too.
+ */
+async function gatedTargetOrNull(
+  component: string,
+  platform: string,
+  architecture: string,
+  version: string | null,
+  minOs: string | null,
+  deviceOs: DeviceOsFacts,
+  onOsHold: ((hold: UpgradeOsHold) => void) | undefined,
+): Promise<string | null> {
+  const servable = await servableTargetOrNull(component, platform, architecture, version);
+  if (servable === null) return null;
+  const decision = evaluateOsFloor(deviceOs, minOs);
+  if (decision.kind === 'allow') return servable;
+  noteOsFloorHold(deviceOs, decision);
+  onOsHold?.({
+    component,
+    blockedVersion: servable,
+    reason: decision.reason,
+    requiredOs: decision.requiredOs,
+    reportedOs: decision.reportedOs,
+  });
+  return null;
 }
 
 /**
@@ -3332,15 +3384,23 @@ export async function resolvePinnedUpgradeTargets(args: {
   architecture: string;
   requests: readonly PinnedUpgradeRequest[];
   agentId?: string;
+  /** #12169 — see resolvePinnedUpgradeTarget. */
+  deviceOs: DeviceOsFacts;
+  onOsHold?: (hold: UpgradeOsHold) => void;
 }): Promise<Map<string, string | null>> {
-  const { platform, architecture, requests, agentId } = args;
+  const { platform, architecture, requests, agentId, deviceOs, onOsHold } = args;
   const result = new Map<string, string | null>();
   if (requests.length === 0) return result;
 
   const components = [...new Set(requests.map((r) => r.component))];
   const pinned = requests.filter((r): r is PinnedUpgradeRequest & { pin: string } => r.pin !== null);
   const rows = await db
-    .select({ component: agentVersions.component, version: agentVersions.version, isLatest: agentVersions.isLatest })
+    .select({
+      component: agentVersions.component,
+      version: agentVersions.version,
+      isLatest: agentVersions.isLatest,
+      minOsVersion: agentVersions.minOsVersion,
+    })
     .from(agentVersions)
     .where(
       and(
@@ -3358,13 +3418,21 @@ export async function resolvePinnedUpgradeTargets(args: {
 
   for (const request of requests) {
     if (request.pin === null) {
-      const latest = rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null;
-      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, latest));
+      const latest = rows.find((r) => r.component === request.component && r.isLatest) ?? null;
+      result.set(
+        request.component,
+        await gatedTargetOrNull(
+          request.component, platform, architecture, latest?.version ?? null, latest?.minOsVersion ?? null, deviceOs, onOsHold,
+        ),
+      );
       continue;
     }
     const hit = rows.find((r) => r.component === request.component && r.version === request.pin);
     if (hit) {
-      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, hit.version));
+      result.set(
+        request.component,
+        await gatedTargetOrNull(request.component, platform, architecture, hit.version, hit.minOsVersion, deviceOs, onOsHold),
+      );
       continue;
     }
     warnMissingPinnedBuild(request.component, platform, architecture, request.pin, agentId);
@@ -3651,21 +3719,23 @@ export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: Devi
 
 export interface WarrantySettings {
   /**
-   * When true the (Windows-only) agent may collect HP warranty data on the
-   * device via HP's CMSL. False explicitly tells the agent to stop — so
-   * unassigning the policy, or a nearer policy replacing the link without an
-   * hpCmsl block, cleanly revokes collection.
+   * The device's per-device HP CMSL opt-in: the nearest warranty link has
+   * hpCmsl enabled with consent to the current EULA. It is an input to the
+   * mode, not the mode: the heartbeat combines it with the vendor canary stage
+   * for the agent's partner (services/hpWarrantyGate.ts), and without it the
+   * device is `off`. False — unassigning the policy, or a nearer policy
+   * replacing the link without an hpCmsl block — cleanly revokes.
    */
-  hpCmslEnabled: boolean;
+  hpCmslOptedIn: boolean;
 }
 
 /**
  * Resolves the warranty feature link for the device and surfaces the HP CMSL
- * collection flag for the heartbeat config push. A device with no warranty
- * policy assigned resolves to `false`, which the agent treats as "stop
- * collecting". The caller (heartbeat) omits the block entirely on a resolver
- * error so a transient failure never revokes collection fleet-wide — which is
- * why this function deliberately does NOT catch.
+ * opt-in for the heartbeat config push. A device with no warranty policy
+ * assigned resolves to `false`, which the heartbeat sends as mode `off`. The
+ * caller (heartbeat) omits the block entirely on a resolver error so a
+ * transient failure never revokes fleet-wide — which is why this function
+ * deliberately does NOT catch.
  *
  * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
  * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
@@ -3674,7 +3744,7 @@ export interface WarrantySettings {
  */
 export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
-  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
+  return { hpCmslOptedIn: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
 // ============================================
@@ -3685,18 +3755,47 @@ export interface WakeOnLanConfigUpdate {
   enabled: boolean;
   configureSettings: false;
   firmwareWrites: string[];
+  /** Vendors the agent may READ (observe-first amendment §1); never a write grant. */
+  observeVendors: string[];
+}
+
+/**
+ * The wake_on_lan vendors whose canary stage is `observe` or `act` for this
+ * partner, sorted. An env and code-table lookup only (services/vendorCanary.ts),
+ * so the heartbeat's query budget does not change. Empty for every partner
+ * while BREEZE_VENDOR_CANARY_PARTNER_IDS is unset, and for a pair named in
+ * BREEZE_VENDOR_CANARY_DISABLED. Dell is not in the table: it follows the
+ * plan's own write path (W04, W06).
+ */
+export function wakeObserveVendors(partnerId: string | null | undefined): string[] {
+  return Object.keys(VENDOR_STAGES.wake_on_lan)
+    .filter((vendor) => vendorStage('wake_on_lan', vendor, partnerId) !== 'off')
+    .sort();
 }
 
 /**
  * `enabled` = a wake_on_lan link resolves for the device, which tells the
  * agent to collect and upload its read-only readiness snapshot. Writes are off
  * until W06, so configureSettings is always false and firmwareWrites is empty.
+ * `observeVendors` is always sent (`[]` when off) so a revoked vendor reaches
+ * the agent on the next heartbeat; it is empty without a link, because observe
+ * runs only on a device a wake_on_lan policy opted in.
  * Deliberately does NOT catch: the heartbeat omits the block on a resolver
  * error so a transient failure never stops collection.
  */
-export async function buildWakeOnLanConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WakeOnLanConfigUpdate> {
+export async function buildWakeOnLanConfigUpdate(
+  deviceId: string,
+  opts?: DevicePolicySetOpts,
+  partnerId?: string | null,
+): Promise<WakeOnLanConfigUpdate> {
   const settings = await resolveWakeOnLanSettingsForDevice(deviceId, opts);
-  return { enabled: settings !== null, configureSettings: false, firmwareWrites: [] };
+  const enabled = settings !== null;
+  return {
+    enabled,
+    configureSettings: false,
+    firmwareWrites: [],
+    observeVendors: enabled ? wakeObserveVendors(partnerId) : [],
+  };
 }
 
 // ============================================

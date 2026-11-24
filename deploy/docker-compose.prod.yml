@@ -388,7 +388,9 @@ x-api-env: &api-env
   # every agent with the legacy heartbeat payload, as an older API would.
   HEARTBEAT_RETAIN_STATE_ENABLED: ${HEARTBEAT_RETAIN_STATE_ENABLED:-true}
   AGENT_ECH_ENABLED: ${AGENT_ECH_ENABLED:-true}
+  TPM_ATTESTATION_ENABLED: ${TPM_ATTESTATION_ENABLED:-false}
   NETWORK_ISOLATION_ENABLED: ${NETWORK_ISOLATION_ENABLED:-false}
+  LEARNED_NETWORKS_INGEST_ENABLED: ${LEARNED_NETWORKS_INGEST_ENABLED:-}
   NETWORK_ISOLATION_ENABLED_PARTNER_IDS: ${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}
   NETWORK_ISOLATION_TOKEN_SIGNING_KEY: ${NETWORK_ISOLATION_TOKEN_SIGNING_KEY:-}
   # #10190 prompt host kill switch. `-default` (no colon) on purpose: unset
@@ -446,9 +448,16 @@ x-api-env: &api-env
   # Vendor updates (#11065). Dark by default; the manifest gates in code stay
   # closed until a lab wave opens them. DISABLED_LANES stops new runs with no deploy.
   BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
+  # Browser remote desktop rollout flag (#9557). Off by default; temporary.
+  BREEZE_BROWSER_DESKTOP_ENABLED: ${BREEZE_BROWSER_DESKTOP_ENABLED:-false}
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
   BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
   OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
+  # Vendor canary (#11065 observe-first): partner UUIDs (at most 3) that run
+  # best-guess vendor code at its code-table stage. Empty = off for everyone.
+  # DISABLED is a feature:vendor kill switch (recreate api + worker to apply).
+  BREEZE_VENDOR_CANARY_PARTNER_IDS: ${BREEZE_VENDOR_CANARY_PARTNER_IDS:-}
+  BREEZE_VENDOR_CANARY_DISABLED: ${BREEZE_VENDOR_CANARY_DISABLED:-}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}

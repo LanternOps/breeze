@@ -7,7 +7,9 @@ import {
   OEM_LANES,
   OEM_UPDATES_POLICY_DEFAULTS,
   OEM_WEEKS_OF_MONTH,
+  oemLaneHonoursBlockedUpdateIds,
   oemUpdatesInlineSettingsSchema,
+  oemUpdatesInlineSettingsWriteSchema,
   type OemCategory,
   type OemLane,
   type OemUpdatesGateSnapshot,
@@ -16,6 +18,8 @@ import { fetchWithAuth } from '../../../stores/auth';
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
 // Inline settings for the `oem_updates` feature (Vendor updates, #11070): when
@@ -34,6 +38,10 @@ import '@/lib/i18n';
 //    category shows "now available" and keeps it off until a person turns it on.
 // Turning updates on, or adding a category, needs devices.execute + MFA; the API
 // decides and this tab explains its refusal.
+//
+// Dell cannot honour blocked update IDs (#12265), so its card offers no such field
+// and a save always sends `[]` for it. A Dell list stored before that rule is named
+// as the reason no Dell runs are sent, and the next save drops it.
 
 const VENDOR_NAMES: Record<OemLane, string> = {
   dell: 'Dell',
@@ -109,6 +117,7 @@ function readGates(body: unknown): OemUpdatesGateSnapshot | null {
     return [{
       lane: entry.lane as OemLane,
       shipped: entry.shipped === true,
+      observable: entry.observable === true,
       categories: Object.fromEntries(OEM_CATEGORIES.map((c) => [c, categories[c] === true])) as Record<OemCategory, boolean>,
     }];
   });
@@ -121,7 +130,6 @@ export default function VendorUpdatesTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
   orgId,
 }: FeatureTabProps) {
@@ -164,6 +172,9 @@ export default function VendorUpdatesTab({
   const laneGates = (lane: OemLane) => gates?.lanes.find((l) => l.lane === lane);
   const isOpen = (lane: OemLane, category: OemCategory) => laneGates(lane)?.categories[category] === true;
   const isShipped = (lane: OemLane) => laneGates(lane)?.shipped === true;
+  // Vendor canary only (#11065 observe-first): the lane can be switched on so its
+  // devices are observed read-only. Its categories stay closed.
+  const isObservable = (lane: OemLane) => laneGates(lane)?.observable === true;
 
   // A new policy preselects Dell plus the categories open today (spec 4.1). Once.
   useEffect(() => {
@@ -182,6 +193,7 @@ export default function VendorUpdatesTab({
   }, [gates, isNew]);
 
   const inherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(inherited);
   const partnerWide = orgId === null;
   // What the resolver will make of the stored link: one that no longer parses resolves as disabled.
   const storedInvalid = source != null && !oemUpdatesInlineSettingsSchema.safeParse(source).success;
@@ -198,7 +210,9 @@ export default function VendorUpdatesTab({
         if (value === undefined) continue;
         categories[category] = value;
       }
-      const blockedUpdateIds = Array.from(new Set(vendor.blocked.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)));
+      const blockedUpdateIds = oemLaneHonoursBlockedUpdateIds(lane)
+        ? Array.from(new Set(vendor.blocked.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)))
+        : [];
       vendors[lane] = { enabled: vendor.enabled, categories, blockedUpdateIds };
     }
     return {
@@ -216,7 +230,7 @@ export default function VendorUpdatesTab({
     };
   };
 
-  const parsed = oemUpdatesInlineSettingsSchema.safeParse(buildSettings());
+  const parsed = oemUpdatesInlineSettingsWriteSchema.safeParse(buildSettings());
 
   const persist = async (id: string | null) => {
     setAttempted(true);
@@ -248,13 +262,12 @@ export default function VendorUpdatesTab({
       saving={saving}
       saveTestId="vendor-updates-save"
       // No save until the gates are known: the form could not tell a stored category from a closed one.
-      saveDisabled={!gates || (inherited && !parsed.success)}
+      saveDisabled={!gates}
       error={handledError ? undefined : error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
-      onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
+      {...change.shellProps}
     >
       {partnerWide && (
         <span
@@ -284,7 +297,7 @@ export default function VendorUpdatesTab({
           <p>{k('storedInvalid')}</p>
         </div>
       )}
-      {attempted && !parsed.success && !inherited && (
+      {attempted && !parsed.success && !change.locked && (
         <div role="alert" data-testid="vendor-updates-invalid" className="mb-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>{k('invalid')}</p>
@@ -303,7 +316,7 @@ export default function VendorUpdatesTab({
         </div>
       )}
 
-      <fieldset disabled={inherited || saving} className="space-y-6">
+      <fieldset disabled={change.locked || saving} className="space-y-6">
         <label className="flex items-start gap-2 text-sm font-medium">
           <input
             data-testid="vendor-updates-enabled"
@@ -375,6 +388,7 @@ export default function VendorUpdatesTab({
           {OEM_LANES.map((lane) => {
             const vendor = form.vendors[lane];
             const shipped = isShipped(lane);
+            const blocklistSupported = oemLaneHonoursBlockedUpdateIds(lane);
             return (
               <div key={lane} data-testid={`vendor-updates-vendor-${lane}`} className="rounded-md border p-3">
                 <label className="flex items-center gap-2 text-sm font-medium">
@@ -383,7 +397,7 @@ export default function VendorUpdatesTab({
                     type="checkbox"
                     role="switch"
                     checked={vendor.enabled}
-                    disabled={!shipped && !vendor.enabled}
+                    disabled={!shipped && !isObservable(lane) && !vendor.enabled}
                     onChange={(e) => setVendor(lane, { enabled: e.target.checked })}
                   />
                   {k('vendorEnabled', { vendor: VENDOR_NAMES[lane] })}
@@ -424,18 +438,30 @@ export default function VendorUpdatesTab({
                         </div>
                       );
                     })}
-                    <label className={`block ${labelClass}`}>
-                      {k('blockedLabel')}
-                      <textarea
-                        data-testid={`vendor-updates-${lane}-blocked`}
-                        rows={2}
-                        className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
-                        value={vendor.blocked}
-                        placeholder={k('blockedPlaceholder')}
-                        onChange={(e) => setVendor(lane, { blocked: e.target.value })}
-                      />
-                      <span className="mt-1 block font-normal">{k('blockedHelp')}</span>
-                    </label>
+                    {!blocklistSupported && vendor.blocked !== '' && (
+                      <div role="alert" data-testid={`vendor-updates-${lane}-blocked-stored`} className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-300">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <p>{k('blockedStoredUnsupported', { vendor: VENDOR_NAMES[lane], ids: vendor.blocked })}</p>
+                      </div>
+                    )}
+                    {blocklistSupported ? (
+                      <label className={`block ${labelClass}`}>
+                        {k('blockedLabel')}
+                        <textarea
+                          data-testid={`vendor-updates-${lane}-blocked`}
+                          rows={2}
+                          className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                          value={vendor.blocked}
+                          placeholder={k('blockedPlaceholder')}
+                          onChange={(e) => setVendor(lane, { blocked: e.target.value })}
+                        />
+                        <span className="mt-1 block font-normal">{k('blockedHelp')}</span>
+                      </label>
+                    ) : (
+                      <p data-testid={`vendor-updates-${lane}-blocked-unsupported`} className="text-xs text-muted-foreground">
+                        {k('blockedUnsupported', { vendor: VENDOR_NAMES[lane] })}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

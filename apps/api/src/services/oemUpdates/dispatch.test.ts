@@ -64,6 +64,7 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('../dispatchDeviceCommand', () => ({ dispatchDeviceCommand: vi.fn() }));
+vi.mock('./observe', () => ({ observedHpPlatformUnsupported: vi.fn(async () => false) }));
 vi.mock('../partnerTrust.commands', () => ({ assertDeviceExecuteAllowed: vi.fn(async () => undefined) }));
 
 vi.mock('./toolManifest', async (importOriginal) => {
@@ -86,6 +87,7 @@ import {
 } from './dispatch';
 import { defaultOfflinePolicy } from '../commandOfflinePolicy';
 import { getLaneManifest, isLaneOpen, openCategoriesForLane } from './toolManifest';
+import { observedHpPlatformUnsupported } from './observe';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -348,6 +350,19 @@ describe('dispatchOemUpdateRun: the row', () => {
     expect(dispatchDeviceCommand).not.toHaveBeenCalled();
   });
 
+  // #12265: the agent refuses a Dell run with any blocked ID, so the seam never queues one.
+  // The scheduler already sends none (`blocked_ids_unsupported`); reaching here is a caller bug.
+  it('blocked IDs for Dell are a caller bug, and queue nothing', async () => {
+    await expect(dispatchOemUpdateRun(input({ blockedUpdateIds: ['ABC12'] }))).rejects.toThrow(/blocked update IDs/);
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+  });
+
+  it('a lane that honours a blocklist still carries it to the payload', async () => {
+    state.device = { ...eligibleDevice(), manufacturer: 'HP', model: 'HP EliteBook 840 G8' };
+    await expect(dispatchOemUpdateRun(input({ blockedUpdateIds: ['ABC12'] }))).resolves.toMatchObject({ ok: true });
+    expect(sentPayload()).toMatchObject({ lane: 'hp', blockedUpdateIds: ['ABC12'] });
+  });
+
   it('never skips the delivery leg contract: the row is written before the socket push', async () => {
     const deliver = vi.fn(async () => queued({ delivery: 'delivered' }));
     vi.mocked(dispatchDeviceCommand).mockResolvedValue(queued({ deliver }));
@@ -386,16 +401,22 @@ describe('dispatchOemUpdateRun: the payload', () => {
     await dispatchOemUpdateRun(input({
       trigger: 'scheduled',
       occurrenceKey: '2027-01',
-      blockedUpdateIds: ['ABC12'],
+      blockedUpdateIds: [],
     }));
     const parsed = oemUpdateRunPayloadSchema.parse(sentPayload());
     expect(parsed).toMatchObject({
       lane: 'dell',
       trigger: 'scheduled',
       occurrenceKey: '2027-01',
-      blockedUpdateIds: ['ABC12'],
+      blockedUpdateIds: [], // Dell never carries one (#12265)
       escrowedProtectorIds: [PROTECTOR_ID],
-      tool: null,
+      // Dell's tool is pinned (W10), so the payload names it for a fresh install.
+      tool: {
+        version: '5.7.2',
+        url: getLaneManifest('dell').tool!.url,
+        sha256: getLaneManifest('dell').tool!.sha256,
+        prerequisites: [expect.objectContaining({ name: 'dotnet_desktop_runtime' })],
+      },
     });
   });
 
@@ -459,6 +480,22 @@ describe('dispatchOemUpdateRun: the not-returned monitor', () => {
     await dispatchOemUpdateRun(input({ occurrenceKey: null }));
     expect(state.upsertSet).not.toHaveProperty('occurrenceKey');
     expect(state.upsertSet).not.toHaveProperty('lastOutcome');
+  });
+
+  // #12266: only a scheduled attempt uses up the night's scheduled run.
+  it('a scheduled run records its attempt as the scheduled one', async () => {
+    await dispatchOemUpdateRun(input({ trigger: 'scheduled', occurrenceKey: '2027-01' }));
+    const { lastAttemptAt } = state.upserts[0]! as { lastAttemptAt: Date };
+    expect(lastAttemptAt).toBeInstanceOf(Date);
+    expect(state.upserts[0]).toMatchObject({ lastScheduledAttemptAt: lastAttemptAt });
+    expect(state.upsertSet).toMatchObject({ lastScheduledAttemptAt: lastAttemptAt });
+  });
+
+  it('Run Now records an attempt but never touches the scheduled one, not even to null it', async () => {
+    await dispatchOemUpdateRun(input({ trigger: 'on_demand', occurrenceKey: null }));
+    expect(state.upserts[0]!.lastAttemptAt).toBeInstanceOf(Date);
+    expect(state.upserts[0]).not.toHaveProperty('lastScheduledAttemptAt');
+    expect(state.upsertSet).not.toHaveProperty('lastScheduledAttemptAt');
   });
 });
 
@@ -552,5 +589,20 @@ describe('dispatchOemUpdateRun: attempts per occurrence (#11065 W07)', () => {
     const outcome = await dispatchOemUpdateRun(input({ trigger: 'on_demand', occurrenceKey: null }));
     expect(outcome.ok).toBe(true);
     expect(state.upsertSet).not.toHaveProperty('attempts');
+  });
+});
+
+describe('observe-first O4b: a consumer HP never gets HPIA', () => {
+  it('consumer HP with 404 catalog: oem_update_run refuses not_applicable', async () => {
+    vi.mocked(observedHpPlatformUnsupported).mockResolvedValueOnce(true);
+    state.device = { ...eligibleDevice(), manufacturer: 'HP', model: 'HP Laptop 15-fd0xxx' };
+    await expectRefusal('not_applicable');
+    expect(observedHpPlatformUnsupported).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('is read only for an HP', async () => {
+    vi.mocked(observedHpPlatformUnsupported).mockClear();
+    await dispatchOemUpdateRun(input());
+    expect(observedHpPlatformUnsupported).not.toHaveBeenCalled();
   });
 });

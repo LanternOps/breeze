@@ -924,6 +924,49 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     }
   });
 
+  // Learned networks (#12369 W01b, P8): an unchanged report only folds its confirmation into the beat's own device
+  // UPDATE. It must cost exactly what a beat without the field costs, and never touch a learned table.
+  runDb('a steady-state beat with an unchanged networkAttachmentsV1 report costs the same statements as one without it', async () => {
+    const report = (sequence: number) => ({
+      epoch: '9f2c1e7ab4d04c11', sequence, capturedAt: new Date().toISOString(), complete: true,
+      attachments: [{ interfaceName: 'Ethernet', localAddress: '192.168.1.57', prefixLength: 24,
+        gatewayAddress: '192.168.1.1', gatewayMac: 'a4:2b:b0:11:22:9c', primary: true }],
+    });
+    const withReport = (sequence: number) => ({ ...CURRENT_AGENT_HEARTBEAT, networkAttachmentsV1: report(sequence) });
+    const sequenceOf = async (deviceId: string) => (await getTestDb().execute<{ sequence: string | null }>(sql`
+      SELECT network_attachment_sequence::text AS sequence FROM devices WHERE id = ${deviceId}::uuid`))[0]!.sequence;
+
+    // Two orgs with the same history (the device learns from one beat, a sibling warms the org caches), so the
+    // measured beats differ only in whether they carry the unchanged report.
+    const steadyAfterLearning = async (label: string, body: Record<string, unknown>) => {
+      const org = await seedOrg(label);
+      const device = await enrollDevice(org, 'target');
+      const sibling = await enrollDevice(org, 'sibling');
+      expect((await heartbeat(device, withReport(1))).status).toBe(200);
+      expect(await sequenceOf(device.deviceId)).toBe('1');
+      advanceClock(NEXT_BEAT_MS);
+      expect((await heartbeat(sibling)).status).toBe(200);
+      await dropDeviceRedisCaches(device.deviceId);
+      const measured = await measure(() => heartbeat(device, body));
+      return { measured, statements: [...recorder.statements], sequence: await sequenceOf(device.deviceId) };
+    };
+
+    const withField = await steadyAfterLearning('attachments-unchanged', withReport(2));
+    const unchanged = withField.measured;
+    const unchangedStatements = withField.statements;
+    expect(withField.sequence).toBe('2');
+    const noField = await steadyAfterLearning('attachments-absent', CURRENT_AGENT_HEARTBEAT);
+    expect(noField.sequence).toBe('1');
+    const without = noField.measured;
+
+    console.log('[#12369 P8] unchanged report:', JSON.stringify(unchanged), 'no field:', JSON.stringify(without));
+    expect(unchanged.status).toBe(200);
+    expect(without.status).toBe(200);
+    expect(unchanged.transactions).toBe(without.transactions);
+    expect(unchanged.statements).toBe(without.statements);
+    expect(unchangedStatements.filter((s) => s.includes('learned_network'))).toEqual([]);
+  });
+
   runDb('POST /agents/:id/heartbeat: a beat whose per-org caches (probe, helper legacy, PAM fallback) all miss — e.g. a single-device org — still costs 2 transactions; each miss loads in its own savepoint inside the policy context', async () => {
     const org = await seedOrg('permiss');
     const device = await enrollDevice(org, 'target');
@@ -1339,7 +1382,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(body.configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
     expect(body.configUpdate.monitoring_settings).toMatchObject({ check_interval_seconds: 90, watches: [expect.objectContaining({ name: 'BudgetService' })] });
     expect(body.configUpdate.onedrive_helper_settings.libraries).toHaveLength(1);
-    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [] });
+    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [], observe_vendors: [] });
 
     expect(steady.transactions).toBe(2);
     expect(steady.buckets.policySetLoad).toBe(1);

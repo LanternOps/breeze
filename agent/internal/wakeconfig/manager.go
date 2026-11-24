@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/biosconfig"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
 
@@ -26,10 +27,28 @@ type Settings struct {
 	// ConfigureSettings is the delivered configure_settings. It reaches a
 	// Writer only once writesActivated is true.
 	ConfigureSettings bool
+	// Observe is the delivered observe_vendors. It authorizes reads only, is
+	// held in memory only, and lapses observeGrantTTL after the last
+	// heartbeat that carried it.
+	Observe biosconfig.VendorSet
+	// FirmwareWrites is the delivered firmware_writes: the vendors whose
+	// firmware settings may be written. Like Observe it is held in memory
+	// only and lapses firmwareGrantTTL after the last heartbeat that carried
+	// it. It reaches a firmware adapter only once writesActivated is true.
+	FirmwareWrites biosconfig.VendorSet
 }
 
+// firmwareGrantTTL is how long a firmware_writes grant outlives the last
+// heartbeat that carried it.
+const firmwareGrantTTL = 24 * time.Hour
+
+// observeGrantTTL is how long an observe grant outlives the last heartbeat
+// that carried it.
+const observeGrantTTL = 24 * time.Hour
+
 // policyFingerprint identifies the delivered policy for the write limiter: a
-// change resets the per-setting failure history.
+// change resets the per-setting failure history. firmware_writes is left out,
+// so toggling the server's firmware switch cannot buy more attempts.
 func policyFingerprint(s Settings) string {
 	return fmt.Sprintf("v1|enabled=%t|configure=%t", s.Enabled, s.ConfigureSettings)
 }
@@ -56,6 +75,13 @@ type Options struct {
 	Reread func(ctx context.Context) (*WindowsReadings, error)
 	// BootID clears needs_reboot once the machine has booted since a write.
 	BootID func() (string, error)
+	// Observe reads a granted vendor's interface; nil means never observe.
+	Observe ObserveFunc
+	// BitLockerState and BitLockerProtectors are the BitLocker guard's
+	// readers, consulted only right before a firmware write. Both nil means
+	// the machine's own (SystemBitLockerReaders).
+	BitLockerState      func() (string, error)
+	BitLockerProtectors func(ctx context.Context) (string, error)
 
 	// testAllowWrites stands in for writesActivated in this package's tests.
 	// It is unexported so no other package can enable writes.
@@ -75,6 +101,10 @@ type Manager struct {
 	haveFP    bool
 	fpChanged bool
 	started   bool
+	// grantAt is when the last settings carrying an observe grant arrived.
+	grantAt time.Time
+	// fwGrantAt is when the last settings carrying firmware_writes arrived.
+	fwGrantAt time.Time
 	cancel    context.CancelFunc
 	done      chan struct{}
 
@@ -102,6 +132,12 @@ func (m *Manager) ApplySettings(s Settings) {
 		m.dirty = true
 	}
 	m.settings = s
+	if s.Observe != 0 {
+		m.grantAt = m.opts.Now()
+	}
+	if s.FirmwareWrites != 0 {
+		m.fwGrantAt = m.opts.Now()
+	}
 	fp := policyFingerprint(s)
 	if m.haveFP && fp != m.lastFP {
 		m.fpChanged = true
@@ -140,6 +176,54 @@ func (m *Manager) takeFPChanged() bool {
 	c := m.fpChanged
 	m.fpChanged = false
 	return c
+}
+
+// observeGrant is the single gate in front of every vendor observation: the
+// delivered grant, while the policy is enabled and the grant is fresh.
+func (m *Manager) observeGrant(now time.Time) biosconfig.VendorSet {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.settings.Enabled || m.settings.Observe == 0 || now.Sub(m.grantAt) > observeGrantTTL {
+		return 0
+	}
+	return m.settings.Observe
+}
+
+// firmwareGrant is the delivered firmware_writes while the policy is enabled
+// and the grant is fresh. It authorizes nothing by itself: writes also need
+// configure_settings and the activation switch (writesAllowed).
+func (m *Manager) firmwareGrant(now time.Time) biosconfig.VendorSet {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.settings.Enabled || m.settings.FirmwareWrites == 0 || now.Sub(m.fwGrantAt) > firmwareGrantTTL {
+		return 0
+	}
+	return m.settings.FirmwareWrites
+}
+
+func (m *Manager) bitLockerReaders() BitLockerReaders {
+	if m.opts.BitLockerState == nil && m.opts.BitLockerProtectors == nil {
+		return SystemBitLockerReaders()
+	}
+	return BitLockerReaders{State: m.opts.BitLockerState, Protectors: m.opts.BitLockerProtectors}
+}
+
+// observe runs the observer under its own deadline and recover: a panic in a
+// vendor read is an error observation, never the end of the wake loop.
+func (m *Manager) observe(ctx context.Context, in Inputs, grant biosconfig.VendorSet) (o *biosconfig.Observation) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("wake vendor observation panicked; reported as an error")
+			o = biosconfig.Failed(observationVendor(in.Manufacturer), "panic")
+			if o != nil {
+				// The observer's own stamping did not run.
+				stampCommon(o, "unknown", "unknown")
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(ctx, observeTimeout)
+	defer cancel()
+	return m.opts.Observe(ctx, in, grant)
 }
 
 // writesAllowed is the single gate in front of every Writer call.
@@ -255,6 +339,17 @@ func (m *Manager) cycle(ctx context.Context) bool {
 		return errors.Is(err, ErrUnsupported)
 	}
 	now := m.opts.Now()
+	if grant := m.observeGrant(now); grant != 0 && m.opts.Observe != nil && in.Windows != nil {
+		in.Observation = m.observe(ctx, in, grant)
+		if o := in.Observation; o != nil {
+			// Counts and codes only; values never reach a log.
+			code := ""
+			if o.ErrorCode != nil {
+				code = *o.ErrorCode
+			}
+			log.Debug("wake vendor observation", "vendor", o.Vendor, "interface", o.Interface, "errorCode", code)
+		}
+	}
 	st, err := loadStateAt(m.opts.StatePath, now)
 	if err != nil {
 		// Transient (a sharing violation, a permission glitch): skip the cycle
@@ -268,6 +363,10 @@ func (m *Manager) cycle(ctx context.Context) bool {
 		st.Apply.Limiter.resetFailures()
 	}
 	if in.Windows != nil {
+		var fwVendor biosconfig.VendorSet
+		if in.Firmware != nil {
+			fwVendor = biosconfig.VendorBit(in.Firmware.Vendor)
+		}
 		rep := Apply(ctx, ApplyInputs{
 			Configure:         m.writesAllowed(settings),
 			PolicyFingerprint: policyFingerprint(settings),
@@ -281,9 +380,17 @@ func (m *Manager) cycle(ctx context.Context) bool {
 			StillAllowed:      func() bool { return m.writesAllowed(m.currentSettings()) },
 			BootID:            m.opts.BootID,
 			Now:               now,
-			activated:         writesActivated || m.opts.testAllowWrites,
+			Firmware:          in.Firmware,
+			FirmwareAdapter:   in.FirmwareAdapter,
+			FirmwareWrites:    m.firmwareGrant(now).Has(fwVendor),
+			FirmwareStillAllowed: func() bool {
+				return m.firmwareGrant(m.opts.Now()).Has(fwVendor)
+			},
+			BitLocker: m.bitLockerReaders(),
+			activated: writesActivated || m.opts.testAllowWrites,
 		})
 		in.Windows = rep.Readings
+		in.Firmware = rep.Firmware
 		status := rep.Status
 		in.Apply = &status
 	}
@@ -293,7 +400,8 @@ func (m *Manager) cycle(ctx context.Context) bool {
 	if err := saveState(m.opts.StatePath, st); err != nil {
 		log.Warn("wake status state not saved", "error", err.Error())
 	}
-	if snap.Fingerprint == st.LastUploadFingerprint && now.Sub(st.LastUploadAt) < m.opts.Interval {
+	key := uploadKey(snap)
+	if key == st.LastUploadFingerprint && now.Sub(st.LastUploadAt) < m.opts.Interval {
 		return true
 	}
 	if err := m.opts.Upload(ctx, snap); err != nil {
@@ -302,7 +410,7 @@ func (m *Manager) cycle(ctx context.Context) bool {
 		}
 		return false
 	}
-	st.LastUploadAt, st.LastUploadFingerprint = now, snap.Fingerprint
+	st.LastUploadAt, st.LastUploadFingerprint = now, key
 	if err := saveState(m.opts.StatePath, st); err != nil {
 		log.Warn("wake status state not saved", "error", err.Error())
 	}

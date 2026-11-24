@@ -55,6 +55,11 @@ type scriptedDownloadProvider struct {
 	// onStall, when set, runs as a stalled object's download begins, before
 	// it blocks. Tests use it to end a manual time budget at that exact point.
 	onStall func()
+	// objectErr, when set, is consulted as each object download begins
+	// (after it is recorded as started): a non-nil answer is returned
+	// instead of the object. manifestErr does the same for the manifest.
+	objectErr   func(ctx context.Context, remotePath string) error
+	manifestErr error
 
 	inflight  atomic.Int32
 	peak      atomic.Int32
@@ -113,6 +118,9 @@ func (p *scriptedDownloadProvider) DownloadContext(ctx context.Context, remotePa
 
 func (p *scriptedDownloadProvider) download(ctx context.Context, remotePath, localPath string) error {
 	if remotePath == p.manifestKey {
+		if p.manifestErr != nil {
+			return p.manifestErr
+		}
 		if p.stallManifest {
 			select {
 			case <-ctx.Done():
@@ -139,6 +147,11 @@ func (p *scriptedDownloadProvider) download(ctx context.Context, remotePath, loc
 		}
 	}
 
+	if p.objectErr != nil {
+		if err := p.objectErr(ctx, remotePath); err != nil {
+			return err
+		}
+	}
 	var done <-chan struct{}
 	if ctx != nil {
 		done = ctx.Done()

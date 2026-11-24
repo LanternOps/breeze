@@ -34,6 +34,13 @@ func (h *Heartbeat) applyWarrantyConfig(raw any) {
 		return
 	}
 
+	// The observe-first mode (warranty_mode.go) is read first and on its own:
+	// a block without it (an older server) is off, whatever the legacy flag
+	// below says. It is memory-only authority and is never persisted.
+	mode, tiers := parseHpCmslMode(m)
+	h.setHpCmslMode(mode, tiers)
+	h.maybeStartHpWarrantyObserve()
+
 	v, present := m["hpCmslEnabled"]
 	if !present {
 		v, present = m["hp_cmsl_enabled"]

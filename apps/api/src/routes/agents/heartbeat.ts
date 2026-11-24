@@ -1,5 +1,6 @@
 import type { HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
+import { hpCmslMode, toWarrantySettingsWire } from '../../services/hpWarrantyGate';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
@@ -21,6 +22,7 @@ import {
   bareMetalRecoveries,
 } from '../../db/schema';
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import type { OsFloorHoldReason } from '../../services/agentOsFloor';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES, isResolvedTerminalIsolationState } from '@breeze/shared';
@@ -69,6 +71,7 @@ import {
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
+  type UpgradeOsHold,
   type OnedriveConfigPlan,
   type OnedriveConfigUpdate,
   type HelperSettings,
@@ -81,6 +84,7 @@ import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
   agentEchEnabled,
+  tpmAttestationEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -111,8 +115,13 @@ import {
   recordAgentHeartbeatEch,
   recordAgentFilterSignatureReport,
   recordAgentControlPlaneBlockReport,
+  recordNetworkAttachmentReport,
   resolveResponseStatus,
 } from '../metrics';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import {
+  applyNetworkAttachmentChange, noteCaptureTimeSkew, planNetworkAttachmentIngest,
+} from '../../services/learnedNetworks/ingest';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
@@ -169,6 +178,29 @@ export function detectWatchdogStateCollapse(
 const warnedEditionWithheldDevices = new Set<string>();
 // Persisted reason code (devices.update_offer_withheld_reason, #6449).
 const EDITION_OFFER_WITHHELD_REASON = 'edition_unconfirmed';
+
+/**
+ * #12169 — the minimum-OS reason (or null) this beat should persist, from the
+ * holds the resolver reported. A hold counts only when the held build is newer
+ * than what the device runs (or the component is missing, i.e. a bootstrap
+ * would have been offered): a Mac already on the held version is not "held".
+ * The agent's own hold wins over a companion's. Dev builds are never offered
+ * an update, so their agent hold does not count.
+ */
+export function osHoldReasonForBeat(
+  holds: readonly UpgradeOsHold[],
+  installed: { agent: string; watchdog: string | null; helper: string | null },
+): OsFloorHoldReason | null {
+  const counts = (hold: UpgradeOsHold): boolean => {
+    if (hold.component === 'agent') {
+      return !installed.agent.startsWith('dev-') && compareAgentVersions(hold.blockedVersion, installed.agent) > 0;
+    }
+    const current = hold.component === 'watchdog' ? installed.watchdog : hold.component === 'helper' ? installed.helper : null;
+    return current === null || compareAgentVersions(hold.blockedVersion, current) > 0;
+  };
+  const counted = holds.filter(counts);
+  return (counted.find((h) => h.component === 'agent') ?? counted[0])?.reason ?? null;
+}
 // Separate dedupe for the far more severe failover-recovery withhold (device
 // stuck OFFLINE, not idling) — its error must not be suppressed by an earlier
 // routine offer-withhold warn for the same device.
@@ -1057,6 +1089,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           architecture: normalizedArch,
           pin: versionPins.watchdog,
           agentId,
+          // #12169: gated, but not persisted from this branch (the main
+          // agent's beat owns the device's withheld reason).
+          deviceOs: { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null },
         });
 
         if (targetWatchdog && watchdogAcceptsServedEdition) {
@@ -1133,6 +1168,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           architecture: normalizedArch,
           pin: versionPins.agent,
           agentId,
+          // #12169: a recovery binary the Mac's OS is below is held too.
+          deviceOs: { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null },
         });
 
         if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
@@ -1289,14 +1326,23 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // the row this beat already loaded), so a steady-state beat — withheld or
   // healthy — adds no column write to the hot path; `since` therefore holds
   // when the episode began, not the last beat.
-  const withholdReason =
+  //
+  // #12169: two writers share this column. This one owns ONLY
+  // `edition_unconfirmed`: it sets it (the edition reason wins over a
+  // minimum-OS hold, since no offer resolves at all while it applies) and
+  // clears only its own code, never an `os_*` hold, which the main branch
+  // writes after the targets resolve (see osHoldReasonForBeat).
+  const editionWithheld = Boolean(
     normalizeAgentArchitecture(device.architecture) &&
-    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion })
-      ? EDITION_OFFER_WITHHELD_REASON
-      : null;
-  if ((device.updateOfferWithheldReason ?? null) !== withholdReason) {
-    deviceUpdates.updateOfferWithheldReason = withholdReason;
-    deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
+    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion }),
+  );
+  const storedWithheldReason = device.updateOfferWithheldReason ?? null;
+  if (editionWithheld && storedWithheldReason !== EDITION_OFFER_WITHHELD_REASON) {
+    deviceUpdates.updateOfferWithheldReason = EDITION_OFFER_WITHHELD_REASON;
+    deviceUpdates.updateOfferWithheldSince = new Date();
+  } else if (!editionWithheld && storedWithheldReason === EDITION_OFFER_WITHHELD_REASON) {
+    deviceUpdates.updateOfferWithheldReason = null;
+    deviceUpdates.updateOfferWithheldSince = null;
   }
 
   // #4073 — close the update-attempt record (stamped by the WS update_status
@@ -1359,6 +1405,43 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates,
     planControlPlaneBlockWrite(device, controlPlaneBlock, data.echActive, new Date()),
   );
+
+  // Learned networks (#12369 W01b, spec §8.1). The planner is pure and runs on the locked `device` row, so a beat
+  // without the field, or with an unchanged report, costs no statement here: an unchanged report only folds its
+  // confirmation into this beat's single device UPDATE. Only a changed report writes the learned tables, in its own
+  // savepoint with the catch outside it, so a learner failure never fails or rolls back the heartbeat; its device
+  // fields are merged only after that savepoint committed, so the next beat retries. The parked and watchdog paths
+  // returned above. A removed device (status decommissioned, inside its uninstall drain) still beats, but the device
+  // write below matches no row for it, so it is treated as carrying no report: it must not learn, and an apply whose
+  // digest is never stored would repeat on every beat.
+  const attachmentsAt = new Date();
+  const attachmentsRaw = device.status === 'decommissioned' || device.status === 'quarantined'
+    ? undefined
+    : data.networkAttachmentsV1;
+  const attachmentPlan = planNetworkAttachmentIngest(device, attachmentsRaw,
+    getTrustedClientIpOrUndefined(c) ?? null, attachmentsAt);
+  if (attachmentPlan.kind === 'apply') {
+    try {
+      await withDbTransaction(() =>
+        applyNetworkAttachmentChange({ id: device.id, orgId: device.orgId }, attachmentPlan, attachmentsAt));
+      Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+      recordNetworkAttachmentReport('apply');
+    } catch (err) {
+      console.error('[heartbeat] learned network ingest failed', {
+        deviceId: device.id, orgId: device.orgId, error: err instanceof Error ? err.name : typeof err,
+      });
+      captureException(err, undefined, { phase: 'learned_network_ingest', deviceId: device.id, orgId: device.orgId });
+      recordNetworkAttachmentReport('apply_failed');
+    }
+  } else if (attachmentPlan.kind === 'confirm') {
+    Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+    recordNetworkAttachmentReport('confirm');
+  } else if (attachmentPlan.reason !== 'absent') {
+    recordNetworkAttachmentReport(attachmentPlan.reason);
+    if (attachmentPlan.reason === 'capture_time_out_of_bounds') {
+      noteCaptureTimeSkew(device.id, attachmentsRaw, attachmentsAt);
+    }
+  }
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
@@ -2126,12 +2209,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // every target null: no offer this beat, the same outcome each per-block
   // catch gave (the first failed read aborted the transaction for the rest).
   let upgradeTargets: Map<string, string | null> | null = null;
+  // #12169 — the device's OS for the minimum-OS gate: this beat's value
+  // first, the stored one when the beat omits it.
+  const deviceOs = { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null };
+  const osHolds: UpgradeOsHold[] = [];
   if (normalizedArch && acceptsServedEdition) {
     try {
       upgradeTargets = await resolvePinnedUpgradeTargets({
         platform: device.osType,
         architecture: normalizedArch,
         agentId,
+        deviceOs,
+        onOsHold: (hold) => osHolds.push(hold),
         requests: [
           { component: 'agent', pin: versionPins.agent },
           { component: 'helper', pin: null },
@@ -2141,6 +2230,42 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     } catch (err) {
       console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
       captureException(err);
+    }
+  }
+
+  // #12169 — persist a minimum-OS hold so the device page says why the Mac
+  // stays on its version. Only after a SUCCESSFUL lookup (a failed one must
+  // not clear an existing hold), only while the edition reason does not
+  // apply (it wins, and its own writer owns it), and only on a transition, so
+  // a steady-state beat — held or healthy — adds no statement.
+  if (upgradeTargets !== null) {
+    const desiredOsReason = osHoldReasonForBeat(osHolds, {
+      agent: data.agentVersion,
+      watchdog: data.watchdogVersion ?? device.watchdogVersion ?? null,
+      helper: data.helperVersion ?? null,
+    });
+    const currentWithheldReason =
+      'updateOfferWithheldReason' in deviceUpdates
+        ? ((deviceUpdates.updateOfferWithheldReason as string | null) ?? null)
+        : (device.updateOfferWithheldReason ?? null);
+    if (currentWithheldReason !== EDITION_OFFER_WITHHELD_REASON && currentWithheldReason !== desiredOsReason) {
+      try {
+        await withDbTransaction(() =>
+          updateOwnDeviceRow(
+            db,
+            agent,
+            {
+              updateOfferWithheldReason: desiredOsReason,
+              updateOfferWithheldSince: desiredOsReason ? new Date() : null,
+            },
+            // Same terminal-status guard as the main device flush above.
+            { where: notInArray(devices.status, ['decommissioned', 'quarantined']) },
+          ),
+        );
+      } catch (err) {
+        console.error(`[agents] failed to persist the minimum-OS update hold for ${agentId}:`, err);
+        captureException(err);
+      }
     }
   }
 
@@ -2253,6 +2378,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // Takes effect on the agent's next connection; never tears down live
   // connections.
   mergedConfigUpdate.ech_enabled = agentEchEnabled();
+
+  // #8318 T1 — TPM EK attestation switch, ALWAYS sent as true/false for the
+  // same reason: turning it back off must reach agents that saw it on.
+  mergedConfigUpdate.tpm_attestation_enabled = tpmAttestationEnabled();
 
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
@@ -2475,6 +2604,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
               architecture: normalizedArch,
               pin: versionPins.agent,
               agentId,
+              // #12169: never migrate a Mac onto a build its OS is below.
+              deviceOs,
             }),
         }),
         // The service catches everything itself; this catch only exists so a
@@ -2844,8 +2975,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     featureUpdateSettings: RingFeatureUpdates | null;
-    warrantySettings: { hpCmslEnabled: boolean } | null;
-    wakeOnLanSettings: { enabled: boolean } | null;
+    warrantySettings: { hpCmslOptedIn: boolean } | null;
+    wakeOnLanSettings: { enabled: boolean; observeVendors?: string[] } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
     workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
@@ -3043,9 +3174,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // its own transaction: a failure
       // is caught outside it and cannot poison the request transaction.
       try {
+        // observe_vendors (observe-first amendment §1) is resolved for the
+        // authenticated agent's partner: an env and code lookup, no query.
         policyConfigs.wakeOnLanSettings = beatPolicySet
-          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts)
-          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts));
+          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts, agent.partnerId)
+          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts, agent.partnerId));
       } catch (err) {
         console.error(`[agents] failed to build wake_on_lan config update for ${agentId}:`, err);
         captureException(err);
@@ -3220,15 +3353,24 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   // Snake_case inside the block as well as outside (contract D6): this
   // assembly is where camelCase resolver output becomes wire keys, and the
-  // agent's inner parse accepts either spelling.
+  // agent's inner parse accepts either spelling. The mode is the vendor canary
+  // stage for the agent's partner (#5511 observe-first §1): env and constants
+  // only, no query, and outside the cached resolver so a canary or kill-switch
+  // change applies on the next beat. Every key is always sent.
   if (warrantySettings) {
-    policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
+    policyConfigUpdate.warranty_settings = toWarrantySettingsWire(
+      hpCmslMode(warrantySettings.hpCmslOptedIn, agent.partnerId),
+    );
   }
   if (wakeOnLanSettings) {
+    // observe_vendors is always sent, `[]` when off, so a revoked vendor
+    // reaches the agent on the next heartbeat rather than waiting on an
+    // absent key. It grants reads only; writes stay off (W06).
     policyConfigUpdate.wake_on_lan_settings = {
       enabled: wakeOnLanSettings.enabled,
       configure_settings: false,
       firmware_writes: [],
+      observe_vendors: wakeOnLanSettings.observeVendors ?? [],
     };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;

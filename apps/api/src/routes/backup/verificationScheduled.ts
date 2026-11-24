@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../../db';
 import { reportBackupDbFallback } from './dbFallbackReport';
 import {
@@ -33,11 +33,12 @@ import { normalizeBackupVerificationType } from './types';
 import {
   LEGACY_VERIFICATION_TIMEOUT_REASON,
   VERIFICATION_TIMEOUT_REASON_CODE,
+  VERIFICATION_TIMEOUT_GRACE_MS,
   isVerificationTimeoutDetails,
   shortestVerificationTimeoutMs,
   verificationCommandType,
+  verificationDeadline,
   verificationTimeoutDetails,
-  verificationTimeoutMs,
   verificationTimeoutReason,
 } from './verificationTimeout';
 import { isCriticalBackupDevice } from './criticality';
@@ -183,18 +184,64 @@ async function markVerificationFailedAndRefreshReadiness(params: {
   await recomputeRecoveryReadinessForDevice(orgId, verification.deviceId);
 }
 
-async function markVerificationCommandTimedOut(
-  commandId: string | null | undefined,
+/** A verification's device command as the timeout scan observed it. */
+type ObservedVerificationCommand = {
+  id: string;
+  status: string;
+  executedAt: Date | null;
+  completedAt: Date | null;
+};
+
+/**
+ * One query for every candidate's command. `null` means the lookup itself
+ * failed: the caller must skip the pass rather than treat every command as
+ * missing (which would fail healthy verifications on a DB blip).
+ */
+async function loadVerificationCommands(
+  commandIds: string[],
+): Promise<Map<string, ObservedVerificationCommand> | null> {
+  const ids = [...new Set(commandIds.filter((id) => isUuid(id)))];
+  if (ids.length === 0) return new Map();
+  try {
+    const rows = await withSystemDbAccessContext(() => db
+      .select({
+        id: deviceCommands.id,
+        status: deviceCommands.status,
+        executedAt: deviceCommands.executedAt,
+        completedAt: deviceCommands.completedAt,
+      })
+      .from(deviceCommands)
+      .where(inArray(deviceCommands.id, ids)));
+    return new Map(rows.map((row) => [row.id, row]));
+  } catch (error) {
+    console.error('[backupVerification] verification command lookup failed; skipping this timeout pass', error);
+    return null;
+  }
+}
+
+/**
+ * Fail a verification's still-live command, as a compare-and-set on the
+ * status and `executed_at` the scan OBSERVED (the reaper's #5128 fence). A
+ * command claimed or answered between the scan and this write is left alone
+ * and the caller must not fail the verification this pass: a result that
+ * arrived in between wins.
+ */
+async function failObservedVerificationCommand(
+  command: ObservedVerificationCommand,
   reason: string,
 ): Promise<boolean> {
-  if (!commandId || !isUuid(commandId)) return false;
-
-  const completedAt = new Date();
+  const observedGuard = and(
+    eq(deviceCommands.id, command.id),
+    eq(deviceCommands.status, command.status),
+    command.executedAt
+      ? eq(deviceCommands.executedAt, command.executedAt)
+      : isNull(deviceCommands.executedAt),
+  );
   const updated = await withSystemDbAccessContext(() => db
     .update(deviceCommands)
     .set({
       status: 'failed',
-      completedAt,
+      completedAt: new Date(),
       result: {
         status: 'timeout',
         error: reason,
@@ -202,13 +249,16 @@ async function markVerificationCommandTimedOut(
       },
       ...terminalPayloadErasureSet(),
     })
-    .where(and(
-      eq(deviceCommands.id, commandId),
-      inArray(deviceCommands.status, ['pending', 'sent']),
-    ))
+    .where(observedGuard)
     .returning({ id: deviceCommands.id }));
 
   return updated.length > 0;
+}
+
+function verificationCommandIdOf(v: BackupVerification): string | null {
+  if (!v.details || typeof v.details !== 'object' || Array.isArray(v.details)) return null;
+  const commandId = (v.details as Record<string, unknown>).commandId;
+  return typeof commandId === 'string' ? commandId : null;
 }
 
 async function findTimedOutVerificationByCommandId(commandId: string): Promise<BackupVerification | null> {
@@ -352,9 +402,26 @@ function deriveVerificationReason(params: {
   return parts.length > 0 ? parts.join('; ') : null;
 }
 
+/**
+ * Agent result codes persisted to `details.reasonCode`. Only codes a consumer
+ * keys on are kept; any other code the agent reports is dropped, as before.
+ * `storage_session_lost`: the run stopped because its brokered storage session
+ * ended (revoked or expired); the files it did not reach are counted in
+ * `details.filesUnchecked`, not failed — distinct from corruption.
+ * `verification_queue_expired` (#11813): the verification waited on the
+ * agent's verification lane until too little of its budget was left for a
+ * useful run, so the agent failed it without starting it. It arrives as the
+ * failed command's `errorCode`, not in a verification body.
+ */
+const PERSISTED_AGENT_VERIFICATION_CODES = new Set(['storage_session_lost', 'verification_queue_expired']);
+
+function nonNegativeIntOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 export async function processBackupVerificationResult(
   commandId: string,
-  commandResult: { status: string; stdout?: string; error?: string }
+  commandResult: { status: string; stdout?: string; error?: string; errorCode?: string }
 ): Promise<void> {
   let pending = await findPendingVerificationByCommandId(commandId);
   if (!pending) {
@@ -377,10 +444,12 @@ export async function processBackupVerificationResult(
   const resultNow = new Date().toISOString();
 
   if (commandResult.status !== 'completed' || !commandResult.stdout) {
+    const errorCode = commandResult.errorCode ?? '';
     await markVerificationFailedAndRefreshReadiness({
       verification: pending,
       orgId,
       reason: commandResult.error || 'Agent command failed',
+      reasonCode: PERSISTED_AGENT_VERIFICATION_CODES.has(errorCode) ? errorCode : undefined,
       source: 'agent.result',
     });
     return;
@@ -424,7 +493,16 @@ export async function processBackupVerificationResult(
   // visible instead of only the downgraded status.
   const filesIncomplete = (agentResult.filesIncomplete as number) ?? 0;
   details.filesIncomplete = filesIncomplete;
+  // Files the run never reached (time budget, or a lost storage session):
+  // neither verified nor failed. Always overwritten so an earlier attempt's
+  // count cannot outlive this result.
+  details.filesUnchecked = (agentResult.filesUnchecked as number) ?? 0;
   details.warnings = agentResult.warnings || [];
+  // How many failedFiles / warnings entries the agent or the validator left
+  // out to fit the result limits; the only sign of a trimmed list when the
+  // warnings arrived as one string. Always overwritten, like filesUnchecked.
+  details.failedFilesOmitted = nonNegativeIntOrZero(agentResult.failedFilesOmitted);
+  details.warningsOmitted = nonNegativeIntOrZero(agentResult.warningsOmitted);
   details.cleanedUp = agentResult.cleanedUp;
   details.restorePath = agentResult.restorePath;
   // #6561: the agent explains an immediate failure (`no files in snapshot`,
@@ -453,7 +531,10 @@ export async function processBackupVerificationResult(
     delete details.reason;
   }
   // Nor may a timeout marker: this row is now answered by the agent (#11813).
-  delete details.reasonCode;
+  // The agent's own code replaces it only when it is one consumers key on.
+  const agentCode = typeof agentResult.code === 'string' ? agentResult.code : '';
+  if (PERSISTED_AGENT_VERIFICATION_CODES.has(agentCode)) details.reasonCode = agentCode;
+  else delete details.reasonCode;
 
   await persistVerificationToDb(pending);
   recordBackupVerificationResult(pending.verificationType, pending.status);
@@ -486,36 +567,57 @@ export async function processBackupVerificationResult(
  * Called by the verification-timeout-check BullMQ job.
  */
 export async function timeoutStaleVerifications(): Promise<number> {
-  // #11813: each verification gets its own command's budget (+ grace). The
-  // SQL pre-filter uses the shortest one; the per-row check below is exact.
+  // Each verification's deadline comes from verificationDeadline: its
+  // command's claim (executed_at) + its own scaled budget + grace, or, for a
+  // command never delivered, started_at + the 2h undelivered limit + grace.
+  // The SQL pre-filter on started_at uses the shortest possible deadline, so
+  // it is a superset; the per-row check below is exact.
   const now = Date.now();
   const cutoffDate = new Date(now - shortestVerificationTimeoutMs());
-  const isOverdue = (v: BackupVerification): boolean => {
-    const startedMs = new Date(v.startedAt).getTime();
-    return startedMs <= now - verificationTimeoutMs(v.verificationType);
-  };
+  const isCandidate = (v: BackupVerification): boolean =>
+    (v.status === 'pending' || v.status === 'running')
+    && new Date(v.startedAt).getTime() <= cutoffDate.getTime();
   let timedOut = 0;
 
   const dbRows = await listTimedOutVerificationsFromDb(cutoffDate);
-  const pendingRows = dbRows.length > 0
-    ? dbRows
-    : backupVerifications.filter((v) => (v.status === 'pending' || v.status === 'running') && isOverdue(v));
+  const pendingRows = (dbRows.length > 0 ? dbRows : backupVerifications).filter(isCandidate);
+  if (pendingRows.length === 0) return 0;
+
+  const commands = await loadVerificationCommands(
+    pendingRows.map(verificationCommandIdOf).filter((id): id is string => id !== null),
+  );
+  if (!commands) return 0;
 
   for (const v of pendingRows) {
     if (v.status !== 'pending' && v.status !== 'running') continue;
-    if (!isOverdue(v)) continue;
+    const commandId = verificationCommandIdOf(v);
+    const command = commandId ? commands.get(commandId) ?? null : null;
+    const { deadlineMs, budgetMs } = verificationDeadline({
+      verificationType: v.verificationType,
+      startedAt: v.startedAt,
+      details: v.details,
+      command,
+    });
+    if (now < deadlineMs) continue;
 
-    const reason = verificationTimeoutReason(v.verificationType);
-    const commandId =
-      v.details && typeof v.details === 'object' && !Array.isArray(v.details)
-        ? typeof (v.details as Record<string, unknown>).commandId === 'string'
-          ? (v.details as Record<string, unknown>).commandId as string
-          : null
-        : null;
-    const commandTimedOut = await markVerificationCommandTimedOut(commandId, reason);
-    if (commandTimedOut) {
+    const reason = verificationTimeoutReason(budgetMs);
+    if (command && (command.status === 'pending' || command.status === 'sent')) {
+      // Lost the CAS: the command was claimed or answered after the scan.
+      // Leave the verification for the next pass, which re-reads both.
+      if (!(await failObservedVerificationCommand(command, reason))) continue;
       recordBackupCommandTimeout(verificationCommandType(v.verificationType), 'verification_timeout');
+    } else if (
+      command?.status === 'completed'
+      && command.completedAt
+      && now - command.completedAt.getTime() < VERIFICATION_TIMEOUT_GRACE_MS
+    ) {
+      // The agent answered moments ago and its result is still being applied
+      // to this verification. Give it the grace; after that the result was
+      // lost and the row is settled below so it does not stay pending forever.
+      continue;
     }
+    // Otherwise the command is terminal (failed by the server reaper or the
+    // agent, completed long ago) or missing: settle the verification as before.
 
     const orgId = verificationOrgById.get(v.id) ?? v.orgId;
     if (orgId) {
@@ -534,7 +636,7 @@ export async function timeoutStaleVerifications(): Promise<number> {
       const details = (v.details && typeof v.details === 'object' && !Array.isArray(v.details))
         ? v.details as Record<string, unknown>
         : {};
-      Object.assign(details, verificationTimeoutDetails(v.verificationType));
+      Object.assign(details, verificationTimeoutDetails(budgetMs));
       v.details = details;
       await persistVerificationToDb(v);
       recordBackupVerificationResult(v.verificationType, 'failed');

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
-import { buildActionLabel, describePax8Submit } from './actionLabel';
+import { buildActionLabel, describePax8Submit, hasTicketIdStub } from './actionLabel';
 import { checkGuardrails } from '../aiGuardrails';
 
 describe('buildActionLabel', () => {
@@ -193,4 +193,54 @@ it('renders new subscriptions as new quantity on the Pax8 approval card', () => 
   const copy = describePax8Submit({ expectedCompany: { name: 'Fixture', pax8CompanyId: 'company' }, expectedLines: [{ action: 'new_subscription', productName: 'Seats', pax8ProductId: 'product', fromQuantity: null, quantity: '5', unitCost: '8.25', currency: 'USD', billingTerm: 'Monthly', commitmentTerm: 'Annual' }] });
   expect(copy).toContain('new → 5');
   expect(copy).not.toContain('? →');
+});
+
+// #11674: the /approvals queue and the mobile push read the stored label, which
+// named a ticket by `ticket #<8 hex>...`. It now names it by number, and only
+// where the stub is THIS call's ticket.
+describe('buildActionLabel — ticket number (#11674)', () => {
+  const TICKET_ID = '2aad0601-1111-4222-8333-444455556666';
+  const OTHER_TICKET_ID = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+
+  it('swaps this call\'s ticket stub for the ticket number, end-to-end from a real headline', () => {
+    const input = { action: 'comment', ticketId: TICKET_ID, isPublic: true, content: 'Hello' };
+    const reason = checkGuardrails('manage_tickets', input).description!;
+    expect(reason).toContain('ticket #2aad0601...');
+    expect(buildActionLabel({ toolName: 'manage_tickets', input, reason, ticketId: TICKET_ID, ticketNumber: 'T-2026-0001' }))
+      .toBe('Post PUBLIC comment on ticket T-2026-0001 (customer-visible; emails the requester)');
+  });
+
+  it('leaves a stub naming a different ticket alone', () => {
+    expect(buildActionLabel({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID },
+      reason: 'Post internal note on ticket #7c1e9d02...',
+      ticketId: TICKET_ID,
+      ticketNumber: 'T-2026-0001',
+    })).toBe('Post internal note on ticket #7c1e9d02...');
+  });
+
+  it('keeps the stub when no number was resolved', () => {
+    expect(buildActionLabel({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID },
+      reason: 'Post internal note on ticket #2aad0601...',
+      ticketId: TICKET_ID,
+      ticketNumber: null,
+    })).toBe('Post internal note on ticket #2aad0601...');
+  });
+
+  it('substitutes before truncation, so a long headline still names the ticket', () => {
+    const reason = `Update ticket #2aad0601... fields (${'x'.repeat(200)})`;
+    const label = buildActionLabel({ toolName: 'manage_tickets', input: {}, reason, ticketId: TICKET_ID, ticketNumber: 'T-2026-0001' });
+    expect(label.startsWith('Update ticket T-2026-0001 fields')).toBe(true);
+    expect(label.length).toBeLessThanOrEqual(140);
+  });
+
+  it('hasTicketIdStub matches only this ticket\'s prefix', () => {
+    expect(hasTicketIdStub('Set ticket #2aad0601... status to resolved', TICKET_ID)).toBe(true);
+    expect(hasTicketIdStub('Set ticket #2AAD0601... status to resolved', TICKET_ID)).toBe(true);
+    expect(hasTicketIdStub('Set ticket #2aad0601... status to resolved', OTHER_TICKET_ID)).toBe(false);
+    expect(hasTicketIdStub('Manage tickets: merge', TICKET_ID)).toBe(false);
+  });
 });

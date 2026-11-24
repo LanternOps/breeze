@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { clearZammadDirectoryCache } from './directory';
 import { FakeZammad, zammadTestHandle } from './fakeZammad.fixtures';
 import { zammadTicketImportModule } from './index';
-import { resolveZammadPeople } from './people';
+import { resolveZammadPeople, ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS } from './people';
 
 /** Names for the report's owner keys, read live (#8313 W6; spec 2026-10-19 §5.10). */
 
@@ -42,6 +42,24 @@ describe('resolveZammadPeople', () => {
     const fake = new FakeZammad();
     expect(Object.fromEntries(await resolveZammadPeople(zammadTestHandle(fake), ['x']))).toEqual({ x: null });
     expect(fake.requestedPaths()).toEqual([]);
+  });
+
+  it('caps per-user requests per call, leaving the rest uncached for a later call', async () => {
+    const fake = new FakeZammad();
+    const handle = zammadTestHandle(fake, { sourceId: 'capped' });
+    // Ids the users index does not hold: each one costs a per-user request.
+    const keys = Array.from({ length: ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS + 10 }, (_, i) => String(900_000 + i));
+    const perUser = () => fake.requestedPaths().filter((p) => /^\/api\/v1\/users\/\d+/.test(p)).length;
+
+    const first = await resolveZammadPeople(handle, keys);
+    expect(perUser()).toBe(ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS);
+    expect([...first.values()].every((p) => p === null)).toBe(true);
+
+    // The first batch is cached; the next call reads only the ten left over.
+    await resolveZammadPeople(handle, keys);
+    expect(perUser()).toBe(ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS + 10);
+    await resolveZammadPeople(handle, keys);
+    expect(perUser()).toBe(ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS + 10);
   });
 
   it('is the module\'s resolvePeople', () => {

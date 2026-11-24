@@ -599,6 +599,17 @@ func manageBdeArgs(drive string) []string {
 	return []string{"-protectors", "-get", drive, "-Type", "TPM"}
 }
 
+// ReadOnlyDeps wires only the two readers Preflight needs: the volume state and
+// manage-bde's TPM protector listing (`-protectors -get -Type TPM`, a read that
+// never lists a recovery password). It carries no Store, SuspendVolume or
+// ResumeVolume, so Suspend and ResumeOnStart refuse it. oem_observe uses it.
+func ReadOnlyDeps() Deps {
+	return Deps{
+		State:      security.SystemDriveBitLockerState,
+		Protectors: systemProtectors,
+	}
+}
+
 // SystemDeps wires the real machine. The two readers come from the caller, which
 // owns those facts.
 func SystemDeps(store Store, bootTime func() (time.Time, error), rebootPending func() (bool, error)) Deps {

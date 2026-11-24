@@ -8,6 +8,11 @@ import { describe, expect, it } from 'vitest';
  * a domain verification across an org move. Only the org merge Phase B
  * transaction may set it; any other writer would carry a proof to an org that
  * never earned it.
+ *
+ * #12490: it also defers the configuration-assignment owner check on
+ * configuration_policies, sites, device_groups and devices to COMMIT (the
+ * check still runs; see migration
+ * 2027-01-29-120000-config-assignment-owner-check-deferred-in-org-merge.sql).
  */
 const SRC = join(__dirname, '..');
 const ALLOWED = ['services/orgMerge.ts'];

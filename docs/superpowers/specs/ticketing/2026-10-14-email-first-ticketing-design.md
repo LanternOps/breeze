@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14
 **Tracking issue:** LanternOps/breeze#8758
-**Status:** Draft for maintainer review. Direction accepted (`track:spec`). Not approved, and not scheduled.
+**Status:** Approved by Todd 2026-11-19 (Gate A). Implementation plan: `docs/superpowers/plans/ticketing/2026-11-19-email-first-replies.md` (Gate B approved 2026-11-19 with changes; the plan's Decisions section settles the open calls below).
 **Builds on:** inbound email-to-ticket (phase 4), connected Microsoft 365 mailbox send (`graphReplySender.ts`), `ticketing.inbound.fullMessageReply`.
 **Related:** #8759 (a one-time secret link is a public reply and has to leave in this email).
 

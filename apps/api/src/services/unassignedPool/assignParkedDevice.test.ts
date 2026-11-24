@@ -203,6 +203,7 @@ beforeEach(() => {
       customFieldRehome: { rehomed: 0, dropped: 0 },
       removedTicketLinks: [],
       expiredElevationRequests: 0,
+      removedConfigPolicyAssignments: [],
     };
   });
 });
@@ -282,9 +283,32 @@ describe('assignParkedDevice', () => {
       updated: { id: DEVICE, agentId: 'agent-1' } as any,
       linkGroupDissolved: false, currencyGuard: null, alertChildRewrite: null,
       customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed, expiredElevationRequests: 0,
+      removedConfigPolicyAssignments: [],
     }));
     await single();
     expect(scheduleTicketLinkRemovalNotes).toHaveBeenCalledWith(removed);
+  });
+
+  it('after commit: counts the removed config policy assignments on the target-org audit row without naming them (#12491)', async () => {
+    const removedAssignments = [{ assignmentId: 'a1', policyId: 'p1', policyName: 'Holding policy' }];
+    vi.mocked(moveDeviceOrgInTransaction).mockImplementationOnce(async () => ({
+      updated: { id: DEVICE, agentId: 'agent-1' } as any,
+      linkGroupDissolved: false, currencyGuard: null, alertChildRewrite: null,
+      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: [], expiredElevationRequests: 0,
+      removedConfigPolicyAssignments: removedAssignments,
+    }));
+    await single();
+    expect(writeAuditEvent).toHaveBeenCalledWith(request, expect.objectContaining({
+      orgId: TARGET_ORG,
+      details: expect.objectContaining({ removedConfigPolicyAssignmentCount: 1 }),
+    }));
+    expect(vi.mocked(writeAuditEvent).mock.calls[0]![1].details).not.toHaveProperty('removedConfigPolicyAssignments');
+  });
+
+  it('after commit: leaves the removed-assignments field off the audit when the move removed none (#12491)', async () => {
+    await single();
+    expect(vi.mocked(writeAuditEvent).mock.calls[0]![1].details).not.toHaveProperty('removedConfigPolicyAssignments');
+    expect(vi.mocked(writeAuditEvent).mock.calls[0]![1].details).not.toHaveProperty('removedConfigPolicyAssignmentCount');
   });
 
   it('refuses a device that is not parked, without consuming the grant', async () => {

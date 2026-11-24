@@ -297,11 +297,14 @@ describe('AutomationEditPage — Jobs moving to Flows (#5221 W06)', () => {
     expect(screen.queryByTestId('automation-moved-notice')).toBeNull();
   });
 
-  it('with Flows on, /jobs/new points to Flows instead of the form', async () => {
-    flowsGate.value = { enabled: true, loaded: true };
+  // #12310: a flow can only be drafted in AI chat, so /jobs/new is the form
+  // whether Flows is on or off.
+  it.each([[true], [false]])('/jobs/new renders the Job form (Flows on: %s)', async (enabled) => {
+    flowsGate.value = { enabled, loaded: true };
     fetchMock.mockImplementation(() => Promise.resolve(json({ data: [] })));
-    render(<AutomationEditPage isNew />);
-    const notice = await screen.findByTestId('automation-new-opens-flows');
-    expect(notice.querySelector('a')?.getAttribute('href')).toBe('/flows');
+    const { container } = render(<AutomationEditPage isNew />);
+    await waitFor(() => expect(container.querySelector('form')).not.toBeNull());
+    expect(screen.queryByTestId('automation-new-opens-flows')).toBeNull();
+    expect(container.querySelector('a[href="/flows"]')).toBeNull();
   });
 });

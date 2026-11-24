@@ -111,6 +111,10 @@ const FIXTURES = {
     { sourceDeviceId: LOWER.device, targetDeviceId: LOWER.device2, targetVersion: 'Version-AbC_0123456789012345678901234567890', evidenceLevel: 'hint', restoreDecommissioned: false },
     { sourceDeviceId: up(LOWER.device), targetDeviceId: up(LOWER.device2), targetVersion: 'Version-AbC_0123456789012345678901234567890', evidenceLevel: 'hint', restoreDecommissioned: false },
   ],
+  deviceTpmBaselineAcceptResourceDigest: [
+    { deviceId: LOWER.device, baselineVersion: 'Version-AbC_0123456789012345678901234567890' },
+    { deviceId: up(LOWER.device), baselineVersion: 'Version-AbC_0123456789012345678901234567890' },
+  ],
 } as Record<string, Fixture>;
 
 type DigestFn = (arg: unknown) => string;

@@ -306,6 +306,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/topologyAdjacency.ts': { exempt: 'agent_transport' },
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
+  'agents/attestation.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
   'agents/workloads.ts': { exempt: 'agent_transport' },
   // #9075 W2b: the client's unauthenticated signing link (token-bearer, like quotesPublic.ts).
@@ -444,9 +445,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'clientAi/templates.ts': { exempt: 'addin_surface' },
   'config.ts': { exempt: 'internal_plumbing' },
   'configurationPolicies/assignments.ts': { tools: ['apply_configuration_policy', 'remove_configuration_policy_assignment'] },
+  'configurationPolicies/assignmentsApply.ts': { tools: ['apply_configuration_policy', 'remove_configuration_policy_assignment'] },
   'configurationPolicies/crud.ts': { tools: ['manage_configuration_policy', 'list_configuration_policies', 'get_configuration_policy'] },
   'configurationPolicies/featureLinks.ts': { tools: ['manage_policy_feature_link', 'manage_service_monitors'] },
   'configurationPolicies/patchJobs.ts': { tools: ['manage_patches'] },
+  'configurationPolicies/precedence.ts': { exempt: 'tool_in_later_wave', note: "outranked counts per feature for the policy page (#12472); an AI read follows the spec's AI follow-up, tracked on feature #12462" },
+  'configurationPolicies/reach.ts': { exempt: 'tool_in_later_wave', note: "reach counts for the policy page and list (#12465); an AI read follows the spec's AI follow-up, tracked on feature #12462" },
   'configurationPolicies/resolution.ts': { tools: ['get_effective_configuration', 'preview_configuration_change', 'configuration_policy_compliance'] },
   'configurationPolicies/wakeStatus.ts': { exempt: 'tool_in_later_wave', note: 'Wake-on-LAN status panel feed and the audited "allow wake again" reset (#10838 W02); no MCP tool planned until the feature activates in W06.' },
   'connectedApps.ts': { exempt: 'identity' },
@@ -527,6 +531,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/processSamples.ts': { tools: ['get_process_samples'] }, // W13 (#6783): the at-or-before sample; range markers are chart data
   'devices/provision.ts': { exempt: 'identity' },
   'devices/reattach.ts': { exempt: 'human_only_tenant_restructure', note: 'Reinstall reattach (#8318 §8): retires one device record and hands another\'s identity to a new install, across orgs of a partner; interactive session, MFA and a device_reattach step-up. The candidates read serves only the reattach dialog.' },
+  'devices/tpmBaseline.ts': { exempt: 'human_only_tenant_restructure', note: 'TPM key baseline review (#8318 wave T2): accepting a held key change moves the anchor every later reattach compares against; interactive session, MFA, the reattach access rule and a device_tpm_baseline_accept step-up. The GET serves the device detail panel.' },
   'devices/removalConfig.ts': { exempt: 'internal_plumbing' },
   'devices/restorePoints.ts': { tools: ['list_device_restore_point_attempts'] },
   'devices/siteAssignmentConfirmation.ts': { exempt: 'internal_plumbing', note: 'Wrong-site suggestion dismissal ("Keep at <site>", site location W3, #7887). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP out of presence, and a suggestion is accepted or dismissed only by a technician in the topology UI.' },
@@ -535,6 +540,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/software.ts': { tools: ['get_device_software'] }, // W12 (#6782)
   'devices/softwareActions.ts': { tools: ['manage_device_software'] }, // W12 (#6782): update / uninstall
   'devices/stats.ts': { tools: ['get_fleet_device_stats'] },
+  'devices/tpmCoverage.ts': { exempt: 'internal_plumbing', note: 'Fleet share with a recorded TPM EK baseline (#8318 T1), a number for the reattach readiness UI; no device data the model needs.' },
   'devices/attentionCounts.ts': { exempt: 'internal_plumbing', note: 'Per-page alert/ticket count batch for the devices list UI (#9038); the same counts reach the model through manage_alerts and the ticket tools.' },
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
   'devices/warranty.ts': { tools: ['manage_device_warranty'] }, // W13 (#6783)
@@ -855,7 +861,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { tools: ['apply_topology_template'] }, // W08 (#6778): preview, apply (supervised), status
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { tools: ['manage_topology_templates'] }, // W08 (#6778): templates, versions, publish (supervised), site options
-  'flows.ts': { tools: ['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219): list/detail + run/runs/cancel; drafts via draft_flow, enable/disable are UI-only.
+  'flows.ts': { tools: ['list_flows', 'get_flow', 'draft_flow', 'validate_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219) + Flows completion W01b (#12435): list/detail, draft create/update (draft_flow), validate (validate_flow), run/runs/cancel. Draft delete, enable and disable are UI-only.
   'flowLimits.ts': { exempt: 'tool_in_later_wave', note: 'Flow limits settings (partner default / org lower-only override, Tool Catalog W05 #5220); no MCP tool planned yet — caps are read through get_flow usage.' },
   'flowConversions.ts': { exempt: 'tool_in_later_wave', note: 'Legacy Job → flow conversions (preview, create, bulk, list/get; Tool Catalog W06 #5221). Converting is an interactive-session action; manage_automations list/get/history report each Job\'s conversion.' },
   'flowWebhooks.ts': { exempt: 'inbound_integration', note: 'Public flow webhook ingress (Tool Catalog W05); HMAC/token authenticated, not an operator surface.' },

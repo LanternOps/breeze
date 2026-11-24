@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import BackupDestinationSection, { destinationPrefixError, emptyConfigForm } from './BackupDestinationSection';
+import { FeatureReadOnlyContext } from './featureEditing';
 
 // DBT-5: Chrome ignores `autoComplete="off"` on password-type inputs and
 // autofills the operator's saved Breeze login into the S3 credential fields.
@@ -152,5 +153,48 @@ describe('BackupDestinationSection local destination copy', () => {
     expect(text).not.toMatch(/mounted NAS/i);
     expect(placeholders).not.toContain('\\\\');
     expect(text).toMatch(/network shares[^.]*not supported/i);
+  });
+});
+
+describe('BackupDestinationSection for a read-only viewer (#12469)', () => {
+  const baseProps = {
+    configsLoading: false,
+    onSelect: vi.fn(),
+    mode: 'select' as const,
+    onStartCreate: vi.fn(),
+    onCancelForm: vi.fn(),
+    onBeginEdit: vi.fn(),
+    form: { ...emptyConfigForm },
+    onFormChange: vi.fn(),
+    fieldErrors: {},
+    testStatus: 'idle' as const,
+    onTest: vi.fn(),
+  };
+  const config = { id: 'cfg-1', name: 'Primary', provider: 's3', details: { bucket: 'b', region: 'r' } } as never;
+
+  it('a read-only viewer gets no create, edit or test destination controls', () => {
+    const { unmount } = render(
+      <FeatureReadOnlyContext.Provider value>
+        <BackupDestinationSection {...baseProps} configs={[]} selectedConfigId="" />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    expect(screen.queryByTestId('backup-destination-empty-create')).toBeNull();
+    unmount();
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <BackupDestinationSection {...baseProps} configs={[config]} selectedConfigId="cfg-1" />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    expect(screen.getByText('Primary')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Edit/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Test/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /New destination/ })).toBeNull();
+  });
+
+  it('an editor gets them', () => {
+    render(<BackupDestinationSection {...baseProps} configs={[config]} selectedConfigId="cfg-1" />);
+    expect(screen.getByRole('button', { name: /Edit/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Test/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /New destination/ })).toBeInTheDocument();
   });
 });

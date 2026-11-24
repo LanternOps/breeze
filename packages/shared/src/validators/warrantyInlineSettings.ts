@@ -135,3 +135,45 @@ export function readRecordedWarrantyHpCmslConsent(inlineSettings: unknown): Warr
   const parsed = warrantyHpCmslStoredBlockSchema.safeParse(readHpCmslBlock(inlineSettings));
   return parsed.success ? (parsed.data.consent ?? null) : null;
 }
+
+/**
+ * The `warranty_settings` block the heartbeat sends (#5511 observe-first
+ * amendment §1). All three keys, always:
+ *
+ *  - `hp_cmsl_mode`: `off | observe | act`. It is the vendor canary stage for
+ *    (`hp_warranty`, `hp`) and the device's partner, and `off` unless the
+ *    device's policy has hpCmsl enabled with consent to the current EULA.
+ *  - `hp_cmsl_tiers`: the act tiers that are open (`HP_WARRANTY_ACT_TIERS` on
+ *    the API) when the mode is `act`; otherwise empty.
+ *  - `hp_cmsl_enabled`: true only when the mode is `act`. Agents older than the
+ *    observe step persist this flag and keep it when the key is omitted, so it
+ *    is always sent and is false otherwise: that is how a stale persisted true
+ *    is revoked.
+ */
+export const HP_CMSL_MODES = ['off', 'observe', 'act'] as const;
+export type HpCmslMode = (typeof HP_CMSL_MODES)[number];
+
+/** Act tiers, in the order they may open; each opens in its own PR. */
+export const HP_CMSL_ACT_TIERS = ['t0_ingest', 't1_refresh', 'install'] as const;
+export type HpCmslActTier = (typeof HP_CMSL_ACT_TIERS)[number];
+
+export const warrantySettingsWireSchema = z
+  .object({
+    hp_cmsl_enabled: z.boolean(),
+    hp_cmsl_mode: z.enum(HP_CMSL_MODES),
+    hp_cmsl_tiers: z.array(z.enum(HP_CMSL_ACT_TIERS)).max(HP_CMSL_ACT_TIERS.length),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.hp_cmsl_enabled !== (value.hp_cmsl_mode === 'act')) {
+      ctx.addIssue({ code: 'custom', message: 'hp_cmsl_enabled must be true exactly when hp_cmsl_mode is act' });
+    }
+    if (value.hp_cmsl_mode !== 'act' && value.hp_cmsl_tiers.length > 0) {
+      ctx.addIssue({ code: 'custom', message: 'hp_cmsl_tiers must be empty unless hp_cmsl_mode is act' });
+    }
+    if (new Set(value.hp_cmsl_tiers).size !== value.hp_cmsl_tiers.length) {
+      ctx.addIssue({ code: 'custom', message: 'hp_cmsl_tiers must not repeat a tier' });
+    }
+  });
+
+export type WarrantySettingsWire = z.infer<typeof warrantySettingsWireSchema>;

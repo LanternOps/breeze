@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { OEM_CATEGORIES, OEM_LANES, type OemCategory, type OemLane } from '../utils/oemUpdates';
+import {
+  OEM_CATEGORIES,
+  OEM_LANES,
+  oemLaneHonoursBlockedUpdateIds,
+  type OemCategory,
+  type OemLane,
+} from '../utils/oemUpdates';
 
 /**
  * Inline settings for the `oem_updates` config-policy feature (Vendor updates,
@@ -67,13 +73,54 @@ export const oemUpdatesInlineSettingsSchema = z.strictObject({
 
 export type OemUpdatesInlineSettings = z.infer<typeof oemUpdatesInlineSettingsSchema>;
 
+export const OEM_DELL_BLOCKED_IDS_UNSUPPORTED_MESSAGE =
+  'Dell does not support blocking individual updates: Dell Command | Update offers another package for the same '
+  + 'component instead. Leave blockedUpdateIds empty for Dell, and turn off the category or the vendor to stop its updates.';
+
+const BLOCKED_IDS_UNSUPPORTED_MESSAGES: Partial<Record<OemLane, string>> = {
+  dell: OEM_DELL_BLOCKED_IDS_UNSUPPORTED_MESSAGE,
+};
+
+/**
+ * True when a lane that cannot honour a blocklist (#12265) has blocked IDs stored. Such a run
+ * would only fail on the agent (`blocked_ids_unsupported`), so the scheduler sends none.
+ */
+export function hasUnsupportedBlockedUpdateIds(settings: OemUpdatesInlineSettings, lane: OemLane): boolean {
+  return !oemLaneHonoursBlockedUpdateIds(lane) && (settings.vendors[lane]?.blockedUpdateIds.length ?? 0) > 0;
+}
+
+/**
+ * What a write may store (#12265): the stored shape, plus no blocked IDs for a lane that cannot
+ * honour them. `[]` stays valid, so existing payloads parse.
+ *
+ * Writers (the feature-link routes, the service backstop, the AI tool and the policy tab) use
+ * this. Readers of a stored blob keep `oemUpdatesInlineSettingsSchema`: a policy saved with a
+ * Dell blocklist before this rule must still resolve, or its other vendors would stop too.
+ */
+export const oemUpdatesInlineSettingsWriteSchema = oemUpdatesInlineSettingsSchema.superRefine((settings, ctx) => {
+  for (const lane of OEM_LANES) {
+    if (!hasUnsupportedBlockedUpdateIds(settings, lane)) continue;
+    ctx.addIssue({
+      code: 'custom',
+      path: ['vendors', lane, 'blockedUpdateIds'],
+      message: BLOCKED_IDS_UNSUPPORTED_MESSAGES[lane] ?? `This vendor does not support blocking individual updates.`,
+    });
+  }
+});
+
 /**
  * `GET /configuration-policies/oem-updates/gates`: per lane, whether its agent
  * code has shipped and which categories may be stored true today. Device-less:
  * the lab override never opens a gate for a stored policy.
  */
 export type OemUpdatesGateSnapshot = {
-  lanes: Array<{ lane: OemLane; shipped: boolean; categories: Record<OemCategory, boolean> }>;
+  lanes: Array<{
+    lane: OemLane;
+    shipped: boolean;
+    /** The caller's partner is a vendor canary for this lane: it may be switched on to be observed. */
+    observable?: boolean;
+    categories: Record<OemCategory, boolean>;
+  }>;
 };
 export type OemUpdatesVendorSettings = z.infer<typeof vendorSchema>;
 

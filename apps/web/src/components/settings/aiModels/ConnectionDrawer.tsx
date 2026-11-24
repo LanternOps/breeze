@@ -24,11 +24,13 @@ export interface ConnectionDrawerProps {
   initialKind?: AddableConnectionKind;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
+  /** #12456: Refresh answered 202 and finishes in a background job; the card owns the re-read (it outlives this drawer). */
+  onJobQueued?: () => void;
 }
 
 const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
 
-export default function ConnectionDrawer({ connection, catalog, catalogEnabled, initialKind, onClose, onSaved }: ConnectionDrawerProps) {
+export default function ConnectionDrawer({ connection, catalog, catalogEnabled, initialKind, onClose, onSaved, onJobQueued }: ConnectionDrawerProps) {
   const { t } = useTranslation('settings');
   const kind: AddableConnectionKind = connection?.kind === 'openai_compatible' ? 'openai_compatible'
     : connection === null ? initialKind ?? 'anthropic_byok' : 'anthropic_byok';
@@ -276,6 +278,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
         friendly,
         onUnauthorized,
       });
+      onJobQueued?.();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.refreshFailed') });

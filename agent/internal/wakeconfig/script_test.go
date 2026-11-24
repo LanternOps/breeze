@@ -66,8 +66,11 @@ func TestReadScriptWithoutNetAdapterModuleUnderPwsh(t *testing.T) {
 
 func TestReadScriptIsReadOnlyAndKeywordMatched(t *testing.T) {
 	s := strings.ToLower(readScript)
-	if !strings.Contains(readScript, "-RegistryKeyword '*EEE'") {
-		t.Fatal("script must match EEE by -RegistryKeyword '*EEE'")
+	// The standard keyword first, then Intel's (the I219-LM in Dell business
+	// desktops has no *EEE; captured on a lab OptiPlex 7060, values 0/1).
+	if !strings.Contains(readScript, "foreach ($kw in @('*EEE','EEELinkAdvertisement'))") ||
+		!strings.Contains(readScript, "-RegistryKeyword $kw") {
+		t.Fatal("script must match EEE by -RegistryKeyword '*EEE', then 'EEELinkAdvertisement'")
 	}
 	for _, bad := range []string{"displayname", "displayvalue"} {
 		if strings.Contains(s, bad) {

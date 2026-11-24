@@ -50,6 +50,9 @@ const EXPECTED: Record<string, Classification> = {
 
   // --- agent-authenticated, refused for a parked device -------------------
   'GET /:id/config': 'deny',
+  // #8318 T1: TPM EK collection. Wave T2 opens both to a parked device (§11).
+  'POST /:id/attestation/challenge': 'allow',
+  'POST /:id/attestation/complete': 'allow',
   // #4618: a parked device cannot start or verify an isolation episode.
   'POST /:id/isolation/:isolationId/verify': 'deny',
   'PUT /:id/monitoring-results': 'deny',
@@ -201,9 +204,11 @@ describe('parked-device route classification', () => {
     expect(shouldSkipAgentAuth(path, idSegment)).toBe(true);
   });
 
-  it('exactly seven endpoints are open to a parked device', () => {
+  it('exactly nine endpoints are open to a parked device', () => {
     expect(Object.entries(EXPECTED).filter(([, cls]) => cls === 'allow').map(([key]) => key).sort()).toEqual([
       'GET /:id/commands',
+      'POST /:id/attestation/challenge',
+      'POST /:id/attestation/complete',
       'POST /:id/commands/:commandId/result',
       'POST /:id/heartbeat',
       'POST /:id/rebind',

@@ -777,7 +777,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		// backup stuck `running` until the stale-backup reaper failed it
 		// (#3001). Send failures are logged inside sendBackupResult under
 		// component=backup so they ship server-side.
-		_ = sendUnsolicitedResult(conn, result)
+		_ = sendUnsolicitedResult(conn, req.CommandType, result)
 		return
 	}
 
@@ -789,11 +789,11 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	} else if req.CommandType == "backup_verify" {
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
-		result = execBackupVerifyContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
+		result = execBackupVerifyContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn, verifyRunBudgetFor(req.TimeoutMs))
 	} else if req.CommandType == "backup_test_restore" {
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
-		result = execBackupTestRestoreContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
+		result = execBackupTestRestoreContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn, verifyRunBudgetFor(req.TimeoutMs))
 	} else {
 		result = run()
 	}
@@ -803,7 +803,7 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	// Same oversize guard as the async path above: the synchronous reply is
 	// what resolves the agent's pending request, so dropping it strands the
 	// command until its forward wait times out (#3001).
-	_ = sendBackupResult(conn, env.ID, result)
+	_ = sendBackupResult(conn, env.ID, req.CommandType, result)
 }
 
 // sendUnsolicitedResult sends a terminal backup_result envelope that is not
@@ -817,9 +817,9 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 //
 // It goes through sendBackupResult so the payload is bounded to the IPC frame
 // first — see result_bounds.go and #3001.
-func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult) error {
+func sendUnsolicitedResult(conn *ipc.Conn, commandType string, result backupipc.BackupCommandResult) error {
 	id := fmt.Sprintf("%s-final-%d", result.CommandID, time.Now().UnixNano())
-	return sendBackupResult(conn, id, result)
+	return sendBackupResult(conn, id, commandType, result)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
@@ -909,9 +909,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			// payload's providerConfig (restoreProviderForCommand), so they work
 			// even with no agent.yaml manager. Route them here instead of falling
 			// through to "backup not configured".
-			return execBackupVerify(req.Payload, mgr, vaultState)
+			return execBackupVerify(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 		case "backup_test_restore":
-			return execBackupTestRestore(req.Payload, mgr, vaultState)
+			return execBackupTestRestore(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 		case "backup_stop":
 			// Server-dispatched backup_runs build ephemeral payload managers
 			// tracked only by the canceller — a device with no agent.yaml
@@ -1016,9 +1016,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "backup_restore":
 		return execBackupRestore(req.Payload, mgr, vaultState)
 	case "backup_verify":
-		return execBackupVerify(req.Payload, mgr, vaultState)
+		return execBackupVerify(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 	case "backup_test_restore":
-		return execBackupTestRestore(req.Payload, mgr, vaultState)
+		return execBackupTestRestore(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 	case "backup_cleanup":
 		return execBackupCleanup(req.Payload)
 

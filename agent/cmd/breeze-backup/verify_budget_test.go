@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net"
 	"os"
 	"path"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 // stallingSnapshotProvider serves a manifest of n small files; the object at
@@ -91,7 +95,7 @@ func TestExecBackupVerify_BudgetExhaustedReturnsPartialCounts(t *testing.T) {
 	}
 	go func() {
 		defer close(done)
-		r := execBackupVerifyContext(context.Background(), "cmd-verify", json.RawMessage(`{"snapshotId":"budget-verify"}`), mgr, nil, nil)
+		r := execBackupVerifyContext(context.Background(), "cmd-verify", json.RawMessage(`{"snapshotId":"budget-verify"}`), mgr, nil, nil, 0)
 		res.Success, res.Stdout, res.Stderr = r.Success, r.Stdout, r.Stderr
 	}()
 	select {
@@ -126,7 +130,7 @@ func TestExecBackupTestRestore_BudgetExhaustedReturnsPartialCounts(t *testing.T)
 	var stdout, stderr string
 	go func() {
 		defer close(done)
-		r := execBackupTestRestoreContext(context.Background(), "cmd-restore", json.RawMessage(`{"snapshotId":"budget-restore"}`), mgr, nil, nil)
+		r := execBackupTestRestoreContext(context.Background(), "cmd-restore", json.RawMessage(`{"snapshotId":"budget-restore"}`), mgr, nil, nil, 0)
 		success, stdout, stderr = r.Success, r.Stdout, r.Stderr
 	}()
 	select {
@@ -144,5 +148,142 @@ func TestExecBackupTestRestore_BudgetExhaustedReturnsPartialCounts(t *testing.T)
 	}
 	if body.Status != "partial" || body.FilesVerified != 3 || body.FilesUnchecked != 1 || !body.CleanedUp {
 		t.Fatalf("result = %+v, want partial with 3 verified, 1 unchecked, cleaned up", body)
+	}
+}
+
+// The helper's run budget is the agent's forward wait (the IPC request's
+// TimeoutMs) minus backupipc.VerifyRunMargin — never the command payload, so a
+// helper paired with an old agent that waits the base 2h still stops at
+// 1h50m. No timeout (0, or anything not usable) is the package default.
+func TestVerifyRunBudgetFor(t *testing.T) {
+	withVerifyRunBudget(t, 42*time.Second)
+	cases := []struct {
+		name      string
+		timeoutMs int64
+		want      time.Duration
+	}{
+		{"no timeout", 0, 42 * time.Second},
+		{"negative", -1, 42 * time.Second},
+		{"old agent base 2h", backupipc.VerifyCommandTimeout.Milliseconds(), backupipc.VerifyRunBudget},
+		{"scaled 395m", (395 * time.Minute).Milliseconds(), 385 * time.Minute},
+		{"12h cap", backupipc.VerifyMaxCommandTimeout.Milliseconds(), backupipc.VerifyMaxCommandTimeout - backupipc.VerifyRunMargin},
+		{"above cap", (48 * time.Hour).Milliseconds(), backupipc.VerifyMaxCommandTimeout - backupipc.VerifyRunMargin},
+		{"overflow-sized", math.MaxInt64, backupipc.VerifyMaxCommandTimeout - backupipc.VerifyRunMargin},
+		// #11813: the agent deducts the wait on its verification lane, so the
+		// wait can be shorter than the 2h base; the helper honours it down to
+		// the agent's floor (margin + a 5m run), below which the agent never
+		// forwards.
+		{"lane-shortened 70m", (70 * time.Minute).Milliseconds(), 60 * time.Minute},
+		{"agent floor 15m", (backupipc.VerifyRunMargin + 5*time.Minute).Milliseconds(), 5 * time.Minute},
+		// A wait no longer than the margin would leave no budget (and a zero
+		// TimeBudget means "unbounded" to the verify loop): use the default.
+		{"shorter than margin", (5 * time.Minute).Milliseconds(), 42 * time.Second},
+		{"equal to margin", backupipc.VerifyRunMargin.Milliseconds(), 42 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := verifyRunBudgetFor(tc.timeoutMs)
+			if got != tc.want {
+				t.Fatalf("verifyRunBudgetFor(%d) = %v, want %v", tc.timeoutMs, got, tc.want)
+			}
+			if got <= 0 {
+				t.Fatalf("verifyRunBudgetFor(%d) = %v, must be positive", tc.timeoutMs, got)
+			}
+		})
+	}
+}
+
+// requestTimeoutFor gives a request whose derived run budget is d.
+func requestTimeoutFor(d time.Duration) int64 {
+	return (backupipc.VerifyRunMargin + d).Milliseconds()
+}
+
+// The production route: the agent's forward request reaches
+// handleBackupCommand, whose verify/test-restore branch must stop the run at
+// TimeoutMs - margin. The package default is set to an hour, so a route that
+// ignored the request would hang past the test's deadline.
+func TestHandleBackupCommand_VerifyRunBudgetFollowsRequestTimeout(t *testing.T) {
+	withVerifyRunBudget(t, time.Hour)
+	originalWorkRoot := backupRestoreWorkRoot
+	backupRestoreWorkRoot = func() string { return t.TempDir() }
+	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
+
+	for _, commandType := range []string{"backup_verify", "backup_test_restore"} {
+		t.Run(commandType, func(t *testing.T) {
+			snapshotID := "route-" + commandType
+			provider := newStallingSnapshotProvider(t, snapshotID, 4, 3)
+			mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
+
+			agentSide, helperSide := net.Pipe()
+			defer func() { _ = agentSide.Close() }()
+			defer func() { _ = helperSide.Close() }()
+
+			req := backupipc.BackupCommandRequest{
+				CommandID:   "route-cmd-" + commandType,
+				CommandType: commandType,
+				Payload:     json.RawMessage(fmt.Sprintf(`{"snapshotId":%q}`, snapshotID)),
+				TimeoutMs:   requestTimeoutFor(300 * time.Millisecond),
+			}
+			raw, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ch := startEnvelopeReader(ipc.NewConn(agentSide))
+			go handleBackupCommand(ipc.NewConn(helperSide), &ipc.Envelope{ID: req.CommandID, Type: backupipc.TypeBackupCommand, Payload: raw}, mgr, nil, newActiveCommandCanceller())
+
+			env := nextBackupResult(t, ch)
+			var res backupipc.BackupCommandResult
+			if err := json.Unmarshal(env.Payload, &res); err != nil {
+				t.Fatal(err)
+			}
+			if !res.Success {
+				t.Fatalf("result not successful (stderr=%q)", res.Stderr)
+			}
+			var body struct {
+				Status         string `json:"status"`
+				FilesUnchecked int    `json:"filesUnchecked"`
+			}
+			if err := json.Unmarshal([]byte(res.Stdout), &body); err != nil {
+				t.Fatalf("stdout: %v (%q)", err, res.Stdout)
+			}
+			if body.Status != "partial" || body.FilesUnchecked != 1 {
+				t.Fatalf("result = %+v, want partial with 1 unchecked", body)
+			}
+		})
+	}
+}
+
+// executeCommand's own verify/test-restore cases (reached with an agent.yaml
+// manager) follow the request too.
+func TestExecuteCommand_VerifyRunBudgetFollowsRequestTimeout(t *testing.T) {
+	withVerifyRunBudget(t, time.Hour)
+	originalWorkRoot := backupRestoreWorkRoot
+	backupRestoreWorkRoot = func() string { return t.TempDir() }
+	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
+
+	for _, commandType := range []string{"backup_verify", "backup_test_restore"} {
+		t.Run(commandType, func(t *testing.T) {
+			snapshotID := "exec-" + commandType
+			provider := newStallingSnapshotProvider(t, snapshotID, 4, 3)
+			mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
+
+			done := make(chan backupipc.BackupCommandResult, 1)
+			go func() {
+				done <- executeCommand(backupipc.BackupCommandRequest{
+					CommandID:   "exec-cmd-" + commandType,
+					CommandType: commandType,
+					Payload:     json.RawMessage(fmt.Sprintf(`{"snapshotId":%q}`, snapshotID)),
+					TimeoutMs:   requestTimeoutFor(300 * time.Millisecond),
+				}, mgr, nil, nil, newActiveCommandCanceller())
+			}()
+			select {
+			case res := <-done:
+				if !res.Success {
+					t.Fatalf("result not successful (stderr=%q)", res.Stderr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("run did not stop at the budget derived from the request timeout")
+			}
+		})
 	}
 }

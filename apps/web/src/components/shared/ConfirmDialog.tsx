@@ -10,6 +10,8 @@ export interface ConfirmDialogProps {
   title: string;
   message: ReactNode;
   confirmLabel?: string;
+  /** Label of the dismiss button. Defaults to Cancel. */
+  cancelLabel?: string;
   variant?: 'destructive' | 'warning';
   isLoading?: boolean;
   /**
@@ -40,6 +42,7 @@ export function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  cancelLabel,
   variant = 'destructive',
   isLoading = false,
   confirmDisabled = false,
@@ -142,7 +145,7 @@ export function ConfirmDialog({
           aria-disabled={isLoading}
           className="rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
         >
-          {t('actions.cancel')}
+          {cancelLabel ?? t('actions.cancel')}
         </button>
         <button
           type="button"

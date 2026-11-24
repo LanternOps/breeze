@@ -279,6 +279,11 @@ describe('agent-binary update command types are only named at known sites (#4093
     // #10919: the same claim-time check, moved here. Only inspects queued update rows for the
     // isolation upgrade floor; never builds, inserts or dispatches a command.
     'apps/api/src/services/networkIsolation/upgradeFloor.ts',
+    // #12169: the minimum-OS gate only READS an update / update_agent /
+    // update_watchdog row's type and payload to refuse a build above the
+    // device's macOS floor, at dispatch (commandQueue) and claim time
+    // (commandClaimEligibility). It never builds, inserts or dispatches one.
+    'apps/api/src/services/agentOsFloorCommands.ts',
   ]);
 
   function walk(dir: string, out: string[] = []): string[] {

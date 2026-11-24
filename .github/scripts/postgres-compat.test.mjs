@@ -139,6 +139,60 @@ test('postgres-versions.json names the default, the PR smoke and the scheduled m
   }
 });
 
+// ── docs: the supported-versions table (#11416 W2, #11418) ──────────────────
+// Docs claim only what CI proves: the table in production.mdx lists exactly the
+// majors in postgres-versions.json, marks the default, and states each
+// major's cadence as CI actually runs it.
+
+const PRODUCTION_DOC_PATH = '../../apps/docs/src/content/docs/deploy/production.mdx';
+const SUPPORTED_HEADING = '### Supported PostgreSQL versions';
+
+/** Rows of the first markdown table under `heading`, as trimmed cell arrays. */
+function tableUnder(text, heading) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => l.trim() === heading);
+  assert.ok(start !== -1, `${heading} not found in production.mdx`);
+  const rows = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,6}\s/.test(line)) break;
+    if (!line.trim().startsWith('|')) {
+      if (rows.length) break;
+      continue;
+    }
+    const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+    if (cells.every((c) => /^:?-+:?$/.test(c))) continue; // separator row
+    rows.push(cells);
+  }
+  assert.ok(rows.length > 1, `no table under ${heading}`);
+  return rows.slice(1); // drop the header row
+}
+
+test('production.mdx: the supported-versions table equals postgres-versions.json', () => {
+  const v = loadVersions();
+  const rows = tableUnder(read(PRODUCTION_DOC_PATH), SUPPORTED_HEADING);
+  const byMajor = new Map();
+  for (const cells of rows) {
+    const m = /^(?:PostgreSQL\s+)?(\d{2})$/.exec(cells[0].replace(/\*/g, ''));
+    assert.ok(m, `first cell must be a major version, got ${JSON.stringify(cells[0])}`);
+    assert.ok(!byMajor.has(m[1]), `major ${m[1]} listed twice`);
+    byMajor.set(m[1], cells.slice(1).join(' | ').toLowerCase());
+  }
+  const expected = new Set([v.default, v.prSmoke, ...Object.keys(v.scheduled)]);
+  assert.deepEqual([...byMajor.keys()].sort(), [...expected].sort(), 'docs list exactly the tested majors');
+
+  for (const [major, text] of byMajor) {
+    const isDefault = major === v.default;
+    assert.equal(/\bdefault\b/.test(text), isDefault, `${major}: "default" appears only on the default major's row`);
+    if (isDefault) assert.match(text, /full suite on every pull request/, `${major}: the default runs the full suite on every PR`);
+    if (major === v.prSmoke) assert.match(text, /migration smoke on every pull request/, `${major}: PR migration smoke`);
+    const entry = v.scheduled[major];
+    if (entry) {
+      const word = entry.cadence === 'daily' ? /\b(daily|nightly)\b/ : /\bweekly\b/;
+      assert.match(text, word, `${major}: cadence ${entry.cadence}`);
+    }
+  }
+});
+
 // ── ci.yml PR smoke ─────────────────────────────────────────────────────────
 
 const SMOKE_JOBS = ['check-migrations', 'check-migrations-nonsuperuser'];
@@ -213,7 +267,7 @@ test('check-migrations-nonsuperuser: the Postgres-N step runs exactly what the 1
 
 test('ci.yml runs this contract in the lint job, before dependencies are installed', () => {
   const lint = steps(job(ci(), 'lint'));
-  const at = lint.findIndex((s) => s.lines.some((l) => l.trim() === 'run: node --test .github/scripts/postgres-compat.test.mjs'));
+  const at = lint.findIndex((s) => s.lines.some((l) => /^run: node --test --test-timeout=\d+ \.github\/scripts\/postgres-compat\.test\.mjs$/u.test(l.trim())));
   assert.ok(at !== -1, 'lint must run node --test .github/scripts/postgres-compat.test.mjs');
   assert.ok(at < lint.findIndex((s) => s.name === 'Install dependencies'), 'built-ins only: runs before pnpm install');
 });

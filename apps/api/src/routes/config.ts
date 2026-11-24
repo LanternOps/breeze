@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, policyDecideEnabled, sweepActEnabled, toolSourcesEnabled, flowsEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
+import { browserDesktopEnabled, aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, policyDecideEnabled, sweepActEnabled, toolSourcesEnabled, flowsEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
@@ -60,6 +60,10 @@ configRoutes.get('/', (c) => {
       // reads GET /oem-updates/fleet. The per-partner allowlist is not applied:
       // this read is unauthenticated and env-only.
       vendorUpdates: oemUpdatesFlagOn(),
+      // Browser remote desktop (#9557): BREEZE_BROWSER_DESKTOP_ENABLED, default
+      // off. A temporary rollout flag; W7 of the browser remote desktop plan
+      // removes it. Nothing reads it yet.
+      browserDesktop: browserDesktopEnabled(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

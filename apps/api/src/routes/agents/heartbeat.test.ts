@@ -226,8 +226,8 @@ vi.mock('./helpers', () => ({
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
-  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
-  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] })),
+  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslOptedIn: false })),
+  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a
@@ -261,13 +261,15 @@ vi.mock('./helpers', () => ({
   resolvePinnedUpgradeTargets: async (args: {
     platform: string; architecture: string; agentId?: string;
     requests: Array<{ component: string; pin: string | null }>;
+    deviceOs?: unknown; onOsHold?: (hold: unknown) => void;
   }) => {
     const helpers = await import('./helpers');
     const out = new Map<string, string | null>();
     for (const r of args.requests) {
       out.set(r.component, await helpers.resolvePinnedUpgradeTarget({
         component: r.component, platform: args.platform, architecture: args.architecture, pin: r.pin, agentId: args.agentId,
-      }));
+        deviceOs: args.deviceOs, onOsHold: args.onOsHold,
+      } as never));
     }
     return out;
   },
@@ -1053,11 +1055,14 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
-        helpers.buildWakeOnLanConfigUpdate, helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+        helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
         helpers.buildWorkloadInventoryConfigUpdate, buildFeatureUpdateConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
       }
+      // The wake builder also takes the agent's partner, for observe_vendors.
+      expect(vi.mocked(helpers.buildWakeOnLanConfigUpdate))
+        .toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }), 'partner-1');
       expect(vi.mocked(helpers.buildHelperConfigUpdate))
         .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ hierarchy }));
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
@@ -2828,6 +2833,36 @@ describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeT
     // Restore the suite's default resolver impl (clearAllMocks does not).
     vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
   });
+
+  // #12169 — both watchdog-branch resolves (the watchdog's own offer and the
+  // agent recovery offer) are judged against the Mac's stored OS version, and a
+  // held recovery target yields no upgradeTo.
+  it('a Mac below the floor gets no recovery upgradeTo, and both resolves carry its OS', async () => {
+    const { compareAgentVersions, resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue(null); // the gate held it
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'macos', osVersion: 'darwin 12.7.6',
+        architecture: 'arm64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+      },
+      [{ version: '0.90.0' }],
+    );
+
+    try {
+      const resp = await post();
+      expect(resp.status).toBe(200);
+      expect(((await resp.json()) as { upgradeTo?: string }).upgradeTo).toBeUndefined();
+      const calls = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as any);
+      expect(calls.map((a) => a.component).sort()).toEqual(['agent', 'watchdog']);
+      for (const a of calls) {
+        expect(a.deviceOs).toEqual({ platform: 'macos', reportedOsVersion: null, storedOsVersion: 'darwin 12.7.6' });
+      }
+    } finally {
+      vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
+    }
+  });
 });
 
 
@@ -3032,6 +3067,25 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
     expect(typeof args.resolveTarget).toBe('function');
   });
 
+  // #12169 — the migration target is resolved through the gated resolver with
+  // the device's OS, so a Mac is never migrated onto a build its OS is below.
+  it('the edition-migration target resolve carries the device OS (#12169)', async () => {
+    const { agentAcceptsServedEdition, resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    prime([{ version: '0.66.0' }]);
+
+    expect((await beat({ osVersion: 'darwin 12.7.6' })).status).toBe(200);
+    const args = vi.mocked(maybeDispatchEditionMigration).mock.calls[0]![0];
+    vi.mocked(resolvePinnedUpgradeTarget).mockClear();
+    await args.resolveTarget();
+    const call = vi.mocked(resolvePinnedUpgradeTarget).mock.calls[0]![0] as any;
+    expect(call.component).toBe('agent');
+    expect(call.deviceOs).toEqual(
+      expect.objectContaining({ platform: args.device.osType, reportedOsVersion: 'darwin 12.7.6' }),
+    );
+  });
+
   it('does NOT launch the dispatch when the cheap precheck says no (flag off / non-candidate)', async () => {
     const { agentAcceptsServedEdition } = await import('./helpers');
     vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
@@ -3230,6 +3284,179 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
       for (const [arg] of calls) {
         expect(arg).toEqual({ reportedEdition: 'self-host', agentVersion: '0.105.1' });
       }
+    });
+
+    // #12169 — the minimum-OS hold shares this column with the edition reason.
+    describe('minimum-OS hold (#12169)', () => {
+      const macRow = { osType: 'macos', osVersion: 'darwin 12.7.6' };
+      type HoldArgs = { component: string; onOsHold?: (hold: unknown) => void; deviceOs?: unknown };
+
+      async function holdAgent(reason = 'os_below_minimum') {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async (args: HoldArgs) => {
+          if (args.component !== 'agent') return null;
+          args.onOsHold?.({
+            component: 'agent',
+            blockedVersion: '0.140.0',
+            reason,
+            requiredOs: '13.0',
+            reportedOs: reason === 'os_below_minimum' ? '12.7.6' : null,
+          });
+          return null;
+        }) as never);
+      }
+
+      afterEach(async () => {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async () => '0.66.0') as never);
+      });
+
+      const withheldWrites = (spy: ReturnType<typeof captureSet>) =>
+        setCalls(spy).filter((s) => 'updateOfferWithheldReason' in s);
+
+      it('macOS 12 beat gets no upgradeTo and persists os_below_minimum', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+
+        const resp = await beat({ osVersion: 'darwin 12.7.6' });
+        expect(resp.status).toBe(200);
+        expect(((await resp.json()) as { upgradeTo?: string }).upgradeTo).toBeFalsy();
+        const writes = withheldWrites(setSpy);
+        expect(writes).toHaveLength(1);
+        expect(writes[0]!.updateOfferWithheldReason).toBe('os_below_minimum');
+        expect(writes[0]!.updateOfferWithheldSince).toBeInstanceOf(Date);
+      });
+
+      it('passes the beat OS version and the stored one to the resolver', async () => {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null });
+
+        await beat({ osVersion: 'darwin 13.1' });
+        const args = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as HoldArgs);
+        expect(args.length).toBeGreaterThan(0);
+        for (const a of args) {
+          expect(a.deviceOs).toEqual({ platform: 'macos', reportedOsVersion: 'darwin 13.1', storedOsVersion: 'darwin 12.7.6' });
+        }
+      });
+
+      it('persists os_version_unknown for an unknown-OS hold', async () => {
+        await holdAgent('os_version_unknown');
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, osVersion: 'darwin', updateOfferWithheldReason: null });
+
+        await beat();
+        expect(withheldWrites(setSpy).map((s) => s.updateOfferWithheldReason)).toEqual(['os_version_unknown']);
+      });
+
+      it('edition reason wins over an os hold', async () => {
+        const { agentAcceptsServedEdition } = await import('./helpers');
+        vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'os_below_minimum' });
+
+        await beat();
+        expect(withheldWrites(setSpy).map((s) => s.updateOfferWithheldReason)).toEqual(['edition_unconfirmed']);
+      });
+
+      it('edition clear leaves os_below_minimum (the edition writer clears only its own code)', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({
+          ...macRow,
+          updateOfferWithheldReason: 'os_below_minimum',
+          updateOfferWithheldSince: new Date('2026-11-01T00:00:00Z'),
+        });
+
+        await beat();
+        expect(withheldWrites(setSpy)).toHaveLength(0);
+      });
+
+      it('edition clears and an os hold applies in the same beat → os_below_minimum', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'edition_unconfirmed' });
+
+        await beat();
+        expect(withheldWrites(setSpy).map((s) => s.updateOfferWithheldReason)).toEqual([null, 'os_below_minimum']);
+      });
+
+      it('lookup failure keeps os_below_minimum', async () => {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async () => {
+          throw new Error('db down');
+        }) as never);
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'os_below_minimum' });
+
+        try {
+          expect((await beat()).status).toBe(200);
+          expect(withheldWrites(setSpy)).toHaveLength(0);
+        } finally {
+          errSpy.mockRestore();
+        }
+      });
+
+      it('a failed hold write is reported and the beat still succeeds', async () => {
+        await holdAgent();
+        const { captureException } = await import('../../services/sentry');
+        const failure = new Error('write failed');
+        const setSpy = vi.fn((values: Record<string, unknown>) => {
+          if (values.updateOfferWithheldReason === 'os_below_minimum') throw failure;
+          return { where: vi.fn(() => whereResultWithReturning()) };
+        });
+        updateMock.mockReturnValue({ set: setSpy });
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null });
+
+        try {
+          const resp = await beat({ osVersion: 'darwin 12.7.6' });
+          expect(resp.status).toBe(200);
+          expect(((await resp.json()) as { upgradeTo?: string }).upgradeTo).toBeFalsy();
+          expect(setSpy.mock.calls.some((c) => c[0].updateOfferWithheldReason === 'os_below_minimum')).toBe(true);
+          expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+        } finally {
+          errSpy.mockRestore();
+        }
+      });
+
+      it('os hold clears when the device upgrades its OS', async () => {
+        const setSpy = captureSet(); // default resolver: no hold
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'os_below_minimum' });
+
+        await beat({ osVersion: 'darwin 13.1' });
+        const writes = withheldWrites(setSpy);
+        expect(writes).toHaveLength(1);
+        expect(writes[0]!.updateOfferWithheldReason).toBeNull();
+        expect(writes[0]!.updateOfferWithheldSince).toBeNull();
+      });
+
+      it('steady-state held beat writes nothing', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({
+          ...macRow,
+          updateOfferWithheldReason: 'os_below_minimum',
+          updateOfferWithheldSince: new Date('2026-11-01T00:00:00Z'),
+        });
+
+        await beat();
+        expect(withheldWrites(setSpy)).toHaveLength(0);
+      });
+
+      it('a hold on a build the device already runs is not recorded', async () => {
+        const { compareAgentVersions } = await import('./helpers');
+        vi.mocked(compareAgentVersions).mockReturnValue(0);
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null });
+
+        await beat();
+        expect(withheldWrites(setSpy)).toHaveLength(0);
+      });
     });
 
     // #4073 — the update-attempt record stamped by WS update_status is closed
@@ -4820,36 +5047,62 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.feature_update_settings).toBeUndefined();
   });
 
-  it('includes warranty_settings in configUpdate when HP CMSL collection is enabled (#5511 W02)', async () => {
-    const { buildWarrantyConfigUpdate } = await import('./helpers');
-    vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: true });
+  describe('warranty_settings (#5511 observe-first §1)', () => {
+    // The mocked agent's partner. Test-only; the canary partner is never named.
+    const AGENT_PARTNER = 'partner-1';
+    const OFF = { hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [] };
 
-    const resp = await buildApp().request('/agents/device-1/heartbeat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+    afterEach(() => {
+      vi.unstubAllEnvs();
     });
 
-    expect(resp.status).toBe(200);
-    const body = (await resp.json()) as Record<string, unknown>;
-    const configUpdate = body.configUpdate as Record<string, unknown> | null;
-    // Snake_case INSIDE the block too — contract D6 pins the wire shape.
-    expect(configUpdate?.warranty_settings).toEqual({ hp_cmsl_enabled: true });
-  });
+    async function warrantyBlock(optedIn: boolean): Promise<unknown> {
+      const { buildWarrantyConfigUpdate } = await import('./helpers');
+      vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslOptedIn: optedIn });
+      const resp = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(minimalHeartbeatBody),
+      });
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as Record<string, unknown>;
+      return (body.configUpdate as Record<string, unknown> | null)?.warranty_settings;
+    }
 
-  it('delivers warranty_settings false when no warranty policy resolves (revoke-on-unassign)', async () => {
-    const { buildWarrantyConfigUpdate } = await import('./helpers');
-    vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: false });
-
-    const resp = await buildApp().request('/agents/device-1/heartbeat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+    it('is off for a partner outside the canary list even with current consent', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', '00000000-0000-4000-8000-0000000000c2');
+      expect(await warrantyBlock(true)).toEqual(OFF);
     });
 
-    const body = (await resp.json()) as Record<string, unknown>;
-    const configUpdate = body.configUpdate as Record<string, unknown> | null;
-    expect(configUpdate?.warranty_settings).toEqual({ hp_cmsl_enabled: false });
+    it('is observe for the canary partner with current-EULA consent, and never enables CMSL', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+      // Snake_case INSIDE the block too — contract D6 pins the wire shape.
+      expect(await warrantyBlock(true)).toEqual({ hp_cmsl_enabled: false, hp_cmsl_mode: 'observe', hp_cmsl_tiers: [] });
+    });
+
+    it('is off for the canary partner without effective consent (none, or a stale EULA)', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+      expect(await warrantyBlock(false)).toEqual(OFF);
+    });
+
+    it('is off when hp_warranty:hp is disabled', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+      vi.stubEnv('BREEZE_VENDOR_CANARY_DISABLED', 'hp_warranty:hp');
+      expect(await warrantyBlock(true)).toEqual(OFF);
+    });
+
+    it.each([true, false])(
+      'always sends every field, valid against the shared wire schema (opted in: %s)',
+      async (optedIn) => {
+        vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+        const { warrantySettingsWireSchema } = await import('@breeze/shared/validators');
+        const block = await warrantyBlock(optedIn);
+        expect(Object.keys(block as object).sort()).toEqual(['hp_cmsl_enabled', 'hp_cmsl_mode', 'hp_cmsl_tiers']);
+        expect(warrantySettingsWireSchema.safeParse(block).success).toBe(true);
+        // hp_cmsl_enabled is false unless act: an older agent's persisted true is revoked.
+        expect((block as { hp_cmsl_enabled: boolean }).hp_cmsl_enabled).toBe(false);
+      },
+    );
   });
 
   it('omits warranty_settings entirely when the warranty resolver throws (no unintended revocation)', async () => {
@@ -4881,12 +5134,13 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       enabled: false,
       configure_settings: false,
       firmware_writes: [],
+      observe_vendors: [],
     });
   });
 
   it('delivers wake_on_lan_settings enabled=true when a wake_on_lan policy resolves', async () => {
     const { buildWakeOnLanConfigUpdate } = await import('./helpers');
-    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({ enabled: true, configureSettings: false, firmwareWrites: [] });
+    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({ enabled: true, configureSettings: false, firmwareWrites: [], observeVendors: [] });
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -4898,7 +5152,33 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       enabled: true,
       configure_settings: false,
       firmware_writes: [],
+      observe_vendors: [],
     });
+  });
+
+  // Observe-first amendment §1: the list rides the existing block, snake_case,
+  // resolved for the authenticated agent's partner.
+  it('delivers observe_vendors from the builder, resolved for the agent partner', async () => {
+    const { buildWakeOnLanConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWakeOnLanConfigUpdate).mockClear();
+    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({
+      enabled: true, configureSettings: false, firmwareWrites: [], observeVendors: ['hp', 'lenovo'],
+    });
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.wake_on_lan_settings).toEqual({
+      enabled: true,
+      configure_settings: false,
+      firmware_writes: [],
+      observe_vendors: ['hp', 'lenovo'],
+    });
+    expect(vi.mocked(buildWakeOnLanConfigUpdate).mock.calls[0]?.[2]).toBe('partner-1');
   });
 
   it('runs the wake_on_lan builder inside withDbTransaction so a failing fallback query cannot poison the request transaction', async () => {
@@ -4913,7 +5193,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
     vi.mocked(buildWakeOnLanConfigUpdate).mockImplementationOnce(async () => {
       callOrder.push('wakeBuilder:ran');
-      return { enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] };
+      return { enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] };
     });
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
@@ -9255,7 +9535,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
   // delegations (so it can verify the signed `rebind` directive) and, while
   // the device is the source of an open reattach intent, the directive.
   const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
-    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
+    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind', 'configUpdate'],
     watchdog: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
   };
   const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
@@ -9393,9 +9673,12 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       for (const key of Object.keys(body)) {
         expect(PARKED_ALLOWED_KEYS[role]).toContain(key);
       }
-      for (const key of role === 'watchdog' ? [...FORBIDDEN_KEYS, ...TRUST_KEYS] : FORBIDDEN_KEYS) {
+      for (const key of role === 'watchdog' ? [...FORBIDDEN_KEYS, ...TRUST_KEYS] : FORBIDDEN_KEYS.filter((k) => k !== 'configUpdate')) {
         expect(body).not.toHaveProperty(key);
       }
+      // #8318 wave T2: the main agent's parked beat carries the TPM
+      // attestation switch, and nothing else of the config.
+      if (role === 'agent') expect(body.configUpdate).toEqual({ tpm_attestation_enabled: false });
     });
 
     it(`${role}: claims only self_uninstall`, async () => {
@@ -9454,6 +9737,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
   }
 
+  const PARKED_CONFIG = { configUpdate: { tpm_attestation_enabled: false } };
   const PARKED_TRUST = {
     manifestTrustKeys: [{ keyId: 'k-1', publicKeyB64: 'AAA=', validFrom: '2026-01-01T00:00:00.000Z' }],
     manifestKeyDelegations: [{ keyId: 'k-1' }],
@@ -9463,7 +9747,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
+    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9473,7 +9757,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
@@ -9522,7 +9806,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST, ...PARKED_CONFIG });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),

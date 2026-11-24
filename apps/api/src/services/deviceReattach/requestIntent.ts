@@ -71,6 +71,7 @@ import { lockActorAssurance } from '../stepUpActorAssurance';
 import { lockLiveUserSession } from '../unassignedPool/assignParkedDeviceSteps';
 import { isReattachDeviceReachable, readReattachDeviceLocations } from './reachability';
 import { reattachTargetVersionMatches } from './targetVersion';
+import { installStartedAt, readTpmEvidence } from './evidence';
 
 const ACCESS_DENIAL_STATUS: Record<ReattachAccessDenial, 403 | 409> = {
   not_partner_user: 403,
@@ -94,7 +95,17 @@ export interface RequestDeviceReattachInput {
   actor: { userId: string };
   sourceDeviceId: string;
   targetDeviceId: string;
-  evidenceLevel: DeviceReattachEvidenceLevel;
+  /**
+   * The evidence level the requester was shown (the candidates read) and
+   * stepped up for. The server computes the level itself under the row locks
+   * (evidence.ts) and records the weaker of the two: a requester shown `hint`
+   * whose pair now has `tpm_continuity` proceeds as `hint` (an older client,
+   * or a key proven since the read), with the typed name; one shown
+   * `tpm_continuity` whose pair no longer has it answers 409
+   * `evidence_changed`, after the access rule and the target version, so it
+   * is no oracle and spends no grant.
+   */
+  expectedEvidenceLevel: DeviceReattachEvidenceLevel;
   restoreDecommissioned: boolean;
   /**
    * The opaque version of the target's install the requester was shown
@@ -180,7 +191,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
   if (input.sourceDeviceId === input.targetDeviceId) {
     return reattachRefusal(400, 'same_device', 'A device cannot be reattached onto itself');
   }
-  if (input.evidenceLevel !== 'hint' && input.evidenceLevel !== 'tpm_continuity') {
+  if (input.expectedEvidenceLevel !== 'hint' && input.expectedEvidenceLevel !== 'tpm_continuity') {
     return reattachRefusal(400, 'invalid_evidence_level', 'Unknown evidence level');
   }
   // Fail closed: a step-up that is neither a grant nor an explicit
@@ -290,6 +301,22 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
         refuse(409, 'target_changed', 'The existing device record changed since it was shown; reload and try again');
       }
 
+      // The evidence, as it is now under both row locks (evidence.ts): never
+      // stronger than what the requester was shown.
+      const evidence = await readTpmEvidence(tx, {
+        partnerId,
+        sourceDeviceId: source.id,
+        sourceInstallStartedAt: installStartedAt(source),
+        targetDeviceId: target.id,
+        lockKey: true,
+      });
+      if (input.expectedEvidenceLevel === 'tpm_continuity' && evidence.level !== 'tpm_continuity') {
+        refuse(409, 'evidence_changed', 'The TPM key evidence changed since it was shown; reload and try again');
+      }
+      const evidenceLevel: DeviceReattachEvidenceLevel = input.expectedEvidenceLevel === 'tpm_continuity'
+        ? 'tpm_continuity'
+        : 'hint';
+
       // The source: a new install that speaks the rebind protocol.
       if (source.rebindProtocolVersion < 1) {
         refuse(409, 'rebind_unsupported', 'The source agent does not support the rebind protocol; upgrade it first');
@@ -332,7 +359,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       if (source.osType !== target.osType && input.acknowledgeOsChange !== true) {
         refuse(409, 'os_changed', `The new install reports ${source.osType}, the existing record ${target.osType}; confirm the operating system change`);
       }
-      if (input.evidenceLevel === 'hint') {
+      if (evidenceLevel === 'hint') {
         const typed = input.confirmTargetName?.trim() ?? '';
         if (!typed) refuse(400, 'confirm_target_name_required', 'Type the existing device\'s name to confirm the reattach');
         if (!sameHostname(typed, target.hostname)) {
@@ -358,7 +385,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
             sourceDeviceId: source.id,
             targetDeviceId: target.id,
             targetVersion: input.targetVersion,
-            evidenceLevel: input.evidenceLevel,
+            evidenceLevel,
             restoreDecommissioned: input.restoreDecommissioned,
           }),
         };
@@ -383,7 +410,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
           sourceDeviceId: source.id,
           targetDeviceId: target.id,
           state: 'requested',
-          evidenceLevel: input.evidenceLevel,
+          evidenceLevel,
           restoreDecommissioned: input.restoreDecommissioned,
           requestedBy: input.actor.userId,
           requestedAt: now,

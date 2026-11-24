@@ -190,6 +190,9 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
   });
 
   it('retract: a pending command is cancelled and its payload erased; an old agent is agent_unsupported; repeat is idempotent', async () => {
+    // One release below ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION: the fixture
+    // default is newer, and this case is about an agent that cannot retract.
+    await sys(() => db.execute(sql`UPDATE devices SET agent_version = '0.127.9' WHERE id = ${f.devA2}::uuid`));
     const input = sendInput(f, {
       devices: [
         { deviceId: f.devA1, orgId: f.orgA, status: 'queued' },

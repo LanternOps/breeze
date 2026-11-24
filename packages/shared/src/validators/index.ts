@@ -523,6 +523,45 @@ export const createConfigPolicySchema = z.object({
   parentPolicyId: z.string().guid().optional(),
 });
 
+/**
+ * Copy a configuration policy (#12309, #11776), to the same owner or to another
+ * organization or the MSP. The server decides the owner's access from this
+ * body, never from the client's claim. There is deliberately no `status` and no
+ * assignment field: a copy is always created `inactive` and applies nowhere.
+ *
+ * `parentPolicyId`: omitted keeps the source's parent; `null` copies with no
+ * parent; an id names a new parent, checked like a create's.
+ */
+export const copyConfigPolicySchema = z.object({
+  name: z.string().min(1).max(255),
+  ownerScope: z.enum(['organization', 'partner']),
+  orgId: z.string().guid().optional(),
+  parentPolicyId: z.string().guid().nullable().optional(),
+  dryRun: z.boolean().optional(),
+});
+export type CopyConfigPolicyInput = z.infer<typeof copyConfigPolicySchema>;
+
+/**
+ * Why a copy leaves a feature behind. A closed set of codes, never free text:
+ * the reason is shown to the caller, so it must not name or describe an entity
+ * the caller cannot read. "Missing" and "belongs to someone else" share one code.
+ * - org_only_feature: the feature cannot be set on an MSP-managed policy.
+ * - linked_item_unavailable: it uses an item the new owner cannot link.
+ * - settings_not_valid: its stored settings no longer pass today's checks.
+ */
+export const CONFIG_POLICY_COPY_DROP_REASONS = ['org_only_feature', 'linked_item_unavailable', 'settings_not_valid'] as const;
+export type ConfigPolicyCopyDropReason = (typeof CONFIG_POLICY_COPY_DROP_REASONS)[number];
+
+/**
+ * A feature a copy carries, but not in the state the source had it. A closed
+ * set of codes, returned the same way by the dry run and the real run.
+ * - consent_required: HP warranty collection is copied switched off, with no
+ *   licence acceptance. A copy never records acceptance of HP's licence on
+ *   anyone's behalf; someone turns it on in the editor and accepts it there.
+ */
+export const CONFIG_POLICY_COPY_NOTICE_CODES = ['consent_required'] as const;
+export type ConfigPolicyCopyNoticeCode = (typeof CONFIG_POLICY_COPY_NOTICE_CODES)[number];
+
 export const updateConfigPolicySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),
@@ -1063,6 +1102,44 @@ export const assignPolicySchema = z.object({
   osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
 });
 
+/**
+ * The staged Apply (#12466, plan W02b G3): one diff-shaped request that adds,
+ * edits and removes assignments of one policy. Each list is capped at 200.
+ * `update` changes only priority and filters; level, target and policy never
+ * change. Per-field checks stay on the fields (zod 4.6 skips a superRefine once
+ * a field fails); the superRefine holds only the cross-entry rules: an id
+ * appears at most once across `update` and `remove`.
+ */
+export const applyAssignmentsSchema = z.object({
+  add: z.array(assignPolicySchema).max(200).default([]),
+  update: z.array(z.object({
+    id: z.string().guid(),
+    priority: z.number().int().min(0).max(1000).optional(),
+    roleFilter: z.array(z.enum(DEVICE_ROLES)).nullable().optional(),
+    osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),
+  })).max(200).default([]),
+  remove: z.array(z.string().guid()).max(200).default([]),
+  dryRun: z.boolean().optional(),
+}).superRefine((data, ctx) => {
+  const updateIds = new Set<string>();
+  data.update.forEach((entry, index) => {
+    if (updateIds.has(entry.id)) {
+      ctx.addIssue({ code: 'custom', path: ['update', index, 'id'], message: 'An assignment appears more than once in update' });
+    }
+    updateIds.add(entry.id);
+  });
+  const removeIds = new Set<string>();
+  data.remove.forEach((id, index) => {
+    if (updateIds.has(id)) {
+      ctx.addIssue({ code: 'custom', path: ['remove', index], message: 'An assignment cannot be both updated and removed' });
+    } else if (removeIds.has(id)) {
+      ctx.addIssue({ code: 'custom', path: ['remove', index], message: 'An assignment appears more than once in remove' });
+    }
+    removeIds.add(id);
+  });
+});
+export type ApplyAssignmentsInput = z.infer<typeof applyAssignmentsSchema>;
+
 export const diffSchema = z.object({
   add: z.array(z.object({
     configPolicyId: z.string().guid(),
@@ -1079,6 +1156,11 @@ export const listConfigPoliciesSchema = z.object({
   status: z.enum(['active', 'inactive', 'archived']).optional(),
   search: z.string().optional(),
   orgId: z.string().guid().optional(),
+  // #12462 W03a: policies that apply to this organization (any status), plus
+  // inactive policies that apply nowhere yet. `orgId` keeps its meaning.
+  appliesToOrgId: z.string().guid().optional(),
+  // Policies with no assignments and no child policies.
+  notApplied: z.enum(['true']).optional(),
 });
 
 export const targetQuerySchema = z.object({
@@ -1284,6 +1366,9 @@ export * from './toolSources';
 export * from './topology';
 
 export * from './topologyCollection';
+
+// Learned networks heartbeat attachment report (#12369 B1)
+export * from './networkAttachments';
 
 export * from './topologyConfiguration';
 
@@ -1500,7 +1585,10 @@ export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
+export * from './flowDrafts';
 export * from './networkIsolation';
 export * from './oemUpdates';
+export * from './oemObserve';
+export * from './hpWarrantyObserve';
 export * from './unitLength';
 export * from './migrationWindows';

@@ -1,50 +1,17 @@
 {
   "configurationPolicies": {
     "assignmentsTab": {
-      "deviceGroup": "Gruppo dispositivi",
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "failedToFetchAssignments": "Impossibile recuperare le assegnazioni",
-      "thisPolicyHasNoOrganizationSoAssignment": "Questo criterio non ha un'organizzazione, quindi non è possibile elencare le destinazioni di assegnazione.",
-      "failedToAddAssignment": "Impossibile aggiungere l'assegnazione",
-      "failedToRemoveAssignment": "Impossibile rimuovere l'assegnazione",
-      "assignmentAdded": "Assegnazione aggiunta",
-      "assignmentRemoved": "Assegnazione rimossa",
       "roleFilter": "Filtro ruolo",
       "optional": "(facoltativo)",
       "noRestrictionAppliesToAllDeviceRoles": "Nessuna restrizione - si applica a tutti i ruoli dispositivo",
       "oSFilter": "Filtro OS",
       "optional2": "(facoltativo)",
       "noRestrictionAppliesToAllOperatingSystems": "Nessuna restrizione - si applica a tutti i sistemi operativi",
-      "priority": "Priorità",
-      "currentAssignments": "Assegnazioni correnti",
-      "noAssignmentsYetAssignThisPolicyTo": "Nessuna assegnazione. Assegna questo criterio alle destinazioni sopra.",
-      "level": "Livello",
-      "target": "Destinazione",
-      "priority2": "Priorità",
-      "filters": "Filtri",
-      "allOrganizations": "Tutte le organizzazioni",
       "allDevices": "Tutti i dispositivi",
-      "addAssignment": "Aggiungi assegnazione",
-      "level2": "Livello",
-      "target2": "Destinazione",
-      "target3": "Destinazione",
-      "search": "Cerca...",
-      "loading": "Caricamento...",
-      "restrictThisAssignmentToDevicesWithSpecific": "Limita questa assegnazione ai dispositivi con ruoli specifici. Lascia vuoto per applicarla a tutti i ruoli.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "I valori più bassi sovrascrivono quelli più alti quando più criteri hanno come destinazione lo stesso dispositivo allo stesso livello.",
-      "partner": "partner",
-      "scopeOfTheAssignmentMoreSpecificLevels": "Ambito dell'assegnazione. I livelli più specifici (dispositivo) hanno la precedenza su quelli più ampi (organizzazione).",
-      "organization": "organization",
-      "anOrganizationPolicyAlwaysTargetsItsOwn": "Un criterio dell'organizzazione ha sempre come destinazione la propria organizzazione. Scegli un livello più ristretto (sito, gruppo dispositivi, dispositivo) per limitarne ulteriormente l'ambito.",
-      "thisOrganization": "Questa organizzazione",
-      "selectATarget": "Seleziona una destinazione...",
-      "noTargetsAvailable": "Nessuna destinazione disponibile",
-      "noMatchesFound": "Nessuna corrispondenza trovata",
-      "assigning": "Assegnazione...",
-      "assign": "Assegna",
-      "failedToLoadTargetsHttp": "Impossibile caricare le destinazioni (HTTP {{status}})"
+      "restrictThisAssignmentToDevicesWithSpecific": "Limita questa assegnazione ai dispositivi con ruoli specifici. Lascia vuoto per applicarla a tutti i ruoli."
     },
     "breezeDefaultsPage": {
       "receivedAnInvalidResponseFromTheServer": "Ricevuta una risposta non valida dal server.",
@@ -72,74 +39,38 @@
       "notCollectedProbeLimit": "Non raccolto (limite di rilevamenti)",
       "notCollectedProbeLimitHint": "L'elenco dei rilevamenti di conformità di questa organizzazione è pieno, quindi almeno un controllo qui non viene raccolto. Non viene valutato, segnalato né corretto finché l'elenco non ha spazio."
     },
-    "configPolicyCreatePage": {
-      "selectAnOrganizationForThisPolicy": "Seleziona un'organizzazione per questo criterio.",
-      "failedToCreatePolicy": "Impossibile creare il criterio",
-      "configurationPolicies": "Criteri di configurazione",
-      "newPolicy": "Nuovo criterio",
-      "newConfigurationPolicy": "Nuovo criterio di configurazione",
-      "howWouldYouLikeToConfigureThis": "Come vuoi configurare questo criterio?",
-      "configureNew": "Configura nuovo",
-      "startFreshWithCustomSettingsForEach": "Inizia da zero con impostazioni personalizzate per ogni funzionalità",
-      "linkToExisting": "Collega a esistente",
-      "useAnotherPolicyAsTheMasterBaseline": "Usa un altro criterio come baseline master",
-      "newConfigurationPolicy2": "Nuovo criterio di configurazione",
-      "masterPolicy": "Criterio master",
-      "selectTheConfigurationPolicyToUseAs": "Seleziona il criterio di configurazione da usare come baseline. Puoi sovrascrivere singole impostazioni per funzionalità.",
-      "policyDetails": "Dettagli criterio",
-      "eGStandardWorkstationPolicy": "ad es. Criterio workstation standard",
-      "optionalDescriptionOfWhatThisPolicyConfigures": "Descrizione facoltativa di cosa configura questo criterio",
-      "scope": "Ambito",
-      "partnerLibrary": "Libreria partner",
-      "assignToOrganizationsAfterCreating": "(assegna alle organizzazioni dopo la creazione)",
-      "aSpecificOrganization": "Un'organizzazione specifica",
-      "selectAnOrganization": "Seleziona un'organizzazione",
-      "createAReusablePolicyOwnedByYour": "Crea un criterio riutilizzabile di proprietà del tuo partner. Non si applica ad alcuna organizzazione finché non lo assegni nella scheda Organizzazioni del criterio. Le impostazioni di backup non sono disponibili nei criteri di proprietà del partner.",
-      "new": "new",
-      "linked": "linked",
-      "createAPolicyLinkedToAnExisting": "Crea un criterio collegato a un master esistente.",
-      "createANewConfigurationPolicyToBundle": "Crea un nuovo criterio di configurazione per raggruppare le impostazioni delle funzionalità.",
-      "name": "name",
-      "description": "description",
-      "status": "status",
-      "partner": "partner",
-      "organization": "organization",
-      "policyOwnerOrgSelect": "policy-owner-org-select",
-      "creating": "Creazione...",
-      "createPolicy": "Crea criterio",
-      "policyCreated": "Criterio creato"
-    },
     "configPolicyDetailPage": {
       "archived": "Archiviato",
       "failedToFetchPolicy": "Impossibile recuperare il criterio",
       "failedToFetchFeatures": "Impossibile recuperare le funzionalità",
       "failedToUpdatePolicy": "Impossibile aggiornare il criterio",
-      "overview": "Panoramica",
       "complianceStatus": "Stato conformità",
-      "assignments": "Assegnazioni",
       "loadingPolicy": "Caricamento criterio...",
       "backToList": "Torna all'elenco",
       "configurationPolicies": "Criteri di configurazione",
       "policyDetails": "Dettagli criterio",
-      "archived2": "Archiviato",
-      "inheritingFrom": "Eredita da",
-      "overrideIndividualTabsToCustomizeSettings": "— Sovrascrivi le singole schede per personalizzare le impostazioni",
-      "isnTAvailableOnPartnerWidePolicies": "non è disponibile nei criteri a livello partner",
-      "configureThisFeatureOnAnOrganizationScoped": "Configura questa funzionalità in un criterio con ambito organizzazione.",
+      "inheritingFrom": "Basato su",
       "thisPolicyStillCarriesAnExisting": "Questo criterio contiene ancora una configurazione",
       "configurationThatWillNeverBeApplied": " esistente che non verrà mai applicata.",
       "policy": "Criterio",
-      "overview2": "overview",
       "saving": "Salvataggio...",
       "saveChanges": "Salva modifiche",
-      "parentPolicy": "criterio padre",
       "removing": "Rimozione...",
       "removeConfiguration": "Rimuovi configurazione",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "assignments",
       "managedByYourMsp": "Gestito dal tuo MSP",
-      "inheritedByPolicies_one": "Ereditato da {{count}} criterio",
-      "inheritedByPolicies_other": "Ereditato da {{count}} criteri"
+      "inheritedByPolicies_one": "Padre di {{count}} criterio",
+      "inheritedByPolicies_other": "Padre di {{count}} criteri",
+      "appliesToDrawerTitle": "Si applica a",
+      "detailsSaved": "Dettagli del criterio salvati",
+      "refreshAppliesToFailed": "Impossibile aggiornare dove si applica questo criterio. Ricarica la pagina per vederlo.",
+      "appliesToCloseBlocked": "Prima applica o scarta le modifiche.",
+      "gatedFeatureUnavailable": "{{feature}} non è disponibile in questo criterio",
+      "gatedFeatureReason": "{{feature}} funziona con gli account e i servizi propri di un'organizzazione, quindi solo un criterio gestito da quell'organizzazione può impostarlo. Questo criterio è gestito dal tuo MSP.",
+      "unsavedLeaveConfirm": "Hai modifiche non salvate su questo criterio. Uscire e scartarle?",
+      "discardChangesTitle": "Scartare le modifiche non salvate?",
+      "discardChangesMessage": "Le modifiche a {{feature}} non sono salvate. Scartale oppure resta e salvale prima.",
+      "discardChanges": "Scarta",
+      "stayOnFeature": "Resta"
     },
     "configPolicyList": {
       "archived": "Archiviata",
@@ -151,22 +82,26 @@
       "archived2": "Archiviata",
       "features": "Funzionalità",
       "noPoliciesFoundTryAdjustingYourSearch": "Nessun criterio trovato. Prova a modificare la ricerca.",
-      "noPoliciesYet": "Nessun criterio di configurazione. Creane uno, poi assegnalo a organizzazioni, siti o dispositivi.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Criterio a livello di partner — si applica a ogni organizzazione",
-      "allOrgs": "A livello di partner",
+      "noPoliciesYet": "Nessun criterio di configurazione per ora. Creane uno, poi scegli dove si applica.",
       "page": "Pagina",
       "of2": "di",
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
-      "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
-      "summary": "{{filtered}} di {{total}} criteri",
+      "rangeSummary": "{{from}}-{{to}} di {{total}} criteri",
+      "organizationFilterLabel": "Organizzazione",
+      "allOrganizations": "Tutte le organizzazioni",
+      "notAppliedFilterLabel": "Non applicato",
       "inheritsBadge": "Eredita",
       "statusFilterLabel": "Stato",
-      "partnerPolicy": "Partner",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Criterio del partner — si applica solo dove è assegnato. Assegnalo a tutte le organizzazioni per renderlo valido a livello di partner."
+      "appliesToHeader": "Si applica a",
+      "managedByOrganization": "Gestito da {{organization}}",
+      "notAppliedChip": "Non applicato",
+      "inUseChip_one": "In uso tramite {{count}} criterio",
+      "inUseChip_other": "In uso tramite {{count}} criteri"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
       "failedToDeletePolicy": "Impossibile eliminare il criterio",
+      "orgFilterForbidden": "Non puoi usare questa organizzazione come filtro. Scegli un'altra organizzazione.",
       "loadingConfigurationPolicies": "Caricamento criteri di configurazione...",
       "tryAgain": "Riprova",
       "configurationPolicies": "Criteri di configurazione",
@@ -180,31 +115,6 @@
       "delete": "delete",
       "deleting": "Eliminazione...",
       "deleteBlockedByChildren": "Elimina prima i criteri che ereditano da questo:"
-    },
-    "organizationScopePanel": {
-      "failedToLoadAssignments": "Impossibile caricare le assegnazioni",
-      "failedToLoadOrganizations": "Impossibile caricare le organizzazioni",
-      "failedToRemove": "Impossibile rimuovere",
-      "failedToRemove2": "Impossibile rimuovere",
-      "failedToAssignAllOrgs": "Impossibile assegnare tutte le org",
-      "failedToRemove3": "Impossibile rimuovere",
-      "failedToNarrow": "Impossibile restringere l'ambito",
-      "failedToAssignOrg": "Impossibile assegnare l'org",
-      "organizations": "Organizzazioni",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Questo criterio della libreria partner si applica solo alle organizzazioni selezionate.",
-      "filtersApplyOnAssign": "Questi filtri si applicano quando assegni sotto. Vuoto significa ogni ruolo e ogni sistema operativo. Per cambiare i filtri di un'assegnazione, disattivala e riattivala.",
-      "allOrganizationsPartnerWide": "Tutte le organizzazioni (a livello di partner)",
-      "allOrganizationsPartnerWide2": "Tutte le organizzazioni (a livello di partner)",
-      "assigned": "Assegnata",
-      "searchOrganizations": "Cerca organizzazioni...",
-      "searching": "Ricerca…",
-      "noOrganizationsMatchYourSearch": "Nessuna organizzazione corrisponde alla ricerca.",
-      "appliedToAllOrganizationsUncheckAllOrganizations": "Applicata a tutte le organizzazioni. Deseleziona “Tutte le organizzazioni” per scegliere un sottoinsieme.",
-      "polite": "polite",
-      "loading": "Caricamento…",
-      "loadMoreOrganizations": "Carica altre organizzazioni",
-      "appliedToAllOrgs": "Il criterio ora si applica a tutte le organizzazioni",
-      "removedFromAllOrgs": "Il criterio non si applica più a tutte le organizzazioni"
     },
     "featureTabs": {
       "automationTab": {
@@ -692,15 +602,25 @@
         "providerLimit": "{{total}} di {{max}} provider aggiuntivi"
       },
       "featureTabShell": {
-        "override": "Sovrascrivi",
-        "revertToParent": "Ripristina dal padre",
+        "unlockAction": "Modifica per questo criterio",
+        "unlockedHint": "Modifica per questo criterio. Nulla viene salvato finché non fai clic su Salva.",
+        "revertToParent": "Ripristina il criterio padre",
         "saving": "Salvataggio...",
         "notSaved": "Non salvato: {{reason}}",
         "saveBlocked": "Non salvato. Correggi il problema evidenziato e riprova.",
-        "revertConfirmTitle": "Ripristinare i criteri padre?",
-        "revertConfirmMessage": "Questa operazione elimina l'override {{feature}} di questo criterio. Le impostazioni vanno perse e vengono applicate quelle del criterio padre a tutti i dispositivi che usano questo criterio. Non può essere annullata.",
+        "revertConfirmTitle": "Ripristinare il criterio padre?",
+        "revertConfirmMessage": "Questa azione elimina le impostazioni di {{feature}} proprie di questo criterio e si applicano invece quelle del criterio padre. L'azione non può essere annullata.",
         "removeConfirmTitle": "Rimuovere questa configurazione?",
-        "removeConfirmMessage": "Questa operazione elimina la configurazione {{feature}} da questo criterio. Le impostazioni vanno perse e la funzione non viene più applicata ai dispositivi che usano questo criterio. Non può essere annullata."
+        "removeConfirmMessage": "Questa azione elimina le impostazioni di {{feature}} da questo criterio e la funzionalità torna a Non impostato. L'azione non può essere annullata.",
+        "badgeSavedNotDeployed": "Salvato (non distribuito)",
+        "saveWithReach": "Salva · {{reach}}",
+        "removeImpactReaches": "Questo criterio raggiunge {{devices}}: su di essi {{feature}} non è più impostato da questo criterio.",
+        "removeImpactInUse": "I criteri basati su questo smettono di ereditare {{feature}} da esso, a meno che non impostino il proprio: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Questo criterio raggiunge {{devices}}: su di essi si applicano invece le impostazioni di {{feature}} del criterio padre.",
+        "resetImpactInUse": "I criteri basati su questo ricevono invece, tramite esso, le impostazioni di {{feature}} del criterio padre, a meno che non impostino le proprie: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Nessun dispositivo cambia per ora: questo criterio non è attivo e nessun criterio si basa su di esso.",
+        "fromParentPolicy": "Da {{policy}}",
+        "openParent": "Apri"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Distribuisci Breeze Assist sui dispositivi",
@@ -818,6 +738,7 @@
         "overridesLabel": "Override:",
         "failedToLoadMonitors": "Impossibile caricare i monitor",
         "createMonitor": "Crea monitor",
+        "helpText": "Le definizioni dei monitor si trovano in Avvisi > Monitor. Questa scheda sceglie quali monitor si applicano a questa policy e permette di sostituire il valore di un monitor.",
         "notAttachable": "Questo monitor non può essere associato a questa policy. Le policy del partner possono usare solo monitor validi per tutto il partner.",
         "monitorDeleted": "Monitor eliminato",
         "recommended": {
@@ -864,7 +785,6 @@
         "failedToLoadUpdateRings": "Impossibile caricare gli anelli di aggiornamento",
         "patchSettingsSaved": "Impostazioni patch salvate",
         "patchSettingsRemoved": "Impostazioni patch rimosse",
-        "patchSettingsOverridden": "Impostazioni patch sovrascritte",
         "revertedToInheritedPatchSettings": "Ripristinate le impostazioni patch ereditate",
         "approvalRing": "Anello di approvazione",
         "selectWhichUpdateRingGovernsPatchApprovals": "Seleziona quale anello di aggiornamento governa le approvazioni delle patch per questo criterio. Lascia vuoto per approvazioni solo manuali.",
@@ -1266,7 +1186,16 @@
             "nic_unreadable": "È presente una scheda cablata, ma non è stato possibile leggerla",
             "nic_cmdlets_unavailable": "Le impostazioni della scheda di rete non possono essere lette su questo dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet attivo",
-            "firmware_adapter_unavailable": "Le impostazioni del firmware non sono ancora leggibili"
+            "firmware_adapter_unavailable": "Le impostazioni del firmware non sono ancora leggibili",
+            "nic_eee_unknown": "Stato di Energy-Efficient Ethernet sconosciuto",
+            "firmware_wake_on_lan_not_lan_only": "Il Wake on LAN del BIOS non è impostato su solo LAN",
+            "firmware_deep_sleep_enabled": "Il controllo del sonno profondo del BIOS è attivo",
+            "firmware_setting_unrecognised": "Un'impostazione del BIOS controllata da Breeze non è stata riconosciuta su questo modello",
+            "firmware_value_not_allowed": "Questo modello non consente il valore del BIOS richiesto da Breeze",
+            "firmware_value_unrecognised": "Un valore del BIOS controllato da Breeze non è stato riconosciuto",
+            "firmware_unreadable": "Impossibile leggere le impostazioni del BIOS",
+            "firmware_interface_unavailable": "Questo modello non espone le impostazioni del BIOS a Windows",
+            "vendor_observe_only": "Osservazione del firmware del produttore (sola lettura)"
           },
           "attempts": {
             "pending": "In sospeso",
@@ -1276,6 +1205,14 @@
             "timed_out": "Timeout",
             "unknown": "Sconosciuto",
             "refused": "Rifiutato"
+          },
+          "observing": "Osservazione {{vendor}}: {{interface}}",
+          "observingWithCode": "Osservazione {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interfaccia presente",
+            "absent": "interfaccia non presente",
+            "access_denied": "accesso negato",
+            "error": "errore di lettura"
           }
         }
       },
@@ -1370,6 +1307,8 @@
         "blockedLabel": "Aggiornamenti bloccati",
         "blockedPlaceholder": "ID degli aggiornamenti, separati da virgole",
         "blockedHelp": "Breeze non installa mai un aggiornamento elencato qui.",
+        "blockedUnsupported": "{{vendor}} non supporta il blocco dei singoli aggiornamenti. Per interromperne gli aggiornamenti, disattiva la categoria o il produttore.",
+        "blockedStoredUnsupported": "Questo criterio blocca gli aggiornamenti {{vendor}} {{ids}}, che {{vendor}} non supporta, quindi con questo criterio non viene eseguito alcun aggiornamento {{vendor}}. Il salvataggio rimuove gli aggiornamenti bloccati.",
         "executeRequired": "Per attivare gli aggiornamenti dei produttori, aggiungere una categoria, attivare i riavvii notturni o sbloccare un aggiornamento servono l’autorizzazione devices.execute e MFA. Chiedi a chi ce l’ha di salvare questa modifica.",
         "gateClosedRefusal": "Una delle categorie di aggiornamento selezionate non è ancora disponibile, quindi la policy non è stata salvata. Rimuovila e salva di nuovo.",
         "invalid": "Controlla la pianificazione: la finestra va da 1 a 8 ore intere, il recupero da 0 a 14 notti e l’ora di inizio è nel formato HH:MM.",
@@ -1432,19 +1371,333 @@
         "body": "Queste condizioni esistono sia come monitor collegato sia come regola o controllo legacy: {{names}}"
       }
     },
-    "partnerGroupAssignment": {
-      "title": "Gruppi di dispositivi (tutte le org.)",
-      "description": "Seleziona come destinazione un gruppo di dispositivi a livello di partner. Un’assegnazione di gruppo si applica a livello di gruppo di dispositivi e ha quindi precedenza sulle assegnazioni di altri criteri a livello di organizzazione e sito.",
-      "selectGroup": "Seleziona un gruppo di dispositivi",
-      "assign": "Assegna",
-      "remove": "Rimuovi",
-      "assigned": "Gruppo di dispositivi assegnato",
-      "removed": "Assegnazione del gruppo di dispositivi rimossa",
-      "failedToLoad": "Impossibile caricare i gruppi di dispositivi",
-      "failedToAssign": "Impossibile assegnare il gruppo di dispositivi",
-      "failedToRemove": "Impossibile rimuovere l’assegnazione del gruppo di dispositivi",
-      "empty": "Non ci sono ancora gruppi di dispositivi a livello di partner. Creane uno in Gruppi di dispositivi → Tutte le org.",
-      "loading": "Caricamento dei gruppi di dispositivi…"
+    "featureNames": {
+      "patch": {
+        "label": "Patch"
+      },
+      "monitors": {
+        "label": "Monitor"
+      },
+      "backup": {
+        "label": "Backup"
+      },
+      "security": {
+        "label": "Sicurezza"
+      },
+      "maintenance": {
+        "label": "Manutenzione"
+      },
+      "compliance": {
+        "label": "Conformità"
+      },
+      "automation": {
+        "label": "Automazioni"
+      },
+      "event_log": {
+        "label": "Registri eventi"
+      },
+      "software_policy": {
+        "label": "Criterio software"
+      },
+      "sensitive_data": {
+        "label": "Individuazione dati"
+      },
+      "peripheral_control": {
+        "label": "Controllo periferiche"
+      },
+      "warranty": {
+        "label": "Garanzia"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Accesso remoto"
+      },
+      "pam": {
+        "label": "Accesso privilegiato"
+      },
+      "vulnerability": {
+        "label": "Scansione delle vulnerabilità"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Ciclo di vita dei dispositivi"
+      },
+      "hardware_monitoring": {
+        "label": "Monitoraggio hardware"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Tutte le organizzazioni"
+      },
+      "organization": {
+        "label": "Organizzazione"
+      },
+      "site": {
+        "label": "Sito"
+      },
+      "device_group": {
+        "label": "Gruppo di dispositivi"
+      },
+      "device": {
+        "label": "Dispositivo"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Si applica a",
+      "unknownState": "Sconosciuto",
+      "notAppliedWarning": "Non applicato a nessun dispositivo. Questo criterio non si applica a nulla finché non scegli dove applicarlo.",
+      "notAppliedNeutral": "Non ancora applicato",
+      "inUseCount_one": "In uso tramite {{count}} criterio",
+      "inUseCount_other": "In uso tramite {{count}} criteri",
+      "moreTargets_one": "{{count}} destinazione in più",
+      "moreTargets_other": "{{count}} destinazioni in più",
+      "assignButton": "Assegna"
+    },
+    "appliesToPanel": {
+      "loadFailed": "Impossibile caricare dove si applica questo criterio",
+      "applyFailed": "Impossibile applicare le modifiche",
+      "applied": "Modifiche applicate",
+      "loading": "Caricamento di dove si applica questo criterio",
+      "retry": "Riprova",
+      "unnamedTarget": "Destinazione {{id}}",
+      "rowStateAdded": "Nuovo",
+      "rowStateChanged": "Modificato",
+      "rowStateRemoved": "Verrà rimosso",
+      "undoRemove": "Annulla",
+      "removeTarget": "Rimuovi {{name}}",
+      "advanced": "Avanzate",
+      "priorityLabel": "Priorità",
+      "priorityHint": "Allo stesso livello, vince il numero più basso.",
+      "entryRefused": "Questa modifica è stata rifiutata.",
+      "conflictFallback": "Dove si applica questo criterio è cambiato da quando l’hai aperto. Non è stato applicato nulla.",
+      "lockedOrganization": "Gestito da {{organization}}. Si applica solo all’interno di quell’organizzazione.",
+      "scopeLegend": "Si applica a",
+      "scopeAllOrganizations": "Tutte le organizzazioni",
+      "scopeAllOrganizationsHint": "Ogni organizzazione gestita dal tuo MSP, comprese quelle aggiunte in seguito.",
+      "scopeSpecificTargets": "Destinazioni specifiche",
+      "scopeSpecificTargetsHint": "Solo le organizzazioni, i siti, i gruppi di dispositivi e i dispositivi elencati di seguito.",
+      "targetsHeading": "Destinazioni",
+      "noTargets": "Ancora nessuna destinazione. Aggiungine una di seguito.",
+      "hiddenRows_one": "Si applica {{count}} altra destinazione a cui non hai accesso. Applica la lascia invariata.",
+      "hiddenRows_other": "Si applicano altre {{count}} destinazioni a cui non hai accesso. Applica le lascia invariate.",
+      "addTargetHeading": "Aggiungi destinazione",
+      "precedenceLegend": "Vince la più specifica, per funzionalità: Dispositivo › Gruppo di dispositivi › Sito › Organizzazione › Tutte le organizzazioni. Un criterio più vicino sostituisce l’intera funzionalità; non si uniscono.",
+      "reload": "Ricarica",
+      "zeroMatching": "0 dispositivi corrispondenti. Dopo questa modifica il criterio non raggiunge alcun dispositivo che puoi vedere.",
+      "counting": "Conteggio dei dispositivi…",
+      "countUnavailable": "Impossibile contare i dispositivi interessati da questa modifica.",
+      "estimateNote": "Stima: troppe destinazioni per un conteggio esatto.",
+      "discard": "Scarta le modifiche",
+      "discardConfirmQuestion": "Scartare le modifiche preparate?",
+      "discardConfirm": "Scarta",
+      "keepEditing": "Continua a modificare",
+      "applying": "Applicazione in corso…",
+      "applyButton": "Applica",
+      "applyWithDelta_one": "Applica · aggiunge {{added}} dispositivo, rimuove {{removed}}",
+      "applyWithDelta_other": "Applica · aggiunge {{added}} dispositivi, rimuove {{removed}}",
+      "applyWithEstimate_one": "Applica · aggiunge circa {{added}} dispositivo, rimuove circa {{removed}}",
+      "applyWithEstimate_other": "Applica · aggiunge circa {{added}} dispositivi, rimuove circa {{removed}}"
+    },
+    "targetPicker": {
+      "levelGroupLabel": "Livello di destinazione",
+      "searchPlaceholder": "Cerca",
+      "loading": "Caricamento…",
+      "loadFailed": "Impossibile caricare le destinazioni",
+      "noResults": "Nessuna corrispondenza",
+      "alreadyListed": "Già in elenco",
+      "changeOrganization": "Cambia organizzazione",
+      "chooseOrganizationFirst": "Scegli prima l’organizzazione.",
+      "lockedOrganizationHint": "Un criterio gestito dall’organizzazione si applica solo all’interno della propria organizzazione.",
+      "mspGroupsHeading": "Gruppi di dispositivi di tutte le organizzazioni"
+    },
+    "reachCount": {
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivi",
+      "atLeastDevices_one": "Almeno {{count}} dispositivo",
+      "atLeastDevices_other": "Almeno {{count}} dispositivi",
+      "noneVisible": "Nessun dispositivo che puoi vedere"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Impostato qui"
+      },
+      "from_parent": {
+        "label": "Dal criterio padre"
+      },
+      "changed_from_parent": {
+        "label": "Modificato qui"
+      },
+      "not_set": {
+        "label": "Non impostato"
+      },
+      "unavailable": {
+        "label": "Non disponibile in questo criterio"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Funzionalità del criterio",
+      "selectLabel": "Funzionalità del criterio",
+      "groups": {
+        "updates_software": {
+          "label": "Aggiornamenti e software"
+        },
+        "monitoring": {
+          "label": "Monitoraggio"
+        },
+        "security": {
+          "label": "Sicurezza"
+        },
+        "backup": {
+          "label": "Backup"
+        },
+        "access_end_user": {
+          "label": "Accesso e utente finale"
+        },
+        "lifecycle": {
+          "label": "Ciclo di vita"
+        },
+        "results": {
+          "label": "Risultati"
+        }
+      },
+      "statusOutranked_one": "{{state}} · Superato su {{count}} dispositivo",
+      "statusOutranked_other": "{{state}} · Superato su {{count}} dispositivi"
+    },
+    "policyHeader": {
+      "editDetails": "Modifica dettagli",
+      "managedByOrganization": "Gestito da {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Sola visualizzazione. Il tuo MSP gestisce questo criterio, quindi solo il tuo MSP può modificarlo."
+        },
+        "msp_managed_limited_access": {
+          "message": "Sola visualizzazione. Il tuo MSP gestisce questo criterio e il tuo accesso copre solo alcune organizzazioni."
+        },
+        "site_restricted": {
+          "message": "Sola visualizzazione. Il tuo accesso è limitato ad alcune sedi e questo criterio va oltre."
+        },
+        "no_write_permission": {
+          "message": "Sola visualizzazione. Il tuo ruolo può visualizzare i criteri di configurazione ma non modificarli."
+        },
+        "not_editable": {
+          "message": "Sola visualizzazione. Puoi visualizzare questo criterio ma non modificarlo."
+        },
+        "unexplained": {
+          "message": "Sola visualizzazione."
+        }
+      }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivi",
+      "atLeastDeviceCount_one": "almeno {{count}} dispositivo",
+      "atLeastDeviceCount_other": "almeno {{count}} dispositivi",
+      "noVisibleDevices": "nessun dispositivo che puoi vedere",
+      "policyCount_one": "{{count}} criterio",
+      "policyCount_other": "{{count}} criteri",
+      "reaches": "raggiunge {{devices}}",
+      "inUseThrough": "in uso tramite {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Attiva",
+      "activateWithReach": "Attiva · {{reach}}",
+      "deactivateAction": "Disattiva",
+      "archiveAction": "Archivia",
+      "restoreAction": "Ripristina",
+      "restoreHint": "Ripristina il criterio come Inattivo.",
+      "deactivateConfirmTitle": "Disattivare questo criterio?",
+      "deactivateConfirmMessage": "Smette di applicare le sue impostazioni ai dispositivi che ha come destinazione diretta. Puoi riattivarlo in seguito.",
+      "deactivateImpactDirect": "Ha come destinazione diretta {{devices}}: smettono di ricevere le sue impostazioni.",
+      "deactivateImpactNoneVisible": "Non si applica direttamente a nessun dispositivo che puoi vedere.",
+      "deactivateImpactChildren": "I criteri basati su di esso mantengono le sue impostazioni: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "L'attivazione di questo criterio abilita gli aggiornamenti dei fornitori sui dispositivi a cui si applica. Servono l'autorizzazione devices.execute e MFA. Chiedi a chi ce l'ha di attivare questo criterio.",
+      "changeFailed": "Lo stato del criterio non è stato modificato.",
+      "activatedToast": "Criterio attivato",
+      "deactivatedToast": "Criterio disattivato",
+      "archivedToast": "Criterio archiviato",
+      "restoredToast": "Criterio ripristinato come Inattivo"
+    },
+    "policyCreate": {
+      "title": "Nuovo criterio di configurazione",
+      "startsInactive": "Un nuovo criterio parte inattivo e non raggiunge alcun dispositivo finché non lo attivi. Puoi impostare tutte le funzionalità prima di salvare qualsiasi cosa.",
+      "namePlaceholder": "ad es. Workstation standard",
+      "descriptionPlaceholder": "Facoltativo: a cosa serve questo criterio",
+      "nameRequired": "Assegna un nome al criterio prima di salvare.",
+      "organizationRequired": "Scegli l'organizzazione che gestisce questo criterio.",
+      "createFailed": "Impossibile creare il criterio.",
+      "invalidParent": "Quel criterio non può essere il criterio padre di questo.",
+      "managedByLabel": "Gestito da",
+      "managedByMspOption": "Il tuo MSP (può applicarsi a qualsiasi tua organizzazione)",
+      "chooseOrganizationOption": "Scegli un'organizzazione",
+      "managedByOrganization": "Gestito da {{organization}}",
+      "managedByOwnOrgFallback": "Gestito dalla tua organizzazione",
+      "mspTrade": "Un criterio gestito dall'MSP non può collegare elementi propri di un cliente (software, sicurezza o backup) né una destinazione di backup specifica, e non può includere OneDrive Helper.",
+      "mspTradePicker": "Questo criterio è gestito dall'MSP: può collegare solo elementi condivisi tra le tue organizzazioni, non quelli propri di un cliente.",
+      "orgManagedHint": "Gestito da un'organizzazione: si applica solo ai dispositivi di quell'organizzazione e può collegare gli elementi propri di quell'organizzazione.",
+      "startFromLegend": "Inizia da",
+      "startFromBlank": "Vuoto",
+      "startFromParent": "Basato su un criterio padre",
+      "parentNeedsOrganization": "Scegli prima l'organizzazione. I criteri padre utilizzabili sono elencati per essa.",
+      "parentHint": "Le funzionalità che questo criterio non imposta provengono dal criterio padre.",
+      "parentReadFailed": "Non è stato possibile leggere le funzionalità del criterio padre, quindi l'elenco delle funzionalità non mostra ciò che imposta. Salvando, questo criterio si baserà comunque su di esso.",
+      "fixedAtFirstSave": "«Gestito da» e «Basato su» vengono fissati al primo salvataggio del criterio.",
+      "fixedNote": "«Gestito da» e «Basato su» sono stati fissati al primo salvataggio di questo criterio.",
+      "firstSaveFailed": "Il criterio è stato salvato come Inattivo e non si applica ad alcun dispositivo, ma {{feature}} non è stato salvato. Correggi il problema qui sotto e salva di nuovo.",
+      "savedInactiveToast": "Salvato come Inattivo. Non si applica ancora ad alcun dispositivo."
+    },
+    "activation": {
+      "drawerTitle": "Attiva questo criterio",
+      "activateWithReach": "Attiva · {{reach}}",
+      "needsDecision": "Per attivare serve almeno una destinazione. Oppure scegli Non applicare ancora, e il criterio resta inattivo.",
+      "dontApplyYet": "Non applicare ancora",
+      "dontApplyHint": "Mantiene il criterio inattivo e non applicato da nessuna parte.",
+      "applyFailedStaysInactive": "Le destinazioni non sono state applicate, quindi non è stato attivato nulla. Il criterio resta inattivo.",
+      "activateFailedAfterApply": "Le destinazioni sono state applicate, ma il criterio è ancora inattivo: {{reason}}"
+    },
+    "outranked": {
+      "line_one": "Superato su {{count}} dispositivo",
+      "line_other": "Superato su {{count}} dispositivi",
+      "detail": "Lì prevale un criterio più specifico o con priorità più alta per questa funzionalità. Dei dispositivi che puoi vedere, questo criterio ne raggiunge {{reached}}.",
+      "capped": "Troppi dispositivi per contare dove un altro criterio prevale per questa funzionalità.",
+      "openDevice": "Apri la scheda Configurazione di un dispositivo per vedere quale criterio gli si applica."
+    },
+    "copyPolicy": {
+      "action": "Copia",
+      "title": "Copia criterio",
+      "defaultName": "{{name}} (copia)",
+      "startsInactive": "La copia parte inattiva e non si applica a nessun dispositivo finché non la applichi e la attivi. Gli elementi che collega, come gli anelli di aggiornamento e i monitor, sono condivisi con l'originale, non duplicati.",
+      "checking": "Verifica di ciò che si può copiare…",
+      "carriedHeading": "Copiato",
+      "carriedNone": "Questo criterio non imposta funzionalità proprie.",
+      "droppedHeading": "Non copiato",
+      "reasons": {
+        "org_only_feature": "solo un criterio gestito da una singola organizzazione può impostare questa funzionalità.",
+        "linked_item_unavailable": "usa un elemento che il nuovo proprietario non può usare.",
+        "settings_not_valid": "le impostazioni salvate non superano più i controlli attuali."
+      },
+      "noticesHeading": "Copiato con una modifica",
+      "notices": {
+        "consent_required": "«Raccogli la garanzia HP dal dispositivo» viene copiato disattivato: una copia non accetta mai la licenza HP per conto di nessuno. Selezionalo nella copia per accettare di nuovo la licenza."
+      },
+      "confirm": "Copia criterio",
+      "copying": "Copia in corso…",
+      "copiedToast": "Criterio copiato. Resta inattivo finché non lo attivi.",
+      "failed": "Impossibile copiare il criterio.",
+      "previewFailed": "Impossibile verificare ciò che si può copiare. Riprova.",
+      "invalidParent": "Quel criterio padre non può essere usato con il proprietario scelto. Scegli un altro criterio padre, oppure nessuno.",
+      "executeRequired": "Questo criterio attiva funzionalità che installano software o spostano file sui dispositivi, quindi per copiarlo serve l'autorizzazione devices:execute.",
+      "mfaRequired": "Conferma la tua identità con MFA per copiare questo criterio.",
+      "copyToOrganization": "Copia in una organizzazione",
+      "changeWithCopy": "Copia con un proprietario o un criterio padre diverso",
+      "droppedSincePreview": "Copiato, ma queste funzionalità non sono state copiate perché qualcosa è cambiato dopo il controllo: {{features}}."
     }
   },
   "software": {

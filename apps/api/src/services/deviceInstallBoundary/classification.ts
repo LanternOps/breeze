@@ -217,6 +217,7 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
   huntress_incidents: history('vendor incidents'),
   hyperv_vms: history('VM discovery'),
   invoice_line_devices: history('billing evidence'),
+  learned_network_devices: history('learned network sightings; the next attachment report replaces them'),
   local_vaults: handled('work_in_flight', 'a sync in flight fails; the vault configuration survives'),
   m365_intune_devices: configuration('Intune link'),
   maintenance_windows: configuration('maintenance window membership (§5.1)'),

@@ -155,6 +155,9 @@ export interface DialogProps {
   alignTop?: boolean;
   /** Classes on the dialog panel (e.g. 'p-6', 'flex flex-col max-h-[90vh]') */
   className?: string;
+  /** Set false to ignore backdrop clicks, e.g. while a form holds unsaved
+   *  input. Escape still calls `onClose`, which can confirm first. Default: true */
+  dismissOnBackdrop?: boolean;
   children: ReactNode;
 }
 
@@ -166,6 +169,7 @@ export function Dialog({
   maxWidth = 'lg',
   alignTop = false,
   className = '',
+  dismissOnBackdrop = true,
   children,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -240,9 +244,9 @@ export function Dialog({
 
   const handleBackdropClick = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {
-      if (e.target === e.currentTarget) onClose();
+      if (dismissOnBackdrop && e.target === e.currentTarget) onClose();
     },
-    [onClose],
+    [onClose, dismissOnBackdrop],
   );
 
   if (!open || typeof document === 'undefined') return null;

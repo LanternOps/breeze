@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Política vinculada:",
     "notEnforced": "No aplicado",
     "usingBreezeDefaults": "- usando los valores predeterminados de Breeze",
-    "inheritanceChain": "Cadena de herencia",
-    "policiesAreResolvedUsingClosestWins": "Las políticas se resuelven utilizando la prioridad de ganador más cercano. Las asignaciones más específicas (nivel de dispositivo) anulan las más amplias (nivel de organización).",
+    "inheritanceChain": "Precedencia",
     "priority": "Prioridad",
     "level": "Nivel",
     "policy2": "Política",
     "features": "Características",
-    "inheritedFrom": "Heredado de {{name}}",
+    "inheritedFrom": "Basada en {{name}}",
     "patchApproval": {
       "label": "aprobación",
       "byRing": "definida por el anillo de actualización vinculado",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Destinos adicionales durante el aislamiento",
       "invalid": "La configuración de contención de esta política no es válida, por lo que el aislamiento usa los valores predeterminados fijos, sin destinos adicionales."
     },
-    "chainResolutionRule": "Primero decide el nivel: Dispositivo gana a Grupo de dispositivos, luego Sitio, Organización y Socio. La prioridad (gana el número más bajo) solo desempata entre políticas del mismo nivel. Las funciones tachadas fueron anuladas por una política más cercana.",
-    "featureOverriddenBy": "Anulada por {{policy}}"
+    "featureOverriddenBy": "Anulada por {{policy}}",
+    "viaLevel": "mediante {{level}}",
+    "managedByYourMsp": "Administrada por su MSP",
+    "precedenceLegend": "Prevalece la más específica, por función: Dispositivo › Grupo de dispositivos › Sitio › Organización › Todas las organizaciones. Una política más cercana reemplaza la función completa; no se combinan.",
+    "lostClause": "Reemplazada para {{features}} por {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "está configurada en un nivel más específico",
+      "lower_priority_number": "mismo nivel, número de prioridad menor",
+      "assigned_earlier": "mismo nivel y prioridad, asignada antes"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "Ningún grupo coincide con este filtro.",
     "managedByPartner": "Administrado por tu proveedor de servicios. Las reglas de membresía no se muestran; ves los dispositivos de tu organización.",
     "partnerDynamicType": "Dinámico · Todas las org.",
-    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas."
+    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas.",
+    "policyRefusedForGroup": "No se aplicó nada. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "No se pudo recuperar el inventario de hardware",
@@ -1429,6 +1437,8 @@
   "deviceInfoTab": {
     "updateStuck": "La actualización del agente a {{target}} parece atascada: {{attempts}} intentos desde {{since}} y el dispositivo sigue en su versión anterior. El actualizador reintenta en cada heartbeat; revise los registros del agente, o el propio dispositivo si no envía ninguno.",
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
+    "updateOfferWithheldOs": "Las actualizaciones del agente están en pausa para este dispositivo (desde {{since}}): su versión de macOS es inferior al mínimo que requiere la versión actual del agente, por lo que permanece en la versión de agente instalada. Actualice macOS para reanudar las actualizaciones del agente.",
+    "updateOfferWithheldOsUnknown": "Las actualizaciones del agente están en pausa para este dispositivo (desde {{since}}): no se pudo determinar su versión de macOS, y la versión actual del agente requiere una versión mínima de macOS, por lo que permanece en la versión de agente instalada hasta que informe su versión de macOS.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
       "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
@@ -1870,6 +1880,8 @@
     "updateStuck": "Actualización atascada",
     "updateStuckTooltip": "Este dispositivo lleva más de una hora reintentando la actualización del agente a {{target}} sin completarla.",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
+    "updateWithheldTooltipOs": "Las actualizaciones están en pausa porque la versión de macOS de este dispositivo es inferior al mínimo que requiere la versión actual del agente.",
+    "updateWithheldTooltipOsUnknown": "Las actualizaciones están en pausa porque no se pudo determinar la versión de macOS de este dispositivo y la versión actual del agente requiere una versión mínima de macOS.",
     "helperNotInstalled": "No instalado",
     "helperUnavailable": "Assist no disponible",
     "helperInstallIssueTooltip": {
@@ -3245,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Mover a otra organización",
-    "description": "Mueve {{hostname}} fuera de {{orgName}}. Su historial, tickets y políticas se mueven con él, y el agente se reconecta bajo la nueva organización.",
+    "description": "Mueve {{hostname}} fuera de {{orgName}}. Su historial y tickets se mueven con él, y el agente se reconecta bajo la nueva organización.",
     "targetOrgLabel": "Organización de destino",
     "targetOrgPlaceholder": "Elige una organización",
     "targetSiteLabel": "Sitio de destino",
@@ -3257,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} registros de tiempo sin facturar y {{parts}} piezas sin facturar conservan su moneda original después del traslado.",
     "currencyMismatchAccept": "Entiendo: mover el dispositivo y conservar esas filas en su moneda original",
     "currencyMismatchNoPermission": "Aceptar esto requiere permiso de escritura de facturas. Pide a un administrador de facturación que facture o resuelva el trabajo pendiente primero.",
+    "policyAssignmentsHeading": "Políticas de configuración que se quitarán de este dispositivo",
+    "policyAssignmentsDetail": "Estas políticas están asignadas directamente a este dispositivo y no pueden aplicarse en la nueva organización. El traslado quita las asignaciones. Las políticas en sí no cambian.",
     "stepUpHeading": "Confirma que eres tú",
     "stepUpIntro": "Mover un dispositivo entre organizaciones requiere un segundo factor.",
     "stepUpCodeLabel": "Código del autenticador",
@@ -5016,7 +5030,8 @@
       "noOpenCategories": "No se puede ejecutar nada con esta opción. Aquí solo hay BIOS y firmware disponibles: elija Reiniciar al terminar.",
       "decommissioned": "Este dispositivo está dado de baja, por lo que no se le puede enviar nada.",
       "cancelledAtClaim": "La ejecución se canceló antes de llegar al dispositivo. Inténtelo de nuevo."
-    }
+    },
+    "observeQueued": "Se inició una revisión de solo lectura en {{hostname}}. No se instala nada."
   },
   "vendorUpdates": {
     "title": "Actualizaciones del fabricante",
@@ -5101,7 +5116,16 @@
       "byUnknown": "Desconocido",
       "range": "{{from}}-{{to}} de {{total}}",
       "previousPage": "Anterior",
-      "nextPage": "Siguiente"
+      "nextPage": "Siguiente",
+      "observed": "Observado",
+      "observedTools": "Herramientas encontradas: {{tools}}",
+      "observedNoTools": "No se encontraron herramientas del fabricante",
+      "observedVerdict": {
+        "observed": "{{vendor}}: revisión de solo lectura terminada",
+        "observedWithErrors": "{{vendor}}: revisión de solo lectura terminada con algunas lecturas fallidas",
+        "platformUnsupported": "{{vendor}}: las herramientas empresariales del fabricante no admiten este modelo",
+        "invalid": "{{vendor}}: no se pudo leer el resultado de la revisión"
+      }
     }
   },
   "reinstalledBadge": {

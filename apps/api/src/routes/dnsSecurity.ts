@@ -608,16 +608,22 @@ const updateIntegrationSchema = z.object({
   // #10054 — store allowed DNS queries too (default: blocked + redirected
   // only). false removes the key, so the default applies. Future syncs only:
   // turning it off does not delete allowed rows already stored.
-  storeAllowedTraffic: z.boolean().optional()
+  storeAllowedTraffic: z.boolean().optional(),
+  // #12507 — Pi-hole API generation (v6 = session-based REST API). Pi-hole
+  // integrations only; the handler refuses it for any other provider.
+  piholeVersion: integrationConfigSchema.shape.piholeVersion
 }).strict().refine(
-  (body) => body.retentionDays !== undefined || body.storeAllowedTraffic !== undefined,
-  { message: 'Provide retentionDays or storeAllowedTraffic' }
+  (body) => body.retentionDays !== undefined
+    || body.storeAllowedTraffic !== undefined
+    || body.piholeVersion !== undefined,
+  { message: 'Provide retentionDays, storeAllowedTraffic or piholeVersion' }
 );
 
 // #10020 / #10054 — the integration fields editable after create are what
 // Breeze stores for it: the retention window and the allowed-traffic opt-in.
-// Strict schema: credentials and provider config are not editable here
-// (re-create the integration to change them).
+// Strict schema: credentials and other provider config are not editable here
+// (re-create the integration to change them). The one provider-config
+// exception is piholeVersion (#12507), Pi-hole integrations only.
 dnsSecurityRoutes.patch(
   '/integrations/:id',
   requireScope('organization', 'partner', 'system'),
@@ -638,6 +644,7 @@ dnsSecurityRoutes.patch(
         id: dnsFilterIntegrations.id,
         orgId: dnsFilterIntegrations.orgId,
         name: dnsFilterIntegrations.name,
+        provider: dnsFilterIntegrations.provider,
         config: dnsFilterIntegrations.config,
         isActive: dnsFilterIntegrations.isActive,
         lastSyncStatus: dnsFilterIntegrations.lastSyncStatus
@@ -651,6 +658,9 @@ dnsSecurityRoutes.patch(
     }
     if (!integration.isActive && integration.lastSyncStatus === DNS_INTEGRATION_DELETING_STATUS) {
       return c.json({ error: 'Integration is being deleted' }, 409);
+    }
+    if (body.piholeVersion !== undefined && integration.provider !== 'pihole') {
+      return c.json({ error: 'piholeVersion can only be set on a Pi-hole integration' }, 400);
     }
 
     const previous = (integration.config ?? {}) as DnsIntegrationConfig;
@@ -667,6 +677,11 @@ dnsSecurityRoutes.patch(
       if (body.storeAllowedTraffic) config.storeAllowedTraffic = true;
       else delete config.storeAllowedTraffic;
       details.storeAllowedTraffic = { from: storesAllowedTraffic(previous), to: body.storeAllowedTraffic };
+    }
+
+    if (body.piholeVersion !== undefined) {
+      config.piholeVersion = body.piholeVersion;
+      details.piholeVersion = { from: previous.piholeVersion ?? 'v5', to: body.piholeVersion };
     }
 
     await db

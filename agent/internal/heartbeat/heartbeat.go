@@ -67,6 +67,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/state"
 	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/terminal"
+	"github.com/breeze-rmm/agent/internal/tpmattest"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/wakeconfig"
@@ -447,6 +448,11 @@ type Command struct {
 	ID      string         `json:"id"`
 	Type    string         `json:"type"`
 	Payload map[string]any `json:"payload"`
+	// receivedAt is when a backup verification command reached this agent,
+	// stamped by both dispatch sites before it joins its pool's queue
+	// (stampVerificationReceipt). Zero for every other command and for a
+	// handler reached any other way, which then deducts no wait (#11813).
+	receivedAt time.Time
 }
 
 // helperLifecycleController is the subset of *sessionbroker.HelperLifecycleManager
@@ -531,6 +537,15 @@ type Heartbeat struct {
 	hardwareCollectFn    func() (*collectors.HardwareInfo, error)
 	memoryCollectFn      func() (*collectors.MemoryInfo, error)
 	memoryCollectTimeout time.Duration
+	// TPM EK collection (#8318 T1, tpm_attestation.go). tpmOpen overrides the
+	// platform TPM in tests; tpmAttestedAt is the last success (Unix seconds).
+	tpmOpen           tpmattest.Opener
+	tpmAttestedAt     atomic.Int64
+	tpmAttestInFlight atomic.Bool
+	// tpmEnabled is the server's switch (configUpdate.tpm_attestation_enabled,
+	// default off); tpmBusy is held while a TPM call is out, even abandoned.
+	tpmEnabled atomic.Bool
+	tpmBusy    atomic.Bool
 	// eventLogSendInFlight protects the collect/send/ack cycle from overlapping ticks.
 	eventLogSendInFlight atomic.Bool
 	// changeTrackerMu serializes the change tracker's collect → send → commit
@@ -712,6 +727,9 @@ type Heartbeat struct {
 	pamDeclineCheckerInstalled atomic.Bool
 	// pamWithdrawKick wakes the withdraw drain right after a decline.
 	pamWithdrawKick chan struct{}
+	// userHelperTaskKick wakes the Windows user-helper logon task repair
+	// (#12580) once the helper reconcile has put a missing executable back.
+	userHelperTaskKick chan struct{}
 	// pamDeclineWait bounds how long an apply waits for an open dialog's
 	// answer. Zero means pamDialogTimeout + pamDismissTimeout; tests shrink it.
 	pamDeclineWait time.Duration
@@ -864,8 +882,14 @@ type Heartbeat struct {
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
 
+	// HP warranty (#5511 observe-first): the in-memory CMSL mode and the
+	// observe schedule (warranty_mode.go, hp_warranty_observe.go). The clock
+	// is a seam for tests; nil means time.Now.
+	hpWarranty    hpWarrantyState
+	hpWarrantyNow func() time.Time
+
 	// verificationPool is the lane for backup_verify and backup_test_restore
-	// (#6106). Each waits up to backupVerificationTimeout on the backup
+	// (#6106). Each waits up to backupVerificationForwardTimeout on the backup
 	// helper; on the shared pool that wait held a slot, so a few
 	// verifications could starve scripts and monitors. It has pool's worker
 	// and queue sizes, so verifications get the concurrency they had, now in
@@ -1277,6 +1301,13 @@ type Heartbeat struct {
 	// stop, proceed" rather than calling a method on a nil broker.
 	backupHelperStopIfIdle func() bool
 
+	// backupForwarderOverride replaces the session broker for
+	// forwardToBackupHelper, and verificationClock time.Now for a
+	// verification's receipt stamp and its lane wait. Test seams; nil in
+	// production.
+	backupForwarderOverride backupHelperForwarder
+	verificationClock       func() time.Time
+
 	// backupHelperInstallMu serializes installBackupBinary so the periodic
 	// reconcile and any future manual dev-push surface for this component
 	// can't race on the shared install path, mirroring userHelperInstallMu.
@@ -1360,13 +1391,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
 		// Memory-only until SetStatePath gives it a file.
-		pamDeclines:     pamdecline.NewStore("", nil),
-		pamWithdrawKick: make(chan struct{}, 1),
-		metricsCol:      collectors.NewMetricsCollector(),
-		hardwareCol:     collectors.NewHardwareCollector(),
-		softwareCol:     collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol:    collectors.NewInventoryCollector(),
-		vpnCol:          collectors.NewVPNCollector(),
+		pamDeclines:        pamdecline.NewStore("", nil),
+		pamWithdrawKick:    make(chan struct{}, 1),
+		userHelperTaskKick: make(chan struct{}, 1),
+		metricsCol:         collectors.NewMetricsCollector(),
+		hardwareCol:        collectors.NewHardwareCollector(),
+		softwareCol:        collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:       collectors.NewInventoryCollector(),
+		vpnCol:             collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -2417,6 +2449,8 @@ func (h *Heartbeat) Start() {
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startWake()
+	// #12580: keep the Windows user-helper logon task registered.
+	h.startUserHelperTaskRepair()
 	h.startPamReconciliationRetryLoop()
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
@@ -2776,6 +2810,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopTimeSync()
 	h.stopWorkloads()
 	h.stopWake()
+	h.stopHpWarrantyObserve()
 	log.Info("draining in-flight commands and inventory goroutines")
 	// Both pools share ctx's deadline: their tasks run concurrently, so
 	// draining them in turn still bounds the whole wait by that deadline.
@@ -2808,6 +2843,7 @@ func (h *Heartbeat) Stop() {
 		h.stopTimeSync()
 		h.stopWorkloads()
 		h.stopWake()
+		h.stopHpWarrantyObserve()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -3279,12 +3315,14 @@ func (h *Heartbeat) sendHardwareInventory() {
 	// on the 15-minute change-tracker tick and at enrollment. It is collected
 	// independently: on any failure the `memory` key is omitted (the API then
 	// keeps what it stored) and base hardware still goes out.
-	payload := hardwareInventoryPayload{HardwareInfo: hw, Memory: h.collectMemoryModules()}
+	tpmAvailable := h.tpmAvailability()
+	payload := hardwareInventoryPayload{HardwareInfo: hw, Memory: h.collectMemoryModules(), TPMAvailable: tpmAvailable}
 	label := "hardware"
 	if payload.Memory != nil {
 		label = fmt.Sprintf("hardware (%d memory slots)", len(payload.Memory.Modules))
 	}
 	_ = h.sendInventoryData("hardware", payload, label)
+	h.maybeAttestTPM(tpmAvailable)
 }
 
 // hardwareInventoryPayload is the PUT /agents/:id/hardware body: the base
@@ -3293,6 +3331,9 @@ func (h *Heartbeat) sendHardwareInventory() {
 type hardwareInventoryPayload struct {
 	*collectors.HardwareInfo
 	Memory *collectors.MemoryInfo `json:"memory,omitempty"`
+	// TPMAvailable: whether a TPM 2.0 answers here (#8318 T1); omitted when
+	// the probe could not tell.
+	TPMAvailable *bool `json:"tpmAvailable,omitempty"`
 }
 
 const defaultMemoryCollectTimeout = 45 * time.Second
@@ -3929,6 +3970,17 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasRMSK {
 		h.applyRequireManifestSigningKeyIDConfig(rmskRaw)
+	}
+
+	// Server-side TPM attestation switch (#8318 T1). Key absent = no change
+	// (an older API: the switch stays off). Must stay above the policy-probe
+	// early return below.
+	tpmRaw, hasTPM := update["tpm_attestation_enabled"]
+	if !hasTPM {
+		tpmRaw, hasTPM = update["tpmAttestationEnabled"]
+	}
+	if hasTPM {
+		h.applyTPMAttestationConfig(tpmRaw)
 	}
 
 	// Server-side ECH kill switch (#8869). Key absent = no change. Must stay
@@ -7904,6 +7956,9 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 		return h.runTrackedCommand(cmd), true
 	}
 
+	// Before the pool: a verification's wait in its lane comes out of its
+	// budget (#11813).
+	cmd = h.stampVerificationReceipt(cmd)
 	pool := h.commandPoolFor(cmd.Type)
 	if pool == nil {
 		return h.executeCommand(cmd), true
@@ -7930,7 +7985,7 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 	// permanently shrinks the pool (issue #2387). Ephemeral commands
 	// (terminal/tunnel/desktop data) should complete in milliseconds, so they
 	// get a much shorter tier (issue #2400) — still log-only.
-	warnAfter := h.commandWarnAfter(cmd.Type)
+	warnAfter := h.commandWarnAfterFor(cmd)
 	started := time.Now()
 	watchdog := time.NewTimer(warnAfter)
 	defer watchdog.Stop()
@@ -7996,6 +8051,23 @@ func (h *Heartbeat) commandWarnAfter(cmdType string) time.Duration {
 	return defaultCommandInFlightWarnAfter
 }
 
+// commandWarnAfterFor is commandWarnAfter for a whole command. A
+// backup_verify / backup_test_restore waits on the helper for its own
+// forward timeout, which scales with the snapshot up to
+// backupipc.VerifyMaxCommandTimeout, so it only counts as wedged once that
+// wait is over (never earlier than the default tier). A test override still
+// takes precedence.
+func (h *Heartbeat) commandWarnAfterFor(cmd Command) time.Duration {
+	warnAfter := h.commandWarnAfter(cmd.Type)
+	if h.commandInFlightWarnAfter > 0 || !isBackupVerificationCommand(cmd.Type) {
+		return warnAfter
+	}
+	if forward := backupVerificationForwardTimeout(cmd.Payload); forward > warnAfter {
+		return forward
+	}
+	return warnAfter
+}
+
 // inFlightCommand is one pool-dispatched command currently executing, as
 // tracked for the heartbeat wedge gauges (issue #2400).
 type inFlightCommand struct {
@@ -8011,7 +8083,7 @@ type inFlightCommand struct {
 // and tracking starts when a worker picks the command up, not when it is
 // queued behind a backlog.
 func (h *Heartbeat) runTrackedCommand(cmd Command) tools.CommandResult {
-	key := h.trackInFlight(time.Now(), h.commandWarnAfter(cmd.Type))
+	key := h.trackInFlight(time.Now(), h.commandWarnAfterFor(cmd))
 	defer h.untrackInFlight(key)
 	return h.executeCommand(cmd)
 }
@@ -9045,6 +9117,9 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	}
 	log.Info("user-helper reconciliation: installed missing helper binary",
 		"path", helperPath, "version", h.agentVersion)
+	// The task that starts it may have gone with it (#12580): check now
+	// rather than at the next scheduled check.
+	h.kickUserHelperTaskCheck()
 }
 
 // userHelperReconcilePersistentThreshold is the consecutive-failure count at

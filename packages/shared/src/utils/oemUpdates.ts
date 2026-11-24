@@ -52,6 +52,19 @@ export function agentSupportsOemRebootHold(agentVersion: string | null | undefin
 export const OEM_LANES = ['dell', 'surface', 'hp', 'lenovo'] as const;
 export type OemLane = (typeof OEM_LANES)[number];
 
+/**
+ * Lanes whose vendor tool cannot honour a policy's blocked update IDs (#12265). Dell: DCU's
+ * `-localblockedswb` is valid only on `/configure`, and blocking a release that way makes DCU
+ * offer a different package for the same component, so the agent refuses any Dell run that
+ * carries a blocked ID (`blocked_ids_unsupported`). The policy validator rejects a blocklist for
+ * these lanes, and the scheduler sends no run for one already stored.
+ */
+export const OEM_LANES_WITHOUT_BLOCKED_UPDATE_IDS: readonly OemLane[] = Object.freeze(['dell']);
+
+export function oemLaneHonoursBlockedUpdateIds(lane: OemLane): boolean {
+  return !OEM_LANES_WITHOUT_BLOCKED_UPDATE_IDS.includes(lane);
+}
+
 /** What a device shows for vendor updates, in the order the fleet tab lists them. */
 export const OEM_DISPLAY_STATES = [
   'up_to_date',
@@ -108,3 +121,47 @@ export const OEM_DISPATCH_REFUSALS = [
   'cancelled_at_claim',
 ] as const;
 export type OemDispatchRefusal = (typeof OEM_DISPATCH_REFUSALS)[number];
+
+/**
+ * Lanes `oem_observe` can read (observe-first amendment, #11065). Dell has no stage entry: its
+ * lab wave stands, so there is nothing to observe there.
+ */
+export const OEM_OBSERVE_LANES = ['surface', 'hp', 'lenovo'] as const;
+export type OemObserveLane = (typeof OEM_OBSERVE_LANES)[number];
+
+/**
+ * First agent release that ships the read-only `oem_observe` handler. Its own minimum, so an older
+ * agent never receives the type (it would only reject it as unknown). Set to the release after the
+ * one in rc when the contract was added; move it if that release slips.
+ */
+export const OEM_OBSERVE_MIN_AGENT_VERSION = '0.131.0';
+
+/** Whether an agent can run `oem_observe`. Fails CLOSED, like `agentSupportsOemUpdates`. */
+export function agentSupportsOemObserve(agentVersion: string | null | undefined): boolean {
+  if (typeof agentVersion !== 'string') return false;
+  const cmp = semverCompare(agentVersion.trim(), OEM_OBSERVE_MIN_AGENT_VERSION);
+  return cmp !== null && cmp >= 0;
+}
+
+/**
+ * Why the observe seam refused. Its own list rather than more members of
+ * `OEM_DISPATCH_REFUSALS`, whose console copy is user-facing: observe is an internal canary
+ * instrument, and only our own operators reach it.
+ */
+export const OEM_OBSERVE_REFUSALS = [
+  'device_not_found',
+  'flag_off',
+  'not_canary',
+  'ephemeral',
+  'parked',
+  'decommissioned',
+  'not_applicable',
+  'kill_switch',
+  'agent_too_old',
+  'no_policy',
+  'offline',
+  'recent_observation',
+  'trust_denied',
+  'cancelled_at_claim',
+] as const;
+export type OemObserveRefusal = (typeof OEM_OBSERVE_REFUSALS)[number];

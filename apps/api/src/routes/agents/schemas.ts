@@ -209,6 +209,9 @@ export const heartbeatSchema = z.object({
   // Version/shape failures are report-local and must not reject the heartbeat.
   networkContextV1: z.unknown().optional(),
   networkContextReset: z.unknown().optional(),
+  // Learned networks (#12369, contract C1). Parsed report-locally by services/learnedNetworks/ingest;
+  // absent = no change, so a beat without it never clears anything.
+  networkAttachmentsV1: z.unknown().optional(),
   // #8608 — log-shipping health. z.unknown() so a malformed object can never
   // reject the beat; services/logShippingHealth.parseLogShipping strict-parses
   // it separately (a bad value is `invalid`, never coerced to a healthy zero).
@@ -703,6 +706,10 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'isolation_stale_generation',
   'isolation_invalid_spec',
   'isolation_busy',
+  // A verification failed on the agent without being started: it waited on
+  // the verification lane past a useful run's budget (#11813). Persisted as
+  // the verification's reasonCode (routes/backup/verificationScheduled.ts).
+  'verification_queue_expired',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];
@@ -1094,6 +1101,10 @@ export const updateHardwareSchema = z.object({
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional(),
   systemUuid: systemUuidField,
+  // #8318 T1 (§12.1): false when the machine has no TPM or TBS is unavailable.
+  // Tolerant like systemUuid: anything but a boolean is dropped, never a 400.
+  // The EK baseline itself is never part of this report (attestation route only).
+  tpmAvailable: z.unknown().optional().transform((v) => (typeof v === 'boolean' ? v : undefined)),
   // #5351: kept RAW here and validated separately with
   // agentMemoryInventorySchema by the route, so an invalid memory block is
   // logged and ignored instead of 400-ing the whole hardware report.

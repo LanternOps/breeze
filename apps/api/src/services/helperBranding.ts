@@ -155,6 +155,10 @@ export function brandingWriteAllowed(incomingBranding: unknown, existingLevels: 
   return !existingLevels.some((level) => LOWER_LEVELS.has(level));
 }
 
+/** Refusal for a lower-level assignment on a branded policy (web API route and AI tool). */
+export const HELPER_BRANDING_ASSIGNMENT_REFUSAL =
+  'Helper branding is partner- and organization-scoped; this policy cannot take a site, device group or device assignment';
+
 /** Adding a lower-level assignment is rejected when the policy already carries branding. */
 export function assignmentWriteAllowed(newLevel: string, policyHasBranding: boolean): boolean {
   return !(LOWER_LEVELS.has(newLevel) && policyHasBranding);

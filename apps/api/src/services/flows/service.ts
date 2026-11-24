@@ -369,7 +369,8 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
   // W06 (#5221, Decision 3): a converted Job's shadow restarts when its draft changes.
   await resetShadowIfChanged(db, { flowId });
   auditDraftSave(auth, row, document.steps.length);
-  return { saved: true, flow: toDetailDto(row), validation: stripDocument(validation) };
+  const convertedFrom = await convertedFromForFlow(row.id);
+  return { saved: true, flow: toDetailDto(row, { ...NO_EXTRAS, convertedFrom }), validation: stripDocument(validation) };
 }
 
 function stripDocument(v: FlowValidationResult & { document?: unknown }): FlowValidationResult {

@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Verlinkte Richtlinie:",
     "notEnforced": "Nicht durchgesetzt",
     "usingBreezeDefaults": "– Verwendung der Breeze-Standardeinstellungen",
-    "inheritanceChain": "Vererbungskette",
-    "policiesAreResolvedUsingClosestWins": "Richtlinien werden anhand der Priorität der nächsten Gewinne gelöst. Spezifischere Zuweisungen (Geräteebene) haben Vorrang vor umfassenderen Zuweisungen (Organisationsebene).",
+    "inheritanceChain": "Vorrang",
     "priority": "Priorität",
     "level": "Ebene",
     "policy2": "Richtlinie",
     "features": "Funktionen",
-    "inheritedFrom": "Geerbt von {{name}}",
+    "inheritedFrom": "Basiert auf {{name}}",
     "patchApproval": {
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Zusätzliche Ziele während der Isolierung",
       "invalid": "Die Eindämmungseinstellungen dieser Richtlinie sind ungültig. Bei der Isolierung gelten daher die festen Standardwerte ohne zusätzliche Ziele."
     },
-    "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
-    "featureOverriddenBy": "Überschrieben von {{policy}}"
+    "featureOverriddenBy": "Überschrieben von {{policy}}",
+    "viaLevel": "über {{level}}",
+    "managedByYourMsp": "Verwaltet von Ihrem MSP",
+    "precedenceLegend": "Das Spezifischste gewinnt, pro Funktion: Gerät › Gerätegruppe › Standort › Organisation › Alle Organisationen. Eine näher liegende Richtlinie ersetzt die gesamte Funktion; es wird nicht zusammengeführt.",
+    "lostClause": "Für {{features}} ersetzt durch {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "sie ist auf einer spezifischeren Ebene festgelegt",
+      "lower_priority_number": "gleiche Ebene, niedrigere Prioritätszahl",
+      "assigned_earlier": "gleiche Ebene und Priorität, früher zugewiesen"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "Keine Gruppen entsprechen diesem Filter.",
     "managedByPartner": "Von Ihrem Dienstleister verwaltet. Mitgliedschaftsregeln werden nicht angezeigt; Sie sehen die Geräte Ihrer Organisation.",
     "partnerDynamicType": "Dynamisch · Alle Org.",
-    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht."
+    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht.",
+    "policyRefusedForGroup": "Es wurde nichts angewendet. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Das Abrufen des Hardwareinventars ist fehlgeschlagen",
@@ -1429,6 +1437,8 @@
   "deviceInfoTab": {
     "updateStuck": "Das Agent-Update auf {{target}} scheint festzuhängen: {{attempts}} Versuche seit {{since}}, und das Gerät ist noch auf seiner alten Version. Der Updater versucht es bei jedem Heartbeat erneut; prüfen Sie die Agent-Protokolle oder das Gerät selbst, falls es keine sendet.",
     "updateOfferWithheld": "Update-Angebote werden für dieses Gerät zurückgehalten (seit {{since}}): Es lässt sich nicht bestätigen, dass der Agent-Build die von diesem Server bereitgestellte Edition akzeptiert, daher bleibt er auf seiner aktuellen Version. Stellen Sie ihn mit einem Installer der bereitgestellten Edition oder einem Agent-Release wieder her, das seine Edition meldet.",
+    "updateOfferWithheldOs": "Agent-Updates für dieses Gerät sind angehalten (seit {{since}}): Die macOS-Version liegt unter dem Minimum, das die aktuelle Agent-Version erfordert, daher bleibt es auf der installierten Agent-Version. Aktualisieren Sie macOS, um die Agent-Updates fortzusetzen.",
+    "updateOfferWithheldOsUnknown": "Agent-Updates für dieses Gerät sind angehalten (seit {{since}}): Die macOS-Version konnte nicht ermittelt werden, und die aktuelle Agent-Version erfordert eine macOS-Mindestversion. Das Gerät bleibt daher auf der installierten Agent-Version, bis es seine macOS-Version meldet.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}}): Der Server hat diesem Gerät keine Breeze-Assist-Version zur Installation angeboten, daher bleibt es ohne Installation. Prüfen Sie, ob für die Plattform dieses Geräts ein Breeze-Assist-Build veröffentlicht ist.",
       "installAbandoned": "Breeze Assist ist aktiviert, aber nicht installiert (seit {{since}}): Die Installation der angebotenen Version ist wiederholt fehlgeschlagen, daher hat der Agent weitere Versuche pausiert. Er versucht es nach einigen Stunden oder bei einer neueren Version erneut; der Installationsfehler steht im Agent-Log.",
@@ -1870,6 +1880,8 @@
     "updateStuck": "Update hängt",
     "updateStuckTooltip": "Dieses Gerät versucht seit über einer Stunde erfolglos, sein Agent-Update auf {{target}} abzuschließen.",
     "updateWithheldTooltip": "Der Server bietet diesem Gerät keine Updates an, weil sich nicht bestätigen lässt, dass sein Agent-Build die bereitgestellte Edition akzeptiert. Er bleibt bis zur Wiederherstellung auf seiner aktuellen Version.",
+    "updateWithheldTooltipOs": "Updates sind angehalten, weil die macOS-Version dieses Geräts unter dem Minimum liegt, das die aktuelle Agent-Version erfordert.",
+    "updateWithheldTooltipOsUnknown": "Updates sind angehalten, weil die macOS-Version dieses Geräts nicht ermittelt werden konnte und die aktuelle Agent-Version eine macOS-Mindestversion erfordert.",
     "helperNotInstalled": "Nicht installiert",
     "helperUnavailable": "Assist nicht verfügbar",
     "helperInstallIssueTooltip": {
@@ -3245,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "In eine andere Organisation verschieben",
-    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
+    "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf und Tickets wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
     "targetOrgLabel": "Zielorganisation",
     "targetOrgPlaceholder": "Organisation auswählen",
     "targetSiteLabel": "Zielstandort",
@@ -3257,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
     "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
     "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "policyAssignmentsHeading": "Konfigurationsrichtlinien, die von diesem Gerät entfernt werden",
+    "policyAssignmentsDetail": "Diese Richtlinien sind diesem Gerät direkt zugewiesen und können in der neuen Organisation nicht gelten. Beim Verschieben werden die Zuweisungen entfernt. Die Richtlinien selbst bleiben unverändert.",
     "stepUpHeading": "Bestätigen Sie Ihre Identität",
     "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
     "stepUpCodeLabel": "Authenticator-Code",
@@ -5016,7 +5030,8 @@
       "noOpenCategories": "Mit dieser Auswahl kann nichts ausgeführt werden. Hier sind nur BIOS und Firmware verfügbar: Wählen Sie „Nach Abschluss neu starten“.",
       "decommissioned": "Dieses Gerät ist außer Betrieb genommen, daher kann nichts an es gesendet werden.",
       "cancelledAtClaim": "Der Lauf wurde abgebrochen, bevor er das Gerät erreichte. Versuchen Sie es erneut."
-    }
+    },
+    "observeQueued": "Prüfung ohne Änderungen auf {{hostname}} gestartet. Es wird nichts installiert."
   },
   "vendorUpdates": {
     "title": "Herstellerupdates",
@@ -5101,7 +5116,16 @@
       "byUnknown": "Unbekannt",
       "range": "{{from}}-{{to}} von {{total}}",
       "previousPage": "Zurück",
-      "nextPage": "Weiter"
+      "nextPage": "Weiter",
+      "observed": "Beobachtet",
+      "observedTools": "Gefundene Tools: {{tools}}",
+      "observedNoTools": "Keine Hersteller-Tools gefunden",
+      "observedVerdict": {
+        "observed": "{{vendor}}: Prüfung ohne Änderungen abgeschlossen",
+        "observedWithErrors": "{{vendor}}: Prüfung ohne Änderungen abgeschlossen, einige Abfragen sind fehlgeschlagen",
+        "platformUnsupported": "{{vendor}}: Dieses Modell wird von den Business-Tools des Herstellers nicht unterstützt",
+        "invalid": "{{vendor}}: Das Prüfergebnis konnte nicht gelesen werden"
+      }
     }
   },
   "reinstalledBadge": {

@@ -2,6 +2,7 @@ package backupipc
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -130,7 +131,16 @@ func TestBackupCapabilitiesRoundTrip(t *testing.T) {
 // agent's forward wait, with room to unwind, or the partial counts are lost.
 func TestVerifyRunBudgetStaysUnderCommandTimeout(t *testing.T) {
 	if VerifyCommandTimeout != 2*time.Hour {
-		t.Fatalf("verify command timeout = %v, want the API's 2h LONG_TIMEOUT_TYPES tier", VerifyCommandTimeout)
+		t.Fatalf("verify command timeout = %v, want the API's 2h base budget (BACKUP_VERIFY_BASE_BUDGET_MS)", VerifyCommandTimeout)
+	}
+	if VerifyMaxCommandTimeout != 12*time.Hour {
+		t.Fatalf("verify max command timeout = %v, want the API's 12h ceiling (BACKUP_VERIFY_MAX_BUDGET_MS)", VerifyMaxCommandTimeout)
+	}
+	if VerifyRunMargin != 10*time.Minute {
+		t.Fatalf("verify run margin = %v, want 10m", VerifyRunMargin)
+	}
+	if VerifyRunBudget != VerifyCommandTimeout-VerifyRunMargin {
+		t.Fatalf("run budget %v must be the base command timeout minus the margin", VerifyRunBudget)
 	}
 	if VerifyRunBudget <= 0 || VerifyRunBudget >= VerifyCommandTimeout {
 		t.Fatalf("run budget %v must be positive and shorter than the command timeout %v", VerifyRunBudget, VerifyCommandTimeout)
@@ -161,5 +171,33 @@ func TestBareMetalRebuildBudgetStaysUnderForwardTimeout(t *testing.T) {
 	}
 	if BareMetalRebuildForwardTimeout >= 24*time.Hour {
 		t.Fatalf("forward timeout %v must stay under the API's 24h whole-machine restore reaper", BareMetalRebuildForwardTimeout)
+	}
+}
+
+// The agent's forward wait for verify/test restore is the command payload's
+// timeBudgetSeconds clamped exactly as the API clamps it: [2h, 12h], and an
+// absent or invalid value is the 2h base (an API that predates the field).
+func TestClampVerifyCommandTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		seconds float64
+		want    time.Duration
+	}{
+		{"zero", 0, VerifyCommandTimeout},
+		{"negative", -60, VerifyCommandTimeout},
+		{"NaN", math.NaN(), VerifyCommandTimeout},
+		{"+Inf", math.Inf(1), VerifyCommandTimeout},
+		{"below floor", 60, VerifyCommandTimeout},
+		{"scaled", 395 * 60, 395 * time.Minute},
+		{"fractional", 7200.5, 7200*time.Second + 500*time.Millisecond},
+		{"above cap", 48 * 3600, VerifyMaxCommandTimeout},
+		{"huge", 1e300, VerifyMaxCommandTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClampVerifyCommandTimeout(tc.seconds); got != tc.want {
+				t.Fatalf("ClampVerifyCommandTimeout(%v) = %v, want %v", tc.seconds, got, tc.want)
+			}
+		})
 	}
 }

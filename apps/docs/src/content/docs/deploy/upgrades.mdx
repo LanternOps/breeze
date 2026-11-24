@@ -110,6 +110,235 @@ The reference configuration and CI now use Redis 8.x (`redis:8-alpine`) instead 
 
 Redis 7 may not be able to read data files written by Redis 8, so restore the backup if you need to roll back. See [Production Deployment](/deploy/production/) for the supported versions.
 
+## PostgreSQL 16 to 18
+
+Adapted from a runbook contributed by @TheMoroney in [#10977](https://github.com/LanternOps/breeze/issues/10977), tested on a long-lived production install.
+
+Breeze is tested on PostgreSQL 16, 17 and 18 (see [Supported PostgreSQL versions](/deploy/production/#supported-postgresql-versions)); the default stays 16. This procedure moves the bundled `postgres` service from 16 to 18 by dump and restore into a **second Docker volume**. The 16 volume is never written to, so it stays your rollback until you delete it. The same steps work for 16 to 17 with a `pg17` image.
+
+**Why dump and restore, not `pg_upgrade`:**
+
+- The 18 image is built on a newer Debian release with a newer glibc, so text collations can sort differently. A restore rebuilds every index under the new collation.
+- Postgres 18 `initdb` turns on data checksums by default. A 16 cluster usually has none, and `pg_upgrade` requires both to match.
+- The old volume stays untouched as the rollback.
+
+**Before you start:**
+
+- Your `docker-compose.yml` must come from a release that has `PGDATA` and `POSTGRES_DATA_VOLUME` on the `postgres` service: `grep -n 'POSTGRES_DATA_VOLUME' docker-compose.yml` prints a line. If it prints nothing, merge the [Compose file changes](#unreleased--postgresql-data-directory-pinned-and-a-second-data-volume) first.
+- Free disk of at least 1.5 times the database size (the dump plus the new cluster).
+- Copies of `.env` and your Compose files kept off the host.
+- Run the long steps (dump, restore) under `nohup`, `tmux` or `screen`, so a dropped SSH session does not kill them.
+- Afterwards, the host `pg_dump` and `pg_restore` that `scripts/backup.sh` and `scripts/restore.sh` use must be version 18 or newer. A `pg_dump` older than the server refuses to dump it.
+- If you installed the boot service (`breeze-rmm.service` by default), do not reboot the host during the procedure. The service starts every container on boot.
+- This procedure is for the bundled `postgres` service on Docker volumes. For the [local `./data` storage mode](#local-data-storage-mode) or a managed database, see below.
+
+Run every command from the directory that holds `docker-compose.yml` and `.env`. `dc` stands for the Compose command your installation uses. `guided-setup.sh` and its boot service use exactly this form:
+
+```bash
+dc() { docker compose -f docker-compose.yml --env-file .env "$@"; }
+# Add every other -f file you normally deploy with, in the same order.
+env | grep -E '^POSTGRES_(IMAGE_REF|DATA_VOLUME)=' && echo 'STOP: unset these first'
+```
+
+The last line must print nothing. Compose prefers a variable exported in your shell over `.env`, so an exported `POSTGRES_IMAGE_REF` or `POSTGRES_DATA_VOLUME` would make your session start a different database than the next reboot.
+
+<Steps>
+
+1. **Record where you are**
+
+   ```bash
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW server_version" -c "SHOW data_directory"'
+   grep '^POSTGRES_DATA_VOLUME=' .env || echo 'unset: postgres_data is active'
+   docker volume ls --format '{{.Name}}' | grep -E '_postgres_data(_alt)?$'
+   ```
+
+   Expect `16.x` and `/var/lib/postgresql/data`. With `POSTGRES_DATA_VOLUME` unset or `postgres_data`, the active volume is `<project>_postgres_data` and you will restore into `<project>_postgres_data_alt`. If it is already `postgres_data_alt`, swap the two names everywhere below. `<project>` is `COMPOSE_PROJECT_NAME` from `.env` (`breeze` by default).
+
+   The target volume must not exist yet, or must be empty. If it exists, list it with `docker run --rm -v <project>_postgres_data_alt:/v:ro alpine ls -A /v` and stop if it holds anything.
+
+2. **Stop everything that writes to the database**
+
+   ```bash
+   dc stop api
+   dc --profile worker-split stop worker   # only if you run the separate worker
+   ```
+
+   Leave `postgres` and `redis` running. Agents keep running on the devices and reconnect when the API is back.
+
+3. **Dump the database and count its rows**
+
+   ```bash
+   mkdir -m 700 pg-upgrade
+   dc exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > pg-upgrade/breeze.dump
+   echo "pg_dump exit: $?"
+   dc exec -T postgres pg_restore --list < pg-upgrade/breeze.dump | tail -n 3
+   ```
+
+   `pg_dump exit` must be `0`, and `pg_restore --list` must print table-of-contents lines, not an error. Then record the row count of every table, while nothing is writing:
+
+   ```bash
+   cat > pg-upgrade/count.sql <<'SQL'
+   SELECT format('%I.%I', table_schema, table_name) || ' ' ||
+          (xpath('/row/c/text()', query_to_xml(
+             format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name),
+             false, true, '')))[1]::text
+   FROM information_schema.tables
+   WHERE table_type = 'BASE TABLE'
+     AND table_schema NOT IN ('pg_catalog', 'information_schema')
+   ORDER BY table_schema COLLATE "C", table_name COLLATE "C";
+   SQL
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < pg-upgrade/count.sql > pg-upgrade/counts-16.txt \
+     && test -s pg-upgrade/counts-16.txt && wc -l pg-upgrade/counts-16.txt
+   ```
+
+   It must print a line count (one line per table). No output means the count failed: stop and fix it before going on.
+
+4. **Save the cluster roles**
+
+   Roles are not part of a single-database dump. Breeze needs `breeze_app`, `breeze_audit_admin` and `breeze_search` (see [Restoring into a new Postgres cluster](/security/backup/#restoring-into-a-new-postgres-cluster)).
+
+   ```bash
+   (umask 077; dc exec -T postgres sh -c 'pg_dumpall -U "$POSTGRES_USER" --globals-only' > pg-upgrade/globals.sql)
+   ```
+
+   <Aside type="caution">
+     `globals.sql` holds every role's password hash. Keep it private and delete it as soon as step 7 is done.
+   </Aside>
+
+5. **Point `postgres` at the new volume and the 18 image**
+
+   ```bash
+   dc stop postgres
+   ```
+
+   Edit `.env` and change both lines **together**:
+
+   ```bash
+   POSTGRES_IMAGE_REF=pgvector/pgvector:pg18@sha256:<reviewed digest>
+   POSTGRES_DATA_VOLUME=postgres_data_alt
+   ```
+
+   Keep the old `POSTGRES_IMAGE_REF` value somewhere: it is half of the rollback. Use a digest you have reviewed (`docker buildx imagetools inspect pgvector/pgvector:pg18` lists it). Any other volume name in `POSTGRES_DATA_VOLUME` makes `docker compose` fail, which is deliberate. Never set it to a path: Compose would bind-mount that host directory instead.
+
+6. **Start Postgres 18 and confirm it is on the new volume**
+
+   ```bash
+   dc up -d postgres
+   until dc ps postgres | grep -q '(healthy)'; do sleep 2; done
+   docker inspect "$(dc ps -q postgres)" --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{println}}{{end}}'
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW server_version" -c "SHOW data_directory"'
+   ```
+
+   Expect `<project>_postgres_data_alt -> /var/lib/postgresql/data`, `18.x` and `/var/lib/postgresql/data`. The 18 image also attaches an anonymous volume at `/var/lib/postgresql`. It holds no data.
+
+7. **Load the roles**
+
+   ```bash
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -q' < pg-upgrade/globals.sql \
+     && rm -f pg-upgrade/globals.sql
+   ```
+
+   One error is expected: `role "<POSTGRES_USER>" already exists`, because the new cluster created it on first start. The `ALTER ROLE` lines after it still apply. `psql` still exits 0 for it, so `globals.sql` is deleted only once the roles loaded. If the file is still there, `psql` could not connect: wait for Postgres and run the step again.
+
+8. **Restore the dump**
+
+   ```bash
+   dc exec -T postgres sh -c 'pg_restore -v -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < pg-upgrade/breeze.dump 2> pg-upgrade/restore.log
+   echo "pg_restore exit: $?"
+   grep -E '^pg_restore: (error|warning)' pg-upgrade/restore.log
+   ```
+
+   `pg_restore exit` must be `0`, and the `grep` must print nothing. An empty error file is not proof on its own: the exit status is. Any `role "..." does not exist` error means step 7 did not load the roles. Do not start the API. Recreate the empty volume and repeat from step 6.
+
+9. **Refresh planner statistics**
+
+   ```bash
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c ANALYZE'
+   ```
+
+10. **Verify before anything writes**
+
+    ```bash
+    dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At' <<'SQL'
+    SHOW server_version;
+    SELECT extname || ' ' || extversion FROM pg_extension ORDER BY 1;
+    SELECT 'invalid index: ' || indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+    SQL
+    dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1' < pg-upgrade/count.sql > pg-upgrade/counts-18.txt \
+      && test -s pg-upgrade/counts-18.txt \
+      && diff pg-upgrade/counts-16.txt pg-upgrade/counts-18.txt && echo 'row counts identical'
+    ```
+
+    Expect `18.x`, `pg_trgm` (and `vector` if Workspace is on), no `invalid index` lines, and `row counts identical`. The counts were taken with every writer stopped, so **any** difference is a failed restore, not activity. Stop and roll back.
+
+11. **Start Breeze**
+
+    ```bash
+    dc up -d redis
+    dc up -d api
+    dc logs -f api     # Ctrl-C once it reports healthy
+    ```
+
+    Watch for the `[auto-migrate]` lines (an up-to-date database applies nothing) and for any `[cluster-roles]` error, which means the roles are missing. Then start the rest and check health:
+
+    ```bash
+    dc up -d
+    curl -s https://breeze.yourdomain.com/health
+    ```
+
+    Start the worker too if you run it (`dc --profile worker-split up -d worker`). Sign in and confirm agents check in.
+
+</Steps>
+
+**Rollback.** Valid until the new database has taken writes you need to keep. Stop the stack (`dc stop`), put the old `POSTGRES_IMAGE_REF` back and remove the `POSTGRES_DATA_VOLUME` line (or set it back to the old slot), then `dc up -d` and check the mount as in step 6. After the 18 database has taken writes that matter, going back means a dump from 18 restored into a fresh 16 cluster, which a newer `pg_dump`'s output does not always allow without edits. Decide your go/no-go point before step 11.
+
+**Cleanup.** Once a backup of the 18 database exists, taken with a `pg_dump` of version 18 or newer:
+
+```bash
+docker volume rm <project>_postgres_data   # the old 16 slot; never the active one
+rm -rf pg-upgrade
+```
+
+Keep `POSTGRES_DATA_VOLUME=postgres_data_alt` in `.env` from now on, next to `POSTGRES_IMAGE_REF`. Losing that line starts Postgres on the old slot, which is empty after cleanup. The next major-version move restores back into `postgres_data` and removes the line. `guided-setup.sh` keeps it when it rewrites `.env`, and both slots count as existing data when it checks for a previous install.
+
+Never run `docker compose down -v` or `docker volume prune` while you rely on the old volume as a rollback: both delete it. The same goes for `guided-setup.sh` run with a new `.env`: if you choose **Delete existing Postgres storage** there, it deletes both `postgres_data` and `postgres_data_alt`.
+
+### Already running 18 with the upstream volume layout
+
+If you moved to 18 by mounting the volume at `/var/lib/postgresql` (the layout the 18 image's error message suggests), `SHOW data_directory` reports `/var/lib/postgresql/18/docker`. Keep that mount in your Compose file and set `PGDATA: /var/lib/postgresql/18/docker` on the `postgres` service. Do not take the release's `PGDATA: /var/lib/postgresql/data` line with your mount. That directory holds no database, so the image would initialize a new, **empty** one and the API would migrate it.
+
+The release's `postgres` service wraps the image entrypoint to stop that. When `PGDATA` holds no database but one exists in its parent directory or one or two levels below it (`/var/lib/postgresql/18/docker`, or `17/data` from an upgrade helper), or the same levels inside `PGDATA`, Postgres refuses to start, changes nothing, and logs the `PGDATA` to set:
+
+```text
+postgres: refusing to start. PGDATA=/var/lib/postgresql/data holds no database, but a PostgreSQL 18 database exists at /var/lib/postgresql/18/docker.
+postgres: starting now would create a new, EMPTY database and Breeze would come up as a fresh install. Nothing has been changed.
+postgres: to start on the existing data, set PGDATA: /var/lib/postgresql/18/docker on the postgres service in docker-compose.yml (keep your volume mount), or move that data into /var/lib/postgresql/data.
+postgres: see https://docs.breezermm.com/deploy/upgrades/#already-running-18-with-the-upstream-volume-layout
+```
+
+If it finds more than one database (for example `17/docker` and `18/docker` after an in-place `pg_upgrade`), it names the one that matches the image's major version and lists the others.
+
+Set that `PGDATA` and run `docker compose up -d postgres` again. The check is in the release's `postgres` service block, including its `entrypoint:` and `command:` lines. If you merge only the `PGDATA` line into your own file, or your override sets `entrypoint:` on `postgres`, you get no check: run `SHOW data_directory` before you take the line.
+
+### Local `./data` storage mode
+
+If `guided-setup.sh` set up local storage, the database is a bind mount of `./data/postgres` and `POSTGRES_DATA_VOLUME` has no effect. `guided-setup.sh` does not regenerate that Compose file, so if its `postgres` service has no `PGDATA` yet, add `PGDATA: /var/lib/postgresql/data` to its `environment:` by hand first (one `PGDATA` key only) (without it an 18 image refuses to start). Follow steps 1–4 and 7–11 above. For steps 5 and 6, keep the old directory as the rollback:
+
+```bash
+dc stop postgres
+mv data/postgres data/postgres-16
+mkdir data/postgres
+# Edit .env: POSTGRES_IMAGE_REF=pgvector/pgvector:pg18@sha256:<reviewed digest>
+dc up -d postgres
+dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW server_version"'   # 18.x
+```
+
+Rollback is the reverse: stop, `mv data/postgres data/postgres-18-failed`, `mv data/postgres-16 data/postgres`, put the old image back. Cleanup deletes `data/postgres-16` once an 18 backup exists.
+
+### Managed Postgres
+
+A managed database (`DATABASE_URL` pointing outside the stack) is upgraded with the provider's own major-version tooling. Take a provider backup first, confirm the target major offers `pg_trgm` (and `vector` if Workspace is on), run `ANALYZE` if the provider does not keep statistics, and make sure whatever runs `pg_dump` for your backups is version 18 or newer.
+
 ## Agent reconnect settings
 
 From agent 0.125.0, agents pace their own traffic after an API restart or overload:
@@ -177,6 +406,23 @@ docker compose config --quiet
 ```
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
+
+### Unreleased — PostgreSQL data directory pinned and a second data volume
+
+The `postgres` service in `docker-compose.yml` gains `PGDATA` and a selectable data volume. PostgreSQL 17 and 18 are now tested and supported; the default image stays 16.
+
+| Change | Required action |
+|---|---|
+| `postgres` sets `PGDATA: /var/lib/postgresql/data`, the mount target. Postgres 18 images moved their default data directory outside that mount and refuse to start without it. | On 16 or 17 with the shipped mount: nothing. It is the default path there, so the next `docker compose up -d` recreates the container once (a few seconds of database restart) on the same data. **Already running 18 with your volume mounted at `/var/lib/postgresql`:** run `SHOW data_directory` first. If it reports `/var/lib/postgresql/18/docker`, keep your mount and set `PGDATA` to that path instead. With the whole release service block, Postgres refuses to start and logs that path. With only this line merged into your file, it starts an empty database. See [Already running 18 with the upstream volume layout](#already-running-18-with-the-upstream-volume-layout). |
+| `postgres` sets `entrypoint:` (a short shell check, then the image's `docker-entrypoint.sh`) and `command: ['postgres']`. The check refuses to start when `PGDATA` holds no database but one exists beside or inside it, instead of initializing an empty one. | Nothing on a fresh install or one whose `PGDATA` already holds the database: it hands straight to the image. A `command:` override, such as `postgres -c ...`, still works. If you set your own `entrypoint:` on `postgres`, yours replaces the check. |
+| The `postgres` mount becomes `${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data`, and a second volume, `postgres_data_alt`, is declared. | Nothing. Unset keeps `postgres_data`. Only the [PostgreSQL 16 to 18](#postgresql-16-to-18) procedure sets `POSTGRES_DATA_VOLUME`, and any other volume name makes `docker compose` fail. Never set it to a path, which Compose would bind-mount. |
+| `guided-setup.sh` local-storage mode rewrites either mount form to `./data/postgres`, and treats both volumes as existing data. | Nothing. Fetch the current `guided-setup.sh` as usual. |
+
+### Unreleased — browser remote desktop rollout flag mapped
+
+| Change | Required action |
+|---|---|
+| New `api` mapping `BREEZE_BROWSER_DESKTOP_ENABLED` (`${VAR:-false}`) in both Compose files. | Nothing. Leave it unset. |
 
 ### Unreleased — report-only observation retention settings mapped
 

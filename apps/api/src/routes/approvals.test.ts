@@ -311,7 +311,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { and, eq } from 'drizzle-orm';
-import { approvalRoutes } from './approvals';
+import { approvalRoutes, countAuthorizedPendingApprovals } from './approvals';
 import { approvalRequests } from '../db/schema/approvals';
 import { actionIntents } from '../db/schema/actionIntents';
 import { db } from '../db';
@@ -807,6 +807,20 @@ describe('GET /approvals/pending/count', () => {
     const res = await buildApp().request('/approvals/pending/count');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ count: 2 });
+  });
+
+  // #11677: Wisp's standing state reads this function directly; it must keep
+  // the same live re-authorisation as the route (a demoted approver's row is not counted).
+  it('countAuthorizedPendingApprovals counts only the live-authorized rows of that user', async () => {
+    const intent = { id: 'intent-c', orgId: 'org-9', status: 'pending_approval', approvalScope: 'four_eyes', requestedByUserId: 'requester-9' };
+    mockPendingJoinResolves([
+      { approval: buildPendingApproval({ id: 'c1' }), intent: null },
+      { approval: buildPendingApproval({ id: 'c2', intentId: 'intent-c' }), intent },
+    ]);
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+    expect(await countAuthorizedPendingApprovals(TEST_USER.id, null)).toBe(1);
+    const where = (vi.mocked(db.select).mock.results.at(-1)!.value as { where: ReturnType<typeof vi.fn> }).where;
+    expect(JSON.stringify(where.mock.calls[0])).toContain(TEST_USER.id);
   });
 });
 

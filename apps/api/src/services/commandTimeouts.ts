@@ -1,6 +1,10 @@
 import { RESTORE_POINT_PAYLOAD_KEY, SECURITY_SCAN_TIMEOUT_MINUTES_RANGE } from '@breeze/shared';
 import { CommandTypes } from './commandTypes';
 import { WORKSTATION_TIMEOUT_MAX_MS } from './callerVerification/workstationProtocol';
+import {
+  BACKUP_VERIFY_BASE_BUDGET_MS,
+  backupVerifyBudgetMsFromPayloadValue,
+} from './backupVerifyBudget';
 
 // ── Timeout tiers (milliseconds) ──────────────────────────────────
 const FIVE_MINUTES = 5 * 60 * 1000;
@@ -132,6 +136,9 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   // the run, which downloads a tool and flashes firmware); listed explicitly so
   // the budget is a decision rather than the unknown-type fallback.
   CommandTypes.OEM_UPDATE_RELEASE,
+  // Read-only vendor observation: a Windows Update driver search (minutes) and at
+  // most two bounded HTTPS reads. Listed so the budget is a decision.
+  CommandTypes.OEM_OBSERVE,
 ]);
 
 /**
@@ -245,8 +252,8 @@ const LONG_TIMEOUT_TYPES = new Set<string>([
   // download + 30 min install ceilings.
   CommandTypes.SOFTWARE_INSTALL,
   CommandTypes.INSTALL_PATCHES,
-  CommandTypes.BACKUP_VERIFY,
-  CommandTypes.BACKUP_TEST_RESTORE,
+  // BACKUP_VERIFY / BACKUP_TEST_RESTORE are not here: their budget scales with
+  // the snapshot (BACKUP_VERIFY_COMMAND_TYPES below).
   CommandTypes.BACKUP_CLEANUP,
   CommandTypes.MSSQL_BACKUP,
   CommandTypes.HYPERV_BACKUP,
@@ -255,6 +262,21 @@ const LONG_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.ENCRYPT_FILE,
   CommandTypes.SECURE_DELETE_FILE,
   CommandTypes.QUARANTINE_FILE,
+]);
+
+/**
+ * Integrity verification and test restore. Their execution budget is computed
+ * from the snapshot's file count and size when the verification is created
+ * and carried as `payload.timeBudgetSeconds` (services/backupVerifyBudget.ts),
+ * clamped to [2h, 12h]; a payload without it (a command queued before the
+ * field existed, or by another caller) gets the 2-hour base. The brokered read
+ * session's deadline (backupStorageSessions.ts) and the reaper's `sent` clock
+ * both read this, so they follow the scaled budget. The UNDELIVERED limit does
+ * not: see getCommandUndeliveredTimeoutMs.
+ */
+const BACKUP_VERIFY_COMMAND_TYPES = new Set<string>([
+  CommandTypes.BACKUP_VERIFY,
+  CommandTypes.BACKUP_TEST_RESTORE,
 ]);
 
 /**
@@ -318,6 +340,9 @@ export function getCommandTimeoutMs(
   )
     return NETWORK_DIAGNOSTIC_TIMEOUT_MS;
   if (commandType === CommandTypes.SECURITY_SCAN) return securityScanTimeoutMs(payload);
+  if (BACKUP_VERIFY_COMMAND_TYPES.has(commandType)) {
+    return backupVerifyBudgetMsFromPayloadValue(payload?.timeBudgetSeconds);
+  }
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return WHOLE_MACHINE_RESTORE_TIMEOUT_MS;
@@ -334,6 +359,26 @@ export function getCommandTimeoutMs(
     console.warn(`[commandTimeouts] Unknown command type "${commandType}" using default ${DEFAULT_TIMEOUT_MS / 60000}min timeout`);
   }
   return DEFAULT_TIMEOUT_MS;
+}
+
+/**
+ * How long a command with NO `deliver_by` may wait undelivered (`pending`)
+ * before the stale reaper expires it — its legacy clock, `created_at` + this.
+ *
+ * For almost every type that is the execution timeout, as it always was. The
+ * exception is a type whose execution budget scales with its payload while its
+ * delivery window must not: `backup_verify` / `backup_test_restore` can carry
+ * up to 12 hours of execution budget, but they are `live` commands
+ * (commandOfflinePolicy.ts) that are delivered within one send or poll, or
+ * after a short file-index hydration deferral; a row still undelivered after
+ * the 2-hour base is not going to be.
+ */
+export function getCommandUndeliveredTimeoutMs(
+  commandType: string,
+  payload?: Record<string, unknown> | null,
+): number {
+  if (BACKUP_VERIFY_COMMAND_TYPES.has(commandType)) return BACKUP_VERIFY_BASE_BUDGET_MS;
+  return getCommandTimeoutMs(commandType, payload);
 }
 
 /**

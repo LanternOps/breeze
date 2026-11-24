@@ -146,10 +146,13 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
+  BREEZE_BROWSER_DESKTOP_ENABLED: 'browser remote desktop rollout flag (#9557, removed after the lab leg)',
   BREEZE_OEM_UPDATES_DISABLED_LANES: 'vendor update per-lane kill switch (#11065)',
   BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
   BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: 'vendor update rollout allowlist (#11065)',
+  BREEZE_VENDOR_CANARY_DISABLED: 'vendor canary feature:vendor kill switch (#11065 observe-first)',
+  BREEZE_VENDOR_CANARY_PARTNER_IDS: 'vendor canary partner list (#11065 observe-first, empty = off)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',
@@ -278,6 +281,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // HEARTBEAT_*
   HEARTBEAT_RETAIN_STATE_ENABLED: 'heartbeat retain-state rollout kill switch',
   AGENT_ECH_ENABLED: 'agent ECH (encrypted client hello) kill switch',
+  TPM_ATTESTATION_ENABLED: 'agent TPM EK attestation rollout switch',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',
@@ -312,6 +316,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   IP_HISTORY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // IS_*
   IS_HOSTED: 'shown as report.deployMode',
+  // LEARNED_*
+  LEARNED_NETWORKS_INGEST_ENABLED: 'learned networks heartbeat ingest kill switch (default on)',
   // LLM_*
   LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   LLM_EGRESS_EVENTS_RETENTION_DAYS: 'data retention window',

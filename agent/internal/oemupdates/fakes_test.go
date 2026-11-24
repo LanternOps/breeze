@@ -178,7 +178,7 @@ type fakeLane struct {
 	filter func(cats, blocked []string) (FilterPlan, error)
 }
 
-var fakePrereqAllow = LaneAllowlist{Publishers: []string{"Microsoft Corporation"}, Hosts: []string{"builds.dotnet.microsoft.com"}}
+var fakePrereqAllow = LaneAllowlist{Publishers: []string{".NET"}, Hosts: []string{"builds.dotnet.microsoft.com"}}
 
 func (l *fakeLane) ToolVersion(path string) (string, error) {
 	l.mu.Lock()
@@ -199,7 +199,7 @@ type fakePrereq struct {
 func newFakeLane() *fakeLane {
 	l := &fakeLane{
 		id:      LaneDell,
-		allow:   LaneAllowlist{Publishers: []string{"Dell Inc"}, Hosts: []string{"dl.dell.com"}},
+		allow:   LaneAllowlist{Publishers: []string{"Dell Technologies Inc."}, Hosts: []string{"dl.dell.com"}},
 		rng:     VersionRange{Min: "5.7.1", MaxExclusive: "6.0.0"},
 		prereqs: map[string]*fakePrereq{},
 	}

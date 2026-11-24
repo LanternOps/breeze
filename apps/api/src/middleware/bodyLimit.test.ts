@@ -399,6 +399,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 5 * MB,
     note: 'carved out — 5MB agent inventory ingest (#3516); warranty-info kept at its declared 1MB.',
   },
+  'agents/attestation.ts': {
+    paths: ['/api/v1/agents/agent-1/attestation/challenge', '/api/v1/agents/agent-1/attestation/complete'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 16 KiB TPM attestation bodies (#8318 T1).',
+  },
   'agents/connections.ts': {
     paths: ['/api/v1/agents/agent-1/connections'],
     globalMaxSize: 5 * MB,

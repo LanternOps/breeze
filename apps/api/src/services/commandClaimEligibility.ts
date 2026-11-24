@@ -4,6 +4,8 @@ import { deviceCommands } from '../db/schema';
 import { isNetworkIsolationCommand } from './networkIsolation/bypass';
 import { isolationDeliveryRefusal } from './networkIsolation/deliveryBinding';
 import { isolationUpgradeFloorRefusal } from './networkIsolation/upgradeFloor';
+import { agentOsFloorRefusal, commandOsFloorComponent } from './agentOsFloorCommands';
+import type { OsFloorHoldReason } from './agentOsFloor';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -40,6 +42,12 @@ export type ClaimCancelReason =
   | 'scope_changed'
   | 'isolation_episode_mismatch'
   | 'network-isolation-version-floor'
+  /**
+   * #12169: the agent build the row would install is above the device's
+   * minimum macOS (or the device's macOS version is unknown while the build
+   * has a floor). Terminal: the device stays on its installed agent.
+   */
+  | OsFloorHoldReason
   /** The row carries its own absolute expiry and it has passed. */
   | 'expired'
   /** A type that REQUIRES revalidation had none registered — fail closed. */
@@ -318,6 +326,9 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   // services/oemUpdates/revalidation.ts: a kill switch, a closed gate or the flag going
   // off cancels the row while it is still unclaimed. A running one is never touched.
   'oem_update_run',
+  // Read-only vendor observation: rechecks the flag, the canary stage and the kill
+  // switches at claim (services/oemUpdates/observe.ts).
+  'oem_observe',
 ]);
 
 /**
@@ -453,6 +464,11 @@ function needsIsolationRevalidation(row: CommandRevalidationRow): boolean {
   return updatesAgentBinary(row) || isNetworkIsolationCommand(row.type, row.payload);
 }
 
+/** Built-in revalidations that read the database, so they run in a savepoint. */
+function needsBuiltInRevalidation(row: CommandRevalidationRow): boolean {
+  return needsIsolationRevalidation(row) || commandOsFloorComponent(row.type) !== null;
+}
+
 /**
  * Runs the registered revalidation for one row, fail-closed for every type in
  * {@link REVALIDATION_REQUIRED_TYPES}. Shared by both delivery legs. `prepared`
@@ -474,6 +490,12 @@ export async function revalidateCommandForDelivery(
   if (updatesAgentBinary(row)) {
     // Judged by the binary the payload selects, not its version label (#10919).
     const refusal = await isolationUpgradeFloorRefusal(reader, row);
+    if (refusal) return refusal;
+  }
+  // #12169: a row queued before its release was promoted (or before the Mac's
+  // OS was known) must not install a build the device's macOS is below.
+  if (commandOsFloorComponent(row.type)) {
+    const refusal = await agentOsFloorRefusal(reader, row);
     if (refusal) return refusal;
   }
   const revalidate = commandRevalidations[row.type];
@@ -748,7 +770,7 @@ export async function partitionClaimable(
     };
     let revalidation: CommandRevalidationResult;
     try {
-      revalidation = commandRevalidations[row.type] || needsIsolationRevalidation(revalidationFacts)
+      revalidation = commandRevalidations[row.type] || needsBuiltInRevalidation(revalidationFacts)
         ? await tx.transaction((sp) => revalidateCommandForDelivery(sp, revalidationFacts, opts.prepared))
         : await revalidateCommandForDelivery(tx, revalidationFacts, opts.prepared);
     } catch (e) {

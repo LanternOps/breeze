@@ -943,7 +943,8 @@ aiRoutes.post(
     }
 
     // #10426: Wisp's standing state (loop cadence, first look, concerns,
-    // watches, check-ins, spend, alerts) rides on THIS turn ahead of the
+    // watches, check-ins, spend, alerts; since #11677 open tickets, offline
+    // devices and approvals waiting) rides on THIS turn ahead of the
     // check-ins, so the system prompt stays cache-stable
     // (services/wisp/standingStateTurn.ts; facts cached up to 60 s). Null
     // when nothing changed since the last block this session was sent;

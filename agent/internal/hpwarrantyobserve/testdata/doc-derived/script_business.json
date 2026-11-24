@@ -1,0 +1,54 @@
+{
+  "rootHp": { "s": "present", "n": ["InstrumentedBIOS", "InstrumentedServices"] },
+  "isv": { "s": "present", "n": "v1" },
+  "v1": { "s": "present", "n": [] },
+  "classes": { "s": "present", "total": 2, "n": ["HP_Warranty", "HP_Entitlements"] },
+  "cls": {
+    "HP_Warranty": {
+      "s": "present",
+      "props": [
+        { "n": "SerialNumber", "t": "String" },
+        { "n": "ProductNumber", "t": "String" },
+        { "n": "WarrantyStartDate", "t": "String" },
+        { "n": "WarrantyEndDate", "t": "String" },
+        { "n": "Status", "t": "String" },
+        { "n": "LastUpdated", "t": "DateTime" }
+      ],
+      "rows": 1,
+      "rowsErr": null,
+      "values": {
+        "SerialNumber": { "k": "string", "v": "5CD1234XYZ" },
+        "ProductNumber": { "k": "string", "v": "3C6A1EA#ABA" },
+        "WarrantyStartDate": { "k": "string", "v": "2024-01-15" },
+        "WarrantyEndDate": { "k": "string", "v": "2027-01-14" },
+        "Status": { "k": "string", "v": "Active" },
+        "LastUpdated": { "k": "datetime", "v": "2026-11-02T08:15:00.0000000Z" }
+      }
+    },
+    "HP_Entitlements": {
+      "s": "present",
+      "props": [
+        { "n": "ServiceLevelDescription", "t": "String" },
+        { "n": "EntitlementType", "t": "String" },
+        { "n": "StartDate", "t": "String" },
+        { "n": "EndDate", "t": "String" }
+      ],
+      "rows": 2,
+      "rowsErr": null,
+      "values": [
+        {
+          "ServiceLevelDescription": { "k": "string", "v": "HP 3y NBD Onsite" },
+          "EntitlementType": { "k": "string", "v": "Base" },
+          "StartDate": { "k": "string", "v": "/Date(1705276800000)/" },
+          "EndDate": { "k": "string", "v": "/Date(1799884800000)/" }
+        },
+        {
+          "ServiceLevelDescription": { "k": "null" },
+          "EntitlementType": { "k": "string", "v": "Care Pack" },
+          "StartDate": { "k": "string", "v": "/Date(1705276800000)/" },
+          "EndDate": { "k": "string", "v": "/Date(1799884800000)/" }
+        }
+      ]
+    }
+  }
+}

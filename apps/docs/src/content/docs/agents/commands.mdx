@@ -777,7 +777,7 @@ Run a hardware maker's own update tool, or hand its schedule back. Windows only,
 | `trigger` | string | `scheduled` or `on_demand` |
 | `occurrenceKey` | string or null | The monthly occurrence a scheduled run counts toward |
 | `categories` | string[] | 1-4 unique values from `bios`, `firmware`, `driver`, `application` |
-| `blockedUpdateIds` | string[] | Up to 200 update IDs the tool must skip |
+| `blockedUpdateIds` | string[] | Up to 200 update IDs the tool must skip. Not supported for `dell`: the agent refuses a Dell run with any blocked ID (`blocked_ids_unsupported`), and Breeze sends Dell runs with an empty list |
 | `rebootControlled` | bool | Whether Breeze will schedule the restart. BIOS and firmware are skipped when `false` |
 | `notAfter` | string (RFC 3339) | Latest time the run may start |
 | `escrowedProtectorIds` | string[] | BitLocker protector IDs whose recovery keys Breeze holds (up to 16) |
@@ -1147,10 +1147,13 @@ The API runs a **stale command reaper** every 2 minutes that cleans up commands 
 | **Short** | 5 min | Process management, service management, event logs, scheduled tasks, registry, file operations, screenshots, computer actions, security status collection |
 | **Medium** | 30 min | Security scans, patch scans, software uninstall, filesystem analysis, safe mode reboot, self-uninstall, evidence collection, containment actions, reliability metrics, CIS remediation, `backup_restore` |
 | **Restore** | 60 min | VM restore/instant-boot, BMR recovery, MSSQL restore, Hyper-V restore |
-| **Long** | 2 hours | Patch installation, backup verify/test-restore/cleanup, CIS benchmarks, sensitive data scans, file encryption/secure delete/quarantine |
+| **Long** | 2 hours | Patch installation, backup cleanup, CIS benchmarks, sensitive data scans, file encryption/secure delete/quarantine |
+| **Scaled by snapshot size** | 2–12 hours | Backup verify (`backup_verify`) and test restore (`backup_test_restore`) |
 | **Excluded** | Never reaped | Terminal sessions (`terminal_start`, `terminal_data`, `terminal_resize`, `terminal_stop`) |
 
 Script commands use the script's own `timeoutSeconds` value (default 300s) plus a 5-minute grace buffer, so the server timeout is always slightly longer than the agent-side timeout.
+
+Backup verify and test restore get a budget computed from the snapshot when the verification is created: one minute per 1,500 files plus the snapshot size read at 4 MiB/s, rounded up to a whole 5 minutes and clamped to 2–12 hours (2 hours when the snapshot's size is unknown). The budget is sent to the agent with the command, and the agent waits for that long and stops the run 10 minutes short of it so it can report partial counts. The budget runs from when the agent receives the command, so time the command spends waiting to be delivered does not count against it. A verify or test restore that is never delivered still expires 2 hours after it was queued.
 
 When a command times out, it is marked `failed` with `timedOutBy: 'server'` in the error message.
 

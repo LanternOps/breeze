@@ -20,6 +20,64 @@ describe('navigateTo same-origin guard', () => {
     vi.restoreAllMocks();
   });
 
+  // #12476: the router's fragment-only shortcut pushStates with no hashchange,
+  // so hashchange subscribers (useHashState) never see the new fragment.
+  describe('same path, different fragment', () => {
+    afterEach(() => {
+      window.history.pushState({}, '', '/');
+    });
+
+    it('assigns location.hash (firing hashchange) instead of calling the router', async () => {
+      window.history.pushState({}, '', '/approvals#proposal-AAAA');
+      const onHashChange = vi.fn();
+      window.addEventListener('hashchange', onHashChange);
+      try {
+        const mode = await navigateTo('/approvals#proposal-BBBB');
+        expect(navigateMock).not.toHaveBeenCalled();
+        expect(window.location.hash).toBe('#proposal-BBBB');
+        await new Promise((r) => setTimeout(r, 0));
+        expect(onHashChange).toHaveBeenCalledTimes(1);
+        expect(mode).toBe('soft');
+      } finally {
+        window.removeEventListener('hashchange', onHashChange);
+      }
+    });
+
+    it('honours replace: rewrites the entry (no new history entry) and still fires hashchange', async () => {
+      window.history.pushState({}, '', '/approvals#proposal-AAAA');
+      const lengthBefore = window.history.length;
+      const onHashChange = vi.fn();
+      window.addEventListener('hashchange', onHashChange);
+      try {
+        await navigateTo('/approvals#proposal-BBBB', { replace: true });
+        expect(navigateMock).not.toHaveBeenCalled();
+        expect(window.location.hash).toBe('#proposal-BBBB');
+        expect(window.history.length).toBe(lengthBefore);
+        expect(onHashChange).toHaveBeenCalledTimes(1);
+      } finally {
+        window.removeEventListener('hashchange', onHashChange);
+      }
+    });
+
+    it('still routes when the path differs', async () => {
+      window.history.pushState({}, '', '/approvals#proposal-AAAA');
+      await navigateTo('/devices#proposal-BBBB');
+      expect(navigateMock).toHaveBeenCalledWith('/devices#proposal-BBBB', { history: 'auto' });
+    });
+
+    it('still routes when the query differs', async () => {
+      window.history.pushState({}, '', '/approvals?x=1#a');
+      await navigateTo('/approvals?x=2#b');
+      expect(navigateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves an identical fragment to the router', async () => {
+      window.history.pushState({}, '', '/approvals#a');
+      await navigateTo('/approvals#a');
+      expect(navigateMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('safe internal paths pass through unchanged', () => {
     const safePaths = [
       '/',

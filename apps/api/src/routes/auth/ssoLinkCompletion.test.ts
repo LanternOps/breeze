@@ -62,6 +62,8 @@ vi.mock('../../services/userSession', () => ({
     transitionId: '00000000-0000-4000-8000-0000000000b1',
     generation: 7,
   }),
+  // The org's owning partner (#12246); matches ORG_PARTNER_ID below.
+  resolveOrganizationSessionPartnerId: vi.fn().mockResolvedValue('00000000-0000-4000-8000-0000000000ee'),
   bindIssuedUserSession: vi.fn(),
 }));
 
@@ -123,7 +125,7 @@ import { db } from '../../db';
 import { users, ssoProviders, organizationUsers, partnerUsers, userSsoIdentities } from '../../db/schema';
 import { consumeSsoPendingLink, restoreConsumedSsoPendingLink } from '../../services/ssoPendingLink';
 import { getUserEpochs } from '../../services';
-import { issueUserSession } from '../../services/userSession';
+import { issueUserSession, resolveOrganizationSessionPartnerId } from '../../services/userSession';
 import { beginAuthIssuanceForStoredTransition, cancelAuthIssuance, finishAuthIssuance } from '../../services/authBrowserTransition';
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { isDomainVerifiedForOrg, isSsoProvisioningBlocked } from '../../services/ssoDomainVerification';
@@ -133,6 +135,7 @@ import { auditLogin } from './helpers';
 const USER_ID = '00000000-0000-4000-8000-0000000000aa';
 const PROVIDER_ID = '00000000-0000-4000-8000-0000000000bb';
 const ORG_ID = '00000000-0000-4000-8000-0000000000cc';
+const ORG_PARTNER_ID = '00000000-0000-4000-8000-0000000000ee';
 
 const RECORD = {
   userId: USER_ID,
@@ -244,8 +247,10 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expiresInSeconds: 900,
       redirectPath: '/dashboard',
     });
+    // #12246: the org session carries its org's owning partner, like password login.
+    expect(resolveOrganizationSessionPartnerId).toHaveBeenCalledWith(expect.anything(), ORG_ID);
     expect(issueUserSession).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID }),
+      expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID, partnerId: ORG_PARTNER_ID }),
       expect.any(Object),
     );
     // Provider fixture has trustsIdpMfa: false and the user holds no factor
@@ -336,6 +341,14 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       recoveryCode: 'CORRECT-1',
     });
     expect(retry.ok).toBe(true);
+  });
+
+  it('fails closed (completion_failed) when the provider org has no owning partner row (#12246)', async () => {
+    wire();
+    vi.mocked(resolveOrganizationSessionPartnerId).mockResolvedValueOnce(null);
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome).toEqual({ ok: false, error: 'completion_failed' });
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('returns link_expired when the record is gone (expired / already consumed / store down)', async () => {

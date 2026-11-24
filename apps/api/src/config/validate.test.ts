@@ -3242,6 +3242,12 @@ describe('validateConfig', () => {
     });
   });
 
+  it('validate rejects a non-boolean BREEZE_BROWSER_DESKTOP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_BROWSER_DESKTOP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_BROWSER_DESKTOP_ENABLED must be a boolean/);
+    });
+  });
+
   it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
     withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);
@@ -3259,6 +3265,53 @@ describe('validateConfig', () => {
       expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_DISABLED_LANES.*dels/);
     });
     withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell, HP' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  // Vendor canary (#11065 observe-first): who may run best-guess vendor code.
+  describe('BREEZE_VENDOR_CANARY_PARTNER_IDS', () => {
+    const a = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const b = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const c = 'cccccccc-0000-4000-8000-000000000003';
+    const d = 'dddddddd-0000-4000-8000-000000000004';
+
+    it('malformed UUID fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: `${a},not-a-uuid` }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS/);
+      });
+    });
+
+    it('a value that parses to nothing fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: ' , ' }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS/);
+      });
+    });
+
+    it('more than 3 ids fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: [a, b, c, d].join(',') }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS.*at most 3/);
+      });
+    });
+
+    it('allowed under NODE_ENV=production', () => {
+      withEnv({ ...workspaceProdEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: `${a}, ${b}` }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('empty is allowed: every stage is off', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  it('rejects an unknown pair in BREEZE_VENDOR_CANARY_DISABLED: a typo would stop nothing', () => {
+    withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_DISABLED: 'oem_updates:hp,oem_update:lenovo' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_DISABLED.*oem_update:lenovo/);
+    });
+    withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_DISABLED: 'oem_updates:HP, wake_on_lan:lenovo' }, () => {
       expect(() => validateConfig()).not.toThrow();
     });
   });
@@ -4184,6 +4237,28 @@ describe('FLOWS_ENABLED boolean guard', () => {
   it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
     withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
       expect(() => validateConfig()).toThrow(/FLOWS_ENABLED must be a boolean/);
+    });
+  });
+});
+
+describe('LEARNED_NETWORKS_INGEST_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('LEARNED_NETWORKS_INGEST_ENABLED');
+    expect(buildEnvParseInput({ LEARNED_NETWORKS_INGEST_ENABLED: 'sentinel' }).LEARNED_NETWORKS_INGEST_ENABLED).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off ', ''])(
+    'accepts %j',
+    (value) => {
+      withEnv({ ...validEnv, LEARNED_NETWORKS_INGEST_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
+    withEnv({ ...validEnv, LEARNED_NETWORKS_INGEST_ENABLED: value }, () => {
+      expect(() => validateConfig()).toThrow(/LEARNED_NETWORKS_INGEST_ENABLED must be a boolean/);
     });
   });
 });

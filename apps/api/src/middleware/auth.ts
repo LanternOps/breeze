@@ -925,11 +925,13 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // Response as a value (it does not throw). Dropping it leaves the Hono
   // context unfinalized — every gated request then 500s with "Context is
   // not finalized" instead of the intended 403/503.
-  // Organization-session JWTs deliberately keep partnerId=null so they cannot
-  // acquire partner-axis RLS authority. IP policy is a different boundary:
-  // every organization belongs to a partner, and the live users.partner_id is
-  // constrained to that same owner by the users (org_id, partner_id) FK. Bind
-  // the guard to that current owner without widening the request DB context.
+  // Organization-session JWTs carry their org's owning partner (pinned at
+  // issuance, #12246), but it only sets `currentPartnerId` — read visibility of
+  // partner-wide rows. `accessiblePartnerIds` stays empty for organization
+  // scope (computeAccessiblePartnerIds), so an org session never acquires
+  // partner-axis RLS authority. IP policy is a different boundary: bind the
+  // guard to the live users.partner_id, which the users (org_id, partner_id)
+  // FK constrains to that same owner.
   // #1448 — a small set of routes (the Stripe pay routes) opt OUT of the auto
   // request-transaction so a slow outbound HTTP call isn't made inside a held
   // transaction (pinning a pooled connection idle-in-transaction, the #1105

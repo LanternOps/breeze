@@ -126,8 +126,23 @@ export function normalizeMessageIds(messageIds: string[]): string[] {
   );
 }
 
-// Looks up every ticket that has a claimed link row for any of the given
-// message-ids, scoped to the partner. `messageIds` arrives as raw header
+/**
+ * Origins whose link rows may thread an inbound reply by its headers. These are
+ * the live channels, and each one records mail that is part of the customer
+ * conversation: an inbound message, the email a ticket was created from, or an
+ * email a technician linked as a public comment. 'backfill' has no writer and no
+ * design yet, so it stays out until one decides otherwise (allowlist, not
+ * denylist: a new origin does not thread until it is added here).
+ */
+export const HEADER_THREADING_ORIGINS = ['inbound', 'addin_create', 'addin_link'] as const satisfies readonly TicketEmailLinkOrigin[];
+
+// Looks up every ticket that has a link row ELIGIBLE FOR HEADER THREADING for
+// any of the given message-ids, scoped to the partner. Eligible means
+// visibility 'public' and an origin in HEADER_THREADING_ORIGINS. An 'internal'
+// link (a technician filed the email as an internal note) records the
+// association and keeps the idempotency claim (findLinkByMessageId and
+// claimMessageLink still see it), but a reply to that message must not post a
+// public inbound comment onto the ticket. `messageIds` arrives as raw header
 // values (already angle-bracket wrapped, but not guaranteed trimmed/normalized
 // the same way stored rows are) — see normalizeMessageIds above.
 export async function findTicketIdsByMessageIds(partnerId: string, messageIds: string[]): Promise<string[]> {
@@ -136,6 +151,11 @@ export async function findTicketIdsByMessageIds(partnerId: string, messageIds: s
   const rows = await db
     .selectDistinct({ ticketId: ticketEmailLinks.ticketId })
     .from(ticketEmailLinks)
-    .where(and(eq(ticketEmailLinks.partnerId, partnerId), inArray(ticketEmailLinks.messageId, normalized)));
+    .where(and(
+      eq(ticketEmailLinks.partnerId, partnerId),
+      inArray(ticketEmailLinks.messageId, normalized),
+      eq(ticketEmailLinks.visibility, 'public'),
+      inArray(ticketEmailLinks.origin, [...HEADER_THREADING_ORIGINS]),
+    ));
   return rows.map((r) => r.ticketId);
 }
