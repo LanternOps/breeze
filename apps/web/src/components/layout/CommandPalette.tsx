@@ -317,7 +317,7 @@ export default function CommandPalette() {
   const toolSourcesEnabled = useFeaturesStore((s) => s.features.toolSources);
   const flowsEnabled = useFeaturesStore((s) => s.features.flows);
   const { wispEnabled, aiForOfficeEnabled } = usePartnerAiFlags(open);
-  const openAiPanel = useAiStore((s) => s.open);
+  const openAiPanel = useAiStore((s) => s.openOnPickedTab);
   // #6396: every own-session /ai/* route requires ai_sessions:use — the same
   // gate as the header's Breeze AI button and the sidebar's AI doors.
   const canUseAi = hasPermission(permissions, 'ai_sessions', 'use');

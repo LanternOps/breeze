@@ -150,7 +150,13 @@
     "noConversations": "Aún no hay conversaciones",
     "m365Customer": "M365 cliente",
     "noM365Customer": "Ningún cliente M365",
-    "dismiss": "Descartar"
+    "dismiss": "Descartar",
+    "tabs": {
+      "label": "Modo del asistente",
+      "session": "Sesión directa",
+      "sessionHint": "Trabaja en esto tú mismo. Breeze AI actúa aquí y te pregunta antes de cada cambio.",
+      "wispHint": "Tu asistente permanente. Wisp delega los trabajos más largos a especialistas y te informa."
+    }
   },
   "aiConversationMove": {
     "openInAssistant": "Abrir en Breeze AI",
