@@ -104,6 +104,11 @@ type contentRestorer struct {
 	// endRun ends the run with a cause; fetchAndVerify calls it when the
 	// storage session ends (endsVerifyRun). nil = never ended early.
 	endRun context.CancelCauseFunc
+	// callerCtx is the caller's context (runCtx's parent). When runCtx ended
+	// with a lost session while callerCtx is still live, the files already
+	// downloaded and verified are installed before the run stops; a caller
+	// stop installs nothing further. nil = treated as live.
+	callerCtx context.Context
 	// integrity is the command's integrity expectation (nil = none): the
 	// staged bytes are checked against it, and a resumed file is skipped
 	// only when it still holds the attested content.
@@ -158,6 +163,42 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 		}
 	}()
 
+	// stop reports whether the run has ended (cancelled = true, result
+	// already carries the status). On a lost storage session it first
+	// settles what needs no further storage read: it waits for the
+	// downloads in flight, then installs, in manifest order, every entry at
+	// the head of the window that already has a verdict (a verified
+	// download, a failed check, an invalid or blocked path). It stops at the
+	// first entry without one: interrupted by the lost session, never
+	// started, or resumed (re-checking a resumed file may need a read).
+	// Without this a verified download that the coordinator had not yet
+	// installed when the session-lost answer arrived was thrown away, and
+	// how many files a run reported restored depended on timing.
+	stop := func() bool {
+		if ctx == nil || ctx.Err() == nil {
+			return c.checkCancelled()
+		}
+		if sessionLostCause(ctx) != nil && (c.callerCtx == nil || c.callerCtx.Err() == nil) {
+			for inflight > 0 {
+				d := <-doneCh
+				inflight--
+				if s := slots[d.index]; s != nil {
+					s.ready, s.outcome = true, d.outcome
+				}
+			}
+			for head < n {
+				s := slots[head]
+				if s == nil || !s.ready || s.resumed || s.outcome.interrupted {
+					break
+				}
+				c.finish(ctx, head, s)
+				delete(slots, head)
+				head++
+			}
+		}
+		return c.checkCancelled()
+	}
+
 	for head < n {
 		// Admit entries in manifest order while the window, the worker bound
 		// and the staged-bytes budget allow.
@@ -205,7 +246,7 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 		}
 
 		if s := slots[head]; s != nil && s.ready {
-			if c.checkCancelled() {
+			if stop() {
 				return true
 			}
 			c.finish(ctx, head, s)
@@ -227,14 +268,14 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 				s.ready, s.outcome = true, d.outcome
 			}
 		case <-ctxDone:
-			if c.checkCancelled() {
+			if stop() {
 				return true
 			}
 		}
 	}
 	// The last entry's inline re-fetch (a resumed file whose target changed)
 	// may have ended the run; nothing else is left to install either way.
-	return c.checkCancelled()
+	return stop()
 }
 
 // admit computes a slot's paths and resume disposition. Caller's goroutine.

@@ -22,6 +22,25 @@ import (
 
 const restorePerFileWarn = "restored file failed its download or content check"
 
+// assertRestoredOnDisk checks that exactly the first FilesRestored manifest
+// files (f000.txt, f001.txt, …) are on disk under target/data, and no others:
+// the reported count is what the restore actually wrote.
+func assertRestoredOnDisk(t *testing.T, target string, result *RestoreResult) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(target, "data"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != result.FilesRestored {
+		t.Fatalf("%d files on disk, result says %d restored", len(entries), result.FilesRestored)
+	}
+	for i := range result.FilesRestored {
+		if _, statErr := os.Stat(filepath.Join(target, "data", fmt.Sprintf("f%03d.txt", i))); statErr != nil {
+			t.Fatalf("restored file %d is not on disk: %v", i, statErr)
+		}
+	}
+}
+
 func sessionLossRestoreConfig(t *testing.T, snapshotID string) RestoreConfig {
 	t.Helper()
 	return RestoreConfig{SnapshotID: snapshotID, TargetPath: t.TempDir(), WorkRoot: t.TempDir()}
@@ -65,11 +84,7 @@ func TestRestore_SessionLostMidRunStopsEarly(t *testing.T) {
 		t.Fatalf("error = %q calls a lost session a cancel", result.Error)
 	}
 	// What was written stays written: a restore is never rolled back.
-	for i := range 3 {
-		if _, statErr := os.Stat(filepath.Join(cfg.TargetPath, "data", fmt.Sprintf("f%03d.txt", i))); statErr != nil {
-			t.Fatalf("restored file %d is gone: %v", i, statErr)
-		}
-	}
+	assertRestoredOnDisk(t, cfg.TargetPath, result)
 	if result.StagingDir == "" {
 		t.Fatal("staging dir was cleaned up; the resume state of an unfinished restore must be kept")
 	}
@@ -109,11 +124,15 @@ func TestRestore_SessionLostAtDefaultConcurrencyFailsNoFile(t *testing.T) {
 	const n = 200
 	p := newScriptedDownloadProvider(t, "restore-session-lost-concurrent", n)
 	p.objectErr = sessionGoneFrom(10)
+	// Successful downloads take a moment, so the files before the lost one
+	// are still in flight when the session-lost answer arrives.
+	p.delay = 20 * time.Millisecond
+	cfg := sessionLossRestoreConfig(t, "restore-session-lost-concurrent")
 
 	var result *RestoreResult
 	var err error
 	runWithWatchdog(t, 10*time.Second, func() {
-		result, err = RestoreFromSnapshotContext(context.Background(), p, sessionLossRestoreConfig(t, "restore-session-lost-concurrent"), nil)
+		result, err = RestoreFromSnapshotContext(context.Background(), p, cfg, nil)
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -121,10 +140,13 @@ func TestRestore_SessionLostAtDefaultConcurrencyFailsNoFile(t *testing.T) {
 	if result.FilesFailed != 0 || len(result.FailedFiles) != 0 {
 		t.Fatalf("failed=%d failedFiles=%v, want none", result.FilesFailed, result.FailedFiles)
 	}
-	if result.FilesRestored+result.FilesNotAttempted != n || result.FilesNotAttempted < n-10 {
-		t.Fatalf("restored=%d notAttempted=%d, want every one of %d files accounted for, at least %d not attempted",
-			result.FilesRestored, result.FilesNotAttempted, n, n-10)
+	// Every file before the lost one had downloaded and verified (or was
+	// still downloading) when the session ended: installing it needs no
+	// further storage read, so it is restored, not thrown away.
+	if result.FilesRestored != 10 || result.FilesNotAttempted != n-10 {
+		t.Fatalf("restored=%d notAttempted=%d, want 10/%d", result.FilesRestored, result.FilesNotAttempted, n-10)
 	}
+	assertRestoredOnDisk(t, cfg.TargetPath, result)
 	if result.Code != ResultCodeStorageSessionLost {
 		t.Fatalf("code = %q, want %q", result.Code, ResultCodeStorageSessionLost)
 	}

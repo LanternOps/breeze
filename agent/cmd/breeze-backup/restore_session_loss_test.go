@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +82,19 @@ func TestStorageSessionWiring_RestoreStopsWhenTheSessionIsRevoked(t *testing.T) 
 	}
 	if result.Success {
 		t.Fatal("an unfinished restore must not be a successful command")
+	}
+	// The reported count is what is actually on disk, nothing rolled back.
+	onDisk, err := os.ReadDir(filepath.Join(target, "data"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(onDisk) != got.FilesRestored {
+		t.Fatalf("%d files on disk, result says %d restored", len(onDisk), got.FilesRestored)
+	}
+	wantCounts := fmt.Sprintf("after %d of %d files (%d restored, 0 failed); the remaining %d were not attempted",
+		got.FilesRestored, n, got.FilesRestored, got.FilesNotAttempted)
+	if !strings.Contains(got.Error, wantCounts) {
+		t.Fatalf("error = %q, want the counts %q", got.Error, wantCounts)
 	}
 	e.mu.Lock()
 	fetches := len(e.storageHeaders)

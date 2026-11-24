@@ -304,6 +304,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		progressFn:     progressFn,
 		checkCancelled: checkCancelled,
 		endRun:         endRun,
+		callerCtx:      ctx,
 		integrity:      cfg.Integrity,
 		blockedBeneath: blockedBeneath,
 	}
