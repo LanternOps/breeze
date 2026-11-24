@@ -154,7 +154,7 @@
     "tabs": {
       "label": "Modo del asistente",
       "session": "Sesión directa",
-      "sessionHint": "Trabaja en esto tú mismo. Breeze AI actúa aquí y te pregunta antes de cada cambio.",
+      "sessionHint": "Trabaja en esto tú mismo. Breeze AI actúa en este chat y pide aquí cada aprobación que necesita.",
       "wispHint": "Tu asistente permanente. Wisp delega los trabajos más largos a especialistas y te informa."
     }
   },

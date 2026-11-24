@@ -154,7 +154,7 @@
     "tabs": {
       "label": "Asistan modu",
       "session": "Doğrudan oturum",
-      "sessionHint": "Bunun üzerinde kendiniz çalışın. Breeze AI burada işlem yapar ve her değişiklikten önce size sorar.",
+      "sessionHint": "Bunun üzerinde kendiniz çalışın. Breeze AI bu sohbette işlem yapar ve gereken her onayı burada ister.",
       "wispHint": "Kalıcı asistanınız. Wisp uzun işleri uzmanlara devreder ve sonucu bildirir."
     }
   },

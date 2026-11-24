@@ -154,7 +154,7 @@
     "tabs": {
       "label": "Assistentenmodus",
       "session": "Direkte Sitzung",
-      "sessionHint": "Arbeiten Sie selbst daran. Breeze AI handelt hier und fragt vor jeder Änderung nach.",
+      "sessionHint": "Arbeiten Sie selbst daran. Breeze AI handelt in diesem Chat und fragt hier nach jeder benötigten Genehmigung.",
       "wispHint": "Ihr ständiger Assistent. Wisp übergibt längere Aufgaben an Spezialisten und berichtet zurück."
     }
   },
