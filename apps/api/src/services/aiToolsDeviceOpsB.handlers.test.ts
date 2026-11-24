@@ -188,6 +188,12 @@ describe('browse_device_event_log — a chat read the gate pinned (#12453)', () 
     expect(h.exec).not.toHaveBeenCalled();
   });
 
+  it('a pin naming any other channel is refused (defence in depth: only the classifier makes pins)', async () => {
+    const out = await pinnedRun({ action: 'query', deviceId: DEV, logName: 'Security' }, Object.freeze({ action: 'query', logName: 'Security' }));
+    expect(out.code).toBe('PIN_MISMATCH');
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+
   it('device scoping and MFA still apply to a pinned read', async () => {
     h.verify.mockResolvedValueOnce({ error: 'Device not found or access denied' });
     expect((await pinnedRun({ action: 'query', deviceId: DEV, logName: 'System' }, Object.freeze({ action: 'query', logName: 'System' }))).code)

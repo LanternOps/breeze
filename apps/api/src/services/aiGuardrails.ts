@@ -1538,7 +1538,8 @@ export interface GuardrailContext {
    * #7906: set ONLY by the interactive chat gate (`createSessionPreToolUse` /
    * its postToolUse twin in aiAgentSdk.ts) for a `user_session` principal
    * that is not a Helper session. Opts the call in to the payload-aware
-   * read-only `event_logs_query` classification. MCP, intents, the agent
+   * read-only `event_logs_query` classification and (#12453) the System /
+   * Setup `browse_device_event_log` query / get_event classification. MCP, intents, the agent
    * catalog and headless runs never set it — `checkAgentGuardrails` strips
    * it — so they keep the base Tier 3.
    */

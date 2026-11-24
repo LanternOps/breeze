@@ -157,8 +157,8 @@ describe('checkGuardrails — chat-session opt-in (#12453)', () => {
     expect(check.requiresApproval).toBe(false);
     expect(check.readOnly).toBe(true);
     expect(isReadOnlyResolution(TOOL, check)).toBe(true);
-    expect(check.pinnedDeviceEventLogRead?.action).toBe(input.action);
-    expect(check.pinnedDeviceEventLogRead?.logName).toBe(input.logName);
+    const { deviceId: _deviceId, ...expected } = input;
+    expect(check.pinnedDeviceEventLogRead).toEqual(expected);
     expect(check.pinnedEventLogsQuery).toBeUndefined();
   });
 

@@ -81,14 +81,15 @@ export function classifyChatReadOnlyEventLogsQuery(
 /**
  * #12453 — the same decision for the dedicated `browse_device_event_log` tool:
  * `query` / `get_event` on System or Setup run without an approval card in an
- * interactive CHAT session (owner decision on the issue, the #7906 precedent).
+ * interactive CHAT session (owner decision recorded on #12453; the #7906
+ * precedent).
  * Every other channel — Security and Application included, any custom,
  * path-style or wildcard name, a list, or a missing channel — keeps the
  * Tier 3 approval, and so does every non-chat principal.
  *
  * The rules differ from `event_logs_query` above in two ways, both because
  * this tool's input is not the agent payload:
- *   - `logName` is trimmed before the case-insensitive match (owner decision),
+ *   - `logName` is trimmed before the case-insensitive match (#12453 decision),
  *     and the CANONICAL channel name (`System` / `Setup`) is what is pinned and
  *     dispatched, so the agent never receives the padded string;
  *   - the schema is the tool's own: no XPath field exists, paging uses the
@@ -97,9 +98,12 @@ export function classifyChatReadOnlyEventLogsQuery(
  * `deviceId` is accepted but not pinned: device scope stays the handler's
  * `verifyDeviceAccess` on the call's own `deviceId`, exactly as before.
  *
- * Duplicates (not imports) the level list and page cap from
+ * Duplicates (not imports) the level list, the page cap (the shared
+ * MAX_READONLY_EVENT_LOG_PAGE) and the query limit cap from
  * aiToolSchemasDeviceOps.ts — aiGuardrails' import surface is pinned
- * (aiGuardrails.imports.contract.test.ts); a parity test keeps them equal.
+ * (aiGuardrails.imports.contract.test.ts). The level list and page cap have a
+ * parity test against the tool schema; the limit is pinned to 100. A drift
+ * could only make this classifier stricter than the tool (fail closed).
  */
 export const READONLY_DEVICE_EVENT_LOG_LEVELS = ['information', 'warning', 'error', 'critical', 'verbose'] as const;
 export const READONLY_DEVICE_EVENT_LOG_QUERY_LIMIT = 100;

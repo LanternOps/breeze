@@ -1095,7 +1095,8 @@ function reportLostTerminalCas(opts: {
  * `user_session` principal (same test as middleware/auth.ts
  * `isInteractiveUserSession`, inlined to keep this module's import surface)
  * that is not a Helper session opts in to the payload-aware read-only
- * `event_logs_query` classification. Anything else — a Helper session (PAM
+ * `event_logs_query` classification, and (#12453) the System / Setup
+ * `browse_device_event_log` read classification. Anything else — a Helper session (PAM
  * governs its tier-2+ calls), or any non-user principal — passes the loaded
  * proposal context through untouched and keeps the base Tier 3. Used by BOTH
  * the gate and postToolUse so the two always resolve the same tier.

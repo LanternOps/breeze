@@ -137,9 +137,10 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
       const action = input.action as Action;
       if (!EVENT_LOG_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
       // #12453: a chat read the gate auto-ran carries the read it classified.
-      // Dispatch exactly that, and refuse a pin for a different action.
+      // Dispatch exactly that, and refuse a pin for a different action or (in
+      // depth: only the classifier builds pins) for any other channel.
       const pinned = context?.pinnedDeviceEventLogRead;
-      if (pinned && pinned.action !== action) {
+      if (pinned && (pinned.action !== action || (pinned.logName !== 'System' && pinned.logName !== 'Setup'))) {
         return jsonError('A pinned event-log read cannot dispatch another action', 'PIN_MISMATCH');
       }
       // The pin (when present) replaces the model's arguments wholesale.
