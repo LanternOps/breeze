@@ -476,7 +476,11 @@ function drawTitleBlock(doc: jsPDF, title: string, subtitle: string, meta: strin
   set.text(doc, C.muted);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.text(meta, PAGE.mx, y);
+  // A long meta line (site-filter note, period label, long timezone) must wrap
+  // inside the margins; US Letter's usable width is 17.6 mm narrower than A4's.
+  const metaLines: string[] = doc.splitTextToSize(meta, PAGE.w - PAGE.mx * 2);
+  doc.text(metaLines, PAGE.mx, y);
+  y += (metaLines.length - 1) * 4;
   return y + 4;
 }
 
