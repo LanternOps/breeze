@@ -126,7 +126,7 @@ function scopeLabel(scope: ReportScopeMeta): string {
 
 /** A ticket's created date in the report's date format, in the period's zone. */
 function dateOnly(chrome: PdfChrome, value: string | null | undefined, timeZone: string): string {
-  return chrome.formatDate(value, timeZone) ?? NA;
+  return value ? (chrome.formatDate(value, timeZone) ?? value) : NA;
 }
 
 function finalY(doc: jsPDF, fallback: number): number {
