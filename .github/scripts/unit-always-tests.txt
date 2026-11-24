@@ -814,6 +814,7 @@ apps/web/src/styles/globals.focusVisible.test.ts
 apps/web/src/styles/tokenPresence.test.ts
 packages/document-ui/src/__tests__/paperTokens.test.ts
 packages/document-ui/src/__tests__/snapshots.test.tsx
+packages/remote-desktop-ui/src/__tests__/noTauriImports.test.ts
 packages/shared/src/browserSafeBarrel.test.ts
 packages/shared/src/promptCatalog/promptCatalog.test.ts
 packages/shared/src/promptHost/promptHost.test.ts
