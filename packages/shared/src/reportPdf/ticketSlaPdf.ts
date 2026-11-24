@@ -26,6 +26,7 @@ import type {
 } from '../types/businessReports';
 import { detailDisclosure } from './detailDisclosure';
 import { formatPercent } from './moneyFormat';
+import type { ReportFormatChrome } from './reportLocale';
 
 type RGB = [number, number, number];
 
@@ -39,7 +40,7 @@ export type PdfChrome = {
   drawFooter: (doc: jsPDF) => void;
   drawTitleBlock: (doc: jsPDF, title: string, subtitle: string, meta: string, top: number) => number;
   drawSectionHeading: (doc: jsPDF, text: string, y: number) => number;
-};
+} & Pick<ReportFormatChrome, 'formatDate' | 'formatDateTime'>;
 
 export type TicketSlaPdfOpts = {
   generatedAt: string;
@@ -123,8 +124,9 @@ function scopeLabel(scope: ReportScopeMeta): string {
     : `Partner-wide · ${scope.orgCount} organization${scope.orgCount === 1 ? '' : 's'}`;
 }
 
-function dateOnly(value: string | null | undefined): string {
-  return value ? value.slice(0, 10) : NA;
+/** A ticket's created date in the report's date format, in the period's zone. */
+function dateOnly(chrome: PdfChrome, value: string | null | undefined, timeZone: string): string {
+  return chrome.formatDate(value, timeZone) ?? NA;
 }
 
 function finalY(doc: jsPDF, fallback: number): number {
@@ -234,7 +236,7 @@ export function renderTicketSlaReport(
         r.orgName ?? NA,
         r.priority,
         r.assignedToName ?? (r.assignedToId ? 'Unknown technician' : 'Unassigned'),
-        dateOnly(r.createdAt),
+        dateOnly(chrome, r.createdAt, summary.period.timeZone),
         OUTCOME_LABEL[r.responseOutcome],
         OUTCOME_LABEL[r.resolutionOutcome],
         r.stampedBreachReason ?? NA,
