@@ -35,6 +35,8 @@ export type DeviceCommandCancelSubject = {
   id: string;
   type: string;
   payload: Record<string, unknown> | null;
+  /** Reason for the owning `patch_job_results` rows; default `cancelled` (#12493). */
+  patchCancelReason?: string;
 };
 
 /**
@@ -55,6 +57,7 @@ export async function propagateCancelledDeviceCommands(
       payload: row.payload,
       completedAt,
       executor,
+      ...(row.patchCancelReason ? { patchCancelReason: row.patchCancelReason } : {}),
     });
   }
 }

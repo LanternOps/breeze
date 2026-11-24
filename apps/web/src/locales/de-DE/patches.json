@@ -493,7 +493,8 @@
       "ring_unavailable": "Übersprungen: Der Update-Ring wurde gelöscht oder deaktiviert, bevor dieses Gerät an der Reihe war.",
       "all_managed_by_vendor_updates": "Übersprungen: Alle ausstehenden Updates dieses Geräts werden von Hersteller-Updates verwaltet, eine Freigabe ist nicht nötig.",
       "requested_patches_not_eligible": "Übersprungen: Keines der für diesen Job ausgewählten Updates kann nach der aktuellen Update-Richtlinie auf diesem Gerät installiert werden.",
-      "invalid_patch_ids": "Übersprungen: Die Liste der für diesen Job ausgewählten Updates war ungültig, daher wurde nichts installiert."
+      "invalid_patch_ids": "Übersprungen: Die Liste der für diesen Job ausgewählten Updates war ungültig, daher wurde nichts installiert.",
+      "requested_patches_no_longer_eligible": "Vor der Zustellung abgebrochen: Mindestens eines der für diesen Job ausgewählten Updates ist auf diesem Gerät nicht mehr zulässig. Führen Sie die Installation erneut aus, um die weiterhin zulässigen Updates zu installieren."
     },
     "errors": {
       "load": "Patch-Job konnte nicht geladen werden"

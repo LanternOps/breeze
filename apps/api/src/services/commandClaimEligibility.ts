@@ -40,6 +40,14 @@ export type ClaimCancelReason =
   | 'submitter_org_erased'
   /** A per-type revalidation found the authority the row was issued under gone. */
   | 'scope_changed'
+  /**
+   * #12493: a queued install from a job that names its patches (the AI
+   * `manage_patches` install) has at least one patch that is no longer
+   * eligible on the device under its live policy and ring. The approval
+   * pinned that exact set, so the whole install is cancelled rather than a
+   * subset delivered (services/installPatchesRevalidation.ts).
+   */
+  | 'requested_patches_no_longer_eligible'
   | 'isolation_episode_mismatch'
   | 'network-isolation-version-floor'
   /**
@@ -121,9 +129,19 @@ export type ClaimCandidate = {
   payload: unknown;
 };
 
+/**
+ * One row `partitionClaimable` terminalised. `detail` is present only when a
+ * revalidation cancelled with the object form ({@link CommandRevalidationCancel}).
+ */
+export type ClaimCancellation = {
+  id: string;
+  reason: ClaimCancelReason;
+  detail?: Readonly<Record<string, unknown>>;
+};
+
 export type ClaimPartition = {
   claimable: ClaimCandidate[];
-  cancelled: Array<{ id: string; reason: ClaimCancelReason }>;
+  cancelled: ClaimCancellation[];
   held: Array<{ id: string; reason: ClaimHoldReason }>;
 };
 
@@ -259,7 +277,23 @@ export type CommandRevalidationRow = {
 export type RevalidationHoldReason = Extract<ClaimHoldReason, 'revalidation_unprepared'>;
 /** A revalidation's answer that leaves the row `pending` for the next claim instead of cancelling it. */
 export type CommandRevalidationHold = { readonly hold: RevalidationHoldReason };
-export type CommandRevalidationResult = ClaimCancelReason | CommandRevalidationHold | null;
+/**
+ * A cancel that says more than its reason (#12493). `detail` is merged into the
+ * cancelled row's `result` as `result.detail` — ids only, never tenant text,
+ * since the result is shown to operators and logged. The reason is also
+ * recorded on the owning record where the type has one (an install's
+ * `patch_job_results` rows), instead of the generic `cancelled` a bare-string
+ * cancel leaves there.
+ */
+export type CommandRevalidationCancel = {
+  readonly cancel: ClaimCancelReason;
+  readonly detail: Readonly<Record<string, unknown>>;
+};
+export type CommandRevalidationResult =
+  | ClaimCancelReason
+  | CommandRevalidationHold
+  | CommandRevalidationCancel
+  | null;
 
 /**
  * Re-derive a queued command's authority from live rows. Returns `null` to
@@ -329,6 +363,11 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   // Read-only vendor observation: rechecks the flag, the canary stage and the kill
   // switches at claim (services/oemUpdates/observe.ts).
   'oem_observe',
+  // #12493: a queued install from a job that names its patches is re-judged
+  // under the device's live policy and ring (services/installPatchesRevalidation.ts).
+  // Every install carries the check, so a lost registration cancels installs
+  // (`authority_unavailable`) rather than delivering AI installs unchecked.
+  'install_patches',
 ]);
 
 /**
@@ -616,7 +655,7 @@ export async function partitionClaimable(
   opts: { inFlight?: number; prepared?: CommandRevalidationPreparation } = {},
 ): Promise<ClaimPartition> {
   const claimable: ClaimCandidate[] = [];
-  const cancelled: Array<{ id: string; reason: ClaimCancelReason }> = [];
+  const cancelled: ClaimCancellation[] = [];
   const held: Array<{ id: string; reason: ClaimHoldReason }> = [];
   const requesterActive = new Map<string, boolean | 'error'>();
   // One trust read per batch, on this transaction, and only if some row is
@@ -794,7 +833,11 @@ export async function partitionClaimable(
       continue;
     }
     if (typeof revalidation === 'object' && revalidation !== null) {
-      held.push({ id: row.id, reason: revalidation.hold });
+      if ('cancel' in revalidation) {
+        cancelled.push({ id: row.id, reason: revalidation.cancel, detail: revalidation.detail });
+      } else {
+        held.push({ id: row.id, reason: revalidation.hold });
+      }
       continue;
     }
     if (revalidation) {
@@ -844,7 +887,12 @@ export async function partitionClaimable(
         .set({
           status: 'cancelled',
           completedAt,
-          result: { status: 'cancelled', reason: c.reason, cancelledBy: 'claim_eligibility' },
+          result: {
+            status: 'cancelled',
+            reason: c.reason,
+            cancelledBy: 'claim_eligibility',
+            ...(c.detail ? { detail: c.detail } : {}),
+          },
           ...terminalPayloadErasureSet(),
         })
         // CAS on `pending`: a row that was claimed between the SELECT and here
@@ -862,7 +910,14 @@ export async function partitionClaimable(
         source.payload && typeof source.payload === 'object' && !Array.isArray(source.payload)
           ? (source.payload as Record<string, unknown>)
           : null;
-      flipped.push({ id: c.id, type: source.type, payload });
+      flipped.push({
+        id: c.id,
+        type: source.type,
+        payload,
+        // A detailed revalidation cancel names its reason on the owning patch
+        // result rows too; every other claim cancel keeps the generic one.
+        ...(c.detail ? { patchCancelReason: c.reason } : {}),
+      });
     }
     // Terminalise the OWNING records too, in this same transaction. Without
     // this a cancelled command leaves its script_executions / deployment_results

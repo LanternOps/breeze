@@ -493,7 +493,8 @@
       "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo.",
       "all_managed_by_vendor_updates": "Ignorado: todas as atualizações pendentes neste dispositivo são gerenciadas pelas atualizações do fabricante, então nenhuma aprovação é necessária.",
       "requested_patches_not_eligible": "Ignorado: nenhuma das atualizações selecionadas para este trabalho pode ser instalada neste dispositivo de acordo com a política de atualização atual.",
-      "invalid_patch_ids": "Ignorado: a lista de atualizações selecionadas para este trabalho não era válida, então nada foi instalado."
+      "invalid_patch_ids": "Ignorado: a lista de atualizações selecionadas para este trabalho não era válida, então nada foi instalado.",
+      "requested_patches_no_longer_eligible": "Cancelado antes da entrega: pelo menos uma das atualizações selecionadas para este trabalho não está mais qualificada neste dispositivo. Execute a instalação novamente para instalar as que ainda estão."
     },
     "errors": {
       "load": "Falha ao carregar o trabalho de patch"

@@ -75,6 +75,7 @@ vi.mock('./networkIsolation/upgradeFloor', () => ({ isolationUpgradeFloorRefusal
 
 import {
   POWER_STATE_BARRIER_TYPES,
+  REVALIDATION_REQUIRED_TYPES,
   TEARDOWN_CLAIM_EXEMPT_TYPES,
   partitionClaimable,
   prepareCommandRevalidations,
@@ -497,11 +498,64 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
   });
 
   it('a registered type hold keeps the row pending without cancelling it', async () => {
-    typeHolds.install_patches = async () => true;
+    // install_patches requires a revalidation (#12493); a pass-through one
+    // isolates the hold.
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('install_patches', async () => null);
+    try {
+      typeHolds.install_patches = async () => true;
+      const r = await partitionClaimable(tx(), device, [row({ type: 'install_patches' })]);
+      expect(r.held).toEqual([{ id: 'c1', reason: 'held_maintenance_suppression' }]);
+      expect(r.claimable).toEqual([]);
+      expect(r.cancelled).toEqual([]);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
+  });
+
+  it('#12493: install_patches with no registered revalidation is cancelled, never delivered unchecked', async () => {
+    __resetCommandRevalidationsForTests();
+    expect(REVALIDATION_REQUIRED_TYPES.has('install_patches')).toBe(true);
     const r = await partitionClaimable(tx(), device, [row({ type: 'install_patches' })]);
-    expect(r.held).toEqual([{ id: 'c1', reason: 'held_maintenance_suppression' }]);
     expect(r.claimable).toEqual([]);
-    expect(r.cancelled).toEqual([]);
+    expect(r.cancelled).toEqual([{ id: 'c1', reason: 'authority_unavailable' }]);
+  });
+
+  it('#12493: a detailed revalidation cancel writes its detail on the row and its reason on the owning patch rows', async () => {
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('install_patches', async () => ({
+      cancel: 'requested_patches_no_longer_eligible',
+      detail: { ineligiblePatchIds: ['p1'] },
+    }));
+    try {
+      const payload = { patchJobId: 'job-1', patchIds: ['p1', 'p2'] };
+      const r = await partitionClaimable(tx(), device, [
+        row({ id: 'inst', type: 'install_patches', payload }),
+        row({ id: 'moved', submittedOrgId: OTHER_ORG }),
+      ]);
+      expect(r.cancelled).toEqual([
+        { id: 'inst', reason: 'requested_patches_no_longer_eligible', detail: { ineligiblePatchIds: ['p1'] } },
+        { id: 'moved', reason: 'device_moved_org' },
+      ]);
+      expect(r.claimable).toEqual([]);
+      const results = setMock.mock.calls.map((c) => (c[0] as { result: unknown }).result);
+      expect(results).toEqual([
+        {
+          status: 'cancelled',
+          reason: 'requested_patches_no_longer_eligible',
+          cancelledBy: 'claim_eligibility',
+          detail: { ineligiblePatchIds: ['p1'] },
+        },
+        { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'claim_eligibility' },
+      ]);
+      const [subjects] = propagateMock.mock.calls[0] as [Array<Record<string, unknown>>];
+      expect(subjects).toEqual([
+        { id: 'inst', type: 'install_patches', payload, patchCancelReason: 'requested_patches_no_longer_eligible' },
+        { id: 'moved', type: 'refresh_inventory', payload: null },
+      ]);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
   });
 
   it('holds a pending caller_verify row (does not cancel it) while the workstation tier is off, passes it with the flag on', async () => {
@@ -521,9 +575,15 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
   });
 
   it('a type hold that returns false lets the row through', async () => {
-    typeHolds.install_patches = async () => false;
-    const r = await partitionClaimable(tx(), device, [row({ type: 'install_patches' })]);
-    expect(r.claimable).toHaveLength(1);
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('install_patches', async () => null);
+    try {
+      typeHolds.install_patches = async () => false;
+      const r = await partitionClaimable(tx(), device, [row({ type: 'install_patches' })]);
+      expect(r.claimable).toHaveLength(1);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
   });
 
   it('reboot, shutdown, reboot_safe_mode and force_reboot are the barrier set', () => {
