@@ -282,6 +282,10 @@ const restoreStructuredResultObject = z.object({
   // semantics (integer, any magnitude) so a large backup isn't recorded failed.
   bytesRestored: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   filesFailed: z.number().int().nonnegative().optional(),
+  // backup_restore: entries the run never reached because its storage session
+  // ended (code `storage_session_lost`). Neither restored nor failed; running
+  // the same restore again resumes them.
+  filesNotAttempted: z.number().int().nonnegative().optional(),
   // A path list from file restores; a count from the bare-metal recovery
   // helper (bmr_recover), which always sends the field.
   failedFiles: z.union([
@@ -316,7 +320,9 @@ const restoreStructuredResultObject = z.object({
   vmError: z.string().max(10_000).optional(),
   securityDescriptorQuarantined: z.number().int().nonnegative().optional(),
   securityDescriptorQuarantinedPaths: z.array(z.string()).transform(boundQuarantinedPaths).optional(),
-  // bmr_recover: stable outcome code (see bmrCompleteSchema in routes/backup/schemas.ts).
+  // Stable outcome code: bmr_recover's (see bmrCompleteSchema in
+  // routes/backup/schemas.ts), an integrity failure code, or
+  // `storage_session_lost` (a file restore stopped by its storage session ending).
   code: z.string().max(64).optional(),
 }).passthrough();
 
