@@ -201,14 +201,38 @@ describe('scriptParameterDefinitionSchema — tenantSecret arm (#3409 PR4c-2)', 
     });
   });
 
-  it('forces required to true regardless of input', () => {
+  // #12613: a secret parameter may be optional. Absent `required` still means
+  // required (every definition stored before #12613 omits the key or carries
+  // `true`), so existing scripts keep failing closed with no data change.
+  it('accepts required:false (an optional secret)', () => {
     const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, required: false });
-    // A secret that is missing fails the device closed — there is no optional
-    // secret, so `required:false` is not a thing a definition can say.
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]?.path).toEqual(['required']);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.required).toBe(false);
+  });
+
+  it('accepts required:true explicitly', () => {
     const explicit = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, required: true });
     expect(explicit.success && explicit.data.required).toBe(true);
+  });
+
+  it('defaults required to TRUE, unlike every other arm', () => {
+    const result = scriptParameterDefinitionSchema.safeParse(secretDefinition);
+    expect(result.success && result.data.required).toBe(true);
+    const runtime = scriptParameterDefinitionSchema.safeParse({ name: 'x', type: 'string' });
+    expect(runtime.success && runtime.data.required).toBe(false);
+  });
+
+  it('rejects a non-boolean required', () => {
+    const result = scriptParameterDefinitionSchema.safeParse({ ...secretDefinition, required: 'false' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['required']);
+  });
+
+  it('a legacy secret definition with no `required` key is the same contract as explicit true', () => {
+    // No spurious script.version bump and no `content_changed` on approved
+    // run_script releases for scripts saved before #12613.
+    expect(scriptParameterDefinitionsEqual([secretDefinition], [{ ...secretDefinition, required: true }])).toBe(true);
+    expect(scriptParameterDefinitionsEqual([secretDefinition], [{ ...secretDefinition, required: false }])).toBe(false);
   });
 
   it('requires variableKey at the arm path', () => {
