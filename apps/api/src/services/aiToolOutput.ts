@@ -129,16 +129,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/**
- * `target[key] = value` for a key taken from a parsed tool result. A JSON
- * `"__proto__"` key is an own data property after `JSON.parse`; assigning it
- * hits the inherited setter instead, which drops the key from the output and
- * re-points `target`'s prototype at the value. defineProperty keeps it an own
- * property, so it is walked, fenced and serialized like any other key.
- */
-function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
-  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
-}
+// Walkers that rebuild an object from a parsed tool result collect
+// `[key, value]` pairs and return `Object.fromEntries(pairs)`, never
+// `out[key] = value`. A JSON `"__proto__"` key is an own data property after
+// `JSON.parse`; assigning it hits the inherited setter instead, which drops the
+// key from the output and re-points the object's prototype at the value.
+// `Object.fromEntries` creates own data properties in order (a repeated key
+// keeps its first position and takes the last value, as assignment did), so
+// the key is walked, fenced and serialized like any other.
+type Entry = [string, unknown];
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
@@ -404,17 +403,17 @@ function compactValue(
       stats.objectKeysDropped += entries.length - config.maxObjectKeys;
     }
 
-    const output: Record<string, unknown> = {};
+    const output: Entry[] = [];
     for (const [key, itemValue] of entries.slice(0, config.maxObjectKeys)) {
       // Q3: a character window the tool sized deliberately — pass through
       // untouched rather than re-truncating it against the generic string cap.
       if (typeof itemValue === 'string' && isCharacterWindowField(key, value)) {
-        setOwn(output, key, itemValue);
+        output.push([key, itemValue]);
         continue;
       }
-      setOwn(output, key, compactValue(itemValue, stats, config, depth + 1, key));
+      output.push([key, compactValue(itemValue, stats, config, depth + 1, key)]);
     }
-    return output;
+    return Object.fromEntries(output);
   }
 
   return String(value);
@@ -677,16 +676,20 @@ function compactCommandStylePayload(
     });
   }
 
+  // `output` holds only the fixed keys set above; the payload's other keys
+  // follow them in order (one that repeats a fixed key overwrites its value in
+  // place, as assignment did).
+  const passthrough: Entry[] = Object.entries(output);
   for (const [key, value] of Object.entries(payload)) {
     if (COMMAND_STYLE_HANDLED_KEYS.has(key)) continue;
     if (typeof value === 'string' && isCharacterWindowField(key, payload)) {
-      setOwn(output, key, redactAiToolOutputText(value));
+      passthrough.push([key, redactAiToolOutputText(value)]);
       continue;
     }
-    setOwn(output, key, compactValue(value, stats, config, 0, key));
+    passthrough.push([key, compactValue(value, stats, config, 0, key)]);
   }
 
-  return output;
+  return Object.fromEntries(passthrough);
 }
 
 function emptyStats(): CompactStats {
@@ -760,11 +763,10 @@ function sanitizeToolPayloadValue(
 
   if (!isRecord(value)) return value;
 
-  const output: Record<string, unknown> = {};
+  const output: Entry[] = [];
   for (const [key, entry] of Object.entries(value)) {
     if (shouldOmitScriptText(toolName, key, entry)) {
-      output[`${key}Omitted`] = true;
-      output[`${key}Chars`] = entry.length;
+      output.push([`${key}Omitted`, true], [`${key}Chars`, entry.length]);
       stats.sensitiveFieldsOmitted += 1;
       continue;
     }
@@ -772,12 +774,12 @@ function sanitizeToolPayloadValue(
     // truncate it in this pre-pass (compactCommandStylePayload / compactValue
     // apply the same rule for the shaping pass that follows).
     if (typeof entry === 'string' && isCharacterWindowField(key, value)) {
-      setOwn(output, key, redactAiToolOutputText(entry));
+      output.push([key, redactAiToolOutputText(entry)]);
       continue;
     }
-    setOwn(output, key, sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key));
+    output.push([key, sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key)]);
   }
-  return output;
+  return Object.fromEntries(output);
 }
 
 const MAX_SYSTEM_CLEANUP_ACTIONS = 40;
@@ -844,16 +846,15 @@ const DEVICE_CORE_KEYS = [
 function hoistDeviceCoreFields(parsed: Record<string, unknown>): Record<string, unknown> {
   const device = parsed.device;
   if (!isRecord(device)) return parsed;
-  // Own-key checks, not `in`: `in` also sees Object.prototype members, so a
-  // device key named `__proto__` or `toString` would be dropped as "already set".
-  const reordered: Record<string, unknown> = {};
-  for (const k of DEVICE_CORE_KEYS) {
-    if (Object.hasOwn(device, k)) setOwn(reordered, k, device[k]);
-  }
+  // Own-key checks and a Set, not `in`: `in` also sees Object.prototype
+  // members, so a device key named `__proto__` or `toString` would be dropped
+  // as "already set".
+  const reordered: Entry[] = DEVICE_CORE_KEYS.filter((k) => Object.hasOwn(device, k)).map((k): Entry => [k, device[k]]);
+  const hoisted = new Set(reordered.map(([k]) => k));
   for (const [k, v] of Object.entries(device)) {
-    if (!Object.hasOwn(reordered, k)) setOwn(reordered, k, v);
+    if (!hoisted.has(k)) reordered.push([k, v]);
   }
-  return { ...parsed, device: reordered };
+  return { ...parsed, device: Object.fromEntries(reordered) };
 }
 
 function applyToolSpecificCompaction(
@@ -1459,17 +1460,17 @@ function fenceRawTextFields(value: unknown, fieldNames: ReadonlySet<string>, fla
     return value.map((entry) => fenceRawTextFields(entry, fieldNames, flags));
   }
   if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
+    const out: Entry[] = [];
     for (const [key, v] of Object.entries(value)) {
       if (key === 'stdout' && typeof v === 'string') {
-        setOwn(out, key, fenceEncodedStdout(v, fieldNames, flags));
+        out.push([key, fenceEncodedStdout(v, fieldNames, flags)]);
       } else if (fieldNames.has(key)) {
-        setOwn(out, key, sanitizeUntrustedToolValue(v, flags));
+        out.push([key, sanitizeUntrustedToolValue(v, flags)]);
       } else {
-        setOwn(out, key, fenceRawTextFields(v, fieldNames, flags));
+        out.push([key, fenceRawTextFields(v, fieldNames, flags)]);
       }
     }
-    return out;
+    return Object.fromEntries(out);
   }
   return value;
 }

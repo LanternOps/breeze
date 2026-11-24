@@ -97,6 +97,25 @@ describe('__proto__ keys in a fenced tool result', () => {
     expect(String(inner.content)).toContain('[filtered]');
   });
 
+  it('the device hoist puts core fields first in their fixed order, keeps the rest in input order, and a repeated key keeps its last value', () => {
+    // JSON.parse keeps a repeated key at its first position with the last value.
+    const rawDevice = '{"device":{"zeta":1,"hostname":"first","osType":"windows","alpha":2,"id":"d-1","hostname":"pc-1","zeta":3}}';
+    const out = compactToolResultForChat('get_device_details', rawDevice);
+    const device = own(JSON.parse(out), 'device') as Record<string, unknown>;
+    expect(Object.keys(device)).toEqual(['id', 'hostname', 'osType', 'zeta', 'alpha']);
+    expect(device).toEqual({ id: 'd-1', hostname: 'pc-1', osType: 'windows', zeta: 3, alpha: 2 });
+  });
+
+  it('a walked object keeps its key order and a repeated key keeps its first position with the last value', () => {
+    const rawLogs = '{"logs":[{"b":1,"message":"ok","a":2,"b":3}],"z":1,"__proto__":{"k":"v"},"y":2}';
+    const out = compactToolResultForChat('search_logs', rawLogs);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toEqual(['logs', 'z', '__proto__', 'y']);
+    const row = (parsed.logs as unknown[])[0] as Record<string, unknown>;
+    expect(Object.keys(row)).toEqual(['b', 'message', 'a']);
+    expect(row.b).toBe(3);
+  });
+
   it('the device hoist keeps a __proto__ key and keys named like Object.prototype members', () => {
     const rawDevice = `{"device":{"id":"d-1","hostname":"pc-1","toString":"t","__proto__":{"hostname":${JSON.stringify(INJECTION)},"marker":"DEV"}}}`;
     const out = compactToolResultForChat('get_device_details', rawDevice);
