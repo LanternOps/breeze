@@ -229,13 +229,12 @@ export default function AiChatSidebar() {
   // panel opened. When the grant it speaks under goes away from the shared
   // store — revoked on /wisp (the home's exitWispMode), a create the server
   // refused as unusable, a plain chat picked from History — the answer from
-  // before is stale: forget it and ask again, so Meet Wisp (or another live
-  // grant) is what the panel shows. That grant itself is not re-entered on
-  // the strength of that one read (whatever dropped it knew better); the guard
-  // is spent by it, so a later open, org change or New conversation decides
-  // afresh.
-  // (A grant created on /wisp reaches the panel through the home binding the
-  // shared store to its thread, WispHomeThread.)
+  // before is stale: forget it and ask again, so Meet Wisp (or the Wisp tab
+  // of another live grant) is what the panel shows. Leaving by the direct
+  // session tab takes the same path: the read confirms the grant is still
+  // there. That grant itself is not re-entered on the strength of that one
+  // read (whatever dropped it knew better); the guard is spent by it, so a
+  // later open or org change decides afresh.
   const wispGrantId = wisp?.grantId ?? null;
   const shownGrantIdRef = useRef<string | null>(wispGrantId);
   const endedGrantIdRef = useRef<string | null>(null);

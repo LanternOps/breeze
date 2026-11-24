@@ -5,7 +5,7 @@ description: Breeze AI, the chat door to the workers - the side panel and full c
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-**Breeze AI** is the chat door. Ask it a question about your fleet and it plans a sequence of tool calls, runs them against live data and answers. Every tool call is governed by the [AI risk engine](/features/ai/#ai-risk-engine): reads run freely, changes ask first, and everything is audited. The full page lives at `/ai/chat`. When you have an active [Wisp](/features/wisp/) grant, the side panel speaks as Wisp.
+**Breeze AI** is the chat door. Ask it a question about your fleet and it plans a sequence of tool calls, runs them against live data and answers. Every tool call is governed by the [AI risk engine](/features/ai/#ai-risk-engine): reads run freely, changes ask first, and everything is audited. The full page lives at `/ai/chat`. When you have an active [Wisp](/features/wisp/) grant, the side panel also has a **Wisp** tab beside your direct session.
 
 Breeze AI is one of the built-in workers; see [AI in Breeze](/features/ai/) for how it fits with agents, AI tasks and Wisp.
 
@@ -16,11 +16,26 @@ Breeze AI is one of the built-in workers; see [AI in Breeze](/features/ai/) for 
 You can talk to Breeze AI in two places:
 
 - **The side panel** — opened from the sparkle button in the header, available on every page. It holds one conversation at a time.
-- **Breeze AI** — the full page, at `/ai/chat`, reached from **Breeze AI** in the sidebar. The old `/workspace` and `/wisp/chat` addresses redirect here. It holds up to five conversations, one per tab, and open tabs survive a reload. Under an active Wisp grant a new tab starts under the grant and its header says **Wisp**; a conversation opened from history keeps the grant it started under. The **Wisp** entry opens the Wisp home instead; see [Wisp](/features/wisp/).
+- **Breeze AI** — the full page, at `/ai/chat`, reached from **Breeze AI** in the sidebar. The old `/workspace` and `/wisp/chat` addresses redirect here. It holds up to five conversations, one per tab, and open tabs survive a reload. Under an active Wisp grant a new tab starts under the grant and its header says **Wisp**, and **New** → **New plain chat** opens a Breeze AI tab without it; a conversation opened from history keeps the grant it started under. The **Wisp** entry opens the Wisp home instead; see [Wisp](/features/wisp/).
 
-The side panel does not have a Wisp switch. Its voice follows the Wisp grant. If you are partner staff and Wisp is on, your plan includes it and you have an **active** grant (partner-wide, or for the organization selected in the header), the panel speaks as **Wisp** and uses the grant's thread. With no grant, or a paused or ended one, it stays Breeze AI and shows a **Meet Wisp** link to `/wisp`. That link also shows when Wisp is on but your plan does not include it. A conversation already open in the panel is not replaced; the next **New conversation** starts under the grant. To say "not now", pause the grant on the Wisp home.
+If you are partner staff and Wisp is on, your plan includes it and you have an **active** grant (partner-wide, or for the organization selected in the header), the side panel has two tabs: **Direct session** and **Wisp**. See [Direct session or Wisp](#direct-session-or-wisp). With no grant, or a paused or ended one, there are no tabs: the panel is Breeze AI and shows a **Meet Wisp** link to `/wisp`. That link also shows when Wisp is on but your plan does not include it.
 
 A conversation can move between the two at any time. It is the same conversation on both: the full history, the device it is bound to, its model, any customer binding and any approval card that is waiting all come along. A move never duplicates a conversation and never deletes it.
+
+### Direct session or Wisp
+
+Under an active grant, each tab in the side panel holds its own conversation:
+
+- **Direct session** is Breeze AI. It works on the record with you in this conversation, with your own permissions, and asks for your approval in the chat before each change. It cannot hand work to a specialist.
+- **Wisp** is your standing assistant under the grant, with its memory, check-ins and watches. It hands longer jobs to [specialists](/features/wisp/#specialists) and reports back. The tab continues the Wisp thread's one live conversation, the same one the [Wisp home](/features/wisp/#the-wisp-home) at `/wisp` shows.
+
+Use **Direct session** for hands-on work on one device or record, when you want to watch each step and approve it. Use **Wisp** for standing work, for jobs that can run in the background, and for questions across customers.
+
+Switching tabs closes neither conversation. Each tab comes back to its own. **New conversation** starts a new one on the tab you are on.
+
+The panel opens on the tab you picked last, whether you open it from the header button, with Cmd/Ctrl+Shift+A or from the command palette. The first time, that is **Direct session**. Only clicking a tab changes the choice. **Talk to Wisp** on a record opens the Wisp tab for that moment and leaves your choice as it was. **Ask AI about reliability** on a device always starts a direct session, even under a grant. So does **Ask AI about this**, which a record shows in place of **Talk to Wisp** when no grant covers it.
+
+On the Wisp home and a Wisp thread page, the page's own composer is the Wisp conversation, so opening the panel there focuses that composer instead. The tabs are in the side panel only: the Breeze AI page at `/ai/chat` and the mobile app work as before.
 
 ### Move a conversation to the Breeze AI page
 

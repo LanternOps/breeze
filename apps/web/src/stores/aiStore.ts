@@ -2088,12 +2088,16 @@ export const useAiStore = create<AiState>()(
     // this call supersedes it even while the resume check is in flight.
     let owns = claimSessionOwnership();
     const before = get();
+    // Coming from the Breeze AI tab: remember its conversation (or that it had
+    // none) so the tab comes back to it. A topology investigation is not a
+    // conversation to return to. A bound session that is this thread's own
+    // (restored after a reload, before its grant was read back) is Wisp's, not
+    // the tab's: what was remembered stays.
+    const boundIsThreads = before.sessionId !== null
+      && (before.sessionId === w.lastSessionId || before.sessionId === before.wispTabResume?.sessionId);
     set({
       wisp: w, ...CLEARED_SESSION, isLoading: true, error: null, errorCode: null, errorStatus: null,
-      // Coming from the Breeze AI tab: remember its conversation (or that it
-      // had none) so the tab comes back to it. A topology investigation is
-      // not a conversation to return to.
-      ...(before.wisp ? {} : { plainTabSessionId: before.topologySiteId === null ? before.sessionId : null }),
+      ...(before.wisp || boundIsThreads ? {} : { plainTabSessionId: before.topologySiteId === null ? before.sessionId : null }),
     });
     // #11672: a Wisp thread is one conversation. Opening the pane on another
     // page (or "Talk to Wisp" there) continues the thread's live session; a

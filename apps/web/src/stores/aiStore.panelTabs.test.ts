@@ -104,6 +104,15 @@ describe('aiStore — side panel tabs', () => {
     expect(useAiStore.getState().plainTabSessionId).toBeNull();
   });
 
+  it('a Wisp session restored after a reload (its grant not read yet) is not remembered as the direct session', async () => {
+    // Reload on the Wisp tab: the persisted session is the Wisp one and `wisp` is still null.
+    useAiStore.setState({ sessionId: 'sess-w', panelTab: 'wisp', plainTabSessionId: 'sess-p' });
+    await useAiStore.getState().enterWispMode(wisp({ lastSessionId: 'sess-w' }));
+    expect(useAiStore.getState().plainTabSessionId).toBe('sess-p');
+    await useAiStore.getState().selectPanelTab('session');
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-p', wisp: null });
+  });
+
   it('opening the pane on the Breeze AI tab leaves a Wisp thread a page bound to the store, and restores the direct session', async () => {
     // The Wisp home bound the shared store to its thread; the user then went to a device page.
     useAiStore.setState({ sessionId: 'sess-p' });
