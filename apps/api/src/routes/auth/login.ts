@@ -66,7 +66,9 @@ import {
   isTokenRevokedForUser,
   revokeCurrentRefreshTokenJti,
   resolveCurrentUserTokenContext,
+  resolveSessionTokenContextForRefresh,
   NoTenantMembershipError,
+  SessionTenantAxisError,
   auditUserLoginFailure,
   auditLogin,
   userRequiresSetup,
@@ -1071,13 +1073,56 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
+  // A refresh re-issues the session's own tenant scope: the scope and tenant
+  // come from the signed refresh token, and the membership on that exact axis
+  // is re-validated. It never re-picks an axis the way a fresh sign-in does,
+  // so an organization session stays on its org even when the user also holds
+  // a partner (or another org's) membership.
   let context;
   try {
-    context = await resolveCurrentUserTokenContext(user.id);
+    context = await resolveSessionTokenContextForRefresh(user.id, {
+      scope: payload.scope,
+      orgId: payload.orgId,
+      partnerId: payload.partnerId,
+    });
   } catch (err) {
-    // A membership-less / non-admin user (membership revoked mid-session) must
-    // not be able to refresh into a system-scope token. Fail closed. (sec review #2)
-    if (!(err instanceof TenantInactiveError) && !(err instanceof NoTenantMembershipError)) throw err;
+    if (err instanceof TenantInactiveError) {
+      recordFailedLogin('refresh_tenant_inactive');
+      clearRefreshTokenCookie(c);
+      return c.json({ error: 'Invalid refresh token' }, 401);
+    }
+    // The session's own tenant axis no longer holds: the membership it was
+    // minted on is gone, or a system session's user is no longer a
+    // membership-less platform admin. End the session: falling back to another
+    // membership would hand out a scope this sign-in never established.
+    // (sec review #2 covers the membership-less case.)
+    if (!(err instanceof SessionTenantAxisError) && !(err instanceof NoTenantMembershipError)) throw err;
+    const familyRevocation = await revokeFamily(familyId, 'tenant-axis-lost');
+    if (familyRevocation.database !== 'confirmed') {
+      console.error('[auth] Refresh refused for a lost tenant axis; durable family revocation unconfirmed', {
+        familyId,
+        ...familyRevocation,
+      });
+    }
+    recordFailedLogin('refresh_tenant_axis_lost');
+    createAuditLogAsync({
+      actorType: 'user',
+      actorId: user.id,
+      actorEmail: user.email,
+      action: 'auth.refresh.tenant_axis_lost',
+      resourceType: 'refresh_token_family',
+      resourceId: familyId,
+      details: {
+        mintedScope: typeof payload.scope === 'string' ? payload.scope : null,
+        reason: err instanceof SessionTenantAxisError
+          ? err.message
+          : 'System session user is no longer a platform admin',
+        familyRevocation,
+      },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'denied',
+    });
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }

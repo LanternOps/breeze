@@ -23,6 +23,8 @@ import {
   _resetAuthCookieWarnStateForTests,
   type PendingMfaRecord,
   genericAuthError,
+  resolveSessionTokenContextForRefresh,
+  SessionTenantAxisError,
 } from './helpers';
 import type { AuthorizedUserSession } from '../../services/userSession';
 import type { RequestLike } from '../../services/auditEvents';
@@ -994,5 +996,21 @@ describe('genericAuthError', () => {
 
   it('exposes no discriminator field beyond error and code', () => {
     expect(Object.keys(genericAuthError()).sort()).toEqual(['code', 'error']);
+  });
+});
+
+describe('resolveSessionTokenContextForRefresh — refuses claims that name no tenant on their axis', () => {
+  // Every case below is refused before any database read, so a token whose
+  // claims do not name the tenant for their own scope can never fall through
+  // to a user-wide membership lookup.
+  it.each([
+    ['partner scope with no partnerId', { scope: 'partner', orgId: 'org-1', partnerId: null }],
+    ['partner scope with an empty partnerId', { scope: 'partner', orgId: null, partnerId: '' }],
+    ['organization scope with no orgId', { scope: 'organization', orgId: null, partnerId: 'partner-1' }],
+    ['organization scope with a non-string orgId', { scope: 'organization', orgId: 42, partnerId: null }],
+    ['an absent scope', { scope: undefined, orgId: 'org-1', partnerId: 'partner-1' }],
+    ['an unknown scope', { scope: 'tenant', orgId: 'org-1', partnerId: 'partner-1' }],
+  ])('%s', async (_label, minted) => {
+    await expect(resolveSessionTokenContextForRefresh('user-1', minted)).rejects.toBeInstanceOf(SessionTenantAxisError);
   });
 });
