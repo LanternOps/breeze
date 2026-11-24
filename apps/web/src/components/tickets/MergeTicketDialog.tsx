@@ -307,8 +307,18 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
             <input
               type="checkbox"
               checked={includeClosed}
-              disabled={submitting}
-              onChange={(e) => setIncludeClosed(e.target.checked)}
+              disabled={submitting || reopening}
+              onChange={(e) => {
+                setIncludeClosed(e.target.checked);
+                // Unticking drops resolved/closed rows from the list; don't leave one selected.
+                if (!e.target.checked && target && (target.status === 'closed' || target.status === 'resolved')) {
+                  previewSeq.current += 1;
+                  setTarget(null);
+                  setPreview(null);
+                  setPreviewLoading(false);
+                  setPreviewFailed(false);
+                }
+              }}
               data-testid="ticket-merge-include-closed"
             />
             <span>{t('ticketWorkbench.merge.includeClosed')}</span>
@@ -325,7 +335,7 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
                 <button
                   type="button"
                   onClick={() => choose(c)}
-                  disabled={submitting}
+                  disabled={submitting || reopening}
                   aria-pressed={target?.id === c.id}
                   className={cn('flex w-full items-baseline gap-2 px-3 py-2 text-left text-sm hover:bg-muted', target?.id === c.id && 'bg-primary/10')}
                   data-testid={`ticket-merge-option-${c.id}`}

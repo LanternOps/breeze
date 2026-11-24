@@ -465,4 +465,31 @@ describe('MergeTicketDialog — resolved and closed targets (#12256)', () => {
     await screen.findByTestId('ticket-merge-reopen-first');
     expect(screen.queryByTestId('ticket-merge-reopen')).toBeNull();
   });
+
+  it('a failed reopen keeps the closed notice and never previews', async () => {
+    mockApi({ list: [CLOSED] });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/tickets/tk-closed/status' && init?.method === 'POST') return json({ error: 'nope' }, 500);
+      return base(input, init);
+    });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-reopen'));
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect(screen.getByTestId('ticket-merge-reopen-first')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-merge-reopen')).not.toBeDisabled();
+    expect(previewCalls()).toHaveLength(0);
+  });
+
+  it('unticking the toggle clears a selected closed target', async () => {
+    mockApi({ list: [CLOSED] });
+    renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-include-closed'));
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-closed'));
+    await screen.findByTestId('ticket-merge-reopen-first');
+    fireEvent.click(screen.getByTestId('ticket-merge-include-closed'));
+    await waitFor(() => expect(screen.queryByTestId('ticket-merge-reopen-first')).toBeNull());
+  });
 });
