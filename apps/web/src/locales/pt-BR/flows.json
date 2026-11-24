@@ -44,6 +44,8 @@
     "createdInChat": "Criado no Breeze AI",
     "movedFromJob": "Movido de um job",
     "movedFromJobReverted": "(movido de volta)",
+    "shadowingNotice": "Este fluxo está em sombra do job {{name}}. Ele entra em produção quando você faz a troca pelo job.",
+    "shadowingLink": "Abrir o diálogo Mover do job",
     "edit": "Editar",
     "delete": "Excluir rascunho",
     "deleteConfirmTitle": "Excluir este rascunho?",
@@ -184,6 +186,7 @@
     "generic": "Não foi possível ativar o fluxo.",
     "webhookSecretMissing": "Crie um segredo de webhook antes de ativar este fluxo.",
     "aiBudgetUnavailable": "Esta organização não tem orçamento de IA, então um fluxo com uma etapa de IA não pode ser ativado.",
+    "conversionNotSwitched": "Este fluxo está em sombra de um job, então ele entra em produção quando você faz a troca pelo job, não por aqui.",
     "webhookSecretInvalidated": "Ativar esta versão apagou o segredo do webhook, porque ele foi criado para um rascunho mais antigo. Todas as requisições são recusadas até que você crie um novo segredo e o entregue ao remetente."
   },
   "run": {

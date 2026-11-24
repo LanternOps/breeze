@@ -32,7 +32,7 @@ export const NAV_KEYWORDS: Record<string, readonly string[]> = {
   '/incidents': ['threats', 'breach', 'security events'],
   '/remote': ['rdp', 'remote desktop', 'terminal', 'ssh', 'screen sharing', 'connect'],
   '/scripts': ['powershell', 'bash', 'commands', 'run script'],
-  '/jobs': ['automation', 'automations', 'scheduled tasks', 'schedule', 'cron', 'tasks'],
+  '/jobs': ['automation', 'automations', 'job', 'jobs', 'scheduled tasks', 'schedule', 'cron', 'tasks'],
   '/flows': ['automation', 'workflow', 'workflows'],
   '/patches': ['updates', 'windows update', 'patching', 'hotfix', 'update rings'],
   '/vulnerabilities': ['cve', 'cves', 'exposure', 'security holes'],
@@ -104,6 +104,12 @@ export const PARTNER_SETTINGS_KEYWORDS: Record<string, readonly string[]> = {
   'customer-portal': ['portal', 'registration', 'sign up', 'end users', 'self service'],
 };
 
+/**
+ * Words that name the Jobs tab itself. With Flows on the Automations entry
+ * opens `/flows`, but these must land on `/jobs` (#12498).
+ */
+const JOBS_TAB_KEYWORDS = ['job', 'jobs'] as const;
+
 const matches = (needle: string, ...parts: Array<string | undefined | readonly string[]>): boolean =>
   parts.flat().some((p) => p !== undefined && p.toLowerCase().includes(needle));
 
@@ -142,9 +148,13 @@ export function searchNavPages(
         ...(NAV_KEYWORDS[item.href] ?? []),
         ...(href === item.hrefWhenFlows ? NAV_KEYWORDS[href] ?? [] : []),
       ];
-      if (matches(needle, title, item.name, sectionLabel, keywords)) {
+      const jobsTab =
+        item.href === '/jobs' && href !== item.href && (JOBS_TAB_KEYWORDS as readonly string[]).includes(needle) &&
+        !matches(needle, title, item.name, sectionLabel);
+      if (jobsTab || matches(needle, title, item.name, sectionLabel, keywords)) {
+        const target = jobsTab ? item.href : href;
         seen.add(item.href);
-        hits.push({ id: href, title, description: sectionLabel ?? '', href });
+        hits.push({ id: target, title, description: sectionLabel ?? '', href: target });
       }
     }
   };

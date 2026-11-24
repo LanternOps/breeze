@@ -44,6 +44,8 @@
     "createdInChat": "Breeze AI'da oluşturuldu",
     "movedFromJob": "İşten taşındı",
     "movedFromJobReverted": "(geri taşındı)",
+    "shadowingNotice": "Bu akış {{name}} işinin gölgesinde çalışıyor. İşten geçiş yaptığınızda canlıya alınır.",
+    "shadowingLink": "İşin Taşı penceresini aç",
     "edit": "Düzenle",
     "delete": "Taslağı sil",
     "deleteConfirmTitle": "Bu taslak silinsin mi?",
@@ -184,6 +186,7 @@
     "generic": "Akış etkinleştirilemedi.",
     "webhookSecretMissing": "Bu akışı etkinleştirmeden önce bir webhook gizli anahtarı oluşturun.",
     "aiBudgetUnavailable": "Bu kuruluşun harcayabileceği bir yapay zeka bütçesi yok, bu nedenle yapay zeka adımı olan bir akış etkinleştirilemez.",
+    "conversionNotSwitched": "Bu akış bir işin gölgesinde çalışıyor; bu yüzden buradan değil, işin kendisinden geçiş yaptığınızda canlıya alınır.",
     "webhookSecretInvalidated": "Bu sürümü etkinleştirmek, daha eski bir taslak için oluşturulduğundan webhook gizli anahtarını temizledi. Yeni bir gizli anahtar oluşturup göndericiye verene kadar tüm istekler reddedilir."
   },
   "run": {
