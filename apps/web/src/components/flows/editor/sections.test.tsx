@@ -196,6 +196,15 @@ describe('OnFailureSection', () => {
     expect(screen.getByTestId(`flow-form-onfailure-channel-${CHANNEL}`)).toBeDisabled();
   });
 
+  it("names each channel's type in the reader's language, not the raw type", () => {
+    const one: FlowFormOnFailure = { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' };
+    render(<OnFailureSection onFailure={one} onChange={vi.fn()} channels={channels} />);
+    const list = screen.getByTestId('flow-form-onfailure-channels').textContent ?? '';
+    expect(list).toContain('Ops (Email)');
+    expect(list).toContain('Pager (Slack)');
+    expect(list).not.toContain('(email)');
+  });
+
   it('channel ids are never duplicated', () => {
     const onChange = vi.fn();
     render(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL, CHANNEL], notice: 'summary' }} onChange={onChange} channels={channels} />);
