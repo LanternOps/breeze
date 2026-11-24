@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { resolveMock, registerMock } = vi.hoisted(() => ({
+const { resolveMock, registerMock, contextMock } = vi.hoisted(() => ({
   resolveMock: vi.fn(),
   registerMock: vi.fn(),
+  contextMock: vi.fn(),
+}));
+
+vi.mock('../db', () => ({
+  getCurrentDbAccessContext: () => contextMock(),
 }));
 
 vi.mock('./patchEligibility', () => ({
@@ -50,6 +55,8 @@ function verdict(eligible: string[], ineligible: string[] = []) {
 describe('install_patches delivery revalidation (#12493)', () => {
   beforeEach(() => {
     resolveMock.mockReset();
+    // The agent heartbeat's context: org-scoped, partner axis set.
+    contextMock.mockReturnValue({ scope: 'organization', currentPartnerId: 'partner-1' });
   });
 
   it('registers itself for install_patches at module load', () => {
@@ -131,6 +138,21 @@ describe('install_patches delivery revalidation (#12493)', () => {
       detail: { ineligiblePatchIds: [] },
     });
     expect(resolveMock).not.toHaveBeenCalled();
+  });
+
+  it('a claim context without the partner axis is held, not judged on rows it cannot see', async () => {
+    const { reader: r } = reader([{ orgId: ORG, patches: { patchIds: [P1] } }]);
+    for (const ctx of [undefined, { scope: 'organization', currentPartnerId: null }]) {
+      contextMock.mockReturnValue(ctx);
+      await expect(revalidateInstallPatchesForDelivery(r, row({ patchJobId: JOB, patchIds: [P1] }))).rejects.toThrow(
+        /cannot read partner-wide patch policy/,
+      );
+    }
+    expect(resolveMock).not.toHaveBeenCalled();
+    // System scope (the push leg) is judged.
+    contextMock.mockReturnValue({ scope: 'system', currentPartnerId: null });
+    resolveMock.mockResolvedValue(verdict([P1]));
+    expect(await revalidateInstallPatchesForDelivery(r, row({ patchJobId: JOB, patchIds: [P1] }))).toBeNull();
   });
 
   it('a resolver fault propagates (held by the caller), never read as eligible', async () => {

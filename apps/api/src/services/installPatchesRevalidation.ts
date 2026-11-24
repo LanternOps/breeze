@@ -44,8 +44,13 @@
  * reads in place instead of borrowing a second pooled connection (#1105).
  * The push leg runs in system context. Proven against real RLS in
  * __tests__/integration/installPatchesDeliveryRevalidation.integration.test.ts.
+ * Every caller that can carry a job-backed install runs in one of those two
+ * contexts. A context with neither (a future caller) would read partner-wide
+ * policies and approvals as absent and cancel a valid install, so it is held
+ * instead.
  */
 import { eq } from 'drizzle-orm';
+import { getCurrentDbAccessContext } from '../db';
 import { patchJobs } from '../db/schema';
 import { requestedPatchIdsSchema } from './patchJobRequestedPatchIds';
 import {
@@ -133,6 +138,13 @@ export async function revalidateInstallPatchesForDelivery(
   const named = new Set(requested.data);
   const unnamed = delivered.filter((id) => !named.has(id));
   if (unnamed.length > 0) return cancel(unnamed);
+
+  // Partner-axis visibility is what makes the verdict trustworthy (module
+  // comment): without it, held rather than judged on rows it cannot see.
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) {
+    throw new Error(`install_patches ${row.id}: claim context cannot read partner-wide patch policy; not judging eligibility`);
+  }
 
   // Every id here is a named uuid (checked above). The resolver reads through
   // the ambient `db`, which under both legs' contexts is the claim's own

@@ -3,7 +3,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 
 import { and, eq, sql } from 'drizzle-orm';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Count every step outside the ambient DB context taken WHILE a context is
 // held. `runOutsideDbContext` is the first step of every system-context
@@ -32,6 +32,8 @@ import {
   configPolicyPatchSettings,
   configurationPolicies,
   deviceCommands,
+  deviceHardware,
+  deviceOemUpdateStatus,
   devicePatches,
   devices,
   patchApprovals,
@@ -42,6 +44,7 @@ import {
 } from '../../db/schema';
 import { __testOnly as patchExecutorTestOnly } from '../../jobs/patchJobExecutor';
 import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { computeOccurrence } from '../../services/oemUpdates/occurrence';
 import { REQUESTED_PATCHES_NO_LONGER_ELIGIBLE } from '../../services/installPatchesRevalidation';
 import { createOrganization, createPartner, deviceAgentId, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -77,6 +80,10 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
   beforeEach(async () => {
     dbSpy.outside = 0;
     env = await setupTestEnvironment({ scope: 'organization' });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   function agentContext(): DbAccessContext {
@@ -373,6 +380,26 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     await expectCancelledWith(job.id, cmd.id, [p1.id]);
   });
 
+  it('a claim context without the partner axis HOLDS the install instead of judging it on rows it cannot see', async () => {
+    const { job, cmd } = await queuedAiInstall();
+
+    const claimed = await withDbAccessContext({ ...agentContext(), currentPartnerId: null }, async () =>
+      claimPendingCommandsForDevice(
+        { deviceId: cmd.deviceId, agentId: await deviceAgentId(cmd.deviceId), installIncarnation: 1 },
+        10,
+        'agent',
+        undefined,
+        { ...AGENT_CAPS },
+      ),
+    );
+
+    expect(claimed).toEqual([]);
+    const row = await commandRow(cmd.id);
+    expect(row.status).toBe('pending');
+    expect(row.result).toBeNull();
+    expect((await jobRow(job.id)).devicesQueued).toBe(1);
+  });
+
   it('a row queued before this change (no evaluationRingId) is found by its patchJobId and revalidated', async () => {
     const { job, cmd, p1 } = await queuedAiInstall();
     const payload = { ...(cmd.payload as Record<string, unknown>) };
@@ -475,5 +502,114 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     const row = await commandRow(cmd!.id);
     expect(row.status).toBe('pending');
     expect(row.result).toBeNull();
+  });
+  // -------------------------------------------------------------------------
+  // Vendor lane: the one read path the fixtures above never reach. A driver
+  // that a vendor lane starts delivering after dispatch is left to the lane
+  // (`managed_by_vendor_updates`); proving it here proves the lane tables
+  // (`device_oem_update_status`, the partner-wide `oem_updates` link,
+  // `device_hardware`) are readable on the agent's claim connection.
+  // -------------------------------------------------------------------------
+
+  it('a driver a Dell lane starts delivering after dispatch cancels the install, read in place on the claim', async () => {
+    const OEM_SCHEDULE = { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 } as const;
+    const ring = await makeRing();
+    await linkPolicy(ring.id, 'organization', env.organization.id);
+    const [device] = await getTestDb()
+      .insert(devices)
+      .values({
+        orgId: env.organization.id,
+        siteId: env.site.id,
+        agentId: `reval-lane-${randomUUID()}`,
+        hostname: `lane-${randomUUID().slice(0, 8)}`,
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'amd64',
+        agentVersion: '0.127.0',
+        status: 'offline',
+      })
+      .returning();
+    await getTestDb().insert(deviceHardware).values({
+      deviceId: device!.id, orgId: env.organization.id, manufacturer: 'Dell Inc.', model: 'Latitude 7420', biosVersion: '1.20.0',
+    });
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    vi.stubEnv('BREEZE_OEM_UPDATES_LAB_DEVICE_IDS', device!.id);
+    // A partner-wide Vendor updates policy with the Dell driver class armed.
+    await withSystemDbAccessContext(async () => {
+      const [policy] = await db
+        .insert(configurationPolicies)
+        .values({ orgId: null, partnerId: env.partner.id, name: `vendor updates ${randomUUID()}`, status: 'active' })
+        .returning({ id: configurationPolicies.id });
+      await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy!.id,
+        featureType: 'oem_updates',
+        inlineSettings: {
+          version: 1,
+          enabled: true,
+          schedule: OEM_SCHEDULE,
+          catchUpNights: 7,
+          reboot: 'overnight',
+          vendors: { dell: { enabled: true, categories: { bios: true, firmware: true, driver: true }, blockedUpdateIds: [] } },
+        },
+      });
+      await db.insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level: 'partner', targetId: env.partner.id });
+    });
+    const [driver] = await getTestDb()
+      .insert(patches)
+      .values({
+        source: 'microsoft', externalId: `wu-${randomUUID()}`, title: 'Dell Inc. - Display', severity: 'low' as 'critical',
+        category: 'driver', releaseDate: '2020-01-01', requiresReboot: false,
+      })
+      .returning();
+    await getTestDb().insert(devicePatches).values({
+      deviceId: device!.id, patchId: driver!.id, orgId: env.organization.id, status: 'pending',
+      reportedUpdateType: 'driver', reportedUpdateOwner: 'dell',
+    });
+    await decide(driver!.id, 'approved');
+    const job = await makeJob({ patchIds: [driver!.id] }, [device!.id]);
+    // No lane has delivered yet, so the approved driver is Windows Update's.
+    expect((await dispatchDevice(job.id, device!.id)).kind).toBe('queued');
+    const cmd = await installCommand(device!.id);
+
+    // The lane completes this occurrence: it now owns the driver class.
+    const now = new Date();
+    const [run] = await getTestDb().insert(deviceCommands).values({
+      deviceId: device!.id,
+      type: 'oem_update_run',
+      payload: { lane: 'dell', trigger: 'scheduled', categories: ['bios', 'firmware', 'driver'] },
+      status: 'completed',
+      submittedOrgId: env.organization.id,
+      result: {
+        stdout: JSON.stringify({
+          lane: 'dell', outcome: 'success', toolVersion: '5.7.2', rawExitCode: 0, errorCode: null,
+          rebootRequired: false, shutdownRequired: false, items: [], skippedCategories: [], takeover: 'ok',
+        }),
+      },
+    }).returning({ id: deviceCommands.id });
+    await getTestDb().insert(deviceOemUpdateStatus).values({
+      lastCommandId: run!.id,
+      deviceId: device!.id,
+      orgId: env.organization.id,
+      lane: 'dell',
+      applicability: 'applicable',
+      occurrenceKey: computeOccurrence({ ...OEM_SCHEDULE, catchUpNights: 7 }, 'UTC', now).occurrenceKey,
+      attempts: 1,
+      lastOutcome: 'success',
+      lastAttemptAt: now,
+      lastSuccessAt: now,
+      firstCompletedAt: now,
+    });
+
+    dbSpy.outside = 0;
+    const claimed = await claimAsAgent(device!.id);
+
+    expect(claimed.filter((c) => c.type === 'install_patches')).toEqual([]);
+    expect(dbSpy.outside).toBe(0);
+    const row = await commandRow(cmd.id);
+    expect(row.status).toBe('cancelled');
+    expect(row.result).toMatchObject({
+      reason: REQUESTED_PATCHES_NO_LONGER_ELIGIBLE,
+      detail: { ineligiblePatchIds: [driver!.id] },
+    });
   });
 });
