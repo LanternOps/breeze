@@ -165,6 +165,33 @@ describe('report branding — partner visibility under a portal org-scoped conte
     },
   );
 
+  // #12048: the browser PDF export of an org-scoped STAFF user (a real user id,
+  // not the portal's null) gets its branding from this loader via the run
+  // download. Deny and positive control run in the same context so the deny
+  // cannot be a vacuous empty result.
+  runDb(
+    "org-scoped staff of partner A resolve A's page size and logo, and partner B's org yields nothing",
+    async () => {
+      const a = await seedTenant('staffA');
+      const b = await seedTenant('staffB');
+      await withSystemDbAccessContext(async () => {
+        await db.update(partners).set({ documentPageSize: 'letter' }).where(eq(partners.id, a.partnerId));
+        await db.update(partners).set({ documentPageSize: 'a4' }).where(eq(partners.id, b.partnerId));
+      });
+      const staffContext: DbAccessContext = { ...portalOrgContext(a.orgId), userId: '11111111-1111-4111-8111-111111111111' };
+
+      const [own, foreign] = await withDbAccessContext(staffContext, async () => [
+        await loadReportBrandingForOrg(a.orgId),
+        await loadReportBrandingForOrg(b.orgId),
+      ] as const);
+
+      expect(own.name).toBe(a.partnerName);
+      expect(own.pageSize).toBe('letter');
+      expect(foreign).toEqual({ name: null, logoDataUrl: null, logoAspect: null });
+      expect(JSON.stringify(foreign)).not.toContain(b.partnerName);
+    },
+  );
+
   runDb(
     'sanity check: the raw partners row IS invisible to that org-scoped context (proves the RLS premise)',
     async () => {
