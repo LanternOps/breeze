@@ -28,6 +28,8 @@
 import { db, withDbAccessContext } from '../db';
 import { aiToolExecutions } from '../db/schema';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
+import { executionDiscoveryStamp } from './aiToolDiscoveryObserver';
+import { noteToolCall } from './aiToolDiscoveryMetrics';
 import { captureException } from './sentry';
 import type { ActiveSession } from './streamingSessionManager';
 
@@ -89,8 +91,10 @@ export async function recordPreHookRefusal(
           errorMessage,
           durationMs: 0,
           completedAt: new Date(),
+          ...executionDiscoveryStamp(session, toolName, toolUseId),
         }),
     );
+    noteToolCall('refused');
   } catch (err) {
     // The call is refused either way, but this refusal now has no ledger row
     // — the #10411 invariant is broken for it, so it is reported, not just logged.

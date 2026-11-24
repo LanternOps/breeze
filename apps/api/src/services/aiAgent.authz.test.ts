@@ -99,6 +99,7 @@ vi.mock('./aiModels/sessionModel', () => ({
   })),
 }));
 
+import { metricsRegistry } from './metricsRegistry';
 import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome, waitForApproval, AI_APPROVAL_REQUEST_EXPIRED_MESSAGE, AI_APPROVAL_WAIT_ENDED_MESSAGE, AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE, type ApprovalWaitDetail } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };
@@ -312,6 +313,25 @@ describe('handleApproval approval_requests mirror (#3094)', () => {
 
     expect(ok).toBe(true);
     expect(updates[1]!.set).toMatchObject({ status: 'denied' });
+  });
+
+  it('a human deny counts one rejected tool call; an approve counts none (#12421)', async () => {
+    metricsRegistry.resetMetrics();
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    captureUpdates();
+    await expect(handleApproval('exec-1', false, auth('victim'), 's1')).resolves.toBe(true);
+    expect(await rejectedCount()).toBe(1);
+
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    captureUpdates();
+    await expect(handleApproval('exec-1', true, auth('victim'), 's1')).resolves.toBe(true);
+    expect(await rejectedCount()).toBe(1);
   });
 
   it('still reports success when the bridge mirror fails (execution row is the source of truth)', async () => {
@@ -528,6 +548,27 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(lockCalls).toEqual([lockedByExecution]);
   });
 
+  it("the wait's own timeout close-out counts one rejected tool call (#12421)", async () => {
+    metricsRegistry.resetMetrics();
+    lockedRequestIds = ['req-1'];
+    recordUpdates([[{ id: 'exec-1' }]]);
+    await expect(waitForApproval('exec-1', 0, undefined, {})).resolves.toBe(false);
+    expect(await rejectedCount()).toBe(1);
+  });
+
+  it('an approval that beat the close-out counts no rejected tool call (#12421)', async () => {
+    metricsRegistry.resetMetrics();
+    vi.useFakeTimers();
+    lockedRequestIds = ['req-1'];
+    stubSelectOnce([{ status: 'pending', errorMessage: null }]);
+    recordUpdates([[]]);
+    stubSelectOnce([{ status: 'approved', errorMessage: null }]);
+    const waiting = waitForApproval('exec-1', 100, undefined, {});
+    await vi.runAllTimersAsync();
+    await expect(waiting).resolves.toBe(true);
+    expect(await rejectedCount()).toBe(0);
+  });
+
   it('honours an approval that beat the timeout close-out, and leaves the mobile request alone (#12084)', async () => {
     vi.useFakeTimers();
     lockedRequestIds = ['req-1'];
@@ -727,3 +768,11 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(detail.expired).toBeUndefined();
   });
 });
+
+
+// #12421 W01: breeze_ai_tool_call_total{status="rejected"} on the chat approval paths.
+async function rejectedCount(): Promise<number> {
+  const metric = metricsRegistry.getSingleMetric('breeze_ai_tool_call_total');
+  const values = metric ? (await metric.get()).values : [];
+  return values.find((v) => v.labels.status === 'rejected')?.value ?? 0;
+}

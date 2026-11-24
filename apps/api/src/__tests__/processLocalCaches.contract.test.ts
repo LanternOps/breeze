@@ -134,6 +134,7 @@ const CACHES: Record<string, Classification> = {
   'apps/api/src/services/aiAgents/agentToolCatalog.ts#memo': { kind: 'process-local', reason: CODE },
   'apps/api/src/services/aiAgentSdkTools.ts#cachedBreezeToolTemplate': { kind: 'process-local', reason: CODE },
   'apps/api/src/services/aiModels/gateway/openai/toolNames.ts#bareIndexCache': { kind: 'process-local', reason: 'WeakMap index over an in-memory tool schema object' },
+  'apps/api/src/services/aiToolSurfaceFingerprint.ts#schemaJsonCache': { kind: 'process-local', reason: 'WeakMap from an in-memory tool schema object to its JSON Schema text (#12421)' },
   'apps/api/src/extensions/tenancyTripwire.ts#coreTableNamesCache': { kind: 'process-local', reason: 'core table names read once from the schema catalog; changes only with a migration (a deploy)' },
   'apps/api/src/services/workerClosure/closureGraph.ts#parseCache': { kind: 'process-local', reason: 'parsed source files for the worker-closure contract tooling' },
   'apps/api/src/jobs/aiAgentSweepScheduler.ts#occurrences': { kind: 'process-local', reason: 'pure cron-occurrence math; no data' },

@@ -55,6 +55,18 @@ export function registerReservedAiToolNamePredicate(predicate: ReservedNamePredi
   extraReservedNamePredicates.push(predicate);
 }
 
+/**
+ * Whether a registry tool is always loaded (never deferred behind tool
+ * search). Lives here, beside the registry map, so a caller can ask without
+ * importing the whole aiTools graph; aiTools.getToolAlwaysLoad delegates.
+ */
+export function isAlwaysLoadedToolName(toolName: string): boolean {
+  // Approval-mode prompts instruct the model to call this chat-only tool by
+  // name, so it is never deferred behind tool search (A-W04).
+  if (toolName === 'propose_action_plan') return true;
+  return aiTools.get(toolName)?.alwaysLoad === true;
+}
+
 export function hasCoreAiToolName(toolName: string): boolean {
   return aiTools.has(toolName) || extraReservedNamePredicates.some((predicate) => predicate(toolName));
 }
