@@ -83,6 +83,6 @@ Lab checks owed before the next tag:
 
 ## Migrations
 
-- `2027-01-28-210000-ai-tool-search-events.sql` (#12421): creates `ai_tool_search_events` (session-keyed, no `org_id`; RLS enabled + forced with four policies joined through `ai_sessions`) and adds nullable `ai_tool_executions.discovery` (with CHECK `ai_tool_executions_discovery_chk`) and `ai_tool_executions.tool_use_id`. The CHECK validates in the same file, scanning `ai_tool_executions` once against an all-NULL column. Writes no rows.
+- `2027-01-30-110000-ai-tool-search-events.sql` (#12421): creates `ai_tool_search_events` (session-keyed, no `org_id`; RLS enabled + forced with four policies joined through `ai_sessions`) and adds nullable `ai_tool_executions.discovery` (with CHECK `ai_tool_executions_discovery_chk`) and `ai_tool_executions.tool_use_id`. The CHECK validates in the same file, scanning `ai_tool_executions` once against an all-NULL column. Writes no rows.
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.

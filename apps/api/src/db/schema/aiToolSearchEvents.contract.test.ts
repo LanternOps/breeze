@@ -10,7 +10,7 @@ import { AI_TOOL_DISCOVERY, aiToolExecutions, aiToolSearchEvents } from './ai';
 // __tests__/integration/aiToolSearchEventsRls.integration.test.ts.
 
 const MIGRATIONS_DIR = join(__dirname, '../../../migrations');
-const MIGRATION = '2027-01-28-210000-ai-tool-search-events.sql';
+const MIGRATION = '2027-01-30-110000-ai-tool-search-events.sql';
 // Fixed predecessor (the newest committed migration when W01 was written).
 // Never "after every other file": that goes red the day the next one merges.
 const PREDECESSOR = '2027-01-28-200000-agent-versions-min-os.sql';
