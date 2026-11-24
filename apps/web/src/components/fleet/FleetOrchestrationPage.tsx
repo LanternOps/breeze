@@ -278,9 +278,10 @@ export default function FleetOrchestrationPage() {
   const canUseAi = usePermissions().can('ai_sessions', 'use');
   const handleQuickAction = (prompt: string) => {
     if (!canUseAi) return;
+    // On the tab the user picked: a Wisp thread a Wisp page left bound must
+    // not receive a prompt sent from this page.
     const store = useAiStore.getState();
-    store.open();
-    store.sendMessage(prompt);
+    void store.openOnPickedTab().then(() => useAiStore.getState().sendMessage(prompt));
   };
 
   // The stat strip is now secondary: a failure or a slow load in the stats

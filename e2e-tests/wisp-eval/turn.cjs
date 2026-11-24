@@ -33,8 +33,8 @@ async function selectWispTab(p) {
     throw new Error('pane has no Wisp tab (no active Wisp grant?): a pane scenario would run against plain Breeze AI');
   });
   if ((await p.getAttribute(WISP_TAB, 'aria-selected')) !== 'true') await p.click(WISP_TAB);
-  // aria-selected flips before the Wisp session is bound; the tab stays disabled until it is.
-  await p.waitForSelector(`${WISP_TAB}[aria-selected="true"]:not([disabled])`, { timeout: 30000 }).catch(() => {
+  // aria-selected flips before the Wisp session is bound; the tab stays aria-disabled until it is.
+  await p.waitForSelector(`${WISP_TAB}[aria-selected="true"]:not([aria-disabled="true"])`, { timeout: 30000 }).catch(() => {
     throw new Error('the pane\'s Wisp tab never became selected');
   });
 }

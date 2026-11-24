@@ -295,7 +295,13 @@ export default function AiChatSidebar() {
   const [tabSwitching, setTabSwitching] = useState(false);
 
   const handleSelectTab = useCallback(async (tab: AiPanelTab) => {
-    if (tabSwitching || tab === activeTab) return;
+    if (tabSwitching) return;
+    if (tab === activeTab) {
+      // Already on screen (a device task showing the direct session over a
+      // panel left on Wisp, say): the click still makes it the picked tab.
+      await selectPanelTab(tab, wisp ?? undefined);
+      return;
+    }
     setTabSwitching(true);
     try {
       if (tab === "session") {
@@ -314,7 +320,7 @@ export default function AiChatSidebar() {
     } finally {
       setTabSwitching(false);
     }
-  }, [activeTab, selectPanelTab, selectedOrgId, tabSwitching]);
+  }, [activeTab, selectPanelTab, selectedOrgId, tabSwitching, wisp]);
 
   // Wisp is on here but there is no active grant (none, paused, ended, or the
   // plan lacks Wisp): point at the home, which explains and starts or resumes one.
@@ -517,11 +523,22 @@ export default function AiChatSidebar() {
                   type="button"
                   role="tab"
                   aria-selected={selected}
+                  // aria-disabled, not disabled: focus stays on the tab while the switch runs.
+                  aria-disabled={tabSwitching || undefined}
+                  tabIndex={selected ? 0 : -1}
                   title={tab.hint}
-                  disabled={tabSwitching}
                   onClick={() => void handleSelectTab(tab.id)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                    event.preventDefault();
+                    const other = tabs.find((candidate) => candidate.id !== tab.id);
+                    if (!other) return;
+                    const sibling = event.currentTarget.parentElement?.querySelector<HTMLElement>(`[data-testid="ai-panel-tab-${other.id}"]`);
+                    sibling?.focus();
+                    void handleSelectTab(other.id);
+                  }}
                   data-testid={`ai-panel-tab-${tab.id}`}
-                  className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-default ${
+                  className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary aria-disabled:cursor-default ${
                     selected
                       ? "border-primary text-foreground"
                       : "border-transparent text-muted-foreground hover:text-foreground"

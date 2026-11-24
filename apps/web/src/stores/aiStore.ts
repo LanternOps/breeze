@@ -219,11 +219,20 @@ interface AiState {
    */
   panelTab: AiPanelTab;
   /**
-   * The Breeze AI tab's conversation while the store is bound to a Wisp
-   * thread (the Wisp tab, "Talk to Wisp", or a Wisp page), so going back
-   * resumes it. Null = that tab is empty. Persisted.
+   * The Breeze AI tab's conversation: the last direct session the pane held,
+   * kept while the store is bound to a Wisp thread (the Wisp tab, "Talk to
+   * Wisp", a Wisp page, a Wisp session from History) so going back resumes
+   * it. Null = that tab is empty. Maintained by a store subscription, never
+   * by the code that binds Wisp. Persisted.
    */
   plainTabSessionId: string | null;
+  /**
+   * The grant the loaded session runs under, as the server reported it when
+   * the session was created or loaded; null = a direct session. Known at once,
+   * where `wisp` (the header's grant state) can arrive a read later. Meaningful
+   * only while `hydratedSessionId === sessionId`.
+   */
+  sessionWispGrantId: string | null;
   /**
    * The Wisp session the panel last left without closing. A grant read from
    * before that session existed carries no `lastSessionId`; this keeps the
@@ -247,8 +256,9 @@ interface AiState {
    * Open the pane as the header button and shortcut do (`toggle`): on the tab
    * the user picked. On the Breeze AI tab, a Wisp thread a Wisp page or "Talk
    * to Wisp" left bound is swapped for the tab's own conversation first.
+   * Resolves once that swap has settled, so a caller can send right after.
    */
-  openOnPickedTab: () => void;
+  openOnPickedTab: () => Promise<void>;
   close: () => void;
   setWispPageThreadId: (threadId: string | null) => void;
   /** Close the pane and focus the page's Wisp composer. */
@@ -371,6 +381,7 @@ const CLEARED_SESSION = {
   topologyPhase: null,
   topologyRunId: null,
   hydratedSessionId: null,
+  sessionWispGrantId: null as string | null,
   messages: [] as AiMessage[],
   isFlagged: false,
   flagReason: null,
@@ -417,6 +428,11 @@ const SWITCHED_TURN_STATE = {
  */
 export function isActiveGrant(w: WispState): boolean {
   return w?.status === 'active';
+}
+
+/** The grant a session read from the API runs under; null = a direct session. */
+function grantIdOf(session: Record<string, unknown> | undefined): string | null {
+  return typeof session?.wispGrantId === 'string' ? session.wispGrantId : null;
 }
 
 function wispForLoadedSession(wisp: WispState, session: Record<string, unknown> | undefined): WispState {
@@ -930,6 +946,7 @@ export const useAiStore = create<AiState>()(
   wisp: null,
   panelTab: 'session',
   plainTabSessionId: null,
+  sessionWispGrantId: null,
   wispTabResume: null,
 
   toggle: () => {
@@ -941,7 +958,7 @@ export const useAiStore = create<AiState>()(
       set({ isOpen: false });
       return;
     }
-    reassertSessionTab();
+    void reassertSessionTab();
     revealPane();
   },
   open: () => {
@@ -954,13 +971,14 @@ export const useAiStore = create<AiState>()(
     }
     revealPane();
   },
-  openOnPickedTab: () => {
+  openOnPickedTab: async () => {
     if (wispPageHoldsChat(get())) {
       get().focusWispPageComposer();
       return;
     }
-    reassertSessionTab();
+    const swapped = reassertSessionTab();
     revealPane();
+    await swapped;
   },
   close: () => set({ isOpen: false }),
   // A claim on the thread an open pane shows hands off to the page (a client
@@ -1028,6 +1046,7 @@ export const useAiStore = create<AiState>()(
           sessionId: data.id,
           sessionOrgId: data.orgId ?? null,
           hydratedSessionId: data.id,
+          sessionWispGrantId: null,
           messages: [],
           isLoading: false,
           isFlagged: false,
@@ -1105,6 +1124,7 @@ export const useAiStore = create<AiState>()(
         sessionId: data.id,
         sessionOrgId: data.orgId ?? null,
         hydratedSessionId: data.id,
+        sessionWispGrantId: wispGrantId ?? null,
         messages: [],
         isLoading: false,
         isFlagged: false,
@@ -1199,6 +1219,7 @@ export const useAiStore = create<AiState>()(
         sessionId,
         sessionOrgId: restoredOrgId,
         hydratedSessionId: sessionId,
+        sessionWispGrantId: grantIdOf(data.session),
         messages,
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
@@ -1796,6 +1817,7 @@ export const useAiStore = create<AiState>()(
         // navigation can rebind (#5684).
         sessionOrgId: data.session?.orgId ?? null,
         hydratedSessionId: sessionId,
+        sessionWispGrantId: grantIdOf(data.session),
         messages,
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,
@@ -1933,6 +1955,7 @@ export const useAiStore = create<AiState>()(
       // but the org is recorded so a later page navigation can rebind (#5684).
       sessionOrgId: data.session.orgId ?? null,
       hydratedSessionId: sessionId,
+      sessionWispGrantId: grantIdOf(data.session),
       messages: mapMessagesFromApi(data.messages || []),
       isLoading: false,
       error: null,
@@ -2087,26 +2110,19 @@ export const useAiStore = create<AiState>()(
     // the thread's). Claimed synchronously, so a pick or create started after
     // this call supersedes it even while the resume check is in flight.
     let owns = claimSessionOwnership();
-    const before = get();
-    // Coming from the Breeze AI tab: remember its conversation (or that it had
-    // none) so the tab comes back to it. A topology investigation is not a
-    // conversation to return to. A bound session that is this thread's own
-    // (restored after a reload, before its grant was read back) is Wisp's, not
-    // the tab's: what was remembered stays.
-    const boundIsThreads = before.sessionId !== null
-      && (before.sessionId === w.lastSessionId || before.sessionId === before.wispTabResume?.sessionId);
-    set({
-      wisp: w, ...CLEARED_SESSION, isLoading: true, error: null, errorCode: null, errorStatus: null,
-      ...(before.wisp || boundIsThreads ? {} : { plainTabSessionId: before.topologySiteId === null ? before.sessionId : null }),
-    });
+    set({ wisp: w, ...CLEARED_SESSION, isLoading: true, error: null, errorCode: null, errorStatus: null });
     // #11672: a Wisp thread is one conversation. Opening the pane on another
     // page (or "Talk to Wisp" there) continues the thread's live session; a
     // second session beside it would hold none of the conversation on screen,
     // and /wisp would then resume that one. Page context still rides each
     // turn, so the page the pane sits on is not baked into the session.
+    // The thread's last session as the caller read it wins: another window may
+    // have moved the thread on. The session this pane left without closing is
+    // the fallback for a read from before that session existed.
     const left = get().wispTabResume;
-    const resumeId = left?.grantId === w.grantId ? left.sessionId : w.lastSessionId;
-    if (resumeId) {
+    const candidates = [w.lastSessionId, left?.grantId === w.grantId ? left.sessionId : null]
+      .filter((id, i, all): id is string => !!id && all.indexOf(id) === i);
+    for (const resumeId of candidates) {
       const resumable = await isResumableWispSession(resumeId, w.grantId);
       if (!owns()) return false;
       if (resumable) {
@@ -2122,6 +2138,7 @@ export const useAiStore = create<AiState>()(
           sessionId: resumeId, boundSessionId: after.sessionId, error: after.error,
         });
         set({ wisp: w, ...CLEARED_SESSION });
+        break;
       }
     }
     const creating = get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
@@ -2247,11 +2264,14 @@ async function leaveWispForSessionTab(): Promise<void> {
   unbindWisp();
   const plainId = useAiStore.getState().plainTabSessionId;
   if (!plainId) return;
-  const switching = useAiStore.getState().switchSession(plainId);
-  const owns = ownershipAsOfNow(); // switchSession claimed synchronously.
-  await switching;
+  // loadSession, not switchSession: this is a restore, not a pick. It binds
+  // only a session that is still active, and drops one that belongs to another
+  // organization than the page the pane now sits on (#5684).
+  const loading = useAiStore.getState().loadSession(plainId);
+  const owns = ownershipAsOfNow(); // loadSession claimed synchronously.
+  await loading;
   if (!owns() || useAiStore.getState().sessionId === plainId) return;
-  // Closed and purged, or no longer readable: start clean rather than show a load error.
+  // Closed, gone, another organization's, or unreadable: an empty tab, not a load error.
   useAiStore.setState({ plainTabSessionId: null, error: null, errorCode: null, errorStatus: null });
 }
 
@@ -2262,10 +2282,33 @@ async function leaveWispForSessionTab(): Promise<void> {
  * asked to see: opening the pane on a device must never be Wisp unasked.
  * `open()` does not do this: its callers have just bound the session to show.
  */
-function reassertSessionTab(): void {
+function reassertSessionTab(): Promise<void> {
   const state = useAiStore.getState();
-  if (state.wisp && state.panelTab === 'session') void leaveWispForSessionTab();
+  // A bind in flight (a Wisp page opening its thread, "Talk to Wisp") is left
+  // to finish: unbinding under it would fail that page's load.
+  if (!state.wisp || state.panelTab !== 'session' || state.isLoading) return Promise.resolve();
+  return leaveWispForSessionTab();
 }
+
+// The Breeze AI tab's conversation is whatever direct session the pane last
+// held. Tracked here, at the one place every bind passes through, so no path
+// into Wisp (the tab, "Talk to Wisp" and its focus switch, a Wisp page, a
+// History pick, an adopt) can forget it. A session counts once it is loaded
+// (`hydratedSessionId`): a persisted id not read yet may be a Wisp session.
+useAiStore.subscribe((state, prev) => {
+  if (state.wisp) return;
+  const directSessionId = state.sessionId !== null && state.hydratedSessionId === state.sessionId
+    && state.sessionWispGrantId === null && state.topologySiteId === null ? state.sessionId : null;
+  if (directSessionId) {
+    if (state.plainTabSessionId !== directSessionId) useAiStore.setState({ plainTabSessionId: directSessionId });
+    return;
+  }
+  // The remembered session left the pane with nothing taking its place
+  // (closed by "+", gone, dropped for another organization's page): forget it.
+  if (!prev.wisp && state.sessionId === null && prev.sessionId !== null && prev.sessionId === state.plainTabSessionId) {
+    useAiStore.setState({ plainTabSessionId: null });
+  }
+});
 
 // #9427: once the bound session changes (a committed rebind, a release, the
 // #5684 org-mismatch drop), the attach that followed the old one stops now —

@@ -170,7 +170,7 @@ describe('AiChatSidebar tabs: a direct session or Wisp', () => {
     render(<AiChatSidebar />);
     expect(tab('wisp')).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(tab('session'));
-    expect(selectPanelTab).toHaveBeenCalledWith('session');
+    await waitFor(() => expect(selectPanelTab).toHaveBeenCalledWith('session'));
     // The store leaves Wisp: the tabs stay, because the grant is still there.
     act(() => { useAiStore.setState({ wisp: null, sessionId: null, hydratedSessionId: null, panelTab: 'session' }); });
     expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument();
@@ -195,6 +195,27 @@ describe('AiChatSidebar tabs: a direct session or Wisp', () => {
     await waitFor(() => expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument());
     expect(enterWispMode).not.toHaveBeenCalled();
     expect(tab('session')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('clicking the tab already on screen still makes it the picked tab', async () => {
+    // A device task showed the direct session over a panel last left on Wisp.
+    h.threads[PARTNER_THREAD] = threadBody('grant-1', 'active');
+    useAiStore.setState({ panelTab: 'wisp', sessionId: 'sess-p', hydratedSessionId: 'sess-p' });
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument());
+    fireEvent.click(tab('session'));
+    await waitFor(() => expect(selectPanelTab).toHaveBeenCalledWith('session', undefined));
+  });
+
+  it('the arrow keys move between the tabs', async () => {
+    h.threads[PARTNER_THREAD] = threadBody('grant-1', 'active');
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument());
+    expect(tab('session')).toHaveAttribute('tabindex', '0');
+    expect(tab('wisp')).toHaveAttribute('tabindex', '-1');
+    fireEvent.keyDown(tab('session'), { key: 'ArrowRight' });
+    await waitFor(() => expect(selectPanelTab).toHaveBeenCalledWith('wisp', expect.objectContaining({ grantId: 'grant-1' })));
+    expect(tab('wisp')).toHaveFocus();
   });
 
   it('New conversation on the direct session stays direct, even with an active grant', async () => {
