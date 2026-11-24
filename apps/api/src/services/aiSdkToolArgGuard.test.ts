@@ -4,7 +4,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { createArgCheckedSdkMcpServer, unknownToolArgsHooks, unknownToolArgsHooksForTools } from './aiSdkToolArgGuard';
+import { advertisedToolsOf, createArgCheckedSdkMcpServer, unknownToolArgsHooks, unknownToolArgsHooksForTools } from './aiSdkToolArgGuard';
 import { createBreezeMcpServer } from './aiAgentSdkTools';
 import { createScriptBuilderMcpServer } from './scriptBuilderTools';
 
@@ -102,6 +102,16 @@ describe('unknownToolArgsHooks (#11861)', () => {
 });
 
 /** The production builders, not a fixture server: the server they return is the one the hook recognizes. */
+describe('advertisedToolsOf (#12421 surface fingerprint)', () => {
+  it('returns the name, description and input schema of every registered tool, and undefined for an unrecorded server', () => {
+    const noop = async () => ({ content: [] });
+    const shape = { p: z.string() };
+    const server = createArgCheckedSdkMcpServer({ name: 'breeze', version: '1', tools: [tool('x', 'does x', shape, noop)] });
+    expect(advertisedToolsOf(server)).toEqual([{ name: 'x', description: 'does x', inputSchema: shape }]);
+    expect(advertisedToolsOf({})).toBeUndefined();
+  });
+});
+
 describe('production SDK servers are recognized by the hook (#11861)', () => {
   const fakeAuth = (() => { throw new Error('handlers must not run in this test'); }) as never;
 

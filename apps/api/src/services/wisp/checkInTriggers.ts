@@ -10,7 +10,8 @@
  *   script_finished   script_executions.status is terminal
  *   command_finished  device_commands.status is terminal (no bus event: the
  *                     tick is its only fast path)
- *   run_settled       ai_agent_runs.status is settled
+ *   run_settled       ai_agent_runs.status is settled, and an `awaiting_approval`
+ *                     run has no step still open (#11965)
  *
  * The subject must also sit inside the grant's LIVE ceiling (its org and
  * site), at scheduling and again at fire time: a subject deleted, or moved
@@ -22,7 +23,7 @@
  * stdout) is device-written text: it is sanitised and capped before it goes
  * anywhere (`CheckInEvidence.outputHead`).
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   WISP_CHECK_IN_PENDING_STATE_LINES,
   type WispCheckInTriggerEvent,
@@ -30,6 +31,7 @@ import {
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { OPEN_STEP_STATUSES } from '../aiAgents/runApprovalSteps';
 import { deviceCommands, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { scriptExecutions, scripts } from '../../db/schema/scripts';
@@ -98,6 +100,12 @@ export type TriggerSubject = {
   exitCode: number | null;
   output: string | null;
   lastSeenAt: Date | null;
+  /**
+   * run_settled only (#11965): the run's steps still open (waiting for a
+   * person, approved but not yet run, or running). An `awaiting_approval`
+   * run is not settled while this is above 0. 0 for every other kind.
+   */
+  openSteps?: number;
   /**
    * What the technician calls it, for the fired post (#11675): the device's
    * display name or hostname, `<script> on <device>` (`the script on
@@ -228,6 +236,12 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
             finishedAt: aiAgentRuns.finishedAt,
             displayName: devices.displayName,
             hostname: devices.hostname,
+            openSteps: sql<number>`(
+              SELECT count(*)::int FROM action_intents ai
+              WHERE ai.org_id = ${aiAgentRuns.orgId}
+                AND (ai.requesting_agent_run_id = ${aiAgentRuns.id} OR ai.id = ANY(${aiAgentRuns.intentIds}))
+                AND ai.status IN (${sql.join(OPEN_STEP_STATUSES.map((st) => sql`${st}`), sql`, `)})
+            )`,
           })
           .from(aiAgentRuns)
           .innerJoin(organizations, eq(organizations.id, aiAgentRuns.orgId))
@@ -238,6 +252,7 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
         return {
           kind, orgId: r.orgId, partnerId: r.partnerId, siteId: r.siteId ?? null, status: r.status, at: r.finishedAt,
           exitCode: null, output: null, lastSeenAt: null, name: onDevice(null, deviceName(r), 'the run'),
+          openSteps: Number(r.openSteps ?? 0),
         };
       }
     }
@@ -286,7 +301,8 @@ export function triggerConditionOf(
     subject.kind === 'device_online' ? subject.status === 'online'
       : subject.kind === 'script_finished' ? isOneOf(SCRIPT_FINISHED_STATUSES, subject.status)
         : subject.kind === 'command_finished' ? isOneOf(COMMAND_FINISHED_STATUSES, subject.status)
-          : isOneOf(AI_AGENT_RUN_SETTLED_STATUSES, subject.status);
+          : isOneOf(AI_AGENT_RUN_SETTLED_STATUSES, subject.status)
+            && !(subject.status === 'awaiting_approval' && (subject.openSteps ?? 0) > 0);
   if (!met) return { met: false, stateLine: WISP_CHECK_IN_PENDING_STATE_LINES[subject.kind] };
 
   const evidence: CheckInEvidence = { kind: subject.kind, status: subject.status, at: (subject.at ?? now).toISOString() };

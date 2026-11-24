@@ -626,6 +626,14 @@ describe('handleWispWakeEvent', () => {
     expect(h.adds).toHaveLength(0);
   });
 
+  // #11965: each step decision already woke an assessment (ai.intent.decided).
+  it('a completed event from a run settling after its steps were decided wakes nothing and reads nothing', async () => {
+    useFixtures({ runProfile: [{ profile: 'device_troubleshooting' }], eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('ai.agent.run.completed', O1, { runId: RUN, settledAfterApproval: true }));
+    expect(h.executes).toHaveLength(0);
+    expect(h.adds).toHaveLength(0);
+  });
+
   it('wakes on ai.agent.run.completed of another profile', async () => {
     useFixtures({ runProfile: [{ profile: 'triage' }], eventGrants: [{ grant_id: G1 }] });
     await handleWispWakeEvent(event('ai.agent.run.completed', O1, { runId: RUN }));

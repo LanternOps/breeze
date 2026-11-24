@@ -279,6 +279,7 @@ apps/api/src/db/schema/aiAgentOpEvidence.registry.test.ts
 apps/api/src/db/schema/aiModelRegistry.contract.test.ts
 apps/api/src/db/schema/aiPlatformModels.contract.test.ts
 apps/api/src/db/schema/aiRunWorkspaces.enums.test.ts
+apps/api/src/db/schema/aiToolSearchEvents.contract.test.ts
 apps/api/src/db/schema/aiUnattendedExposure.test.ts
 apps/api/src/db/schema/alerts.ownerKind.test.ts
 apps/api/src/db/schema/backupConfigsProviderConfig.test.ts
@@ -460,6 +461,7 @@ apps/api/src/services/aiOperator/taskCoordinatorPlanApproval.test.ts
 apps/api/src/services/aiOriginMint.contract.test.ts
 apps/api/src/services/aiRemoteToolsPolicy.contract.test.ts
 apps/api/src/services/aiSdkToolArgGuard.test.ts
+apps/api/src/services/aiToolDiscoveryMetrics.test.ts
 apps/api/src/services/aiToolMfaGate.routeParity.contract.test.ts
 apps/api/src/services/aiToolNames.test.ts
 apps/api/src/services/aiToolOutput.encryptedColumns.test.ts

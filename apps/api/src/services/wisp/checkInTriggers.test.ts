@@ -196,6 +196,24 @@ describe('evaluateCheckInTrigger — run_settled', () => {
     }
   });
 
+  // #11965: a run parked on approval is not settled while any step it proposed
+  // is still open (waiting for a person, approved but not yet run, or running).
+  it('pending while awaiting_approval with open steps; met once none is open', async () => {
+    h.rows = [run({ status: 'awaiting_approval', finishedAt: FINISHED, openSteps: 2 })];
+    expect(await evaluateCheckInTrigger(row('run_settled'), ceiling(), NOW)).toEqual({ state: 'pending', stateLine: 'the run is still going' });
+    h.rows = [run({ status: 'awaiting_approval', finishedAt: FINISHED, openSteps: '1' })];
+    expect(await evaluateCheckInTrigger(row('run_settled'), ceiling(), NOW)).toEqual({ state: 'pending', stateLine: 'the run is still going' });
+    h.rows = [run({ status: 'awaiting_approval', finishedAt: FINISHED, openSteps: 0 })];
+    expect(await evaluateCheckInTrigger(row('run_settled'), ceiling(), NOW)).toEqual({
+      state: 'met', evidence: { kind: 'run_settled', status: 'awaiting_approval', at: FINISHED.toISOString() },
+    });
+  });
+
+  it('an open-step count never holds back a run in any other settled status', async () => {
+    h.rows = [run({ status: 'completed', openSteps: 3 })];
+    expect(await evaluateCheckInTrigger(row('run_settled'), ceiling(), NOW)).toMatchObject({ state: 'met' });
+  });
+
   it('pending while queued or running', async () => {
     for (const status of ['queued', 'running']) {
       h.rows = [run({ status, finishedAt: null })];

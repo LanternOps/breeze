@@ -92,7 +92,13 @@ import {
   sdkMaxTurns,
   workTurns,
   type RoundTripTally,
+  type ToolSearchReason,
 } from './aiToolSearchPolicy';
+import { createToolDiscoveryObserver, type ToolDiscoveryObserver } from './aiToolDiscoveryObserver';
+import { persistTurnDiscovery } from './aiToolDiscoveryLedger';
+import { toolSurfaceFingerprint } from './aiToolSurfaceFingerprint';
+import { advertisedToolsOf } from './aiSdkToolArgGuard';
+import { isAlwaysLoadedToolName } from './aiToolNames';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
 import { finalizeWispSummaries, sessionExpiryReason } from './aiSessionExpiry';
 
@@ -738,6 +744,41 @@ export interface ActiveSession {
    * the gated tier instead of the core classifier's "unknown tool" answer.
    */
   flowToolGatedTiers?: Map<string, 1 | 2 | 3>;
+  /**
+   * #12421 W01: the tool-discovery observer (aiToolDiscoveryObserver.ts), fed
+   * every assistant and user message of the stream. Set at creation only for
+   * a `discoveryEligible` session (web chat and Wisp); null for every other
+   * surface, whose ledger rows then stamp `discovery = 'unknown'`. Optional
+   * so fixtures that build ActiveSession literals compile unchanged.
+   */
+  discovery?: ToolDiscoveryObserver | null;
+  /**
+   * #12421 W01: the tool-search policy this live query was created with
+   * (`resolveToolSearchPolicy`). Unset for a session that never resolved one.
+   */
+  toolSearch?: { enabled: boolean; reason: ToolSearchReason } | null;
+  /**
+   * #12421 W01 (plan Decision 3): hash of what this session's tool server
+   * advertises (aiToolSurfaceFingerprint.ts), stored on every discovery row.
+   * Computed only for a discovery-eligible session.
+   */
+  toolSurfaceFingerprint?: string | null;
+}
+
+/**
+ * #12421 W01: whether a session records tool-discovery telemetry. Only a
+ * chat-surface session that registered the full chat registry behind tool
+ * search (`getOrCreate`'s `toolSearch` option: web chat and Wisp) observes.
+ * A topology investigation is on the chat surface too but builds its own
+ * narrowed server and never opts in; helper, Office, script builder and agent
+ * runs bind other surfaces. Fixed at session creation: a session's surface
+ * and server do not change across turns.
+ */
+export function discoveryEligible(
+  session: Pick<ActiveSession, 'turnBinding'>,
+  opts: { fullChatRegistry: boolean },
+): boolean {
+  return session.turnBinding.surface === 'chat' && opts.fullChatRegistry;
 }
 
 /**
@@ -1329,6 +1370,13 @@ export class StreamingSessionManager {
       flowTools: flowToolsByName,
     };
 
+    // #12421 W01: only a full-registry chat session observes tool discovery.
+    // `toolSearch` is the caller's opt-in (web chat and Wisp); a caller with
+    // its own server factory never sets it.
+    session.discovery = discoveryEligible(session, { fullChatRegistry: options?.toolSearch === true && !mcpServerFactory })
+      ? createToolDiscoveryObserver({ isAlwaysLoaded: isAlwaysLoadedToolName })
+      : null;
+
     // Create session-scoped callbacks (close over session object)
     const preToolUse = createSessionPreToolUse(session);
     const postToolUse = createSessionPostToolUse(session);
@@ -1487,6 +1535,11 @@ export class StreamingSessionManager {
           remainingTurns: maxTurns,
         });
         session.workTurnLimit = toolSearchPolicy.enabled ? maxTurns : undefined;
+        session.toolSearch = { enabled: toolSearchPolicy.enabled, reason: toolSearchPolicy.reason };
+        // #12421 W01: examples land in W03; until then examplesApplied is false.
+        session.toolSurfaceFingerprint = session.discovery
+          ? toolSurfaceFingerprint({ tools: advertisedToolsOf(mcpServer) ?? [], examplesApplied: false, searchEnabled: toolSearchPolicy.enabled })
+          : null;
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
@@ -1997,6 +2050,8 @@ export class StreamingSessionManager {
           }
 
           case 'assistant': {
+            // #12421 W01: the discovery observer reads the message first (pure, in-memory).
+            session.discovery?.onMessage(message);
             // Accumulate per-API-call usage as the fallback token source for
             // this turn's cost recording (#3095). Each SDK assistant message
             // wraps one model API response whose `usage` is authoritative for
@@ -2158,6 +2213,9 @@ export class StreamingSessionManager {
           }
 
           case 'user': {
+            // #12421 W01: before the dropped-result check below, so a drop's
+            // discovery sees this message's search results.
+            session.discovery?.onMessage(message);
             // Ordinary user content is skipped (the SDK replays user messages
             // during resume; they are already in DB). BUT this is also the only
             // place a tool_result the model received WITHOUT our MCP handler
@@ -2439,6 +2497,15 @@ export class StreamingSessionManager {
         || session.pendingTurnToolExecutionCount > 0
       ) {
         await this.settleSdkTurn(session, null);
+      } else if (session.discovery) {
+        // #12421 W01: a turn with nothing to bill (e.g. it only searched, no
+        // reservation) skips settlement, but its discovery state must still be
+        // flushed — otherwise this turn's searches leak into the next one.
+        const roundTrips = session.pendingTurnRoundTrips ?? newRoundTripTally();
+        if (roundTrips.builtinCalls.size > 0 || roundTrips.workCalls.size > 0 || roundTrips.anonymous > 0) {
+          session.pendingTurnRoundTrips = newRoundTripTally();
+          await this.flushTurnDiscovery(session, { aborted: true, tally: roundTrips });
+        }
       }
       // #11968: a turn that ended without a `result` still flags the session
       // for an input refusal it never corrected (no-op when nothing is held).
@@ -2599,7 +2666,57 @@ export class StreamingSessionManager {
       console.error('[StreamingSessionManager] Failed to settle SDK turn usage:', { reservationId: reservationId ?? null, error: message });
       if (reservationId) await this.retainUnsettled(session, reservationId);
     }
+    // #12421 W01: after settlement, awaited and alone (never in a Promise.all).
+    await this.flushTurnDiscovery(session, { aborted: result === null, tally: roundTrips });
     return { ...tokens, costCents, outcome: turn.outcome };
+  }
+
+  /**
+   * #12421 W01: write this turn's tool-discovery telemetry (one `turn` row,
+   * one `search` row per ToolSearch) and reconcile the turn's
+   * ai_tool_executions.discovery stamps. Telemetry never fails the turn:
+   * persistTurnDiscovery returns its failures, and anything thrown here is
+   * caught and logged.
+   *
+   * `turnUserMessageId` is read, not reset: the Wisp turn-end hooks and the
+   * attach route read it after settlement, and every eligible turn sets it
+   * before it is pushed (routes/ai.ts).
+   */
+  private async flushTurnDiscovery(
+    session: ActiveSession,
+    input: { aborted: boolean; tally: RoundTripTally },
+  ): Promise<void> {
+    const observer = session.discovery;
+    if (!observer) return;
+    try {
+      const { events, turn, discoveryByToolUseId } = observer.endTurn(input);
+      const outcome = await persistTurnDiscovery({
+        sessionId: session.breezeSessionId,
+        orgId: session.orgId,
+        turnMessageId: session.turnUserMessageId ?? null,
+        surface: session.turnBinding.surface,
+        surfaceFingerprint: session.toolSurfaceFingerprint ?? '',
+        events,
+        turn,
+        reconcile: discoveryByToolUseId,
+      });
+      if (!outcome.ok) {
+        console.error('[StreamingSessionManager] tool discovery write failed:', outcome.error);
+        captureException(new Error(`ai_tool_discovery_write_failed: ${outcome.error}`), undefined, {
+          org_id: session.orgId,
+          cas_label: 'streamingSessionManager.flushTurnDiscovery',
+        });
+      }
+    } catch (err) {
+      const message = safeErrorMessage(err);
+      console.error('[StreamingSessionManager] tool discovery flush threw:', message);
+      try {
+        captureException(new Error(`ai_tool_discovery_flush_threw: ${message}`), undefined, {
+          org_id: session.orgId,
+          cas_label: 'streamingSessionManager.flushTurnDiscovery',
+        });
+      } catch { /* the console line above stands */ }
+    }
   }
 
   /**
@@ -2792,7 +2909,9 @@ export class StreamingSessionManager {
             sessionId: session.breezeSessionId,
             role: 'tool_result',
             toolName,
-            toolOutput: output,
+            // #12421 W01: final at persist time — this runs in the consumer,
+            // in stream order, after the observer read this message.
+            toolOutput: { ...output, discovery: session.discovery?.discoveryOf(toolName) ?? 'unknown' },
             toolUseId,
           })
       );

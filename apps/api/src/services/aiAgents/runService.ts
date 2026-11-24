@@ -2417,6 +2417,12 @@ export type AgentRunStatusPatch = Partial<Pick<typeof aiAgentRuns.$inferInsert,
  * candidate SELECT and this call loses the CAS instead of being wrongly
  * failed. Optional because most callers (runLoop.ts, the cancel route) have
  * no extra predicate — id+status is the whole story for them.
+ *
+ * #11965: a move between two terminal statuses (only
+ * `awaiting_approval → completed`, when a parked run's last step is final:
+ * runApprovalSettlement.ts) is not a new terminal outcome. The run already
+ * woke its task and counted in the circuit when it parked, so neither fires
+ * again; the compute release below stays, a no-op for a parked run.
  */
 export async function transitionRunStatus(
   runId: string,
@@ -2426,6 +2432,7 @@ export async function transitionRunStatus(
   guard?: SQL,
 ): Promise<boolean> {
   const fromStatuses = Array.isArray(from) ? from : [from];
+  const newTerminal = isTerminalRunStatus(to) && !fromStatuses.every(isTerminalRunStatus);
   const moved = await inSystemDbContext(async () => {
     const rows = await db
       .update(aiAgentRuns)
@@ -2473,7 +2480,7 @@ export async function transitionRunStatus(
     // `failRunAfterEnqueueFailure` get the wake too, for free. A task whose
     // run was reaped as stalled must still wake; putting this in `finishRun`
     // would have covered only the happy path.
-    if (row && row.taskId && isTerminalRunStatus(to)) {
+    if (row && row.taskId && newTerminal) {
       await enqueueTaskOutbox(db, {
         orgId: row.orgId,
         taskId: row.taskId,
@@ -2546,7 +2553,7 @@ export async function transitionRunStatus(
     }
   }
 
-  if (isTerminalRunStatus(to)) {
+  if (newTerminal) {
     try {
       const runVerdict: AgentRunVerdict | null =
         moved.outcome.runVerdict === 'needs_attention' ? 'needs_attention' : null;

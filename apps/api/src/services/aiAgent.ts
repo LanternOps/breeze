@@ -36,6 +36,7 @@ import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
 import { topologySessionAccessCondition } from './topology/aiSessionAccess';
 import { timePreStreamPhase } from './aiPreStreamTiming';
+import { noteToolCall } from './aiToolDiscoveryMetrics';
 export { BREEZE_FALLBACK_MODEL, resolveDefaultModel } from './aiModel';
 export { InvalidSessionModelError } from './aiModels/invalidSessionModelError';
 
@@ -820,6 +821,8 @@ async function closeOutApprovalWait(
         return { kind: 'decided' as const, row };
       });
 
+      // #12421: counted once the close-out committed (the loop above retries).
+      if (result.kind === 'closed' || result.kind === 'stopped') noteToolCall('rejected');
       if (result.kind === 'closed') {
         noteRejection(errorMessage, detail);
         return false;
@@ -1060,6 +1063,8 @@ export async function handleApproval(
     .returning({ id: aiToolExecutions.id });
 
   if (!updated) return false;
+  // #12421: a human deny is the chat path's main `rejected` write.
+  if (!approved) noteToolCall('rejected');
 
   // Mirror the decision onto the mobile-bridge approval_requests row (#3094).
   // The Tier-2 per_step flow creates BOTH ledgers (aiAgentSdk.ts

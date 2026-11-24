@@ -225,6 +225,23 @@ describe('specialistResultsForTurn', () => {
     expect(turn?.keys).toEqual(['run-1:awaiting_approval']);
   });
 
+  // #11965: a troubleshooting run that settled after its steps were decided.
+  it('carries how the steps of a completed troubleshooting run ended; none when it proposed nothing', async () => {
+    h.rows.ai_agent_runs = [run('run-1')];
+    h.rows.action_intents = [
+      { runId: 'run-1', status: 'completed', n: 2 },
+      { runId: 'run-1', status: 'rejected', n: 1 },
+      { runId: 'run-other', status: 'failed', n: 4 },
+    ];
+    const turn = await specialistResultsForTurn(input);
+    expect(turn?.results[0]).toMatchObject({ status: 'completed', stepTally: '2 ran, 1 denied' });
+
+    h.rows.action_intents = [];
+    h.sets.clear();
+    const bare = await specialistResultsForTurn(input);
+    expect(bare?.results[0]).not.toHaveProperty('stepTally');
+  });
+
   it('says cancelled for a cancelled run', async () => {
     h.rows.ai_agent_runs = [run('run-1', { status: 'cancelled' })];
     const turn = await specialistResultsForTurn(input);
