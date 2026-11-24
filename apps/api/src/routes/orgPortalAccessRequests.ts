@@ -234,7 +234,8 @@ async function sendDecisionEmail(c: Context, orgId: string, decided: Decided, { 
   // Partner from the VERIFIED auth context, never request input (spec §8.1),
   // exactly as issueAndSendInvite: a system-scope caller has partnerId null,
   // which resolves to the platform sender.
-  const sender = { orgName: orgName ?? undefined, partnerId: auth.partnerId ?? null, partnerName };
+  // Internal (#12249): a staff decision, not something an outsider caused.
+  const sender = { orgName: orgName ?? undefined, partnerId: auth.partnerId ?? null, partnerName, trigger: 'internal' as const };
   if (decided.kind === 'approve') {
     await emailService.sendPortalAccessApproved({ to: decided.result.email, loginUrl: buildPortalUrl('/login'), ...sender });
   } else {

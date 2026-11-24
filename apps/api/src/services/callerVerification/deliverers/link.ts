@@ -93,6 +93,8 @@ async function send(row: LinkDelivery): Promise<FailureReason | null> {
       to: row.destination,
       ...buildCallerVerificationTemplate({ partnerName: row.partnerName, technicianLabel: row.technicianLabel, requestLabel: row.requestLabel, url }),
       purpose: 'security.caller_verification_link',
+      // Internal (#12249): a technician starts the verification.
+      trigger: 'internal',
       partnerId: row.partnerId,
       partnerName: row.partnerName,
     });

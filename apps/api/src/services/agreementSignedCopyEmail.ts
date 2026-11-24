@@ -251,6 +251,10 @@ export async function sendSignedAgreementCopy(input: {
     await emailService.sendEmail({
       to,
       purpose: 'agreement.signed_copy',
+      // Internal (#12249) although the public accept route is anonymous: its
+      // token is single-use and only exists because staff sent the request, so
+      // the volume is bounded by agreement.sent.
+      trigger: 'internal',
       partnerId: req.partnerId,
       partnerName: req.partnerName ?? null,
       replyTo: req.billingEmail?.trim() || undefined,

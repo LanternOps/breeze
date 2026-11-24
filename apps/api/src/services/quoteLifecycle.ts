@@ -1042,6 +1042,7 @@ async function deliverQuoteEmail(
       // partner has a verified sending domain. Both values come from rows this
       // function already holds, never from request input (spec §8.1).
       purpose: 'quote.sent',
+      trigger: 'internal',
       partnerId: quote.partnerId,
       partnerName: partnerName ?? null,
       replyTo,

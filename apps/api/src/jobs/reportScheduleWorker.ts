@@ -82,6 +82,7 @@ import {
   resolveTimezoneFromRows,
 } from '../services/portal/timezone';
 import { captureException } from '../services/sentry';
+import { isEmailSendHeldError, logHeldSendDropped } from '../services/emailDomains/heldSend';
 import { reconcileAllSeries, seriesChildGate } from '../services/reportSeries/reconcile';
 import { isValidRecipientEmail, resolveSeriesChildRecipients } from '../services/reportSeries/recipients';
 import { parseSeriesRecipientRule, type SeriesGateDecision } from '../services/reportSeries/types';
@@ -1076,10 +1077,18 @@ export async function processRunScheduledReport(
         });
         send = handedOff ? 'sent' : 'failed';
       } catch (err) {
-        // Delivery failure must not fail the (already stored) run — but the
-        // recipients silently got nothing, so it goes to error tracking.
-        console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
-        captureException(err);
+        if (isEmailSendHeldError(err)) {
+          // #12249: held (daily cap or a suspended sending domain). Dropped
+          // deliberately: re-running the occurrence job would regenerate the
+          // report, and the next scheduled run carries the newer data. One
+          // structured log line, not an error-tracking event per hold.
+          logHeldSendDropped('reportScheduleWorker', err, { reportId: report.id });
+        } else {
+          // Delivery failure must not fail the (already stored) run — but the
+          // recipients silently got nothing, so it goes to error tracking.
+          console.error(`[ReportScheduleWorker] Email delivery failed for report ${report.id}:`, err);
+          captureException(err);
+        }
         send = 'failed';
       }
     }

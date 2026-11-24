@@ -215,6 +215,7 @@ export async function emailReportRun(opts: {
     // already hold the report's org id and a system DB context, so the read is
     // theirs. `null` still resolves to the platform sender (§8.1).
     purpose: 'report.delivery',
+    trigger: 'internal',
     partnerId: opts.partnerId,
     partnerName: opts.partnerId ? opts.branding.name ?? null : null,
     subject: `Scheduled report ready: ${opts.reportName}`,

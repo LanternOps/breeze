@@ -21,6 +21,7 @@ const verifyBase = {
   orgName: 'Acme Co',
   partnerId: PARTNER_ID,
   partnerName: 'Acme MSP',
+  trigger: 'external' as const,
 };
 const existingBase = {
   to: 'person@example.com',
@@ -29,6 +30,7 @@ const existingBase = {
   orgName: 'Acme Co',
   partnerId: PARTNER_ID,
   partnerName: 'Acme MSP',
+  trigger: 'external' as const,
 };
 
 describe('portal self-registration emails', () => {
@@ -73,10 +75,10 @@ describe('portal self-registration emails', () => {
     await svc.sendPortalSelfRegistrationLink(verifyBase);
     await svc.sendPortalSelfRegistrationExistingAccount(existingBase);
     expect(spy.mock.calls[0]![0]).toMatchObject({
-      purpose: 'portal.self_registration.verify', partnerId: PARTNER_ID, partnerName: 'Acme MSP', to: 'person@example.com',
+      purpose: 'portal.self_registration.verify', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP', to: 'person@example.com',
     });
     expect(spy.mock.calls[1]![0]).toMatchObject({
-      purpose: 'portal.self_registration.existing_account', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      purpose: 'portal.self_registration.existing_account', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     });
   });
 
