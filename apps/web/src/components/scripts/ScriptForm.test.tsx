@@ -603,7 +603,9 @@ describe('ScriptForm sourced parameters', () => {
     // (#12613), so the Required checkbox is offered, checked by default.
     expect(screen.queryByPlaceholderText('Default')).toBeNull();
     expect(screen.getByTestId('script-parameter-secret-required')).toBeChecked();
-    expect(screen.getByTestId('script-parameter-secret-required-help')).toBeInTheDocument();
+    const help = screen.getByTestId('script-parameter-secret-required-help');
+    expect(help).toHaveTextContent('BREEZE_VAR_API_TOKEN is not set');
+    expect(help).toHaveTextContent(/cannot be read still fails/);
     // The plain-mode "this is a secret, the save will be rejected" warning must
     // NOT fire here — a secret is exactly what this arm wants.
     expect(screen.queryByTestId('script-parameter-secret-warning')).toBeNull();
@@ -791,6 +793,25 @@ describe('ScriptForm sourced parameters', () => {
     fireEvent.click(screen.getByRole('button', { name: /save script/i }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0][0].parameters[0].required).toBe(false);
+  });
+
+  it('switching away from an optional secret and back makes it required again', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'api_password', required: false }],
+        }}
+      />
+    );
+
+    expect(await screen.findByTestId('script-parameter-secret-required')).not.toBeChecked();
+    const source = screen.getByLabelText('Source for parameter 1');
+    fireEvent.change(source, { target: { value: 'tenantVariable' } });
+    expect(screen.queryByTestId('script-parameter-secret-required')).toBeNull();
+    fireEvent.change(source, { target: { value: 'tenantSecret' } });
+    expect(screen.getByTestId('script-parameter-secret-required')).toBeChecked();
   });
 
   it('shows a secret row with no stored required flag as required (the default)', async () => {

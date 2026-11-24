@@ -112,9 +112,9 @@ interface Scenario {
   deviceSnapshot: DispatchScriptInput['device'];
 }
 
-async function seedScenario(): Promise<Scenario> {
-  const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
+async function seedScenario(existingPartnerId?: string): Promise<Scenario> {
+  const partnerId = existingPartnerId ?? (await createPartner()).id;
+  const org = await createOrganization({ partnerId });
   const site = await createSite({ orgId: org.id });
 
   const [device] = await getTestDb()
@@ -153,7 +153,7 @@ async function seedScenario(): Promise<Scenario> {
       orgId: org.id,
       // As the create route stores it; an automation may only reference a
       // script whose owner axes match (test 5's scheduled launcher).
-      partnerId: partner.id,
+      partnerId,
       name: `secret-delivery-${randomUUID().slice(0, 8)}`,
       osTypes: ['linux'],
       language: 'bash',
@@ -165,7 +165,7 @@ async function seedScenario(): Promise<Scenario> {
     .returning();
 
   return {
-    partnerId: partner.id,
+    partnerId,
     orgId: org.id,
     deviceId: device!.id,
     variableId: variable!.id,
@@ -456,9 +456,68 @@ describe('script secret delivery (integration)', () => {
       expect(payload.parameters).toEqual({});
 
       const [execution] = await executionsForDevice(scn.deviceId);
-      expect(execution!.status).not.toBe('failed');
+      expect(execution!.status).toBe('queued');
       // Nothing records that a secret was looked for.
       expect(JSON.stringify(execution!.parameters ?? {})).not.toContain(SECRET_KEY);
+    });
+
+    it('optional + no org row, but a partner-wide secret: a partner-wide script still gets it', async () => {
+      await setRequired(false);
+      await deleteSecret();
+      const partnerVariableId = randomUUID();
+      await getTestDb().insert(tenantVariables).values({
+        id: partnerVariableId,
+        orgId: null,
+        partnerId: scn.partnerId,
+        key: SECRET_KEY,
+        value: encryptTenantVariableValue(partnerVariableId, SECRET_VALUE),
+        isSecret: true,
+      });
+      await getTestDb().update(scripts).set({ orgId: null }).where(eq(scripts.id, scn.script.id));
+
+      await launch();
+      const command = await onlyCommand();
+      expect(
+        openSecretEnv((command.payload as Record<string, unknown>).secretEnvEnvelope as string, {
+          commandId: command.id,
+          deviceId: scn.deviceId,
+        }),
+      ).toEqual({ [PARAM_NAME]: SECRET_VALUE });
+    });
+
+    it('optional + no org row + UNREADABLE partner-wide row: fails the device', async () => {
+      await setRequired(false);
+      await deleteSecret();
+      await getTestDb().insert(tenantVariables).values({
+        orgId: null,
+        partnerId: scn.partnerId,
+        key: SECRET_KEY,
+        value: encryptTenantVariableValue(randomUUID(), SECRET_VALUE),
+        isSecret: true,
+      });
+      await getTestDb().update(scripts).set({ orgId: null }).where(eq(scripts.id, scn.script.id));
+
+      await launch();
+      expect(await commandsForDevice(scn.deviceId)).toHaveLength(0);
+      expect(await recordedFailure()).toContain('could not be read');
+    });
+
+    it('optional + not defined: a user-context run is not refused, there is nothing to deliver', async () => {
+      await setRequired(false);
+      await deleteSecret();
+      await getTestDb().update(scripts).set({ runAs: 'user' }).where(eq(scripts.id, scn.script.id));
+
+      await launch();
+      expect(Object.keys((await onlyCommand()).payload as Record<string, unknown>)).not.toContain('secretEnvEnvelope');
+    });
+
+    it('optional + defined + an agent without secret-env support: refused, never run with it unset', async () => {
+      await setRequired(false);
+      await setSecretEnvVersion(scn.deviceId, 0);
+
+      await launch();
+      expect(await commandsForDevice(scn.deviceId)).toHaveLength(0);
+      expect(await recordedFailure()).toContain(AGENT_UPGRADE_REQUIRED_MESSAGE);
     });
 
     it('required + not defined: fails the device, queues nothing', async () => {
@@ -491,5 +550,44 @@ describe('script secret delivery (integration)', () => {
         openSecretEnv(payload.secretEnvEnvelope as string, { commandId: command.id, deviceId: scn.deviceId }),
       ).toEqual({ [PARAM_NAME]: SECRET_VALUE });
     });
+  });
+
+  // The per-org use case in one fan-out: one partner-wide script, one org that
+  // defines the secret and one that does not.
+  it('6. optional secret across two orgs in one snapshot: delivered to one, absent for the other', async () => {
+    const other = await seedScenario(scn.partnerId);
+    await getTestDb().delete(tenantVariables).where(eq(tenantVariables.id, other.variableId));
+    const script = {
+      ...scn.script,
+      orgId: null,
+      parameters: [{ ...SECRET_PARAMETERS[0]!, required: false }],
+    };
+    await getTestDb()
+      .update(scripts)
+      .set({ orgId: null, parameters: script.parameters })
+      .where(eq(scripts.id, script.id));
+
+    const variableScope = await loadTenantVariableScope([scn.orgId, other.orgId]);
+    for (const target of [scn, other]) {
+      const result = await withSystemDbAccessContext(() =>
+        dispatchScriptToDevice({
+          device: target.deviceSnapshot,
+          source: { kind: 'saved', script },
+          variableScope,
+          triggerType: 'manual',
+        }),
+      );
+      expect(result.ok).toBe(true);
+    }
+
+    const [withSecret] = await commandsForDevice(scn.deviceId);
+    expect(
+      openSecretEnv((withSecret!.payload as Record<string, unknown>).secretEnvEnvelope as string, {
+        commandId: withSecret!.id,
+        deviceId: scn.deviceId,
+      }),
+    ).toEqual({ [PARAM_NAME]: SECRET_VALUE });
+    const [without] = await commandsForDevice(other.deviceId);
+    expect(Object.keys(without!.payload as Record<string, unknown>)).not.toContain('secretEnvEnvelope');
   });
 });

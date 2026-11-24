@@ -564,18 +564,59 @@ describe('resolveSourcedParameters — optional tenantSecret (#12613)', () => {
   });
 
   it('optional + partner-wide secret above an org-owned script -> still fails the device', () => {
-    const result = expectFailed(
+    for (const definition of [secretParam(false), secretParam(true)]) {
+      const result = expectFailed(
+        resolve({
+          definitions: [definition],
+          variables: varsWith(
+            variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true, ownerScope: 'partner' }),
+          ),
+          unreadableVariableKeys: noUnreadable,
+          scriptOwnerScope: 'organization',
+        }),
+      );
+      expect(result.code).toBe('unresolved_parameters');
+      expect(result.error).toContain('is bound to partner-wide secret variable "vendor_token"');
+      expect(result.error).not.toContain('no value for required parameter');
+      expect(result.error).not.toContain('sup3r-s3cret');
+    }
+  });
+
+  it('optional + only a partner-wide secret, partner-wide script -> delivers it (not "undefined")', () => {
+    const result = expectOk(
       resolve({
         definitions: [secretParam(false)],
         variables: varsWith(
           variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true, ownerScope: 'partner' }),
         ),
         unreadableVariableKeys: noUnreadable,
-        scriptOwnerScope: 'organization',
+        scriptOwnerScope: 'partner',
       }),
     );
-    expect(result.ok).toBe(false);
-    expect(result.error).not.toContain('sup3r-s3cret');
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+  });
+
+  it('an undefined optional secret does not disturb a defined one beside it, nor excuse a required one', () => {
+    const other = { name: 'db_password', source: 'tenantSecret', variableKey: 'vendor_db' };
+    const defined = variable({ key: 'vendor_db', value: 'db-s3cret', isSecret: true });
+    const mixed = expectOk(
+      resolve({
+        definitions: [secretParam(false), other],
+        variables: varsWith(defined),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+    expect(mixed.secretEnv).toEqual({ db_password: 'db-s3cret' });
+
+    const failed = expectFailed(
+      resolve({
+        definitions: [secretParam(false), other],
+        variables: varsWith(),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+    expect(failed.error).toContain('no value for required parameter(s) "db_password"');
+    expect(failed.error).not.toContain('api_token');
   });
 
   // Fail closed: without the unreadable set an undecryptable secret is

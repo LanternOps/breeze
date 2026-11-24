@@ -995,8 +995,7 @@ export default function ScriptForm({
                   )}
                   {/* #12613: an optional secret. Controlled (not `register`ed) so
                       the box shows the same rule `stripSecretParameterValueFields`
-                      saves — a row with no stored flag is required — whatever
-                      path the row arrived by (load, source switch, AI edit). */}
+                      saves: a row with no stored flag is required. */}
                   {isSecretParam && (
                   <div className="space-y-1 sm:col-span-2">
                     <label className="text-xs font-medium text-muted-foreground" htmlFor={`parameter-${index}-secret-required`}>{t('common:labels.required')}</label>
