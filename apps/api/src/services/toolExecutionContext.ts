@@ -147,6 +147,15 @@ export type ToolExecutionContext = {
    */
   releaseDecision?: ReleaseDecision;
   /**
+   * Set ONLY by the MCP route (routes/mcpServer.ts) for a `run_script
+   * { proposalId }` call it let through without approval: the caller is on
+   * MCP_UNATTENDED_TIER3_PRINCIPALS and the proposal's reviewed risk is within
+   * its partner's MCP unattended proposal ceiling. There is no intent, so the
+   * handler claims the proposal with `claimId` (the MCP tool-execution ledger
+   * id) and records approval_method `unattended_mcp_principal`.
+   */
+  unattendedMcpProposalRun?: { claimId: string; principalRef: string };
+  /**
    * The released intent's `source` (`chat` | `mcp_api` | `ai_agent`) — set by
    * the SAME two release paths that set `actionIntentId`, from the intent row
    * they hold, and by nothing else (#6268). `ioc_hunt sweep` stamps its sweep

@@ -8089,7 +8089,18 @@
     "saved": "Script authoring settings saved.",
     "saveFailed": "Those settings could not be saved.",
     "loading": "Loading…",
-    "loadFailed": "Script authoring settings could not be loaded."
+    "loadFailed": "Script authoring settings could not be loaded.",
+    "mcpCeiling": {
+      "title": "MCP unattended script runs",
+      "description": "The highest reviewed risk at which an MCP principal listed in MCP_UNATTENDED_TIER3_PRINCIPALS may run an AI-proposed script without a human approval, up to Medium. The run must also pass the unattended script lane's rules for the device's organization: its opt-in, allowed touch classes, protected resources, circuit breaker and hourly cap. Above the ceiling, every run needs approval.",
+      "label": "Run without approval up to",
+      "options": {
+        "none": "Never (always require approval)",
+        "low": "Low",
+        "medium": "Medium"
+      },
+      "stepUpBody": "Raising this ceiling needs a fresh security check. Confirm, then select Save again."
+    }
   },
   "orgAiBudgetSettings": {
     "title": "AI budget & limits",

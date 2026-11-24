@@ -14,8 +14,11 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));
+const scopeMock = vi.hoisted(() => vi.fn(async (_auth: unknown, _orgId: string, _ids: unknown): Promise<string[] | null> => null));
+vi.mock('../aiToolsSiteScope', () => ({ scopeDeviceIdsToCaller: scopeMock }));
+vi.mock('../aiToolDbContext', () => ({ inToolDbPhase: (_auth: unknown, fn: () => unknown) => fn() }));
 import {
-  loadProposalGuardrailContext, loadProposalGuardrailContextInReach, resolveProposalOrgInReach,
+  loadProposalGuardrailContext, loadProposalGuardrailContextForCaller, loadProposalGuardrailContextInReach, resolveProposalOrgInReach,
 } from './guardrailContext';
 
 describe('loadProposalGuardrailContext', () => {
@@ -136,5 +139,47 @@ describe('resolveProposalOrgInReach', () => {
   it('returns null for a missing proposal', async () => {
     stored = null;
     await expect(resolveProposalOrgInReach('p1', reach('org-1'))).resolves.toBeNull();
+  });
+});
+
+describe('loadProposalGuardrailContextForCaller (MCP: org reach plus site and device axes)', () => {
+  const auth = (orgs: string[]) => ({ canAccessOrg: (id: string) => orgs.includes(id) }) as never;
+  const reviewed = { id: 'p1', orgId: 'org-1', status: 'reviewed', riskTier: 'low', strictHits: [], targetDeviceIds: ['d-b'] };
+
+  it('returns the context and org for an unrestricted caller in reach', async () => {
+    stored = reviewed;
+    scopeMock.mockResolvedValueOnce(null);
+    await expect(loadProposalGuardrailContextForCaller({ proposalId: 'p1' }, auth(['org-1']))).resolves.toEqual({
+      context: { proposal: { riskTier: 'low', strictHits: [] } }, proposalOrgId: 'org-1',
+    });
+  });
+
+  it.each([
+    ['reviewed', reviewed],
+    ['pending', { ...reviewed, status: 'proposed', riskTier: null }],
+    ['failed', { ...reviewed, status: 'scan_rejected', riskTier: null }],
+  ])('collapses a %s proposal targeting none of a restricted caller\'s devices into proposal_not_found', async (_label, row) => {
+    stored = row as Record<string, unknown>;
+    scopeMock.mockResolvedValueOnce([]);
+    await expect(loadProposalGuardrailContextForCaller({ proposalId: 'p1' }, auth(['org-1']))).resolves.toEqual({
+      context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null,
+    });
+    expect(scopeMock).toHaveBeenLastCalledWith(expect.anything(), 'org-1', ['d-b']);
+  });
+
+  it('keeps the context when the restricted caller can see a target device', async () => {
+    stored = reviewed;
+    scopeMock.mockResolvedValueOnce(['d-b']);
+    const out = await loadProposalGuardrailContextForCaller({ proposalId: 'p1' }, auth(['org-1']));
+    expect(out.proposalOrgId).toBe('org-1');
+  });
+
+  it('never consults the site axis for a proposal outside org reach', async () => {
+    stored = { ...reviewed, orgId: 'org-2' };
+    scopeMock.mockClear();
+    await expect(loadProposalGuardrailContextForCaller({ proposalId: 'p1' }, auth(['org-1']))).resolves.toEqual({
+      context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null,
+    });
+    expect(scopeMock).not.toHaveBeenCalled();
   });
 });

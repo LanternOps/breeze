@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  RISK_TIERS, SCRIPT_PROPOSAL_STATUSES, proposeScriptInputSchema, riskTierRank,
+  MCP_UNATTENDED_PROPOSAL_CEILINGS, RISK_TIERS, SCRIPT_PROPOSAL_STATUSES, proposeScriptInputSchema, riskTierRank, riskWithinMcpUnattendedCeiling,
   scriptReviewVerdictSchema, scriptVerificationClaimSchema,
 } from './scriptProposals';
 
@@ -148,5 +148,29 @@ describe('scriptReviewVerdictSchema', () => {
   it('defaults blastRadius to an empty array when omitted', () => {
     const { blastRadius: _blastRadius, ...rest } = valid;
     expect(scriptReviewVerdictSchema.parse(rest).blastRadius).toEqual([]);
+  });
+});
+
+describe('riskWithinMcpUnattendedCeiling', () => {
+  it('never lifts anything under none', () => {
+    for (const tier of RISK_TIERS) expect(riskWithinMcpUnattendedCeiling(tier, 'none')).toBe(false);
+  });
+
+  it('lifts exactly the tiers at or below the ceiling', () => {
+    expect(RISK_TIERS.filter((t) => riskWithinMcpUnattendedCeiling(t, 'low'))).toEqual(['low']);
+    expect(RISK_TIERS.filter((t) => riskWithinMcpUnattendedCeiling(t, 'medium'))).toEqual(['low', 'medium']);
+  });
+
+  it('stops at medium: high and critical are not ceiling values, and a stray one lifts nothing', () => {
+    expect(MCP_UNATTENDED_PROPOSAL_CEILINGS).toEqual(['none', 'low', 'medium']);
+    for (const stray of ['high', 'critical', 'extreme']) {
+      for (const tier of RISK_TIERS) expect(riskWithinMcpUnattendedCeiling(tier, stray as never)).toBe(false);
+    }
+  });
+
+  it('refuses an unknown risk tier under every ceiling, rather than ranking it below low', () => {
+    for (const ceiling of MCP_UNATTENDED_PROPOSAL_CEILINGS) {
+      expect(riskWithinMcpUnattendedCeiling('unknown' as never, ceiling)).toBe(false);
+    }
   });
 });

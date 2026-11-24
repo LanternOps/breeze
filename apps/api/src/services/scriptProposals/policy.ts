@@ -120,6 +120,7 @@ type PolicyExecutor = Pick<typeof db, 'select'>;
 export async function resolveEffectiveScriptPolicy(
   orgId: string,
   executor: PolicyExecutor = db,
+  opts: { lockShare?: boolean } = {},
 ): Promise<EffectiveScriptPolicy> {
   const [orgRow] = await executor
     .select({ partnerId: organizations.partnerId })
@@ -128,7 +129,7 @@ export async function resolveEffectiveScriptPolicy(
     .limit(1);
   const partnerId: string | null = orgRow?.partnerId ?? null;
 
-  const rows: AiScriptPolicyRow[] = await executor
+  const query = executor
     .select()
     .from(aiScriptPolicies)
     .where(
@@ -140,6 +141,14 @@ export async function resolveEffectiveScriptPolicy(
         : eq(aiScriptPolicies.orgId, orgId),
     )
     .limit(2);
+  // `lockShare`: read the two rows FOR SHARE on the caller's transaction, so
+  // a concurrent policy save (an UPDATE or DELETE of either row) waits until
+  // that transaction commits, and a save that committed first is the one read.
+  // A missing row cannot be locked, but a missing row already disables the
+  // lane, so inserting one can only widen it.
+  const rows: AiScriptPolicyRow[] = opts.lockShare
+    ? await query.for('share')
+    : await query;
 
   const partner = rows.find((r) => r.orgId === null) ?? null;
   const org = rows.find((r) => r.orgId !== null) ?? null;

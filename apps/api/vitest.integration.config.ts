@@ -301,6 +301,7 @@ export default defineConfig({
       // Real-Redis test of the per-org script-review concurrency slot Lua
       // scripts (#5637): cap, release, TTL self-heal, idempotent release.
       'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
+      'src/services/scriptProposals/mcpUnattendedCeilingLock.integration.test.ts',
       // Co-located real-DB integration test for the nightly enrollment-key
       // purge sweep: the #2775 live-bootstrap-token exemption (proving
       // Postgres itself evaluates the correlated NOT EXISTS subquery per row,
