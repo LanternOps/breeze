@@ -319,6 +319,7 @@ const EXEMPT: Record<string, string> = {
   // Full-control W18 (#6789): lifted verbatim from their routes; request-path aggregates over the ONE org (or the
   // accepted org list) the caller named, after the route's / tool's own access check.
   'services/orgAccountReadinessResponse.ts': 'org administration (holding org already guarded): the default org set uses notHiddenOrgType(), the same filter as resolveAcceptedOrgs',
+  'services/patchRollback.ts': 'request path (#12492, lifted from routes/patches/operations.ts): POST /patches/:id/rollback and the AI manage_patches rollback, under the caller\'s RLS and its own org/site check; reads the devices the caller named, or with none named (the route only) the devices reporting this patch installed. Not a background selector; dispatchDeviceCommand refuses a parked device (device_pending_assignment)',
   'services/orgSummary.ts': 'request path: counts the devices of the ONE org the caller named and may access (decommissioned excluded, as the record page); selects no targets and dispatches no work',
   'services/roleDirectory.ts': 'role administration: isHiddenOrgType() keeps the holding org out of a focused-org role read; reads no devices',
   'services/orgArchive.ts': 'org administration (holding org already guarded)',

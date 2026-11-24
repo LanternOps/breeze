@@ -145,10 +145,12 @@ describe('manage_patches — per-device site scoping', () => {
   });
 
   it('rollback denies a device owned but outside the caller site scope', async () => {
-    // rollback selects { id, siteId } for the single device; site is forbidden.
-    mockDb.select.mockReturnValue({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'd1', siteId: 'site-FORBIDDEN' }]) }) }),
-    });
+    // rollback reads the patch, then the device with its installed observation; site is forbidden.
+    mockDb.select
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'p1' }]) }) }) })
+      .mockReturnValueOnce({
+        from: () => ({ leftJoin: () => ({ where: () => Promise.resolve([{ id: 'd1', orgId: 'org-1', siteId: 'site-FORBIDDEN', observationId: 'dp-1' }]) }) }),
+      });
     const r = await handlerFor('manage_patches')({ action: 'rollback', patchId: 'p1', deviceIds: ['d1'] }, makeAuth(['site-A']));
     expect(r).toContain('access denied');
     expect(mockDb.insert).not.toHaveBeenCalled();

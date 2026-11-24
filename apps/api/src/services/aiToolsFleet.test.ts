@@ -263,6 +263,13 @@ vi.mock('../routes/patches/helpers', () => ({
   MAX_PAGE_LIMIT: 200,
 }));
 
+// #12492: rollback reaches each device through aiDispatch.
+const { mockAiQueue } = vi.hoisted(() => ({ mockAiQueue: vi.fn() }));
+vi.mock('./aiDispatch', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./aiDispatch')>(),
+  aiQueueCommandForExecution: mockAiQueue,
+}));
+
 import { db } from '../db';
 import { registerFleetTools, requireOrgOwnedReportRow } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
@@ -1458,6 +1465,13 @@ describe('exported builders for export_dataset reuse', () => {
   });
 });
 
+/** #12492: the rollback's two reads, the patch and then the devices joined to their `installed` observation. */
+function mockRollbackLookups(devices: Array<{ id: string; orgId: string; siteId: string | null; observationId: string | null }>) {
+  vi.mocked(db.select)
+    .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'patch-row' }]) }) }) } as never)
+    .mockReturnValueOnce({ from: () => ({ leftJoin: () => ({ where: () => Promise.resolve(devices) }) }) } as never);
+}
+
 describe('user-owned release attribution (#6200)', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
@@ -1535,14 +1549,9 @@ describe('user-owned release attribution (#6200)', () => {
   });
 
   it("manage_patches:rollback with a matching approverRelease.approverUserId inserts patch_rollbacks.initiatedBy from the approver's auth.user.id", async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-1' }]),
-        }),
-      }),
-    } as never);
-    const insertValuesSpy = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'rollback-1' }]) }));
+    mockRollbackLookups([{ id: deviceId, siteId: null, orgId: 'org-1', observationId: 'dp-1' }]);
+    mockAiQueue.mockResolvedValueOnce({ command: { id: 'cmd-1', status: 'sent' } });
+    const insertValuesSpy = vi.fn(() => Promise.resolve());
     vi.mocked(db.insert).mockReturnValueOnce({ values: insertValuesSpy } as never);
 
     const result = JSON.parse(await tool.handler(
@@ -1552,9 +1561,9 @@ describe('user-owned release attribution (#6200)', () => {
     ));
 
     expect(result.success).toBe(true);
-    expect(insertValuesSpy).toHaveBeenCalledWith(
+    expect(insertValuesSpy).toHaveBeenCalledWith([
       expect.objectContaining({ initiatedBy: approverId }),
-    );
+    ]);
   });
 
   it("manage_deployments:create with a matching approverRelease.approverUserId inserts deployments.createdBy from the approver's auth.user.id", async () => {
@@ -1624,6 +1633,7 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
   } as any;
   afterEach(() => {
     vi.mocked(db.insert).mockClear();
+    mockAiQueue.mockClear();
   });
   const dialect = new PgDialect();
   const paramsOf = (cond: unknown) => dialect.sqlToQuery(cond as any).params;
@@ -1686,18 +1696,19 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
   });
 
   it('rollback resolves the device under a partner-scope caller', async () => {
-    const lookupWhere = lookupMock();
-    const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'rb-1' }]) }));
+    mockRollbackLookups([{ id: deviceId, siteId: null, orgId: 'org-device', observationId: 'dp-1' }]);
+    mockAiQueue.mockResolvedValueOnce({ command: { id: 'cmd-1', status: 'sent' } });
+    const insertValues = vi.fn(() => Promise.resolve());
     vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
 
     const result = JSON.parse(await tool.handler(inputFor('rollback'), partnerAuth));
 
     expect(result.success).toBe(true);
-    expect(paramsOf(lookupWhere.mock.calls[0]![0])).not.toContain('org-first');
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ deviceId }));
+    expect(mockAiQueue.mock.lastCall![5]).toEqual(expect.objectContaining({ expectedOrgId: 'org-device' }));
+    expect(insertValues).toHaveBeenCalledWith([expect.objectContaining({ deviceId })]);
   });
 
-  it.each(['list', 'rollback', 'device_history'])('%s denies a device outside caller scope', async (action) => {
+  it.each(['list', 'device_history'])('%s denies a device outside caller scope', async (action) => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
     } as never);
@@ -1705,7 +1716,15 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
     expect(result.error).toMatch(/not found or access denied/i);
   });
 
-  it.each(['list', 'rollback', 'device_history'])('%s denies a site-restricted caller for an out-of-site device', async (action) => {
+  it('rollback denies a device outside caller scope', async () => {
+    mockRollbackLookups([]);
+    const result = JSON.parse(await tool.handler(inputFor('rollback'), partnerAuth));
+    expect(result.error).toMatch(/not found or access denied/i);
+    expect(mockAiQueue).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(['list', 'device_history'])('%s denies a site-restricted caller for an out-of-site device', async (action) => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: 'site-other', orgId: 'org-device' }]) }),
@@ -1714,6 +1733,15 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
     const restricted = { ...partnerAuth, allowedSiteIds: ['site-ok'], canAccessSite: (id: string | null) => id === 'site-ok' };
     const result = JSON.parse(await tool.handler(inputFor(action), restricted));
     expect(result.error).toMatch(/not found or access denied/i);
+  });
+
+  it('rollback denies a site-restricted caller for an out-of-site device', async () => {
+    mockRollbackLookups([{ id: deviceId, siteId: 'site-other', orgId: 'org-device', observationId: 'dp-1' }]);
+    const restricted = { ...partnerAuth, allowedSiteIds: ['site-ok'], canAccessSite: (id: string | null) => id === 'site-ok' };
+    const result = JSON.parse(await tool.handler(inputFor('rollback'), restricted));
+    expect(result.error).toMatch(/not found or access denied/i);
+    expect(mockAiQueue).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });
 
