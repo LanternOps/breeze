@@ -77,9 +77,19 @@ function refuse(
   };
 }
 
+/**
+ * Whether a snapshot can only be signed into by a recovery client that
+ * reports the file-membership capability (the recovery helper): its files
+ * reference objects stored with earlier snapshots. A browser Preview never
+ * reports it, so the web disables Preview for such a token (#12566).
+ */
+export function snapshotRequiresMembershipCapability(referencedFiles: number | null | undefined): boolean {
+  return typeof referencedFiles === 'number' && referencedFiles > 0;
+}
+
 export function negotiateRecoveryCapabilities(input: NegotiationInput): NegotiationResult {
   const clientHasCap = hasMembershipCapability(input.clientCapabilities);
-  const needs = typeof input.referencedFiles === 'number' && input.referencedFiles > 0;
+  const needs = snapshotRequiresMembershipCapability(input.referencedFiles);
 
   if (!needs) {
     // #6490: a self-contained snapshot streams every object from its own

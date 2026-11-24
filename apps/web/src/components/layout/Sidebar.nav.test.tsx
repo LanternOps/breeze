@@ -180,13 +180,17 @@ describe('navSections structure (#1321, #1324)', () => {
     ]);
   });
 
-  it('exposes Jobs at top level right after Scripts (#5288)', () => {
+  it('exposes Automations at top level right after Scripts (#12437)', () => {
     const hrefs = topLevelNav.map((i) => i.href);
     expect(hrefs.indexOf('/jobs')).toBe(hrefs.indexOf('/scripts') + 1);
-    const jobs = topLevelNav.find((i) => i.href === '/jobs')!;
-    expect(jobs.name).toBe('Jobs');
-    expect(jobs.labelKey).toBe('nav.jobs');
-    expect(jobs.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
+    const item = topLevelNav.find((i) => i.href === '/jobs')!;
+    expect(item.name).toBe('Automations');
+    expect(item.labelKey).toBe('nav.automations');
+    expect(item.hrefWhenFlows).toBe('/flows');
+    expect(item.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
+    // One entry replaces Jobs and Flows.
+    expect(topLevelNav.filter((i) => i.name === 'Jobs' || i.name === 'Flows')).toEqual([]);
+    expect(topLevelNav.some((i) => i.href === '/flows')).toBe(false);
   });
 
   it('labels /monitoring as Network — checks are authored under Alerts → Monitors (W05e)', () => {

@@ -24,7 +24,9 @@
       "publicTo": "Für den Kunden sichtbare Antwort an {{recipient}}",
       "publicNoRecipient": "Für den Kunden sichtbare Antwort (per E-Mail an den Anfragenden)",
       "publicNoEmail": "Für den Kunden sichtbare Antwort (keine E-Mail-Adresse des Anfragenden hinterlegt, daher wird keine E-Mail gesendet)",
-      "internal": "Interne Notiz (für den Kunden nicht sichtbar)"
+      "internal": "Interne Notiz (für den Kunden nicht sichtbar)",
+      "editReplaces": "Ersetzt den Text eines vorhandenen Kommentars durch:",
+      "deleteNotice": "Ein vorhandener Kommentar zu diesem Ticket wird gelöscht."
     },
     "memory": {
       "heading": "Wisp merkt sich",
@@ -535,6 +537,8 @@
     "createTicket": "Ticket erstellen"
   },
   "scriptProposal": {
+    "unavailable": "Dieser Vorschlag ist nicht mehr verfügbar. Er wurde möglicherweise entschieden, ist abgelaufen oder gehört zu einer anderen Organisation.",
+    "loadFailed": "Dieser Vorschlag konnte nicht geladen werden. Versuchen Sie es gleich noch einmal.",
     "title": "KI-erstelltes Skript",
     "goal": "Ziel",
     "expectedEffect": "Erwartete Wirkung",

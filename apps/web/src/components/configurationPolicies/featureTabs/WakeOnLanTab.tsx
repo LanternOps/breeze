@@ -6,6 +6,8 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import WakeStatusPanel from './WakeStatusPanel';
 
 // Inline settings for the `wake_on_lan` feature (#10838): when the Wake button
@@ -26,12 +28,12 @@ export default function WakeOnLanTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   const { t } = useTranslation('policies');
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [mode, setMode] = useState<WakeButtonMode>(() => modeFrom(effectiveLink?.inlineSettings));
 
@@ -56,17 +58,13 @@ export default function WakeOnLanTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, 'wake_on_lan');
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, payload());
-    if (result) onLinkChanged(result, 'wake_on_lan');
-  };
 
   const meta = FEATURE_META.wake_on_lan;
   const isPlatformDefault = !existingLink && !parentLink;
   const prefix = 'configurationPolicies.featureTabs.wakeOnLanTab';
 
   return (
+    <div className="space-y-6">
     <FeatureTabShell
       title={meta.label}
       description={meta.description}
@@ -75,10 +73,9 @@ export default function WakeOnLanTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRemove : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {isPlatformDefault && (
@@ -129,9 +126,13 @@ export default function WakeOnLanTab({
           <p className="text-sm font-medium">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutTitle')}</p>
           <p className="mt-1 text-xs text-muted-foreground">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutBody')}</p>
         </div>
-
-        {effectiveLink && <WakeStatusPanel policyId={policyId} />}
       </div>
     </FeatureTabShell>
+    {/* A status view, not a form: outside the shell so a read-only viewer's
+        disabled fieldset does not lock its filter chips and paging, and its
+        clicks never mark the feature dirty (#12469). */}
+    {/* No wake status for a policy that does not exist yet (the create page). */}
+    {effectiveLink && policyId && <WakeStatusPanel policyId={policyId} />}
+    </div>
   );
 }

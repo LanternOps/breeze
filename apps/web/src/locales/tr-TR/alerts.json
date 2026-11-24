@@ -837,6 +837,8 @@
       "userKeyTooLong": "Kullanıcı anahtarı 30 karakter veya daha az olmalıdır",
       "tokenTooLong": "Jeton 30 karakter veya daha az olmalıdır",
       "deviceNameTooLong": "Cihaz adı 25 karakter veya daha az olmalıdır",
+      "emailRequired": "En az bir e-posta alıcısı gerekli",
+      "allEmailFormat": "Tüm e-posta alıcıları geçerli e-posta adresleri olmalıdır (ör. ad@example.com)",
       "phoneRequired": "En az bir telefon numarası gerekli",
       "phoneFormat": "Telefon numarası E.164 biçiminde olmalıdır (ör. +1234567890)",
       "allPhoneFormat": "Tüm SMS telefon numaraları E.164 biçimini kullanmalıdır (ör. +1234567890)",

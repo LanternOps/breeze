@@ -1,8 +1,14 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AutomationsTabStrip from '../../components/automations/AutomationsTabStrip';
 import AutomationsPage from '../../components/automations/AutomationsPage';
+
+const currentPath = Astro.url.pathname;
 ---
 
 <DashboardLayout titleKey="titles.jobs">
-  <AutomationsPage client:load />
+  <div class="space-y-5">
+    <AutomationsTabStrip currentPath={currentPath} client:load />
+    <AutomationsPage client:load />
+  </div>
 </DashboardLayout>

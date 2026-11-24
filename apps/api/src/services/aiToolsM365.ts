@@ -43,6 +43,7 @@ import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365C
 import type { AiTool } from './aiTools';
 import type { SecretToolResult } from './actionIntents/secretBearingTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import type { ActionIntent } from '../db/schema/actionIntents';
@@ -388,6 +389,15 @@ function pinnedConnectionError(error: unknown): string | null {
 const errorTemplate = (e: { code: string; message: string }): string =>
   errorString(e.code, `Could not complete the M365 operation: ${e.message}`);
 
+/**
+ * The helpdesk reads return prose ("M365 user profile: {...}"), so the
+ * field-name fence in aiToolOutput.ts (RAW_TEXT_FIELDS_BY_TOOL) never parses
+ * them. The Graph payload is unprojected and its strings (display names, job
+ * titles, group descriptions, a sign-in's device name and browser user agent)
+ * are chosen in the customer's tenant, so every string in it is fenced here.
+ */
+const fencedGraphJson = (data: unknown): string => JSON.stringify(sanitizeUntrustedToolValue(data));
+
 const unresolvedUser = (identifier: string): string =>
   errorString('user_not_found', `Could not find an M365 user matching "${identifier}".`);
 
@@ -427,7 +437,7 @@ export async function m365LookupUserHandler(
 
   const result = await call(ctx, auth, sessionId, 'get_user', { userId: identifier });
   return formatResultForLlm(result, {
-    successTemplate: (data) => `M365 user profile: ${JSON.stringify(data)}`,
+    successTemplate: (data) => `M365 user profile: ${fencedGraphJson(data)}`,
     errorTemplate,
   });
 }
@@ -452,7 +462,7 @@ export async function m365RecentSigninsHandler(
 
   const result = await call(ctx, auth, sessionId, 'get_user_signin_activity', { userId });
   return formatResultForLlm(result, {
-    successTemplate: (data) => `Recent sign-in activity for ${identifier}: ${JSON.stringify(data)}`,
+    successTemplate: (data) => `Recent sign-in activity for ${identifier}: ${fencedGraphJson(data)}`,
     errorTemplate,
   });
 }
@@ -467,7 +477,7 @@ export async function m365ListGroupMembershipsHandler(
 
   const result = await call(ctx, auth, sessionId, 'list_groups', {});
   return formatResultForLlm(result, {
-    successTemplate: (data) => `Groups in the customer tenant: ${JSON.stringify(data)}`,
+    successTemplate: (data) => `Groups in the customer tenant: ${fencedGraphJson(data)}`,
     errorTemplate,
   });
 }

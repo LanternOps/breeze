@@ -256,6 +256,15 @@ describe('saveDraftFlow — update', () => {
     expect(callsOf('update')).toHaveLength(0);
   });
 
+  it('an update save returns the flow\'s conversion, as GET does (#12499)', async () => {
+    const from = { automationId: '55555555-5555-4555-8555-555555555555', name: 'Nightly cleanup', conversionId: '66666666-6666-4666-8666-666666666666', state: 'shadow' as const };
+    vi.mocked(convertedFromForFlow).mockResolvedValueOnce(from);
+    queues.select.push([row({ status: 'draft', definitionVersion: 4 })]);
+    queues.update.push([row({ status: 'draft', definitionVersion: 5 })]);
+    const r = await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 4 });
+    expect(r.saved && r.flow.convertedFrom).toEqual(from);
+  });
+
   it.each(['disabled', 'paused'])('%s flow can be edited and keeps its status', async (status) => {
     const extra = status === 'paused' ? { pausedReason: 'drift', enabledPublicationSeq: 2 } : {};
     queues.select.push([row({ status, definitionVersion: 4, ...extra })]);

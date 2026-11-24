@@ -90,7 +90,7 @@ it('requires a mapped pin and explains that it overrides the site', () => {
       .disabled,
   ).toBe(true);
 });
-it('inherits without editing the parent, then creates a local override', async () => {
+it('inherits without editing the parent, then creates its own link via Change for this policy + Save', async () => {
   const parent = {
     id: 'parent-link',
     featureType: 'time_sync' as const,
@@ -108,7 +108,9 @@ it('inherits without editing the parent, then creates a local override', async (
   expect(
     screen.getByTestId('time-sync-enforce-ntp').closest('fieldset')!.disabled,
   ).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: /override/i }));
+  fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+  expect(m.save).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
   await waitFor(() =>
     expect(m.save).toHaveBeenCalledWith(
       null,

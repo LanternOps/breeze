@@ -139,11 +139,11 @@ async function seedOrg(opts: { snapshotId?: string } = {}) {
   return { orgId: org.id, siteId, executing, source, configId, snapshotDbId };
 }
 
-async function queueRestore(deviceId: string, payload: Record<string, unknown>, claimedAt?: Date) {
+async function queueRestore(deviceId: string, payload: Record<string, unknown>, claimedAt?: Date, type = 'backup_restore') {
   const id = randomUUID();
   await getTestDb().execute(sql`
     INSERT INTO device_commands (id, device_id, type, status, payload, executed_at)
-    VALUES (${id}, ${deviceId}, 'backup_restore', 'sent', ${JSON.stringify(payload)}::jsonb,
+    VALUES (${id}, ${deviceId}, ${type}, 'sent', ${JSON.stringify(payload)}::jsonb,
             ${claimedAt ? sql`${claimedAt.toISOString()}::timestamp` : sql`now()`})
   `);
   return id;
@@ -155,14 +155,14 @@ function orgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   );
 }
 
-async function mint(org: Awaited<ReturnType<typeof seedOrg>>) {
+async function mint(org: Awaited<ReturnType<typeof seedOrg>>, type = 'backup_restore') {
   const payload = { snapshotId: SNAP, targetPath: '/restore', ...backupReadCredentialPayload(org.configId, org.orgId, 's3') };
-  const commandId = await queueRestore(org.executing, payload);
+  const commandId = await queueRestore(org.executing, payload, undefined, type);
   const delivered = await runOutsideDbContext(() =>
     deliverBrokeredReadCommand(payload, {
       commandId,
       deviceId: org.executing,
-      type: 'backup_restore',
+      type,
       claimedAt: new Date(),
     }),
   );
@@ -310,6 +310,37 @@ describe('brokered storage sessions (real database)', () => {
       authenticateStorageSession({ sessionId: session.sessionId, token: session.token, agent: { deviceId: org.executing, orgId: org.orgId } }),
     );
     expect(expired).toMatchObject({ ok: false, status: 410 });
+  });
+
+  // #11813: a verification parked on the agent's verification lane reaches
+  // the helper after its lease lapsed; its first call, a renew, re-arms it.
+  // Decided by the command's type, read from device_commands.
+  runDb('renews the lapsed lease of an unused verification session, not of a restore', async () => {
+    const org = await seedOrg();
+    const verify = await mint(org, 'backup_verify');
+    const restore = await mint(org);
+    for (const { session } of [verify, restore]) {
+      await getTestDb().execute(sql`
+        UPDATE backup_storage_sessions SET expires_at = now() - interval '1 second' WHERE id = ${session.sessionId}
+      `);
+    }
+    const authAs = (session: SessionDescriptor, op?: 'renew' | 'resolve') =>
+      orgContext(org.orgId, () =>
+        authenticateStorageSession({ sessionId: session.sessionId, token: session.token, agent: { deviceId: org.executing, orgId: org.orgId }, op }),
+      );
+
+    expect(await authAs(verify.session, 'resolve')).toMatchObject({ ok: false, status: 410 });
+    expect(await authAs(restore.session, 'renew')).toMatchObject({ ok: false, status: 410 });
+
+    const renewed = await orgContext(org.orgId, async () => {
+      const auth = await authenticateStorageSession({
+        sessionId: verify.session.sessionId, token: verify.session.token, agent: { deviceId: org.executing, orgId: org.orgId }, op: 'renew',
+      });
+      if (!auth.ok) throw new Error(`auth failed: ${auth.status} ${auth.error}`);
+      return renewStorageSession(auth.session);
+    });
+    expect(renewed.status).toBe(200);
+    expect(await authAs(verify.session, 'resolve')).toMatchObject({ ok: true });
   });
 
   runDb('redelivery mints a new generation while the earlier one stays usable', async () => {

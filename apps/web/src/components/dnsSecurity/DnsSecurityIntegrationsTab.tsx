@@ -35,7 +35,7 @@ type Integration = {
   provider: Provider;
   name: string;
   isActive?: boolean;
-  config?: { retentionDays?: number; storeAllowedTraffic?: boolean } | null;
+  config?: { retentionDays?: number; storeAllowedTraffic?: boolean; piholeVersion?: 'v5' | 'v6' } | null;
   lastSync: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
@@ -387,6 +387,9 @@ export default function DnsSecurityIntegrationsTab() {
             name: retentionTarget.name,
             retentionDays: retentionTarget.config?.retentionDays ?? null,
             storeAllowedTraffic: retentionTarget.config?.storeAllowedTraffic === true,
+            ...(retentionTarget.provider === 'pihole'
+              ? { piholeVersion: retentionTarget.config?.piholeVersion === 'v6' ? 'v6' as const : 'v5' as const }
+              : {}),
           }}
           onClose={() => setRetentionTarget(null)}
           onSaved={() => void fetchIntegrations()}

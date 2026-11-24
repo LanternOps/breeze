@@ -25,7 +25,7 @@ describe('FeatureTabShell destructive-action confirmation (#5314)', () => {
     const onRevert = vi.fn();
     render(<FeatureTabShell {...baseProps} isConfigured onRevert={onRevert} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Revert to Parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
 
     expect(onRevert).not.toHaveBeenCalled();
     expect(screen.getByTestId('feature-tab-revert-confirm')).toBeInTheDocument();
@@ -35,7 +35,7 @@ describe('FeatureTabShell destructive-action confirmation (#5314)', () => {
     const onRevert = vi.fn();
     render(<FeatureTabShell {...baseProps} isConfigured onRevert={onRevert} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Revert to Parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
 
     expect(onRevert).toHaveBeenCalledTimes(1);
@@ -45,7 +45,7 @@ describe('FeatureTabShell destructive-action confirmation (#5314)', () => {
     const onRevert = vi.fn();
     render(<FeatureTabShell {...baseProps} isConfigured onRevert={onRevert} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Revert to Parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
 
     expect(onRevert).not.toHaveBeenCalled();

@@ -2825,6 +2825,18 @@
       ]
     },
     {
+      "pattern": "apps/api/src/services/configPolicyPrecedence.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/page/**",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/services/configPolicyOwnership.ts",
       "docs": [
         "features/configuration-policies.mdx"

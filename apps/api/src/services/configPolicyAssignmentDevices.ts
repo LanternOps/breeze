@@ -86,8 +86,12 @@ export interface AssignmentExpansionOptions {
    *    surface a warning.
    */
   refusedGroups: 'resolve' | 'exclude';
-  /** Audit action recorded for a refused group. */
-  auditAction: string;
+  /**
+   * Audit action recorded for a refused group. `null` records nothing: a read
+   * that only counts devices (policy reach, #12465) must never write audit
+   * rows. The refusal is still returned in `refusedGroups`.
+   */
+  auditAction: string | null;
 }
 
 export interface ExpandedAssignment {
@@ -175,7 +179,9 @@ async function selectCandidates(
     case 'device_group': {
       const { refusedGroups } = await resolveExecutionSafeGroupIds([targetId]);
       if (refusedGroups.length > 0) {
-        auditRefusedExecutionGroups(scope.policyOrgId, options.auditAction, refusedGroups);
+        if (options.auditAction !== null) {
+          auditRefusedExecutionGroups(scope.policyOrgId, options.auditAction, refusedGroups);
+        }
         if (options.refusedGroups === 'exclude') return { rows: [], refusedGroups };
       }
       // #3182: membership and device must share an org. An org-owned group

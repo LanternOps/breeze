@@ -7,8 +7,10 @@ import { PERMISSIONS } from '../../services/permissions';
 import { db, runOutsideDbContext } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
-import { buildMappingHostList } from '../../services/unifi/unifiMappingHosts';
-import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
+import { getConnection, upsertConnection, deleteConnection, createSelfHostedIntegration, UnifiMultiKeyError } from '../../services/unifi/unifiConnectionService';
+import { countEnabledKeys, getSyncKeys, listKeys, type UnifiSyncKey } from '../../services/unifi/unifiKeyService';
+import { readHostsAcrossKeys } from '../../services/unifi/unifiHostsAcrossKeys';
+import { mergeKeyReads, readKeys } from '../../services/unifi/unifiKeyMerge';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
 import { toUnifiTelemetryDevice } from './telemetryReadModel';
@@ -17,6 +19,7 @@ import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import { revokeUnifiCollectorDrift, revokeUnifiMappingDrift, snapshotUnifiCollectors, snapshotUnifiMappings } from '../../services/topology/unifiAuthority';
 import {
   diffUnifiMappings,
+  resolveUnifiMappingRemovals,
   resolveUnifiMappingTargets,
   writeUnifiControllerAudits,
   writeUnifiMappingAudits,
@@ -50,6 +53,23 @@ const readPerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSI
 const writePerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const partnerScopes = requireScope('partner', 'system');
 
+const MULTI_KEY_CONNECT_MESSAGE = 'This connection has several API keys. Manage them from the key list.';
+
+const MAX_KEY_MESSAGE = 500;
+const clipMessage = (text: string) => (text.length > MAX_KEY_MESSAGE ? `${text.slice(0, MAX_KEY_MESSAGE - 1)}…` : text);
+
+// The live reads (/test, /hosts) use every enabled key (#11808). No key, or a
+// lone key that does not decrypt, keeps the single-key 400s; with several keys
+// an unreadable one is a failed key in the per-key results instead.
+function noUsableKey(creds: { keys: UnifiSyncKey[] } | null):
+  { status: 400; body: { success: false; message: string } } | null {
+  if (!creds || creds.keys.length === 0) return { status: 400, body: { success: false, message: 'No API key found' } };
+  if (creds.keys.length === 1 && creds.keys[0]!.apiKey === null) {
+    return { status: 400, body: { success: false, message: 'The stored UniFi API key could not be decrypted. Reconnect the integration.' } };
+  }
+  return null;
+}
+
 const connectSchema = z.object({
   apiKey: z.string().min(1),
   baseUrl: z.string().url().max(300).optional(),
@@ -76,8 +96,19 @@ const mappingsSchema = z.object({
   // cleanup is scoped to these hosts so a host transiently absent from the live list is
   // never purged, and a failed/empty host list can't trigger a mass delete. Omitted →
   // upsert-only (no deletes), preserving safe behavior for callers that don't send it.
+  // Refused once the connection has several enabled keys (#11808 D9): one key's
+  // partial view could hide a site another key still sees.
   hostIds: z.array(z.string()).optional(),
+  // Explicit deletes (#11808 D9): exactly these mappings of this connection are
+  // removed. Each must pass the same org and site gates as the replace-all cleanup.
+  removeMappingIds: z.array(z.string().guid()).max(500).optional(),
 });
+
+const EXPLICIT_DELETES_REQUIRED = {
+  success: false as const,
+  code: 'UNIFI_EXPLICIT_DELETES_REQUIRED',
+  message: 'This connection has several API keys. Send removeMappingIds to remove mappings.',
+};
 
 const collectorSchema = z.object({
   unifiHostId: z.string().min(1),
@@ -103,6 +134,8 @@ unifiRoutes.get('/', partnerScopes, readPerm, async (c) => {
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ connected: false });
+  // Key summaries never carry the ciphertext or the key (listKeys never selects it).
+  const keys = conn.connectionType === 'cloud' ? await listKeys(db, conn.id, conn.partnerId) : [];
   return c.json({
     connected: true,
     connectionType: conn.connectionType,
@@ -111,6 +144,7 @@ unifiRoutes.get('/', partnerScopes, readPerm, async (c) => {
     lastSyncAt: conn.lastSyncAt,
     lastSyncStatus: conn.lastSyncStatus,
     lastSyncError: conn.lastSyncError,
+    keys,
   });
 });
 
@@ -133,12 +167,22 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
     console.error('[unifi] connect: non-auth failure validating API key:', err);
     return c.json({ success: false, message: 'Could not reach UniFi to validate the key. Please try again shortly.' }, 502);
   }
-  const conn = await withAuthDbAccessContext(auth, () => upsertConnection(db, partner.partnerId, {
-    baseUrl: base,
-    apiKey,
-    accountLabel: accountLabel ?? null,
-    createdBy: auth.user.id,
-  }));
+  let conn;
+  try {
+    conn = await withAuthDbAccessContext(auth, () => upsertConnection(db, partner.partnerId, {
+      baseUrl: base,
+      apiKey,
+      accountLabel: accountLabel ?? null,
+      createdBy: auth.user.id,
+    }));
+  } catch (err) {
+    // Raised before any write (unifiConnectionService), so nothing changed:
+    // neither baseUrl nor any stored key.
+    if (err instanceof UnifiMultiKeyError) {
+      return c.json({ success: false, code: 'UNIFI_MULTI_KEY', message: MULTI_KEY_CONNECT_MESSAGE }, 409);
+    }
+    throw err;
+  }
   return c.json({ connected: true, status: conn.status });
 });
 
@@ -165,19 +209,37 @@ unifiRoutes.post('/test', partnerScopes, writePerm, requireMfa(), async (c) => {
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   // One short read; the UniFi call below runs with no transaction held.
-  const { conn, apiKey } = await withAuthDbAccessContext(auth, async () => {
+  const { conn, creds } = await withAuthDbAccessContext(auth, async () => {
     const found = await getConnection(db, partner.partnerId);
-    return { conn: found, apiKey: found ? await getDecryptedApiKey(db, partner.partnerId) : null };
+    return { conn: found, creds: found ? await getSyncKeys(db, found.id, partner.partnerId) : null };
   });
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
-  try {
-    const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
-    const hosts = await runOutsideDbContext(() => client.listHosts());
-    return c.json({ success: true, hostsFound: hosts.length });
-  } catch (err) {
-    return c.json({ success: false, message: err instanceof Error ? err.message : String(err) }, 502);
+  const refusal = noUsableKey(creds);
+  if (refusal || !creds) return c.json(refusal!.body, refusal!.status);
+  // Every enabled key's /v1/hosts, with no transaction held. success = every key works.
+  const reads = await runOutsideDbContext(() => readKeys(
+    creds.keys.map((key) => ({
+      id: key.id,
+      label: key.label,
+      client: key.apiKey === null ? null : createUnifiClient({ baseUrl: creds.baseUrl, apiKey: key.apiKey }),
+      decryptError: key.apiKey === null ? key.decryptError : undefined,
+    })),
+    { mode: 'hosts' },
+  ));
+  const keys = reads.map((r) => (r.ok
+    ? { id: r.keyId, label: r.label, success: true, hostsFound: r.hosts.length }
+    : { id: r.keyId, label: r.label, success: false, message: clipMessage(r.error) }));
+  const failed = reads.filter((r) => !r.ok);
+  if (failed.length === reads.length) {
+    // As with one key: 502 with the (first) failure's message.
+    return c.json({ success: false, message: keys[0]!.message, keys }, 502);
   }
+  const hostsFound = mergeKeyReads(reads.filter((r) => r.ok)).hosts.length;
+  if (failed.length > 0) {
+    const names = failed.map((r) => `"${r.label}"`).join(', ');
+    return c.json({ success: false, hostsFound, message: `${failed.length} of ${reads.length} API keys failed: ${names}`, keys });
+  }
+  return c.json({ success: true, hostsFound, keys });
 });
 
 // POST /unifi/disconnect — remove connection for partner
@@ -203,22 +265,28 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   // One short read; the UniFi call below runs with no transaction held.
-  const { conn, apiKey } = await withAuthDbAccessContext(auth, async () => {
+  const { conn, creds } = await withAuthDbAccessContext(auth, async () => {
     const found = await getConnection(db, partner.partnerId);
-    return { conn: found, apiKey: found ? await getDecryptedApiKey(db, partner.partnerId) : null };
+    return { conn: found, creds: found ? await getSyncKeys(db, found.id, partner.partnerId) : null };
   });
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
+  const refusal = noUsableKey(creds);
+  if (refusal || !creds) return c.json(refusal!.body, refusal!.status);
   try {
-    const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
-    const [hosts, allSites] = await runOutsideDbContext(() =>
-      Promise.all([client.listHosts(), client.listSites()])
-    );
-    // Every host with a site is listed, whatever its type. The response is additive:
-    // type, unknownConsole and omitted are new; id/name/model/sites stay unchanged.
-    const list = buildMappingHostList(hosts, allSites);
-    return c.json({ hosts: list.hosts, omitted: list.omitted });
+    // Every enabled key, merged (#11808). Every host with a site is listed, whatever
+    // its type. The response is additive: keyIds on each host and site, the per-key
+    // outcome and `complete` (false when a key failed, so the list may be short).
+    const list = await runOutsideDbContext(() => readHostsAcrossKeys(creds.keys, creds.baseUrl));
+    return c.json({
+      hosts: list.hosts,
+      omitted: list.omitted,
+      keys: list.keys.map((k) => (k.ok
+        ? { id: k.id, label: k.label, ok: true }
+        : { id: k.id, label: k.label, ok: false, error: clipMessage(k.error ?? 'UniFi request failed') })),
+      complete: list.complete,
+    });
   } catch (err) {
+    // Every key failed: the first key's error, as with one key.
     return c.json({ success: false, message: err instanceof Error ? err.message : String(err) }, 502);
   }
 });
@@ -230,11 +298,24 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  const { mappings, hostIds } = c.req.valid('json');
-  // Every target is authorized before any write (see resolveUnifiMappingTargets).
+  const { mappings, hostIds, removeMappingIds } = c.req.valid('json');
+  // D9: with several enabled keys a host-scoped replace-all could delete a site
+  // that a failed key hid while another key showed its host. Refuse it before any
+  // write rather than silently ignoring the deletes it asked for.
+  if (hostIds !== undefined && conn.connectionType === 'cloud'
+    && await countEnabledKeys(db, conn.id, conn.partnerId) > 1) {
+    return c.json(EXPLICIT_DELETES_REQUIRED, 409);
+  }
+  // Every target and every explicit removal is authorized before any write
+  // (see resolveUnifiMappingTargets / resolveUnifiMappingRemovals).
   const targets = await resolveUnifiMappingTargets(auth, conn.partnerId, mappings);
   if (!targets.ok) {
     const { status, message, code } = targets.error;
+    return c.json({ success: false, message, ...(code ? { code } : {}) }, status);
+  }
+  const removals = await resolveUnifiMappingRemovals(auth, conn.id, removeMappingIds ?? [], mappings);
+  if (!removals.ok) {
+    const { status, message, code } = removals.error;
     return c.json({ success: false, message, ...(code ? { code } : {}) }, status);
   }
   const resolved = mappings.map((m, i) => ({ m, ...targets.targets[i]! }));
@@ -300,6 +381,13 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
         .delete(unifiSiteMappings)
         .where(and(eq(unifiSiteMappings.integrationId, conn.id), inArray(unifiSiteMappings.id, staleIds)));
     }
+  }
+  // Explicit removals (D9), between the two snapshots so revoke and audit cover them.
+  // unifi_devices cascade on a mapping delete.
+  if (removals.ids.length > 0) {
+    await db
+      .delete(unifiSiteMappings)
+      .where(and(eq(unifiSiteMappings.integrationId, conn.id), inArray(unifiSiteMappings.id, removals.ids)));
   }
   await revokeUnifiMappingDrift(conn.id, mappingsBefore);
   const mappingsAfter = await snapshotUnifiMappings(conn.id);
@@ -466,6 +554,11 @@ unifiRoutes.post('/sync', partnerScopes, writePerm, requireMfa(), async (c) => {
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
+  // The worker syncs cloud connections only; a self-hosted controller is polled
+  // by its collector, so a queued job would silently do nothing.
+  if (conn.connectionType !== 'cloud') {
+    return c.json({ success: false, code: 'UNIFI_NOT_CLOUD', message: 'Self-hosted controllers are polled by their collectors; there is no cloud sync to run' }, 400);
+  }
   await enqueueUnifiSync(conn.id, partner.partnerId, 'manual');
   return c.json({ success: true });
 });

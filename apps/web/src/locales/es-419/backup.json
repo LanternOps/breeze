@@ -488,6 +488,8 @@
     "failedToLoadToken": "No se pudo cargar el token",
     "failedToRefreshToken": "No se pudo actualizar el token",
     "failedToPreviewBootstrap": "No se pudo obtener una vista previa del arranque",
+    "previewUnavailableSessionActive": "La vista previa no está disponible: este token ya tiene una sesión de recuperación. Una vista previa inicia sesión con el token y no puede leer una sesión que tiene el asistente de recuperación. Use Actualizar para seguir la restauración.",
+    "previewUnavailableNeedsRecoveryHelper": "La vista previa no está disponible: esta instantánea hace referencia a archivos guardados con instantáneas anteriores, que solo el asistente de recuperación puede leer. Ejecute el comando de recuperación en el equipo de destino.",
     "failedToRevokeToken": "No se pudo revocar el token",
     "failedToCopyToClipboard": "No se pudo copiar al portapapeles.",
     "failedToCreateRecoveryBundle": "No se pudo crear el paquete de recuperación",

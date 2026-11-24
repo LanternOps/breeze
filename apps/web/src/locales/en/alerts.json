@@ -837,6 +837,8 @@
       "userKeyTooLong": "User key must be 30 characters or fewer",
       "tokenTooLong": "Token must be 30 characters or fewer",
       "deviceNameTooLong": "Device name must be 25 characters or fewer",
+      "emailRequired": "At least one email recipient is required",
+      "allEmailFormat": "All email recipients must be valid email addresses (e.g. name@example.com)",
       "phoneRequired": "At least one phone number is required",
       "phoneFormat": "Phone number must be in E.164 format (e.g. +1234567890)",
       "allPhoneFormat": "All SMS phone numbers must use E.164 format (e.g. +1234567890)",

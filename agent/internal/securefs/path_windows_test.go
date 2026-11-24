@@ -499,10 +499,21 @@ type replacementRun struct {
 	log       *publishLog
 }
 
+// replacementHooks is what a control's mutate works with.
+type replacementHooks struct {
+	dest string
+	// now is the run's orderedClock, the one the watch and publishLog stamp
+	// with, so a control's own stamps order against theirs.
+	now func() time.Time
+	// readerSawPresentAfter blocks until a probe the watch issued after t
+	// found the destination, or until the watch has returned (false).
+	readerSawPresentAfter func(t time.Time) bool
+}
+
 // runConcurrentReplacement has writers goroutines publish perWriter files each
 // onto one destination while a reader watches it by name. mutate, when
 // non-nil, wraps the real publish so a control can inject a publication gap.
-func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(dest string, publish publishFunc) publishFunc) replacementRun {
+func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(hooks replacementHooks, publish publishFunc) publishFunc) replacementRun {
 	t.Helper()
 	base := t.TempDir()
 	dest := filepath.Join(base, "file.txt")
@@ -513,9 +524,10 @@ func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(
 	run := replacementRun{dest: dest, attempted: int64(writers * perWriter), log: newPublishLog(clock.now)}
 	orig := publishTemporary
 	t.Cleanup(func() { publishTemporary = orig })
+	gate := newPresenceGate()
 	publish := orig
 	if mutate != nil {
-		publish = mutate(dest, orig)
+		publish = mutate(replacementHooks{dest: dest, now: clock.now, readerSawPresentAfter: gate.waitPresentAfter}, orig)
 	}
 	publishTemporary = run.log.wrap(publish)
 	origRename := ntSetRenameInformation
@@ -527,8 +539,11 @@ func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(
 	readerWG.Add(1)
 	go func() {
 		defer readerWG.Done()
+		defer gate.close()
 		run.watch = watchForAbsenceExcusing(func() error {
+			issued := clock.now()
 			_, err := os.Stat(dest)
+			gate.observe(issued, err)
 			return err
 		}, stop, transientMissRecheck, absenceClock{now: clock.now, sleep: time.Sleep}, run.log.excuse)
 	}()
@@ -662,9 +677,9 @@ func (g *gapInjector) open(dest string) bool {
 // between the removal and the rename.
 func TestInstallFileConcurrentReplacementDetectsAPublicationGap(t *testing.T) {
 	var gaps gapInjector
-	run := runConcurrentReplacement(t, 8, 25, func(dest string, publish publishFunc) publishFunc {
+	run := runConcurrentReplacement(t, 8, 25, func(hooks replacementHooks, publish publishFunc) publishFunc {
 		return func(handle, parent windows.Handle, name string) error {
-			if gaps.open(dest) {
+			if gaps.open(hooks.dest) {
 				time.Sleep(2 * time.Millisecond)
 			}
 			return publish(handle, parent, name)
@@ -695,15 +710,35 @@ func TestInstallFileConcurrentReplacementDetectsAPublicationGap(t *testing.T) {
 // a sustained, genuine publication gap: the real publishLog.excuse must decline
 // it (no publish returns inside the absence) so the verdict fails as a
 // persistent absence rather than logging it as tolerated lookup lag.
+//
+// The publishes either side of the gap are real, so the kernel's
+// in-flight-rename race can still hide the name during one of them, and that
+// absence may be excused (#12559: CI run 45130165098 excused one on the
+// publish before the gap, then reported the gap persistent, and the old
+// "nothing excused" assertion failed). The verdict is therefore about the
+// gap's own window (checkInjectedGapReport). The gap opens only once the watch
+// has found the destination on a probe issued after the previous publish
+// returned, so an earlier absence's excuse cannot run on into the gap and that
+// publish cannot count as returning inside it.
 func TestInstallFileConcurrentReplacementDoesNotExcuseASustainedGap(t *testing.T) {
 	var calls atomic.Int64
 	var gaps gapInjector
-	run := runConcurrentReplacement(t, 1, 3, func(dest string, publish publishFunc) publishFunc {
+	var opened, closed time.Time // written by the only writer; read after it has finished
+	run := runConcurrentReplacement(t, 1, 3, func(hooks replacementHooks, publish publishFunc) publishFunc {
 		return func(handle, parent windows.Handle, name string) error {
-			if calls.Add(1) == 2 && gaps.open(dest) {
-				time.Sleep(500 * time.Millisecond)
+			if calls.Add(1) != 2 {
+				return publish(handle, parent, name)
 			}
-			return publish(handle, parent, name)
+			hooks.readerSawPresentAfter(hooks.now())
+			at := hooks.now()
+			if !gaps.open(hooks.dest) {
+				return publish(handle, parent, name)
+			}
+			opened = at
+			time.Sleep(500 * time.Millisecond)
+			err := publish(handle, parent, name)
+			closed = hooks.now()
+			return err
 		}
 	})
 	if gaps.opened.Load() != 1 {
@@ -716,9 +751,11 @@ func TestInstallFileConcurrentReplacementDoesNotExcuseASustainedGap(t *testing.T
 	if errors.Is(err, errPublicationBroken) {
 		t.Fatalf("control is not discriminating: the injected gap broke the installs instead of being observed: %v", err)
 	}
-	if run.watch.persistent == nil || len(run.watch.excused) != 0 {
-		t.Fatalf("a sustained gap must be reported as persistent and never excused; persistent=%v excused=%v",
-			run.watch.persistent, run.watch.excused)
+	if err := checkInjectedGapReport(run.watch, opened, closed, lookupLagBudget); err != nil {
+		t.Fatal(err)
+	}
+	for _, excused := range run.watch.excused {
+		t.Logf("an absence outside the injected gap was excused (budget %d, #12559): %s", lookupLagBudget, excused)
 	}
 }
 

@@ -32,6 +32,7 @@ import {
   evaluateStorageSessionBudget,
   renewStorageSession,
   resolveStorageSessionObjects,
+  rfc3339,
   storageSessionBudgets,
   type BrokeredReadDeps,
   type BrokeredReadStore,
@@ -82,7 +83,7 @@ type FakeState = {
     originKeyRoot?: { keyLayout: string; keyPrefix: string | null };
   }>;
   sessions: Map<string, StorageSessionRow>;
-  command: { status: string; deviceId: string } | null;
+  command: { status: string; deviceId: string; type: string } | null;
   revoked: Array<{ id: string; reason: string }>;
 };
 
@@ -175,7 +176,7 @@ function makeState(): FakeState {
       { originSnapshotId: 'snap-foreign', originOrgId: ORG, originDeviceId: OTHER_DEVICE, originStorageIdentity: IDENTITY },
     ],
     sessions: new Map(),
-    command: { status: 'sent', deviceId: EXEC_DEVICE },
+    command: { status: 'sent', deviceId: EXEC_DEVICE, type: 'backup_restore' },
     revoked: [],
   };
 }
@@ -672,6 +673,27 @@ describe('brokered read delivery', () => {
       });
       expect(deadlineMs).toBeGreaterThan(Date.parse(s.deadline));
     });
+
+    // The stale-command reaper times a delivered command out at
+    // executed_at + budget (staleCommandReaper.ts). The refresher that mints
+    // this session runs after the claim stamped executed_at (seconds after,
+    // on a heartbeat that claims several commands), so a deadline measured
+    // from the mint instant outlived the command it belongs to.
+    it('ends no later than the claim (executed_at) + budget, however long after the claim it is minted', async () => {
+      const claimedAt = new Date(NOW.getTime() - 7_250);
+      const deps = makeDeps(makeState());
+      const out = await deliverBrokeredReadCommand({ ...restorePayload(), timeBudgetSeconds: 395 * 60 }, ctx({ type, claimedAt }), deps);
+      const s = out.storageSession as SessionDescriptor;
+      const reaperDeadline = claimedAt.getTime() + 395 * 60_000;
+      expect(Date.parse(s.deadline)).toBeLessThanOrEqual(reaperDeadline);
+      expect(Date.parse(s.deadline)).toBe(Math.floor(reaperDeadline / 1000) * 1000);
+    });
+  });
+
+  it('measures the deadline from the mint instant only when there is no claim', async () => {
+    const deps = makeDeps(makeState());
+    const out = await deliverBrokeredReadCommand(restorePayload(), ctx({ type: 'backup_verify', claimedAt: null }), deps);
+    expect(Date.parse((out.storageSession as SessionDescriptor).deadline)).toBe(NOW.getTime() + 2 * 3600_000);
   });
 });
 
@@ -987,7 +1009,7 @@ describe('storage session authentication', () => {
   it.each(['completed', 'failed', 'timeout', 'cancelled'])('revokes the session once the command is %s', async (status) => {
     const state = makeState();
     const { deps, desc } = await mintSession(state);
-    state.command = { status, deviceId: EXEC_DEVICE };
+    state.command = { status, deviceId: EXEC_DEVICE, type: 'backup_restore' };
     expect(await authenticateStorageSession({ sessionId: desc.sessionId, token: desc.token, agent }, deps)).toMatchObject({ ok: false, status: 410 });
     expect(state.revoked).toEqual([{ id: desc.sessionId, reason: `command_${status}` }]);
   });
@@ -995,7 +1017,7 @@ describe('storage session authentication', () => {
   it('revokes the session when the command row is gone or retargeted', async () => {
     const state = makeState();
     const { deps, desc } = await mintSession(state);
-    state.command = { status: 'sent', deviceId: OTHER_DEVICE };
+    state.command = { status: 'sent', deviceId: OTHER_DEVICE, type: 'backup_restore' };
     expect(await authenticateStorageSession({ sessionId: desc.sessionId, token: desc.token, agent }, deps)).toMatchObject({ ok: false, status: 410 });
     state.command = null;
     const again = await mintSession(state);
@@ -1214,7 +1236,7 @@ describe('a write session queued behind another backup (#11012)', () => {
     expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has been revoked' });
   });
 
-  it('leaves read sessions unchanged: an unused read session still expires with its lease', async () => {
+  it('leaves restore read sessions unchanged: an unused one still expires with its lease, renew included', async () => {
     const state = makeState();
     const { desc, row } = await mintSession(state);
     const stored = state.sessions.get(row.id)!;
@@ -1222,6 +1244,108 @@ describe('a write session queued behind another backup (#11012)', () => {
     expect(stored.callCount).toBe(0);
     const deps = makeDeps(state, { now: () => new Date(stored.expiresAt.getTime() + 1) });
     expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+    expect(await authenticateStorageSession({ sessionId: desc.sessionId, token: desc.token, agent, op: 'renew' }, deps))
+      .toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+});
+
+// #11813: a verification waits on the agent's verification lane (10 at a
+// time) before it reaches the helper. A bulk verify parks the rest there long
+// past their 15-minute read lease, and the helper's first call (a renew, since
+// it renews any lease with under a third left) got 410 and the run failed.
+describe('a verification read session queued on the agent (#11813)', () => {
+  const agent = { deviceId: EXEC_DEVICE, orgId: ORG };
+  const VERIFY_TYPES = ['backup_verify', 'backup_test_restore'] as const;
+
+  async function mintQueued(state: FakeState, type: string) {
+    state.command = { status: 'sent', deviceId: EXEC_DEVICE, type };
+    const { desc, row } = await mintSession(state, type);
+    const stored = state.sessions.get(row.id)!;
+    // A restore runs on a shorter clock; give it room so only the type
+    // decides whether the lapsed lease is exempt.
+    if (!(VERIFY_TYPES as readonly string[]).includes(type)) stored.deadline = new Date(NOW.getTime() + 24 * 3600_000);
+    // The helper finally starts it an hour after its lease lapsed, well
+    // inside the command's deadline.
+    const startedAt = new Date(stored.expiresAt.getTime() + 3600_000);
+    expect(startedAt.getTime()).toBeLessThan(stored.deadline.getTime());
+    return { desc, stored, deps: makeDeps(state, { now: () => startedAt }), startedAt };
+  }
+  const authAs = (desc: SessionDescriptor, deps: BrokeredReadDeps, op?: 'renew' | 'resolve' | 'object') =>
+    authenticateStorageSession({ sessionId: desc.sessionId, token: desc.token, agent, op }, deps);
+
+  it.each(VERIFY_TYPES)('accepts a renew of an unused %s session whose lease lapsed, and grants a fresh lease from now', async (type) => {
+    const state = makeState();
+    const { desc, deps, startedAt } = await mintQueued(state, type);
+
+    const result = await authAs(desc, deps, 'renew');
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    const renewed = await renewStorageSession(result.session, deps);
+    expect(renewed).toEqual({
+      status: 200,
+      body: { expiresAt: rfc3339(new Date(startedAt.getTime() + STORAGE_SESSION_LEASE_MS)), expiresIn: STORAGE_SESSION_LEASE_MS / 1000 },
+    });
+    expect(state.sessions.get(desc.sessionId)!.callCount).toBe(1);
+
+    // From here the lease is a liveness window like any running session.
+    expect(await authAs(desc, deps, 'resolve')).toMatchObject({ ok: true });
+    const lapsedAgain = makeDeps(state, { now: () => new Date(startedAt.getTime() + STORAGE_SESSION_LEASE_MS + 1) });
+    expect(await authAs(desc, lapsedAgain, 'renew')).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
+  it.each(VERIFY_TYPES)('refuses any call but renew on a lapsed unused %s session', async (type) => {
+    const state = makeState();
+    const { desc, deps } = await mintQueued(state, type);
+    for (const op of ['resolve', 'object', undefined] as const) {
+      expect(await authAs(desc, deps, op)).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+    }
+    expect(state.revoked).toEqual([]);
+  });
+
+  it.each(['backup_restore', 'mssql_restore', 'mssql_verify'])('does not exempt a lapsed unused %s session, even on renew', async (type) => {
+    const state = makeState();
+    if (type.startsWith('mssql')) state.snapshots = [makeSnapshot({ metadata: { backupFileName: 'db.bak' } })];
+    const { desc, deps } = await mintQueued(state, type);
+    expect(await authAs(desc, deps, 'renew')).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
+  it.each([
+    ['has made a call', { callCount: 1 }],
+    ['has a recorded use', { lastUsedAt: NOW }],
+    ['has resumed', { resumedAt: NOW }],
+    ['has issued URLs', { urlHorizonAt: NOW }],
+  ])('refuses a renew of a lapsed verify session once it %s', async (_name, used) => {
+    const state = makeState();
+    const { desc, stored, deps } = await mintQueued(state, 'backup_verify');
+    Object.assign(stored, used);
+    expect(await authAs(desc, deps, 'renew')).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
+  it('refuses a renew of an unused verify session that was revoked', async () => {
+    const state = makeState();
+    const { desc, stored, deps } = await mintQueued(state, 'backup_verify');
+    stored.revokedAt = NOW;
+    expect(await authAs(desc, deps, 'renew')).toMatchObject({ ok: false, status: 410, error: 'Storage session has been revoked' });
+  });
+
+  it('refuses a renew of an unused verify session past its deadline', async () => {
+    const state = makeState();
+    const { desc, stored } = await mintQueued(state, 'backup_verify');
+    const late = makeDeps(state, { now: () => new Date(stored.deadline.getTime()) });
+    expect(await authAs(desc, late, 'renew')).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
+  it.each([
+    ['completed', { status: 'completed', deviceId: EXEC_DEVICE, type: 'backup_verify' }, 'command_completed'],
+    ['timed out', { status: 'timeout', deviceId: EXEC_DEVICE, type: 'backup_verify' }, 'command_timeout'],
+    ['retargeted', { status: 'sent', deviceId: OTHER_DEVICE, type: 'backup_verify' }, 'command_sent'],
+    ['gone', null, 'command_missing'],
+  ])('refuses and revokes a renew of an unused verify session whose command is %s', async (_name, command, reason) => {
+    const state = makeState();
+    const { desc, deps } = await mintQueued(state, 'backup_verify');
+    state.command = command;
+    expect(await authAs(desc, deps, 'renew')).toMatchObject({ ok: false, status: 410, error: 'Storage session has ended with its command' });
+    expect(state.revoked).toEqual([{ id: desc.sessionId, reason }]);
   });
 });
 

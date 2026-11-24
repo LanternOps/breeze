@@ -23,6 +23,7 @@ import {
   withAuthDbAccessContext,
   type AuthContext,
 } from '../middleware/auth';
+import { classifyAutomation } from '../services/flows/conversion/classify';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { verifyBreezeHmacSignature, type BreezeHmacFailure } from '../services/webhookSignature';
@@ -68,7 +69,6 @@ import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
 import { OccurrenceClaimedError, claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
 import { legacyWebhookDeliveryIdHeader, webhookOccurrenceInstant, webhookOccurrenceKeys } from '../services/flows/conversion/webhookOccurrence';
-import { flowsEnabled } from '../config/env';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -826,6 +826,21 @@ automationRoutes.use('*', authMiddleware);
 // Read-only routes
 // ============================================
 
+// Standalone (class S) Jobs not yet switched to a flow. SQL mirror of
+// classifyAutomation() === 'S' && !convertedToFlowId in
+// services/flows/conversion/classify.ts. The policy-workflow test is NULL-safe
+// (IS NOT TRUE) so a trigger with no `filter` key still counts.
+const standaloneNotMovedCondition = and(
+  isNull(automations.retiredAt),
+  isNull(automations.convertedToFlowId),
+  isNull(automations.managedByMonitorId),
+  isNull(automations.managedByAgentId),
+  sql`(jsonb_typeof(${automations.trigger}->'filter') = 'object' AND jsonb_exists(${automations.trigger}->'filter', '_policyWorkflow')) IS NOT TRUE`,
+);
+
+/** The list's `jobCounts.notMoved` column; exported for the real-DB test (flowDraftRoutes.integration.test.ts). */
+export const notMovedCountColumn = sql<number>`count(*) filter (where ${standaloneNotMovedCondition})`;
+
 automationRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -871,6 +886,7 @@ automationRoutes.get(
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 },
+            jobCounts: { notMoved: 0 },
           });
         }
         const orgCondition = orgIds.length > 0 ? inArray(automations.orgId, orgIds) : undefined;
@@ -891,6 +907,7 @@ automationRoutes.get(
 
     let rows: Array<typeof automations.$inferSelect>;
     let total: number;
+    let notMoved = 0;
     if (permissions?.allowedSiteIds !== undefined) {
       const scanSize = 100;
       let databaseOffset = 0;
@@ -911,6 +928,7 @@ automationRoutes.get(
         for (const automation of candidates) {
           const check = await checkAutomationTargetsWithinSiteScope(automation, permissions);
           if (!check.ok) continue;
+          if (classifyAutomation(automation) === 'S' && !automation.convertedToFlowId) notMoved += 1;
           if (total >= offset && rows.length < limit) rows.push(automation);
           total += 1;
         }
@@ -918,11 +936,16 @@ automationRoutes.get(
         if (candidates.length < scanSize) break;
       }
     } else {
+      // W01b (#12435, Decision P6): the Jobs tab count rides the same count query.
       const countResult = await db
-        .select({ count: sql<number>`count(*)` })
+        .select({
+          count: sql<number>`count(*)`,
+          notMoved: notMovedCountColumn,
+        })
         .from(automations)
         .where(whereCondition);
       total = Number(countResult[0]?.count ?? 0);
+      notMoved = Number(countResult[0]?.notMoved ?? 0);
 
       rows = await db
         .select()
@@ -943,6 +966,7 @@ automationRoutes.get(
         conversion: conversions.get(automation.id) ?? null,
       })),
       pagination: { page, limit, total },
+      jobCounts: { notMoved },
     });
   },
 );
@@ -1320,17 +1344,11 @@ automationRoutes.get(
 // These mutation routes remain for legacy compatibility.
 // ============================================
 
-/**
- * W06 R1 (#5221, plan Decision 8): new standalone Jobs are not created once
- * Flows are enabled on this installation — "New job" opens Flows instead. With
- * FLOWS_ENABLED=false Jobs stay writable (Flows are unavailable there). Answers
- * before body validation, so a client learns where to go whatever it sent.
- * Managed rows (triage seeding, monitor compile) never come through this route.
- */
-async function refuseCreateWhenFlowsEnabled(c: Context, next: Next) {
-  if (flowsEnabled()) return c.json({ error: 'automations_moved_to_flows', flowsUrl: '/flows' }, 410);
-  await next();
-}
+// #12310: W06 R1 (#5221, plan Decision 8) refused this route with 410
+// `automations_moved_to_flows` while Flows was on. A flow can only be drafted in
+// AI chat or moved from an existing Job, so the refusal left a tenant without
+// AI unable to create any automation. Creation stays open whatever
+// FLOWS_ENABLED says; the refusal returns with the manual flow editor (#10336).
 
 // DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.post(
@@ -1338,7 +1356,6 @@ automationRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
-  refuseCreateWhenFlowsEnabled,
   zValidator('json', createAutomationSchema),
   async (c) => {
     const auth = c.get('auth');

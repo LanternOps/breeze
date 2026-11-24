@@ -837,6 +837,8 @@
       "userKeyTooLong": "La chiave utente deve contenere al massimo 30 caratteri",
       "tokenTooLong": "Il token deve contenere al massimo 30 caratteri",
       "deviceNameTooLong": "Il nome dispositivo deve contenere al massimo 25 caratteri",
+      "emailRequired": "È richiesto almeno un destinatario email",
+      "allEmailFormat": "Tutti i destinatari email devono essere indirizzi email validi (es. nome@example.com)",
       "phoneRequired": "È richiesto almeno un numero di telefono",
       "phoneFormat": "Il numero di telefono deve essere in formato E.164 (es. +1234567890)",
       "allPhoneFormat": "Tutti i numeri di telefono SMS devono usare il formato E.164 (es. +1234567890)",

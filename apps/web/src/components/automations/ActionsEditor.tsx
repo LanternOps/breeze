@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useFormContext, useFieldArray, type FieldValues } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
+import { useChannelTypeLabel } from './channelTypeLabel';
 import type { TFunction } from 'i18next';
 import { Plus, Trash2 } from 'lucide-react';
 import { RunContextSelect } from '../common/RunContext';
@@ -62,6 +63,7 @@ export default function ActionsEditor({
   softwareCatalog = [],
 }: ActionsEditorProps) {
   const { t } = useTranslation('scripts');
+  const channelTypeLabel = useChannelTypeLabel();
   const {
     register,
     control,
@@ -205,7 +207,7 @@ export default function ActionsEditor({
                         <option value="">{t('automationForm.placeholders.selectChannel')}</option>
                         {notificationChannels.map((channel) => (
                           <option key={channel.id} value={channel.id}>
-                            {channel.name} ({channel.type})
+                            {channel.name} ({channelTypeLabel(channel.type)})
                           </option>
                         ))}
                       </select>

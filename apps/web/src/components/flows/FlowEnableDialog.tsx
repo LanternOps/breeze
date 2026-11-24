@@ -6,6 +6,7 @@ import { ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import { enableFlow, type EnableFlowResult } from './api';
+import { FleetMaxTargetsField, parseFleetMaxTargets } from './FleetMaxTargetsField';
 
 interface EnableErrorBody {
   error?: string;
@@ -27,9 +28,13 @@ const SIMPLE_ERRORS: Record<string, string> = {
   slug_unavailable: 'enable.slugUnavailable',
   webhook_secret_missing: 'enable.webhookSecretMissing',
   ai_budget_unavailable: 'enable.aiBudgetUnavailable',
+  flow_conversion_not_switched: 'enable.conversionNotSwitched',
   flow_not_found: 'errors.notFound',
   MFA_REQUIRED: 'errors:MFA_REQUIRED',
 };
+
+/** The fleet lane (W6): a pre-approval of this tool also needs the user's `maxTargets`. */
+const FLEET_TOOL = 'run_script_on_targets';
 
 function readBody(err: ActionError): EnableErrorBody {
   const body = err.body;
@@ -60,11 +65,30 @@ export function FlowEnableDialog({
 }) {
   const { t } = useTranslation('flows');
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [maxTargets, setMaxTargets] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<EnableErrorBody | null>(null);
 
   const tier3 = validation.steps.filter((s) => s.tier === 3);
   const eligibility = flow.preApprovalEligibility ?? {};
+  // A webhook run never honours a pre-approval (Flows spec §6.5), so a webhook
+  // flow offers none and sends none.
+  const isWebhook = flow.definition.trigger.type === 'webhook';
+  const partnerWide = flow.ownerScope === 'partner';
+
+  // The one list both the payload and the Confirm gate are computed from: a
+  // tick on a step that is not (or no longer) eligible authorizes nothing.
+  const preApproved = isWebhook
+    ? []
+    : tier3
+        .filter((s) => checked.has(s.id) && eligibility[s.id]?.eligible === true)
+        .map((s) => ({
+          id: s.id,
+          maxTargets: s.tool === FLEET_TOOL ? parseFleetMaxTargets(maxTargets[s.id]) : undefined,
+        }));
+  const fleetPreApproved = preApproved.filter((p) => p.maxTargets !== undefined);
+  const preApprovalsValid = fleetPreApproved.every((p) => p.maxTargets !== null);
+  const canSubmit = !submitting && preApprovalsValid;
 
   const toggle = (id: string) =>
     setChecked((prev) => {
@@ -75,14 +99,20 @@ export function FlowEnableDialog({
     });
 
   const submit = async () => {
-    if (submitting) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
-      const preApprovedStepIds = tier3
-        .filter((s) => checked.has(s.id) && eligibility[s.id]?.eligible === true)
-        .map((s) => s.id);
-      const result = await enableFlow(flow.id, { expectedVersion: flow.definitionVersion, preApprovedStepIds });
+      const preApprovedStepIds = preApproved.map((p) => p.id);
+      // canSubmit guarantees every entry parsed; the guard keeps the compiler checking it.
+      const fleetMaxTargets = Object.fromEntries(
+        fleetPreApproved.flatMap((p) => (typeof p.maxTargets === 'number' ? [[p.id, p.maxTargets] as const] : [])),
+      );
+      const result = await enableFlow(flow.id, {
+        expectedVersion: flow.definitionVersion,
+        preApprovedStepIds,
+        ...(fleetPreApproved.length > 0 ? { fleetMaxTargets } : {}),
+      });
       onEnabled(result);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
@@ -118,12 +148,27 @@ export function FlowEnableDialog({
           <h3 className="text-sm font-semibold">{t('enable.tier3Heading')}</h3>
           {tier3.length === 0 ? (
             <p className="text-sm text-muted-foreground" data-testid="flow-enable-no-tier3">{t('enable.noTier3')}</p>
+          ) : isWebhook ? (
+            <>
+              <p className="text-sm text-muted-foreground" data-testid="flow-enable-webhook-no-preapproval">
+                {t('conversion.switch.webhookApprovalEachRun')}
+              </p>
+              <ul className="space-y-2">
+                {tier3.map((step) => (
+                  <li key={step.id} className="rounded border p-2 text-sm" data-testid={`flow-enable-step-${step.id}`}>
+                    <span className="font-mono">{step.id}</span>{' '}
+                    <span className="text-muted-foreground">{step.tool}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
           ) : (
             <ul className="space-y-2">
               {tier3.map((step) => {
                 const el = eligibility[step.id];
                 const eligible = el?.eligible === true;
                 const reason = el && !el.eligible ? el.reason : 'not_tier3';
+                const ticked = eligible && checked.has(step.id);
                 return (
                   <li key={step.id} className="rounded border p-2 text-sm" data-testid={`flow-enable-step-${step.id}`}>
                     <label className="flex items-start gap-2">
@@ -131,7 +176,7 @@ export function FlowEnableDialog({
                         type="checkbox"
                         data-testid={`flow-enable-preapprove-${step.id}`}
                         disabled={!eligible || submitting}
-                        checked={eligible && checked.has(step.id)}
+                        checked={ticked}
                         onChange={() => toggle(step.id)}
                       />
                       <span>
@@ -140,6 +185,16 @@ export function FlowEnableDialog({
                         <span className="block text-xs">{t('enable.preApprove')}</span>
                       </span>
                     </label>
+                    {ticked && step.tool === FLEET_TOOL && (
+                      <FleetMaxTargetsField
+                        stepId={step.id}
+                        value={maxTargets[step.id] ?? ''}
+                        onChange={(v) => setMaxTargets((prev) => ({ ...prev, [step.id]: v }))}
+                        partnerWide={partnerWide}
+                        testIdPrefix="flow-enable-maxtargets"
+                        perOrgTestId={`flow-enable-perorg-${step.id}`}
+                      />
+                    )}
                     {eligible ? (
                       <p className="mt-1 text-xs text-muted-foreground">{t('enable.preApproveHelp')}</p>
                     ) : (
@@ -206,7 +261,7 @@ export function FlowEnableDialog({
             type="button"
             className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             data-testid="flow-enable-confirm"
-            disabled={submitting}
+            disabled={!canSubmit}
             onClick={submit}
           >
             {t('enable.confirm')}

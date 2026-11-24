@@ -32,7 +32,8 @@ const BASELINE: Record<string, number> = {
   'aiToolsCisBenchmark.ts': 1,
   'aiToolsCompliance.ts': 3,
   'aiToolsDR.ts': 1,
-  'aiToolsDevice.ts': 2,
+  // query_devices' site narrowing now spans the caller's whole reach (#11677, deviceListReachConditions).
+  'aiToolsDevice.ts': 1,
   'aiToolsDns.ts': 1,
   'aiToolsEventLogs.ts': 1,
   // manage_patches approve/decline/defer/bulk_approve and the org-config

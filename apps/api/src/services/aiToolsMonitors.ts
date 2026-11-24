@@ -19,6 +19,7 @@
  * Attach/detach read and rewrite the monitors link through
  * `monitors/monitorAttachments.ts`, the same helper the REST route uses.
  */
+import { keepReadablePolicies } from './configPolicyReadable';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
@@ -244,11 +245,13 @@ async function attachmentCountsFor(monitorIds: string[]): Promise<Map<string, nu
   return new Map(rows.map((r) => [r.monitorId, r.count]));
 }
 
-async function attachmentsFor(monitorId: string) {
-  return db
+/** The monitor's attachments, naming only the policies the caller may read (W03a). */
+async function attachmentsFor(monitorId: string, auth: AuthContext) {
+  const rows = await db
     .select({
       id: configPolicyMonitors.id,
       configPolicyId: configPolicyFeatureLinks.configPolicyId,
+      policyOrgId: configurationPolicies.orgId,
       policyName: configurationPolicies.name,
       enabled: configPolicyMonitors.enabled,
       overrides: configPolicyMonitors.overrides,
@@ -263,6 +266,8 @@ async function attachmentsFor(monitorId: string) {
       eq(configurationPolicies.id, configPolicyFeatureLinks.configPolicyId),
     )
     .where(eq(configPolicyMonitors.monitorId, monitorId));
+  return (await keepReadablePolicies(auth, rows, (a) => ({ id: a.configPolicyId, orgId: a.policyOrgId })))
+    .map(({ policyOrgId: _policyOrgId, ...attachment }) => attachment);
 }
 
 export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
@@ -350,7 +355,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       const monitor = await getMonitorDefinition(input.monitorId as string, auth);
       if (!monitor) return JSON.stringify({ error: 'Monitor not found or access denied' });
 
-      const attachments = await attachmentsFor(monitor.id);
+      const attachments = await attachmentsFor(monitor.id, auth);
 
       return JSON.stringify({
         monitor: { ...presentMonitorDefinition(monitor), ownerScope: ownerScopeOf(monitor) },

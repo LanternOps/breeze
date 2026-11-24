@@ -200,6 +200,9 @@ const AGENT_ERROR_CODE_KIND: Record<AgentCommandErrorCode, AgentRefusalKind> = {
   isolation_stale_generation: ERROR_CODES.AGENT_COMMAND_REJECTED,
   isolation_invalid_spec: ERROR_CODES.AGENT_COMMAND_REJECTED,
   isolation_busy: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  // Rides only backup verification results (#11813), never a file-browser
+  // command; a refusal if one ever did.
+  verification_queue_expired: ERROR_CODES.AGENT_COMMAND_REJECTED,
 };
 
 function failureForKind(kind: AgentRefusalKind, raw: string): CommandFailure {

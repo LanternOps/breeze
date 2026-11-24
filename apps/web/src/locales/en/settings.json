@@ -2945,7 +2945,8 @@
         "not_found": "not a script this agent's owner can see",
         "not_in_partner_baseline": "not in the partner baseline",
         "run_script_not_allowed": "Run a script is not allowed for this agent"
-      }
+      },
+      "circuitOpen": "This agent's circuit breaker is open for this organization, so no run was started. Reset it from the agent's row to run again."
     },
     "actions": {
       "add": "New agent",
@@ -5119,6 +5120,27 @@
           "hint": "Total spending cap per day across all of this agent's runs."
         }
       }
+    },
+    "circuit": {
+      "badge": "Circuit open",
+      "openedSince": "Paused in {{org}} since {{at}}.",
+      "opened": "Paused in {{org}}.",
+      "reason": "Why: {{reason}}",
+      "reset": "Reset",
+      "dialog": {
+        "title": "Reset the circuit breaker?",
+        "message": "{{agent}} will run again in {{org}}. If what made it fail is not fixed, it pauses again after the same number of failures.",
+        "reasonLabel": "Reason (saved to the audit log)",
+        "reasonPlaceholder": "For example: the model gateway is back up",
+        "confirm": "Reset circuit"
+      },
+      "toasts": {
+        "reset": "Circuit reset. The agent can run again.",
+        "resetFailed": "Could not reset the circuit."
+      },
+      "errors": {
+        "mfaRequired": "Resetting a circuit needs a session signed in with two-factor authentication. Sign in again with your second factor."
+      }
     }
   },
   "apiKeyForm": {
@@ -5906,7 +5928,8 @@
   "settingsSectionNav": {
     "settingsSection": "Settings section",
     "settingsSections": "Settings sections",
-    "unsavedChanges": "{{label}} (unsaved changes)"
+    "unsavedChanges": "{{label}} (unsaved changes)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Provider name is required",

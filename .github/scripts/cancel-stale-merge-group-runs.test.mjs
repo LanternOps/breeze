@@ -113,6 +113,36 @@ test('ref lookup 403/429 or a thrown error never cancels', async () => {
   }
 });
 
+// Stacked pull requests: each PR in a stack is its own queue entry, chained on the
+// previous entry's head. When a mid-stack entry fails, it and every entry above it
+// leave the queue at once, and their refs go together.
+const queueRef = (pr, base) => `gh-readonly-queue/main/pr-${pr}-${base.repeat(40)}`;
+
+test('stack: entries removed together are each cancelled, every workflow on them, and a live entry is kept', async () => {
+  const lookups = [];
+  const failed = queueRef(15, 'a'), above = queueRef(16, 'b'), live = queueRef(30, 'c');
+  const base = fakeApi({
+    // CI, CI Gate and the janitor itself start a merge_group run per entry.
+    runs: { queued: [run(1, above), run(2, above)], in_progress: [run(3, failed), run(4, failed), run(5, above), run(6, live), run(7, live)] },
+    refs: new Set([live]),
+  });
+  const api = async (m, p) => { if (p.includes('/git/ref/')) lookups.push(p); return base.api(m, p); };
+  const res = await cancelStaleMergeGroupRuns({ api, repo: REPO, log });
+  assert.deepEqual(base.cancelled.sort((x, y) => x - y), [1, 2, 3, 4, 5]);
+  assert.deepEqual([res.inspected, res.cancelled, res.errors], [7, 5, 0]);
+  assert.equal(lookups.length, 3, 'one lookup per ref, however many entries leave at once');
+});
+
+test('stack: a survivor re-queued under the same ref name keeps the old runs; a live ref is never a cancel', async () => {
+  // The rebuilt entry has a new head but the same PR and base, so the same ref name.
+  // The janitor reads only the ref's existence, so it errs toward not cancelling.
+  const reused = queueRef(16, 'a');
+  const { api, cancelled } = fakeApi({ runs: { in_progress: [run(1, reused), run(2, reused)] }, refs: new Set([reused]) });
+  const res = await cancelStaleMergeGroupRuns({ api, repo: REPO, log });
+  assert.deepEqual(cancelled, []);
+  assert.deepEqual([res.cancelled, res.errors], [0, 0]);
+});
+
 test('cancel returning 409 (already finished) is benign, not an error', async () => {
   const { api } = fakeApi({ runs: { queued: [run(1, 'gone')] }, cancelFails: new Set([1]), cancelStatus: 409 });
   const res = await cancelStaleMergeGroupRuns({ api, repo: REPO, log });

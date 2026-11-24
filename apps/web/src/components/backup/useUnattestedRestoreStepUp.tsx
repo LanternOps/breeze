@@ -63,12 +63,12 @@ export function isUnattestedRestoreStepUp(err: unknown): boolean {
 async function discoverFactors(): Promise<{ tier: ReauthTier; smsOnly: boolean }> {
   const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
   if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
-  const me = await user.json() as { mfaEnabled?: boolean | null; mfaMethod?: string | null } | null;
+  const me = await user.json() as { mfaEnabled?: boolean | null; mfaMethod?: string | null; totpEnrolled?: boolean } | null;
   const keys = await passkeys.json() as unknown;
   const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
   if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
   return {
-    tier: pickReauthTier(list.length, me.mfaMethod ?? null),
+    tier: pickReauthTier(list.length, me.mfaMethod ?? null, me.totpEnrolled),
     smsOnly: list.length === 0 && me.mfaEnabled === true && me.mfaMethod === 'sms',
   };
 }

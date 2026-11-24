@@ -205,6 +205,21 @@ describe('oem_updates feature links (#11070)', () => {
       expect((await res.json()).code).toBe('oem_updates_invalid_settings');
     });
 
+    it('a Dell blocklist is 400 naming the field; another vendor\'s still saves (#12265)', async () => {
+      const dellBlocked = settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] });
+      const res = await send(app, 'POST', { featureType: 'oem_updates', inlineSettings: dellBlocked });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe('oem_updates_invalid_settings');
+      expect(body.error).toContain('vendors.dell.blockedUpdateIds');
+      expect(body.error).toContain('Dell does not support blocking individual updates');
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+
+      const hpBlocked = { ...OFF, vendors: { ...OFF.vendors, hp: { enabled: false, categories: {}, blockedUpdateIds: ['ABC12'] } } };
+      const ok = await send(app, 'POST', { featureType: 'oem_updates', inlineSettings: hpBlocked });
+      expect(ok.status).toBe(201);
+    });
+
     it('partner-wide policy still needs canManagePartnerWidePolicies, before any vendor check', async () => {
       getConfigPolicyMock.mockResolvedValue({ ...POLICY, orgId: null, partnerId: PARTNER_ID });
       state.auth = { scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'selected' };
@@ -233,11 +248,15 @@ describe('oem_updates feature links (#11070)', () => {
     });
 
     it('narrowing with devices.write passes: off, a category removed, a blocked ID added', async () => {
-      getConfigPolicyMock.mockResolvedValue({ ...POLICY, featureLinks: [OWN(ARMED)] });
+      // The blocked ID goes on HP: Dell cannot honour one (#12265).
+      const hp = (blockedUpdateIds: string[]) => ({ enabled: true, categories: { driver: true }, blockedUpdateIds });
+      const withHp = (base: ReturnType<typeof settings>, ids: string[] = []) => ({ ...base, vendors: { ...base.vendors, hp: hp(ids) } });
+      gates.open.add('hp:driver');
+      getConfigPolicyMock.mockResolvedValue({ ...POLICY, featureLinks: [OWN(withHp(ARMED))] });
       for (const inlineSettings of [
-        settings({ enabled: false }),
-        settings(),
-        settings({}, { categories: { driver: true, application: true }, blockedUpdateIds: ['ABC12'] }),
+        withHp(settings({ enabled: false })),
+        withHp(settings()),
+        withHp(settings({}, { categories: { driver: true, application: true } }), ['ABC12']),
       ]) {
         const res = await send(app, 'PATCH', { inlineSettings });
         expect(res.status).toBe(200);
@@ -251,6 +270,15 @@ describe('oem_updates feature links (#11070)', () => {
       const res = await send(app, 'PATCH', { inlineSettings: settings() });
       expect(res.status).toBe(200);
       expect(updateFeatureLinkMock.mock.calls[0]![5]).toEqual({ oemUpdatesArmAuthorized: true });
+    });
+
+    it('a Dell blocklist is 400 on PATCH too, even resent unchanged from a link stored before #12265', async () => {
+      const dellBlocked = settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] });
+      getConfigPolicyMock.mockResolvedValue({ ...POLICY, featureLinks: [OWN(dellBlocked)] });
+      const res = await send(app, 'PATCH', { inlineSettings: dellBlocked });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('vendors.dell.blockedUpdateIds');
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
     });
 
     it('a featurePolicyId is 400', async () => {

@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Bağlantılı politika:",
     "notEnforced": "Zorunlu değil",
     "usingBreezeDefaults": "— Breeze Varsayılanlarını kullanarak",
-    "inheritanceChain": "Miras Zinciri",
-    "policiesAreResolvedUsingClosestWins": "Politikalar, en yakın kazanç önceliği kullanılarak çözümlenir. Daha spesifik atamalar (cihaz düzeyi), daha geniş atamaları (organizasyon düzeyi) geçersiz kılar.",
+    "inheritanceChain": "Öncelik sırası",
     "priority": "Öncelik",
     "level": "Seviye",
     "policy2": "Politika",
     "features": "Özellikler",
-    "inheritedFrom": "Şuradan devralındı: {{name}}",
+    "inheritedFrom": "Dayandığı politika: {{name}}",
     "patchApproval": {
       "label": "onay",
       "byRing": "bağlı güncelleme halkası tarafından belirlenir",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Yalıtım sırasındaki ek hedefler",
       "invalid": "Bu ilkenin sınırlama ayarları geçerli değil, bu nedenle yalıtımda ek hedef olmadan sabit varsayılanlar kullanılır."
     },
-    "chainResolutionRule": "Önce seviye belirler: Cihaz, Cihaz Grubunu geçer; ardından Site, Kuruluş ve İş Ortağı gelir. Öncelik (düşük sayı kazanır) yalnızca aynı seviyedeki politikalar arasında karar verir. Üstü çizili özellikler daha yakın bir politika tarafından geçersiz kılınmıştır.",
-    "featureOverriddenBy": "{{policy}} tarafından geçersiz kılındı"
+    "featureOverriddenBy": "{{policy}} tarafından geçersiz kılındı",
+    "viaLevel": "{{level}} düzeyinden",
+    "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
+    "precedenceLegend": "Özellik başına en belirgin olan kazanır: Cihaz › Cihaz grubu › Site › Kuruluş › Tüm kuruluşlar. Daha yakın bir politika özelliğin tamamının yerini alır; birleştirme yapılmaz.",
+    "lostClause": "{{features}} için {{winner}} tarafından değiştirildi: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "daha belirgin bir düzeyde ayarlanmış",
+      "lower_priority_number": "aynı düzey, daha düşük öncelik numarası",
+      "assigned_earlier": "aynı düzey ve öncelik, daha önce atanmış"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "Bu filtreyle eşleşen grup yok.",
     "managedByPartner": "Hizmet sağlayıcınız tarafından yönetilir. Üyelik kuralları gösterilmez; kuruluşunuzun cihazlarını görürsünüz.",
     "partnerDynamicType": "Dinamik · Tüm kuruluşlar",
-    "partnerDeleteWarning": "Bu işlem grubu tüm kuruluşlardan kaldırır ve ilke atamalarını siler."
+    "partnerDeleteWarning": "Bu işlem grubu tüm kuruluşlardan kaldırır ve ilke atamalarını siler.",
+    "policyRefusedForGroup": "Hiçbir şey uygulanmadı. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Donanım envanteri getirilemedi",

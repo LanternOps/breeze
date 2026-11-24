@@ -127,11 +127,58 @@ describe('restore result persistence', () => {
     expect((metadata.securityDescriptorQuarantinedPaths as string[]).length).toBeLessThanOrEqual(100);
   });
 
+  it('keeps how many failed files and warnings the result left out', () => {
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      { status: 'partial', filesFailed: 5_000, failedFiles: ['/a'], failedFilesOmitted: 4_999, warningsOmitted: 12 },
+    );
+    expect(metadata).toMatchObject({ failedFilesOmitted: 4_999, warningsOmitted: 12 });
+  });
+
+  it('drops an omitted count that is not a non-negative integer', () => {
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      { status: 'partial', failedFilesOmitted: -1, warningsOmitted: 'many' },
+    );
+    expect(metadata).not.toHaveProperty('failedFilesOmitted');
+    expect(metadata).not.toHaveProperty('warningsOmitted');
+  });
+
+  it('keeps the not-attempted count, code and reason of a restore stopped by a lost storage session', () => {
+    const reason =
+      'restore stopped: the storage session ended after 3 of 50 files (3 restored, 0 failed); the remaining 47 were not attempted, and running the same restore again resumes it';
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'failed', stderr: 'restore completed partially', error: 'restore completed partially' },
+      {
+        status: 'partial',
+        filesRestored: 3,
+        filesFailed: 0,
+        filesNotAttempted: 47,
+        code: 'storage_session_lost',
+        error: reason,
+      },
+    );
+    expect(metadata).toMatchObject({
+      status: 'partial',
+      filesRestored: 3,
+      filesFailed: 0,
+      filesNotAttempted: 47,
+      code: 'storage_session_lost',
+      // The agent's reason, not the generic stderr, is what the restore view
+      // shows as the error summary.
+      error: reason,
+    });
+  });
+
   it('omits the new fields for a result that does not carry them', () => {
     const metadata = buildRestoreResultMetadata('backup_restore', { status: 'completed' }, { status: 'completed' });
     expect(metadata).not.toHaveProperty('securityDescriptorQuarantined');
     expect(metadata).not.toHaveProperty('securityDescriptorQuarantinedPaths');
     expect(metadata).not.toHaveProperty('code');
+    expect(metadata).not.toHaveProperty('filesNotAttempted');
   });
 
   it('keeps the bare_metal_rebuild Hyper-V VM outcome (vmCreated/vmError) and redacts vmError (W06d)', () => {
@@ -273,6 +320,58 @@ describe('restore result persistence', () => {
     expect(persisted.targetConfig).not.toHaveProperty('error');
     expect(persisted.targetConfig.existing).toBe(true);
     expect(persisted.targetConfig.result).toMatchObject({ status: 'completed', filesRestored: 105_946 });
+  });
+
+  // #11813: the server times the command out, fails the job and revokes the
+  // read session; the agent's restore then stops at the session loss and its
+  // late result replaces the server's guess with how far the restore got.
+  it('records a late storage-session-lost restore over the server timeout guess', async () => {
+    const returning = vi.fn().mockResolvedValue([{ id: 'restore-1' }]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+
+    const applied = await updateRestoreJobFromResult(
+      {
+        id: 'restore-1',
+        status: 'failed',
+        targetConfig: {
+          error: 'Server-side timeout: no response from agent after 30 minutes',
+          result: { status: 'failed', timedOutBy: 'server' },
+        },
+      },
+      'backup_restore',
+      {
+        status: 'failed',
+        stderr: 'restore completed partially',
+        error: 'restore completed partially',
+        result: {
+          status: 'partial',
+          filesRestored: 1_200,
+          bytesRestored: 9_000_000,
+          filesFailed: 0,
+          filesNotAttempted: 800,
+          code: 'storage_session_lost',
+          error: 'restore stopped: the storage session ended after 1200 of 2000 files (1200 restored, 0 failed); the remaining 800 were not attempted',
+        },
+      }
+    );
+
+    expect(applied).toBe(true);
+    const persisted = set.mock.calls[0]?.[0] as {
+      status: string;
+      restoredFiles: number | null;
+      targetConfig: Record<string, unknown>;
+    };
+    expect(persisted.status).toBe('failed');
+    expect(persisted.restoredFiles).toBe(1_200);
+    expect(persisted.targetConfig).not.toHaveProperty('error');
+    expect(persisted.targetConfig.result).toMatchObject({
+      code: 'storage_session_lost',
+      filesNotAttempted: 800,
+      filesFailed: 0,
+    });
+    expect(persisted.targetConfig.result).not.toHaveProperty('timedOutBy');
   });
 
   it('drops the sweep-owned top-level error even when the genuine outcome is a failure (#6415)', async () => {

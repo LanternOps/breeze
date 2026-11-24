@@ -82,7 +82,9 @@ For Cloudflare Gateway, `apiKey` is an API token for the Zero Trust account name
   Cloudflare keeps Gateway analytics for a limited time that depends on your Zero Trust plan (about a day on the Free plan). If a Cloudflare integration has not synced for longer than that, Breeze syncs from the oldest data Cloudflare still holds and logs a warning; the earlier stretch cannot be backfilled.
 </Aside>
 
-Pi-hole supports both the legacy v5 admin API and the newer v6 session-based API. Set `config.piholeVersion` to `v5` or `v6` to match your Pi-hole installation's major version.
+Pi-hole supports both the legacy v5 admin API and the newer v6 session-based API. In the Add DNS Integration form, pick **Pi-hole v6** from the **Pi-hole version** select (the credential field then becomes **App password**). Through the API, set `config.piholeVersion` to `v5` or `v6`. Either way, match your Pi-hole installation's major version.
+
+An existing Pi-hole integration can be switched later from **Stored data** on the integration row, or with `PATCH` (see below). If you change the version, the stored credential must still match: switching from v5 to v6 needs an app password, so re-create the integration when the stored key is a v5 token.
 
 <Aside type="caution">
   **`config.piholeVersion` defaults to `v5` when not set.** If your Pi-hole instance is on v6, you must explicitly set `config.piholeVersion` to `v6` in the integration config — otherwise Breeze will talk to it using the legacy v5 API, which will fail or behave unpredictably against a v6 instance.
@@ -216,7 +218,7 @@ Content-Type: application/json
 { "retentionDays": 30 }
 ```
 
-Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays` and `storeAllowedTraffic` can be changed after an integration is created.
+Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays`, `storeAllowedTraffic` and, for Pi-hole integrations, `piholeVersion` (`v5` or `v6`) can be changed after an integration is created.
 
 The job deletes in batches, and each batch commits on its own, so it never holds a long lock on the tables the sync writes to. On a large backlog, the first runs after an upgrade may not reach the window in one night: the job logs a warning, reports the backlog to Sentry, and continues the next night. These environment variables control it:
 

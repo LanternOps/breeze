@@ -4,6 +4,8 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import PolicyLinkSelector from "./PolicyLinkSelector";
 import SoftwarePolicyCoverageBadge from "../../software/SoftwarePolicyCoverageBadge";
 import { useTranslation } from "react-i18next";
@@ -22,12 +24,12 @@ export default function SoftwarePolicyTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [selectedPolicyId, setSelectedPolicyId] = useState<string | null>(
     effectiveLink?.featurePolicyId ?? null,
@@ -92,18 +94,6 @@ export default function SoftwarePolicyTab({
       setLinkedPolicySummary(null);
     }
   };
-  const handleOverride = async () => {
-    if (!parentLink?.featurePolicyId) return;
-    clearError();
-    const result = await save(null, {
-      featureType: "software_policy",
-      featurePolicyId: parentLink.featurePolicyId,
-    });
-    if (result) {
-      onLinkChanged(result, "software_policy");
-      setSelectedPolicyId(parentLink.featurePolicyId);
-    }
-  };
   const handleRevert = async () => {
     if (!existingLink || !parentLink) return;
     const ok = await remove(existingLink.id);
@@ -121,10 +111,9 @@ export default function SoftwarePolicyTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={existingLink && parentLink ? handleRevert : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-4">
         <div>

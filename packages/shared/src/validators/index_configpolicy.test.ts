@@ -7,6 +7,7 @@ import {
   addFeatureLinkSchema,
   updateFeatureLinkSchema,
   assignPolicySchema,
+  applyAssignmentsSchema,
   diffSchema,
   listConfigPoliciesSchema,
   targetQuerySchema,
@@ -334,6 +335,18 @@ describe('listConfigPoliciesSchema', () => {
       listConfigPoliciesSchema.safeParse({ status: 'deleted' }).success
     ).toBe(false);
   });
+
+  it('accepts the applies-to filters (#12462 W03a)', () => {
+    const result = listConfigPoliciesSchema.safeParse({ appliesToOrgId: VALID_UUID, notApplied: 'true' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toMatchObject({ appliesToOrgId: VALID_UUID, notApplied: 'true' });
+  });
+
+  it('rejects a malformed appliesToOrgId and any notApplied other than "true"', () => {
+    expect(listConfigPoliciesSchema.safeParse({ appliesToOrgId: 'not-a-uuid' }).success).toBe(false);
+    expect(listConfigPoliciesSchema.safeParse({ notApplied: 'false' }).success).toBe(false);
+    expect(listConfigPoliciesSchema.safeParse({ notApplied: '1' }).success).toBe(false);
+  });
 });
 
 describe('targetQuerySchema', () => {
@@ -427,5 +440,55 @@ describe('config policy inheritance validators', () => {
   it('update schema strips parentPolicyId (immutable)', () => {
     const parsed = updateConfigPolicySchema.parse({ name: 'x', parentPolicyId: VALID_UUID } as never);
     expect('parentPolicyId' in parsed).toBe(false);
+  });
+});
+
+describe('applyAssignmentsSchema', () => {
+  const uuid = (n: number) => `${n.toString(16).padStart(8, '0')}-e29b-41d4-a716-446655440000`;
+
+  it('apply schema defaults the three lists to empty', () => {
+    const result = applyAssignmentsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({ add: [], update: [], remove: [] });
+      expect(result.data.dryRun).toBeUndefined();
+    }
+  });
+
+  it('accepts a full Apply with a dry run', () => {
+    const result = applyAssignmentsSchema.safeParse({
+      add: [{ level: 'site', targetId: VALID_UUID, priority: 5, roleFilter: ['server'], osFilter: ['windows'] }, { level: 'partner' }],
+      update: [{ id: VALID_UUID, priority: 3, roleFilter: null, osFilter: ['linux'] }],
+      remove: [VALID_UUID_2],
+      dryRun: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('apply schema caps each list at 200', () => {
+    const ids = Array.from({ length: 201 }, (_, i) => uuid(i));
+    expect(applyAssignmentsSchema.safeParse({ remove: ids }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ remove: ids.slice(0, 200) }).success).toBe(true);
+    expect(applyAssignmentsSchema.safeParse({ update: ids.map((id) => ({ id })) }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ add: ids.map((id) => ({ level: 'device', targetId: id })) }).success).toBe(false);
+  });
+
+  it('apply schema refuses an id in both update and remove', () => {
+    const result = applyAssignmentsSchema.safeParse({ update: [{ id: VALID_UUID, priority: 1 }], remove: [VALID_UUID] });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.path).toEqual(['remove', 0]);
+  });
+
+  it('refuses the same id twice within update or within remove', () => {
+    expect(applyAssignmentsSchema.safeParse({ remove: [VALID_UUID, VALID_UUID] }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ update: [{ id: VALID_UUID }, { id: VALID_UUID, priority: 2 }] }).success).toBe(false);
+  });
+
+  it('keeps the per-field checks on the fields', () => {
+    expect(applyAssignmentsSchema.safeParse({ update: [{ id: 'not-a-uuid' }] }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ update: [{ id: VALID_UUID, priority: 1001 }] }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ update: [{ id: VALID_UUID, osFilter: ['plan9'] }] }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ add: [{ level: 'galaxy', targetId: VALID_UUID }] }).success).toBe(false);
+    expect(applyAssignmentsSchema.safeParse({ remove: ['nope'] }).success).toBe(false);
   });
 });
