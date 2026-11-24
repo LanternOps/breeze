@@ -13,7 +13,9 @@ import RebootPromptPreview from "./RebootPromptPreview";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
+import { useRegisterDirtyForm } from "@/lib/keyboard/useRegisterDirtyForm";
 import UpdateRingForm, {
+  DiscardRingChangesDialog,
   type UpdateRingFormValues,
 } from "../../patches/UpdateRingForm";
 import type { UpdateRingItem as UpdateRing } from "../../patches/UpdateRingList";
@@ -275,17 +277,11 @@ export default function PatchTab({
   // #12305: the form holds unsaved input, so a stray click outside the dialog
   // is ignored and every other way out asks first.
   const [ringEditorDirty, setRingEditorDirty] = useState(false);
+  const [confirmDiscardRing, setConfirmDiscardRing] = useState(false);
+  useRegisterDirtyForm(ringEditorOpen && ringEditorDirty);
   const requestCloseRingEditor = () => {
-    if (
-      ringEditorDirty &&
-      !window.confirm(
-        i18n.t(
-          "policies:configurationPolicies.featureTabs.patchTab.discardRingChangesConfirm",
-        ),
-      )
-    )
-      return;
-    setRingEditorOpen(false);
+    if (ringEditorDirty) setConfirmDiscardRing(true);
+    else setRingEditorOpen(false);
   };
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
@@ -1291,6 +1287,14 @@ export default function PatchTab({
           />
         </div>
       </Dialog>
+      <DiscardRingChangesDialog
+        open={confirmDiscardRing}
+        onClose={() => setConfirmDiscardRing(false)}
+        onConfirm={() => {
+          setConfirmDiscardRing(false);
+          setRingEditorOpen(false);
+        }}
+      />
     </FeatureTabShell>
   );
 }

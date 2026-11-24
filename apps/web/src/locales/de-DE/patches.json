@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Nicht gespeicherte Änderungen verwerfen?",
+      "message": "Dieser Update-Ring hat nicht gespeicherte Änderungen. Beim Schließen des Editors werden sie verworfen.",
+      "confirm": "Verwerfen"
+    },
     "validation": {
       "selectCategory": "Kategorie auswählen",
       "selectSeverity": "Mindestens einen Schweregrad für die automatische Freigabe auswählen.",
