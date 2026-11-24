@@ -29,7 +29,6 @@ vi.mock('./DeviceDetails', () => ({
   default: () => null,
 }));
 vi.mock('@/lib/orgSwitch', () => ({ applyOrgSwitch: vi.fn() }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));

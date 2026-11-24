@@ -113,6 +113,12 @@ describe('DeviceDetails tab layout', () => {
     expect(screen.getByTestId('device-tab-alerts')).toBeInTheDocument();
   });
 
+  it('gives the Details tab the id that "Edit details" reveals (revealDeviceTab)', async () => {
+    render(<DeviceDetails device={device} />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/devices/device-1/tab-counts')));
+    expect(document.getElementById('device-tab-details')).toBe(screen.getByTestId('device-tab-details'));
+  });
+
   it('files Topology under the Monitoring header in "More" instead of orphaning it above (#9030)', async () => {
     render(<DeviceDetails device={device} />);
     fireEvent.click(screen.getByRole('button', { name: /^more$/i }));

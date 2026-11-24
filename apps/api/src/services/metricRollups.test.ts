@@ -240,6 +240,32 @@ describe('metric rollups service', () => {
     expect(processHourlyStatementSql).toContain('sourceBucketSeconds');
   });
 
+  // #12583 — the process-sample statement read its window twice
+  // (`process_devices` DISTINCT, then `sample_values`), and compared the
+  // timestamptz column against `::timestamp` bounds. That cross-type operator is
+  // not leakproof, so under forced RLS Postgres kept it out of the index
+  // condition and every scan walked the org's whole retained history. The plan
+  // itself is pinned in metricRollups.integration.test.ts; this pins the SQL.
+  it('reads the process-sample window once, bounded by same-type timestamptz values', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+    });
+
+    const statements = executedByLabel.get('metricRollups.raw.device_process_samples') ?? [];
+    expect(statements).toHaveLength(1);
+    const compiled = new PgDialect().sqlToQuery((statements[0] as { statement: SQL }).statement).sql;
+
+    expect(countOccurrences(compiled, 'FROM device_process_samples')).toBe(1);
+    expect(compiled).toMatch(/SELECT DISTINCT sv\.org_id, sv\.device_id\s+FROM sample_values sv/);
+    // Both window bounds: `timestamp → timestamptz` on the constant side keeps
+    // the old session-timezone semantics while making the comparison sargable.
+    expect(compiled).toMatch(/dps\.timestamp >= \(\$\d+::timestamp\)::timestamptz/);
+    expect(compiled).toMatch(/dps\.timestamp < \(\$\d+::timestamp\)::timestamptz/);
+    expect(compiled).not.toMatch(/dps\.timestamp [<>]=? \$\d+::timestamp/);
+  });
+
   it('rolls up numeric SNMP metrics for SNMP assets linked to managed devices', async () => {
     await rollupDeviceMetricsRange({
       orgId: '11111111-1111-1111-1111-111111111111',
@@ -424,7 +450,9 @@ describe('metric rollups service', () => {
       for (const metricName of PROCESS_METRIC_SERIES) {
         expect(processSql).toContain(metricName);
       }
-      expect(countOccurrences(processSql, 'FROM device_process_samples')).toBe(2);
+      // #12583: one read of the window — `process_devices` comes out of
+      // `sample_values` instead of its own DISTINCT scan (was 2).
+      expect(countOccurrences(processSql, 'FROM device_process_samples')).toBe(1);
     });
 
     it('expands each top_processes array once per sample row, not once per metric', async () => {

@@ -405,6 +405,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/ticketing/');
     });
 
+    it('/tickets/import maps to ticket import docs', () => {
+      const result = getDocsForPath('/tickets/import');
+      expect(result.label).toBe('Ticket Import');
+      expect(result.url).toContain('/features/ticket-import/');
+    });
+
     it('/tickets/abc-123 matches ticketing', () => {
       const result = getDocsForPath('/tickets/abc-123');
       expect(result.label).toBe('Ticketing');

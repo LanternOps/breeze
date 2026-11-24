@@ -27,9 +27,15 @@ import {
   type RingConfig,
 } from '../services/patchApprovalEvaluator';
 import { ringFeatureUpdatesSchema, DEFAULT_RING_FEATURE_UPDATES, type RingFeatureUpdates } from '@breeze/shared/validators';
-// W02 (#5748): the DB-facing resolver moved to patchEligibility.ts; the call
-// below and its behaviour are unchanged (golden-fixture parity test there).
-import { resolveApprovedPatchesForDevice, areAllPendingPatchesManagedByVendorLane } from '../services/patchEligibility';
+// W02 (#5748): the DB-facing resolver moved to patchEligibility.ts. A job
+// without `patches.patchIds` resolves exactly as before (golden-fixture parity
+// test there); one with it narrows to those patches, under the device's live
+// evaluation config.
+import {
+  resolveApprovedPatchesForDevice,
+  areAllPendingPatchesManagedByVendorLane,
+  resolveDevicePatchEvaluation,
+} from '../services/patchEligibility';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
   deliveryTtlMs,
@@ -47,6 +53,10 @@ import { RING_UNAVAILABLE_SKIP_REASON } from '../services/updateRingQueuedWork';
 
 /** Job-history skip reason: every pending update was left to a vendor lane (#11243). Web label: patchJobDetail.skipReasons. */
 const ALL_MANAGED_BY_VENDOR_SKIP_REASON = 'all_managed_by_vendor_updates';
+/** Job-history skip reason: the job names its patches, and none of them is eligible on this device. */
+const REQUESTED_PATCHES_NOT_ELIGIBLE_SKIP_REASON = 'requested_patches_not_eligible';
+/** Job-history skip reason: the job's `patches.patchIds` is present but not a non-empty list of UUIDs. */
+const INVALID_PATCH_IDS_SKIP_REASON = 'invalid_patch_ids';
 import {
   buildRestorePointRequest,
   discardRestorePointRequest,
@@ -54,6 +64,11 @@ import {
   restorePointPayloadField,
 } from '../services/restorePointRequest';
 import { attachWorkerObservability } from './workerObservability';
+
+// A job that names its patches (`patches.patchIds`, written by the AI tool
+// `manage_patches` action `install`). Same id validation the tool's input
+// schema applies (`z.string().guid()`), so no id the tool accepted is refused.
+const jobPatchIdsSchema = z.array(z.string().guid()).min(1);
 
 // Strict shape for one patches.categoryRules entry as stored in the job JSONB.
 // Matches the evaluator's CategoryRule: severityFilter is the legacy stored
@@ -1156,10 +1171,30 @@ async function prepareDeviceExecution(
     apps?: unknown;
     ringAppRules?: unknown;
     ringFeatureUpdates?: unknown;
+    // Only the AI tool `manage_patches` action `install` writes this; scheduled
+    // and policy-driven jobs never carry it.
+    patchIds?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string; offlineBehavior?: string };
   };
+
+  // A job that names its patches installs ONLY those (still under every
+  // eligibility gate below). Absent = every eligible patch, as always. Present
+  // but not a non-empty list of UUIDs skips the device: falling back to
+  // "every approved patch" would install what nobody asked for.
+  let requestedPatchIds: string[] | undefined;
+  if (patchesConfig?.patchIds !== undefined) {
+    const parsed = jobPatchIdsSchema.safeParse(patchesConfig.patchIds);
+    if (!parsed.success) {
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.patchIds; skipping device rather than installing every approved patch`;
+      console.warn(`${message}:`, JSON.stringify(patchesConfig.patchIds));
+      captureException(new Error(message));
+      await markDeviceSkipped(patchJobId, deviceId, INVALID_PATCH_IDS_SKIP_REASON);
+      return { kind: 'skipped', skipped: true, reason: 'Invalid requested patch list' };
+    }
+    requestedPatchIds = [...new Set(parsed.data)];
+  }
 
   // Distinguish absent sources (legacy job → no filtering) from
   // present-but-malformed (shape drift / bad write). Present malformed sources
@@ -1269,7 +1304,36 @@ async function prepareDeviceExecution(
     }
   }
 
-  const ringConfig: RingConfig = {
+  // A job that names its patches was approved against the device's CURRENT
+  // patch policy and ring: the AI path and the intent's effect digest
+  // (manage_patches:install) both judge through `resolvePatchInstallEligibility`,
+  // which reads `resolveDevicePatchEvaluationConfig`. So it is judged under that
+  // same config here, not the job row (which carries no ring snapshot). The
+  // config is used whole: an invalid ring reference keeps `ringReferenceInvalid`
+  // and the evaluator denies every candidate, as the resolver does. A resolved
+  // ring still goes through the locking read below (#8909).
+  let liveConfig: RingConfig | undefined;
+  if (requestedPatchIds) {
+    let live;
+    try {
+      // Savepoint: the catch writes the skipped row on this same transaction (#11225).
+      live = await dbModule.withDbTransaction(() => resolveDevicePatchEvaluation(deviceId));
+    } catch (err) {
+      console.error(`[PatchJobExecutor] Failed to resolve the patch policy for device ${deviceId}:`, err instanceof Error ? err.message : err);
+      await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
+      return { kind: 'error', error: 'Failed to resolve patches' };
+    }
+    // The device's ring is disabled or deleted. The evaluator would deny every
+    // candidate anyway; record the reason a ring job records (#8909).
+    if (live.ringUnavailable) {
+      console.warn(`[PatchJobExecutor] Skipping device ${deviceId} of job ${patchJobId}: its update ring is deleted or disabled`);
+      await markDeviceSkipped(patchJobId, deviceId, RING_UNAVAILABLE_SKIP_REASON);
+      return { kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' };
+    }
+    liveConfig = { ...live.config };
+  }
+
+  let ringConfig: RingConfig = liveConfig ?? {
     ringId: patchesConfig?.ringId ?? null,
     categoryRules: jobCategoryRules,
     autoApprove: patchesConfig?.autoApprove ?? {},
@@ -1318,6 +1382,36 @@ async function prepareDeviceExecution(
       await markDeviceSkipped(patchJobId, deviceId, RING_UNAVAILABLE_SKIP_REASON);
       return { kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' };
     }
+
+    // A job that names its patches read the ring's rules above WITHOUT a lock.
+    // An edit to the ring (an app block, an excluded category) that committed
+    // while this dispatch waited on FOR SHARE would otherwise be missed, so the
+    // config is read again now: the share lock keeps the ring row as it is
+    // until this dispatch commits. If the device now resolves to a different
+    // ring (or to none), the locked ring no longer decides and the new one is
+    // not locked, so the device is skipped rather than judged under it. Jobs
+    // without a list are untouched.
+    if (liveConfig) {
+      const lockedRingId = ringConfig.ringId;
+      let relocked;
+      try {
+        // Savepoint: the catch writes the skipped row on this same transaction (#11225).
+        relocked = await dbModule.withDbTransaction(() => resolveDevicePatchEvaluation(deviceId));
+      } catch (err) {
+        console.error(`[PatchJobExecutor] Failed to re-read the patch policy for device ${deviceId} under the ring lock:`, err instanceof Error ? err.message : err);
+        await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
+        return { kind: 'error', error: 'Failed to resolve patches' };
+      }
+      if (relocked.config.ringId !== lockedRingId) {
+        console.error(
+          `[PatchJobExecutor] Skipping device ${deviceId} of job ${patchJobId}: its update ring changed from ${lockedRingId} `
+          + `to ${relocked.config.ringId ?? 'none'} during dispatch`
+        );
+        await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
+        return { kind: 'error', error: 'Failed to resolve patches' };
+      }
+      ringConfig = { ...relocked.config };
+    }
     ringConfig.deferralDays = ring.deferralDays;
     ringConfig.ringPartnerId = ring.partnerId;
   }
@@ -1326,15 +1420,36 @@ async function prepareDeviceExecution(
   let approvedPatches;
   try {
     // Savepoint: the catch writes the skipped row on this same transaction (#11225).
-    approvedPatches = await dbModule.withDbTransaction(() =>
-      resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig));
+    //
+    // A requested list excludes superseded patches. The AI path judged these
+    // ids with `resolvePatchInstallEligibility`, which excludes them, and the
+    // intent's effect digest (manage_patches:install) pinned that verdict at
+    // approval; with the live config above this is the same evaluation.
+    // Installing a patch the approver saw as `superseded` would contradict it.
+    // Jobs without a list keep their historical no-exclusion behaviour.
+    approvedPatches = await dbModule.withDbTransaction(() => requestedPatchIds
+      ? resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig, { patchIds: requestedPatchIds, excludeSuperseded: true })
+      : resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig));
   } catch (err) {
     console.error(`[PatchJobExecutor] Failed to resolve patches for device ${deviceId}:`, err instanceof Error ? err.message : err);
     await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
     return { kind: 'error', error: 'Failed to resolve patches' };
   }
 
+  // Belt and braces over the resolver's own narrowing: never dispatch a patch
+  // the job did not name.
+  if (requestedPatchIds) {
+    const requested = new Set(requestedPatchIds);
+    approvedPatches = approvedPatches.filter((p) => requested.has(p.patchId));
+  }
+
   // 2. No approved patches → skip
+  if (approvedPatches.length === 0 && requestedPatchIds) {
+    // The vendor-lane and "nothing approved" reasons describe every pending
+    // update on the device; this job asked about specific ones.
+    await markDeviceSkipped(patchJobId, deviceId, REQUESTED_PATCHES_NOT_ELIGIBLE_SKIP_REASON);
+    return { kind: 'skipped', skipped: true, reason: 'Requested patches are not eligible' };
+  }
   if (approvedPatches.length === 0) {
     // #11243: every pending update left to a vendor lane is not "nothing approved".
     let allVendorManaged = false;
@@ -1422,7 +1537,17 @@ async function prepareDeviceExecution(
   const res = await dispatchDeviceCommand({
     deviceId,
     type: 'install_patches',
-    payload: { patchJobId, patchIds, patches: patchRecords, ...restorePointPayloadField(restorePoint) },
+    payload: {
+      patchJobId,
+      patchIds,
+      patches: patchRecords,
+      ...restorePointPayloadField(restorePoint),
+      // Server-side only, like patchJobId (the agent reads neither). A job
+      // that names its patches stores no ring, so the ring its eligibility
+      // was judged under rides on the command; the ring delete-time sweep
+      // (services/updateRingQueuedWork.ts) finds a queued install by it.
+      ...(requestedPatchIds && ringConfig.ringId ? { evaluationRingId: ringConfig.ringId } : {}),
+    },
     expectedOrgId: patchJob.orgId,
     offlinePolicy: offline.policy,
   });

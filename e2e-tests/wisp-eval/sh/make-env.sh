@@ -16,7 +16,11 @@
 #                 whose VALUE is a URL with a password in it. A credential added to the
 #                 source later is blanked by default.
 #   copied        everything else: settings, image refs, and public keys (PUBLIC).
-#   set           the Wisp feature flags and the stack's port, subnet and caddy IP (SET).
+#   set           the Wisp feature flags, the stack's port, subnet and caddy IP, and a
+#                 placeholder artifact store (SET). The API refuses to start hosted
+#                 with the workspace lane on and no artifact store for its region; the
+#                 placeholder points at an address nothing listens on, so no source
+#                 bucket or key is used.
 #
 # Re-running over a .env this script wrote reuses the values it generated there (so a
 # stack whose volumes were kept still decrypts its data and accepts its passwords).
@@ -101,6 +105,12 @@ BREEZE_WISP_ENABLED=true
 BREEZE_AI_AGENTS_ENABLED=true
 BREEZE_AI_WORKSPACE_ENABLED=true
 AI_WORKSPACE_BACKEND=fake
+ARTIFACT_S3_BUCKET_US=wisp-eval-placeholder
+ARTIFACT_S3_BUCKET_EU=wisp-eval-placeholder
+ARTIFACT_S3_ACCESS_KEY=wisp-eval-placeholder
+ARTIFACT_S3_SECRET_KEY=wisp-eval-placeholder
+ARTIFACT_S3_ENDPOINT_US=http://127.0.0.1:9
+ARTIFACT_S3_ENDPOINT_EU=http://127.0.0.1:9
 BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED=true
 MCP_TIER3_INTENTS_ENABLED=true
 TOOL_SOURCES_ENABLED=true

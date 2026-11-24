@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
     "power": "Güç",
     "shutdown": "Kapatma",
-    "deviceSettings": "Cihaz Ayarları",
+    "editDetails": "Ayrıntıları düzenle",
     "installHomebrew": "Homebrew'u yükle",
     "restartAgent": "Ajanı yeniden başlat",
     "runVendorUpdates": "Üretici güncellemelerini çalıştır",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Uzak Terminal",
     "runScript": "Komut Dosyasını Çalıştır",
     "reboot": "Yeniden başlat",
-    "settings": "Ayarlar",
+    "editDetails": "Ayrıntıları düzenle",
     "restore": "Geri Yükle",
     "decommission": "Çıkar",
     "permanentlyDelete": "Kalıcı Olarak Sil",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
     "failedToFetchDevice": "Cihaz getirilemedi",
+    "refreshAfterEditFailed": "Kaydedildi, ancak bu sayfa yenilenemedi. Değişikliği her yerde görmek için sayfayı yeniden yükleyin.",
     "online": "çevrimiçi",
     "offline": "çevrimdışı",
     "rebootToSafeMode": "Güvenli Modda Yeniden Başlat",
@@ -1619,7 +1620,21 @@
     "customFields": "Özel Alanlar",
     "text2": "*",
     "edit": "Düzenle",
-    "roleNotAssessed": "Rol henüz değerlendirilmedi"
+    "roleNotAssessed": "Rol henüz değerlendirilmedi",
+    "noTags": "Etiket yok",
+    "editTags": "Etiketleri düzenle",
+    "addTag": "Etiket ekle",
+    "removeTag": "{{tag}} etiketini kaldır",
+    "tagsSaved": "Etiketler kaydedildi",
+    "tagsSaveFailed": "Etiketler kaydedilemedi",
+    "purchaseDate": "Satın alma tarihi",
+    "editPurchaseDate": "Satın alma tarihini düzenle",
+    "purchaseDateNotSet": "Ayarlanmadı",
+    "purchaseDateFromVendor": "Üreticiden",
+    "purchaseDateSaved": "Satın alma tarihi kaydedildi",
+    "purchaseDateSaveFailed": "Satın alma tarihi kaydedilemedi",
+    "purchaseDateHelp": "Donanım Yaşam Döngüsü raporu tarafından değiştirme planlaması için kullanılır.",
+    "purchaseDateVendorHint": "Üreticinin sevkiyat tarihinden alındı. Geçersiz kılmak için bir tarih girin."
   },
   "deviceIpHistoryTab": {
     "true": "doğru",
@@ -1845,7 +1860,7 @@
     "reboot": "Yeniden Başlat",
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
     "wake": "Uyan",
-    "settings": "Ayarlar",
+    "editDetails": "Ayrıntıları düzenle",
     "enterMaintenance": "Bakıma Girin",
     "exitMaintenance": "Bakımdan Çık",
     "restore": "Geri Yükle",
@@ -2500,31 +2515,6 @@
     "scanAlreadyRunning": "Tarama cihazda zaten çalışıyor ve iptal edilemez.",
     "scanAlreadyQueued": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Bir etiket ekleyin...",
-    "dangerZone": "Tehlikeli Bölge",
-    "decommissionDevice": "Cihazı Çıkar",
-    "decommissionWarning": "Çıkarma işlemi bu cihazı etkin filonuzdan çıkarır. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
-    "decommissionedDescription": "Bu cihaz çıkarıldı. Geri yükleyebilir veya kalıcı olarak silebilirsiniz.",
-    "decommissionedTitle": "Çıkarılmış Cihaz",
-    "displayName": "Görünen Ad",
-    "errors": {
-      "loadSites": "Siteler yüklenemedi",
-      "saveSettings": "Ayarlar kaydedilemedi",
-      "siteChanged": "Bu cihaz başka biri tarafından taşındı; geçerli sitesini görmek için sayfayı yenileyin"
-    },
-    "hostname": "Ana bilgisayar adı: {{hostname}}",
-    "saved": "Cihaz ayarları kaydedildi",
-    "permanentlyDelete": "Kalıcı Olarak Sil",
-    "restoreDevice": "Cihazı Geri Yükle",
-    "saveChanges": "Değişiklikleri Kaydet",
-    "site": "Sitesi",
-    "tags": "Etiketler",
-    "title": "Cihaz Ayarları",
-    "purchaseDate": "Satın alma tarihi",
-    "purchaseDateHelp": "Donanım Yaşam Döngüsü raporu değiştirmeyi planlamak için kullanır.",
-    "purchaseDateVendorHint": "Üreticinin sevk tarihinden alındı. Üzerine yazmak için bir tarih girin."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Kaldır",
@@ -2659,7 +2649,6 @@
     "compactTitle": "Garanti",
     "endDate": "Bitiş Tarihi",
     "error": "Hata: {{error}}",
-    "expires": "Süresi doluyor",
     "lastChecked": "Son kontrol: {{time}}",
     "loadFailed": "Garanti yüklenemedi.",
     "lookupUnavailable": "Bu üretici için garanti araması mevcut değil",
@@ -2700,7 +2689,11 @@
       "import": "İçe aktarıldı",
       "importVendorEarlier": "İçe aktarıldı (üretici daha erken bir bitiş tarihi bildiriyor)",
       "provider": "Üretici API"
-    }
+    },
+    "sectionTitle": "Garanti ve satın alma",
+    "coverage": "Kapsam",
+    "coverageStarts": "Kapsam başlangıcı",
+    "coverageEnds": "Kapsam bitişi"
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",
@@ -5217,6 +5210,28 @@
       "keysDiffer": "İki kaydın TPM anahtarları farklı.",
       "keyShared": "TPM anahtarı sayılmaz: iş ortağınızın başka bir cihazında aynı anahtar var (örneğin klonlanmış bir sanal makine)."
     }
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Cihaz bilgileri",
+    "serial": "Seri numarası",
+    "serialShort": "Seri No",
+    "lanIp": "LAN IP adresi",
+    "warranty": {
+      "active": "Garanti bitişi {{date}}",
+      "expiring": "Garanti {{date}} tarihinde bitiyor",
+      "expired": "Garanti {{date}} tarihinde sona erdi"
+    },
+    "warrantyStatus": "Garanti: {{status}}",
+    "warrantyDetails": "Garanti ayrıntıları",
+    "manageContacts": "Kişileri yönet",
+    "more": "{{count}} tane daha",
+    "showLess": "Daha az göster",
+    "call": "{{name}} kişisini ara",
+    "loadFailed": "Bazı ayrıntılar yüklenemedi"
+  },
+  "deviceAssetRecord": {
+    "title": "Varlık kaydı",
+    "description": "Kime ulaşılacağı, nerede durduğu ve ücretini kimin ödediği."
   },
   "tpmKeyPanel": {
     "title": "TPM anahtarı",

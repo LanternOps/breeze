@@ -515,7 +515,7 @@
     "sendAWakeOnLanPacket": "Invia un pacchetto Wake-on-LAN tramite un agente peer online sulla LAN del dispositivo",
     "power": "Alimentazione",
     "shutdown": "Arresta",
-    "deviceSettings": "Impostazioni del dispositivo",
+    "editDetails": "Modifica dettagli",
     "gateHint": {
       "liveSessionOnly": "{{reason}} — il Terminale remoto richiede un agente connesso. I comandi in coda verranno comunque eseguiti alla riconnessione.",
       "allCommands": "{{reason}} — non ha un agente per eseguire comandi."
@@ -719,7 +719,7 @@
     "remoteTerminal": "Terminale remoto",
     "runScript": "Esegui script",
     "reboot": "Riavvia",
-    "settings": "Impostazioni",
+    "editDetails": "Modifica dettagli",
     "restore": "Ripristina",
     "decommission": "Rimuovi",
     "permanentlyDelete": "Elimina definitivamente",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} è stato spostato in {{orgName}}",
     "failedToFetchDevice": "Impossibile recuperare il dispositivo",
+    "refreshAfterEditFailed": "Salvato, ma non è stato possibile aggiornare la pagina. Ricaricala per vedere la modifica ovunque.",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Riavvia in modalità provvisoria",
@@ -1619,7 +1620,21 @@
     "customFields": "Campi personalizzati",
     "text2": "*",
     "edit": "Modifica",
-    "roleNotAssessed": "Ruolo non ancora valutato"
+    "roleNotAssessed": "Ruolo non ancora valutato",
+    "noTags": "Nessun tag",
+    "editTags": "Modifica tag",
+    "addTag": "Aggiungi un tag",
+    "removeTag": "Rimuovi tag {{tag}}",
+    "tagsSaved": "Tag salvati",
+    "tagsSaveFailed": "Impossibile salvare i tag",
+    "purchaseDate": "Data di acquisto",
+    "editPurchaseDate": "Modifica data di acquisto",
+    "purchaseDateNotSet": "Non impostata",
+    "purchaseDateFromVendor": "Dal produttore",
+    "purchaseDateSaved": "Data di acquisto salvata",
+    "purchaseDateSaveFailed": "Impossibile salvare la data di acquisto",
+    "purchaseDateHelp": "Usata dal report sul ciclo di vita dell’hardware per pianificare la sostituzione.",
+    "purchaseDateVendorHint": "Ricavata dalla data di spedizione del produttore. Inserisci una data per sostituirla."
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1845,7 +1860,7 @@
     "reboot": "Riavvia",
     "sendAWakeOnLanPacket": "Invia un pacchetto Wake-on-LAN tramite un agent online nella stessa LAN del dispositivo",
     "wake": "Riattiva",
-    "settings": "Impostazioni",
+    "editDetails": "Modifica dettagli",
     "enterMaintenance": "Entra in manutenzione",
     "exitMaintenance": "Esci dalla manutenzione",
     "restore": "Ripristina",
@@ -2500,31 +2515,6 @@
     "scanAlreadyRunning": "La scansione è già in esecuzione sul dispositivo e non può essere annullata.",
     "scanAlreadyQueued": "Per questo dispositivo è già in coda una scansione."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Aggiungi un tag...",
-    "dangerZone": "Zona di pericolo",
-    "decommissionDevice": "Rimuovi dispositivo",
-    "decommissionWarning": "La rimozione toglie questo dispositivo dalla tua flotta attiva. La cronologia viene conservata e potrai ripristinarlo in seguito.",
-    "decommissionedDescription": "Questo dispositivo è stato rimosso. Puoi ripristinarlo o eliminarlo definitivamente.",
-    "decommissionedTitle": "Dispositivo rimosso",
-    "displayName": "Nome visualizzato",
-    "errors": {
-      "loadSites": "Impossibile caricare i siti",
-      "saveSettings": "Impossibile salvare le impostazioni",
-      "siteChanged": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale"
-    },
-    "hostname": "Nome host: {{hostname}}",
-    "saved": "Impostazioni del dispositivo salvate",
-    "permanentlyDelete": "Elimina definitivamente",
-    "restoreDevice": "Ripristina dispositivo",
-    "saveChanges": "Salva modifiche",
-    "site": "Sito",
-    "tags": "Tag",
-    "title": "Impostazioni del dispositivo",
-    "purchaseDate": "Data di acquisto",
-    "purchaseDateHelp": "Usata dal report ciclo di vita dell’hardware per pianificare la sostituzione.",
-    "purchaseDateVendorHint": "Ricavata dalla data di spedizione del produttore. Inserisci una data per sovrascriverla."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Disinstalla",
@@ -2659,7 +2649,6 @@
     "compactTitle": "Garanzia",
     "endDate": "Data di fine",
     "error": "Errore: {{error}}",
-    "expires": "Scade",
     "lastChecked": "Ultimo controllo: {{time}}",
     "loadFailed": "Impossibile caricare la garanzia.",
     "lookupUnavailable": "Ricerca della garanzia non disponibile per questo produttore",
@@ -2700,7 +2689,11 @@
       "import": "Importato",
       "importVendorEarlier": "Importato (il produttore riporta una data di fine precedente)",
       "provider": "API del produttore"
-    }
+    },
+    "sectionTitle": "Garanzia e acquisto",
+    "coverage": "Copertura",
+    "coverageStarts": "Inizio copertura",
+    "coverageEnds": "Fine copertura"
   },
   "devicesPage": {
     "accessDenied": "Non hai il permesso di visualizzare i dispositivi.",
@@ -5217,6 +5210,28 @@
       "keysDiffer": "I due record hanno chiavi TPM diverse.",
       "keyShared": "La chiave TPM non conta: un altro dispositivo del tuo partner ha la stessa chiave (ad esempio una macchina virtuale clonata)."
     }
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Dati del dispositivo",
+    "serial": "Numero di serie",
+    "serialShort": "S/N",
+    "lanIp": "IP LAN",
+    "warranty": {
+      "active": "Garanzia fino al {{date}}",
+      "expiring": "La garanzia scade il {{date}}",
+      "expired": "Garanzia scaduta il {{date}}"
+    },
+    "warrantyStatus": "Garanzia: {{status}}",
+    "warrantyDetails": "Dettagli garanzia",
+    "manageContacts": "Gestisci contatti",
+    "more": "{{count}} in più",
+    "showLess": "Mostra meno",
+    "call": "Chiama {{name}}",
+    "loadFailed": "Alcuni dettagli non sono stati caricati"
+  },
+  "deviceAssetRecord": {
+    "title": "Scheda asset",
+    "description": "Chi contattare, dove si trova e chi lo paga."
   },
   "tpmKeyPanel": {
     "title": "Chiave TPM",

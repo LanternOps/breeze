@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Enviar um pacote Wake-on-LAN por um agente par online na LAN do dispositivo",
     "power": "Energia",
     "shutdown": "Desligar",
-    "deviceSettings": "Configurações do dispositivo",
+    "editDetails": "Editar detalhes",
     "installHomebrew": "Instalar o Homebrew",
     "restartAgent": "Reiniciar agente",
     "runVendorUpdates": "Executar atualizações do fabricante",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Terminal remoto",
     "runScript": "Executar script",
     "reboot": "Reiniciar",
-    "settings": "Configurações",
+    "editDetails": "Editar detalhes",
     "restore": "Restaurar",
     "decommission": "Remover",
     "permanentlyDelete": "Excluir permanentemente",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} foi movido para {{orgName}}",
     "failedToFetchDevice": "Falha ao buscar o dispositivo",
+    "refreshAfterEditFailed": "Salvo, mas não foi possível atualizar esta página. Recarregue para ver a alteração em todos os lugares.",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Reiniciar no modo de segurança",
@@ -1619,7 +1620,21 @@
     "customFields": "Campos personalizados",
     "text2": "*",
     "edit": "Editar",
-    "roleNotAssessed": "Função ainda não avaliada"
+    "roleNotAssessed": "Função ainda não avaliada",
+    "noTags": "Sem tags",
+    "editTags": "Editar tags",
+    "addTag": "Adicionar uma tag",
+    "removeTag": "Remover tag {{tag}}",
+    "tagsSaved": "Tags salvas",
+    "tagsSaveFailed": "Não foi possível salvar as tags",
+    "purchaseDate": "Data de compra",
+    "editPurchaseDate": "Editar data de compra",
+    "purchaseDateNotSet": "Não definida",
+    "purchaseDateFromVendor": "Do fabricante",
+    "purchaseDateSaved": "Data de compra salva",
+    "purchaseDateSaveFailed": "Não foi possível salvar a data de compra",
+    "purchaseDateHelp": "Usada pelo relatório de ciclo de vida do hardware para planejar a substituição.",
+    "purchaseDateVendorHint": "Obtida da data de envio do fabricante. Informe uma data para substituí-la."
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1845,7 +1860,7 @@
     "reboot": "Reiniciar",
     "sendAWakeOnLanPacket": "Enviar um pacote Wake-on-LAN por um agente par online na LAN do dispositivo",
     "wake": "Acordar",
-    "settings": "Configurações",
+    "editDetails": "Editar detalhes",
     "enterMaintenance": "Entrar em manutenção",
     "exitMaintenance": "Sair da manutenção",
     "restore": "Restaurar",
@@ -2500,31 +2515,6 @@
     "scanAlreadyRunning": "A verificação já está em execução no dispositivo e não pode ser cancelada.",
     "scanAlreadyQueued": "Já existe uma verificação na fila para este dispositivo."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Adicionar uma tag...",
-    "dangerZone": "Zona de perigo",
-    "decommissionDevice": "Remover dispositivo",
-    "decommissionWarning": "Remover tira este dispositivo da sua frota ativa. O histórico é mantido e você pode restaurá-lo depois.",
-    "decommissionedDescription": "Este dispositivo foi removido. Você pode restaurá-lo ou excluí-lo permanentemente.",
-    "decommissionedTitle": "Dispositivo removido",
-    "displayName": "Nome de exibição",
-    "errors": {
-      "loadSites": "Falha ao carregar os sites",
-      "saveSettings": "Falha ao salvar as configurações",
-      "siteChanged": "Este dispositivo foi movido por outra pessoa: recarregue para ver o site atual"
-    },
-    "hostname": "Nome do host: {{hostname}}",
-    "saved": "Configurações do dispositivo salvas",
-    "permanentlyDelete": "Excluir permanentemente",
-    "restoreDevice": "Restaurar dispositivo",
-    "saveChanges": "Salvar alterações",
-    "site": "Site",
-    "tags": "Tags",
-    "title": "Configurações do dispositivo",
-    "purchaseDate": "Data de compra",
-    "purchaseDateHelp": "Usada pelo relatório de ciclo de vida do hardware para planejar a substituição.",
-    "purchaseDateVendorHint": "Obtida da data de envio do fabricante. Informe uma data para substituí-la."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Desinstalar",
@@ -2659,7 +2649,6 @@
     "compactTitle": "Garantia",
     "endDate": "Data de término",
     "error": "Erro: {{error}}",
-    "expires": "Expira em",
     "lastChecked": "Última verificação: {{time}}",
     "loadFailed": "Não foi possível carregar a garantia.",
     "lookupUnavailable": "A consulta de garantia não está disponível para este fabricante",
@@ -2700,7 +2689,11 @@
       "import": "Importado",
       "importVendorEarlier": "Importado (o fabricante informa uma data de término anterior)",
       "provider": "API do fabricante"
-    }
+    },
+    "sectionTitle": "Garantia e compra",
+    "coverage": "Cobertura",
+    "coverageStarts": "Início da cobertura",
+    "coverageEnds": "Fim da cobertura"
   },
   "devicesPage": {
     "accessDenied": "Você não tem permissão para visualizar dispositivos.",
@@ -5217,6 +5210,28 @@
       "keysDiffer": "Os dois registros têm chaves de TPM diferentes.",
       "keyShared": "A chave do TPM não conta: outro dispositivo do seu parceiro tem a mesma chave (uma máquina virtual clonada, por exemplo)."
     }
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Dados do dispositivo",
+    "serial": "Número de série",
+    "serialShort": "N/S",
+    "lanIp": "IP da LAN",
+    "warranty": {
+      "active": "Garantia até {{date}}",
+      "expiring": "A garantia termina em {{date}}",
+      "expired": "Garantia expirada em {{date}}"
+    },
+    "warrantyStatus": "Garantia: {{status}}",
+    "warrantyDetails": "Detalhes da garantia",
+    "manageContacts": "Gerenciar contatos",
+    "more": "mais {{count}}",
+    "showLess": "Mostrar menos",
+    "call": "Ligar para {{name}}",
+    "loadFailed": "Alguns detalhes não foram carregados"
+  },
+  "deviceAssetRecord": {
+    "title": "Registro do ativo",
+    "description": "Quem contatar, onde fica e quem paga por ele."
   },
   "tpmKeyPanel": {
     "title": "Chave do TPM",

@@ -2,7 +2,7 @@
   "id": "thread-context-survives-pane",
   "title": "Opening the pane on another page does not cut /wisp off from the earlier conversation",
   "issue": 11672,
-  "expect": "known-red",
+  "expect": "pass",
   "door": "wisp",
   "steps": [
     { "name": "first", "type": "say", "approve": "none", "maxSec": 90,

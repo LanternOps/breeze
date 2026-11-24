@@ -129,6 +129,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Walkers that rebuild an object from a parsed tool result collect
+// `[key, value]` pairs and return `Object.fromEntries(pairs)`, never
+// `out[key] = value`. A JSON `"__proto__"` key is an own data property after
+// `JSON.parse`; assigning it hits the inherited setter instead, which drops the
+// key from the output and re-points the object's prototype at the value.
+// `Object.fromEntries` creates own data properties in order (a repeated key
+// keeps its first position and takes the last value, as assignment did), so
+// the key is walked, fenced and serialized like any other.
+type Entry = [string, unknown];
+
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -393,17 +403,17 @@ function compactValue(
       stats.objectKeysDropped += entries.length - config.maxObjectKeys;
     }
 
-    const output: Record<string, unknown> = {};
+    const output: Entry[] = [];
     for (const [key, itemValue] of entries.slice(0, config.maxObjectKeys)) {
       // Q3: a character window the tool sized deliberately — pass through
       // untouched rather than re-truncating it against the generic string cap.
       if (typeof itemValue === 'string' && isCharacterWindowField(key, value)) {
-        output[key] = itemValue;
+        output.push([key, itemValue]);
         continue;
       }
-      output[key] = compactValue(itemValue, stats, config, depth + 1, key);
+      output.push([key, compactValue(itemValue, stats, config, depth + 1, key)]);
     }
-    return output;
+    return Object.fromEntries(output);
   }
 
   return String(value);
@@ -666,16 +676,20 @@ function compactCommandStylePayload(
     });
   }
 
+  // `output` holds only the fixed keys set above; the payload's other keys
+  // follow them in order (one that repeats a fixed key overwrites its value in
+  // place, as assignment did).
+  const passthrough: Entry[] = Object.entries(output);
   for (const [key, value] of Object.entries(payload)) {
     if (COMMAND_STYLE_HANDLED_KEYS.has(key)) continue;
     if (typeof value === 'string' && isCharacterWindowField(key, payload)) {
-      output[key] = redactAiToolOutputText(value);
+      passthrough.push([key, redactAiToolOutputText(value)]);
       continue;
     }
-    output[key] = compactValue(value, stats, config, 0, key);
+    passthrough.push([key, compactValue(value, stats, config, 0, key)]);
   }
 
-  return output;
+  return Object.fromEntries(passthrough);
 }
 
 function emptyStats(): CompactStats {
@@ -749,11 +763,10 @@ function sanitizeToolPayloadValue(
 
   if (!isRecord(value)) return value;
 
-  const output: Record<string, unknown> = {};
+  const output: Entry[] = [];
   for (const [key, entry] of Object.entries(value)) {
     if (shouldOmitScriptText(toolName, key, entry)) {
-      output[`${key}Omitted`] = true;
-      output[`${key}Chars`] = entry.length;
+      output.push([`${key}Omitted`, true], [`${key}Chars`, entry.length]);
       stats.sensitiveFieldsOmitted += 1;
       continue;
     }
@@ -761,12 +774,12 @@ function sanitizeToolPayloadValue(
     // truncate it in this pre-pass (compactCommandStylePayload / compactValue
     // apply the same rule for the shaping pass that follows).
     if (typeof entry === 'string' && isCharacterWindowField(key, value)) {
-      output[key] = redactAiToolOutputText(entry);
+      output.push([key, redactAiToolOutputText(entry)]);
       continue;
     }
-    output[key] = sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key);
+    output.push([key, sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key)]);
   }
-  return output;
+  return Object.fromEntries(output);
 }
 
 const MAX_SYSTEM_CLEANUP_ACTIONS = 40;
@@ -833,14 +846,15 @@ const DEVICE_CORE_KEYS = [
 function hoistDeviceCoreFields(parsed: Record<string, unknown>): Record<string, unknown> {
   const device = parsed.device;
   if (!isRecord(device)) return parsed;
-  const reordered: Record<string, unknown> = {};
-  for (const k of DEVICE_CORE_KEYS) {
-    if (k in device) reordered[k] = device[k];
-  }
+  // Own-key checks and a Set, not `in`: `in` also sees Object.prototype
+  // members, so a device key named `__proto__` or `toString` would be dropped
+  // as "already set".
+  const reordered: Entry[] = DEVICE_CORE_KEYS.filter((k) => Object.hasOwn(device, k)).map((k): Entry => [k, device[k]]);
+  const hoisted = new Set(reordered.map(([k]) => k));
   for (const [k, v] of Object.entries(device)) {
-    if (!(k in reordered)) reordered[k] = v;
+    if (!hoisted.has(k)) reordered.push([k, v]);
   }
-  return { ...parsed, device: reordered };
+  return { ...parsed, device: Object.fromEntries(reordered) };
 }
 
 function applyToolSpecificCompaction(
@@ -1180,10 +1194,18 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // deviceDetail (device name, browser user agent) by the signing-in client.
   m365_query_users: new Set(['displayName', 'userPrincipalName', 'mail', 'jobTitle', 'department']),
   m365_query_signins: new Set(['userPrincipalName', 'appDisplayName', 'clientAppUsed', 'status', 'location', 'deviceDetail']),
-  m365_query_intune_devices: new Set(['deviceName', 'userPrincipalName', 'osVersion', 'model', 'manufacturer', 'serialNumber']),
+  m365_query_intune_devices: new Set(['deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'model', 'manufacturer', 'serialNumber']),
   m365_query_groups: new Set(['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName']),
   m365_query_org: new Set(['displayName', 'verifiedDomains']),
   m365_query_sites: new Set(['name', 'displayName', 'webUrl']),
+  // Microsoft 365 helpdesk tools (aiToolsM365.ts, session-aware): an error result's `message` quotes a Graph or broker
+  // error message, which can echo strings chosen in the customer's tenant. The handler fences it before adding its own
+  // prefix; this entry is the chat-path backstop. A success result is prose (or `message` in the toolCallId envelope).
+  m365_lookup_user: new Set(['message']),
+  m365_recent_signins: new Set(['message']),
+  m365_list_group_memberships: new Set(['message']),
+  m365_disable_user: new Set(['message']),
+  m365_reset_password: new Set(['message']),
   // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
   // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
   // fenced as data, never instructions.
@@ -1446,17 +1468,17 @@ function fenceRawTextFields(value: unknown, fieldNames: ReadonlySet<string>, fla
     return value.map((entry) => fenceRawTextFields(entry, fieldNames, flags));
   }
   if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
+    const out: Entry[] = [];
     for (const [key, v] of Object.entries(value)) {
       if (key === 'stdout' && typeof v === 'string') {
-        out[key] = fenceEncodedStdout(v, fieldNames, flags);
+        out.push([key, fenceEncodedStdout(v, fieldNames, flags)]);
       } else if (fieldNames.has(key)) {
-        out[key] = sanitizeUntrustedToolValue(v, flags);
+        out.push([key, sanitizeUntrustedToolValue(v, flags)]);
       } else {
-        out[key] = fenceRawTextFields(v, fieldNames, flags);
+        out.push([key, fenceRawTextFields(v, fieldNames, flags)]);
       }
     }
-    return out;
+    return Object.fromEntries(out);
   }
   return value;
 }
@@ -1500,7 +1522,8 @@ function logFenceFlags(toolName: string, flags: readonly string[]): void {
   console.warn('[AI] Untrusted tool-output fence flags:', flags.join(','), 'tool:', toolName);
 }
 
-function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown {
+/** Exported for tests; production callers go through `compactToolResultForChat`. */
+export function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown {
   const fieldNames = RAW_TEXT_FIELDS_BY_TOOL[toolName];
   if (!fieldNames) return value;
   const flags: string[] = [];

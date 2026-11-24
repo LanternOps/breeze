@@ -128,7 +128,6 @@ vi.mock('../../devices/DeviceList', async () => {
 });
 vi.mock('../../devices/DeviceCard', () => ({ default: () => null }));
 vi.mock('../../devices/ScriptPickerModal', () => ({ default: () => null }));
-vi.mock('../../devices/DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('../../devices/AddDeviceModal', () => ({ default: () => null }));
 vi.mock('../../devices/AddNetworkAssetModal', () => ({ default: () => null }));
 vi.mock('../../devices/LinkVmHostModal', () => ({ default: () => null }));

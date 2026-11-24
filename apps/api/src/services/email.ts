@@ -10,8 +10,10 @@ import {
   renderLayout,
   renderLinkRow,
 } from './emailLayout';
-import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
-import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
+import { mailPurposePolicy, type MailPurpose, type PartnerLaneMailPurpose, type PlatformMailPurpose } from './emailDomains/mailPurposes';
+import { platformFallbackFrom, resolveSender, type HeldReason, type SendTrigger } from './emailDomains/senderResolution';
+
+export type { HeldReason, SendTrigger } from './emailDomains/senderResolution';
 import {
   renderPartnerEmail,
   type PartnerEmailCustom,
@@ -67,6 +69,43 @@ export class EmailTransportError extends Error implements EmailTransportErrorFie
   }
 }
 
+/**
+ * A partner-lane send that was refused rather than moved to the platform
+ * sender (senderResolution.ts `HeldReason`). Nothing was sent on either lane.
+ * There is no hold queue: `retryAt` is when trying again can succeed. Queue
+ * and outbox senders reschedule to it within their own maximum age, and
+ * synchronous routes answer with a 4xx (services/emailDomains/heldSend.ts).
+ */
+function missingTrigger(purpose: string): 'internal' {
+  if (mailPurposePolicy(purpose as MailPurpose).lane === 'partner') {
+    console.warn('[email] partner-lane send without a trigger; counted as internal', { purpose });
+  }
+  return 'internal';
+}
+
+export class EmailSendHeldError extends Error {
+  readonly reason: HeldReason;
+  readonly partnerId: string;
+  readonly purpose: string;
+  readonly retryAt: Date;
+
+  constructor(fields: { reason: HeldReason; partnerId: string; purpose: string; retryAt: Date }) {
+    super(
+      fields.reason === 'domain_suspended'
+        ? `Email not sent: partner ${fields.partnerId}'s sending domain is suspended by an administrator ` +
+          `(purpose ${fields.purpose}). It was held, not sent from the platform sender.`
+        : `Email not sent: partner ${fields.partnerId} reached its daily partner-lane send cap ` +
+          `(purpose ${fields.purpose}). It was held, not sent from the platform sender; ` +
+          'the cap resets at 00:00 UTC.',
+    );
+    this.name = 'EmailSendHeldError';
+    this.reason = fields.reason;
+    this.partnerId = fields.partnerId;
+    this.purpose = fields.purpose;
+    this.retryAt = fields.retryAt;
+  }
+}
+
 export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
@@ -93,7 +132,11 @@ export interface RawEmailMessage extends SendEmailBase {
 
 /**
  * Every send declares WHAT IT IS; `services/emailDomains/mailPurposes.ts`
- * decides who it is from. There is no raw `from`: an unclassified send does
+ * decides who it is from. A partner-lane send also declares WHO CAUSED IT
+ * (`trigger`, #12249): `external` for mail an outsider can make Breeze send
+ * (inbound autoresponse, portal self-registration and password reset,
+ * trust-page access confirmation), `internal` otherwise. It picks the daily
+ * bucket; see senderResolution.ts `SendTrigger`. There is no raw `from`: an unclassified send does
  * not compile (spec G5), and a spoofed envelope address is unrepresentable.
  *
  * A partner-lane purpose MUST state its partner — `null` is allowed and means
@@ -102,8 +145,8 @@ export interface RawEmailMessage extends SendEmailBase {
  * context, never from request input (spec §8.1).
  */
 export type SendEmailParams = SendEmailBase & (
-  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
-  | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
+  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never; trigger?: never }
+  | { purpose: PartnerLaneMailPurpose; trigger: SendTrigger; partnerId: string | null; partnerName?: string | null }
 );
 
 export interface InvoiceEmailParams {
@@ -146,7 +189,7 @@ export type PasswordResetEmailParams = {
   supportEmail?: string;
 } & (
   | { purpose: 'auth.password_reset' }
-  | { purpose: 'portal.password_reset'; partnerId: string | null; partnerName?: string | null }
+  | { purpose: 'portal.password_reset'; trigger: SendTrigger; partnerId: string | null; partnerName?: string | null }
 );
 
 export interface PortalInviteEmailParams {
@@ -163,6 +206,8 @@ export interface PortalInviteEmailParams {
    */
   partnerId: string | null;
   partnerName?: string;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
   /** Partner-saved template override; null/absent uses code defaults. */
   custom?: PartnerEmailCustom | null;
   /**
@@ -196,6 +241,8 @@ export interface PortalAccessDecisionEmailParams {
   orgName?: string;
   partnerId: string | null;
   partnerName?: string;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
 }
 
 export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEmailParams {
@@ -218,6 +265,8 @@ export interface PortalSelfRegistrationLinkEmailParams {
   orgName: string;
   partnerId: string | null;
   partnerName: string | null;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
 }
 
 export interface PortalSelfRegistrationExistingAccountEmailParams {
@@ -227,6 +276,8 @@ export interface PortalSelfRegistrationExistingAccountEmailParams {
   orgName: string;
   partnerId: string | null;
   partnerName: string | null;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
 }
 
 /**
@@ -461,8 +512,19 @@ export class EmailService {
       purpose: params.purpose,
       partnerId: params.partnerId ?? null,
       partnerName: params.partnerName ?? null,
+      // A platform purpose returns before the bucket is read. A partner-lane
+      // caller that bypassed the type counts as internal (the cap still
+      // applies) and is logged, since internal is the bucket an outsider must
+      // never be able to spend.
+      trigger: params.trigger ?? missingTrigger(params.purpose),
       defaultFrom: this.defaultFrom,
     });
+
+    if (resolved.lane === 'held') {
+      throw new EmailSendHeldError({
+        reason: resolved.reason, partnerId: resolved.partnerId, purpose: params.purpose, retryAt: resolved.retryAt,
+      });
+    }
 
     if (resolved.lane === 'partner') {
       // Dynamic so a platform-lane send never loads the provider registry, the
@@ -660,6 +722,7 @@ export class EmailService {
         html: template.html,
         text: template.text,
         purpose: 'portal.password_reset',
+        trigger: params.trigger,
         partnerId: params.partnerId,
         partnerName: params.partnerName ?? null,
       });
@@ -748,6 +811,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.invite',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -761,6 +825,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.access_request.approved',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -774,6 +839,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.access_request.declined',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -787,6 +853,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.self_registration.verify',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName,
     });
@@ -800,6 +867,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.self_registration.existing_account',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName,
     });
@@ -1308,7 +1376,7 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
  * The subject never changes. A partner's custom button label was written for
  * the password button, so it never relabels an SSO one.
  */
-export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
+export function buildPortalInviteTemplate(params: Omit<PortalInviteEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
   const customMessage = params.message?.trim();
@@ -1373,7 +1441,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
  * support footer: the platform support address is not the customer's IT
  * provider.
  */
-export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEmailParams): EmailTemplate {
+export function buildPortalAccessApprovedTemplate(params: Omit<PortalAccessApprovedEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName?.trim();
   const subject = orgName ? `You can now sign in to the ${orgName} portal` : 'You can now sign in to your portal';
   const lead = orgName
@@ -1398,7 +1466,7 @@ export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEm
  * address is the requester's. No requester-typed text; `orgName` comes from
  * the org row.
  */
-export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegistrationLinkEmailParams): EmailTemplate {
+export function buildPortalSelfRegistrationLinkTemplate(params: Omit<PortalSelfRegistrationLinkEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName.trim();
   const subject = `Confirm your request for access to ${orgName}'s portal`;
   const lead = `Someone, hopefully you, asked for access to ${orgName}'s customer portal with this address. Confirm within 30 minutes:`;
@@ -1419,7 +1487,7 @@ export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegist
 }
 
 /** Self-registration for an address that already has a portal account (W6 #11383). */
-export function buildPortalSelfRegistrationExistingAccountTemplate(params: PortalSelfRegistrationExistingAccountEmailParams): EmailTemplate {
+export function buildPortalSelfRegistrationExistingAccountTemplate(params: Omit<PortalSelfRegistrationExistingAccountEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName.trim();
   const subject = `You already have an account for ${orgName}'s portal`;
   const lead = `You already have an account for ${orgName}'s customer portal. Sign in, or reset your password if you have forgotten it. If you can't sign in, contact your IT provider.`;
@@ -1439,7 +1507,7 @@ export function buildPortalSelfRegistrationExistingAccountTemplate(params: Porta
 }
 
 /** Portal access request declined (W3 #11380, spec §5.10): neutral, no link. */
-export function buildPortalAccessDeclinedTemplate(params: PortalAccessDeclinedEmailParams): EmailTemplate {
+export function buildPortalAccessDeclinedTemplate(params: Omit<PortalAccessDeclinedEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName?.trim();
   const subject = 'Your portal access request';
   const copy = orgName

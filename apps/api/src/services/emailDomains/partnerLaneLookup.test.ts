@@ -51,6 +51,7 @@ function row(over: Record<string, unknown> = {}) {
     domainId: 'd1',
     domain: 'mail.acme.test',
     domainStatus: 'verified',
+    domainStatusReason: null,
     ...over,
   };
 }
@@ -138,6 +139,31 @@ describe('lookupPartnerLaneIdentity — conditions 2 and 3 of spec §8.3', () =>
       await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
         .resolves.toEqual({ ok: false, reason: 'domain_not_sendable' });
     }
+  });
+
+  // #12249: only a suspension an administrator made stops the partner's mail.
+  // An automatic (bounce/complaint) suspension keeps the platform-lane fallback:
+  // bounce and complaint stats have no purpose dimension, so outsider-triggered
+  // junk could trip it.
+  it('reports an administrator suspension as domain_suspended, and nothing else', async () => {
+    selectMock.mockReturnValue(selectChain([row({ domainStatus: 'suspended', domainStatusReason: 'platform_suspended' })]));
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+      .resolves.toEqual({ ok: false, reason: 'domain_suspended' });
+    for (const domainStatusReason of ['abuse_auto', null, 'something_else']) {
+      selectMock.mockReturnValue(selectChain([row({ domainStatus: 'suspended', domainStatusReason })]));
+      await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+        .resolves.toEqual({ ok: false, reason: 'domain_not_sendable' });
+    }
+    // The reason alone is not a suspension: a row the admin unsuspended clears it,
+    // but a stale value on a sendable row must not hold anything.
+    selectMock.mockReturnValue(selectChain([row({ domainStatus: 'verified', domainStatusReason: 'platform_suspended' })]));
+    expect((await lookupPartnerLaneIdentity(PARTNER, 'support')).ok).toBe(true);
+  });
+
+  it('an administrator suspension wins over an ineligible partner only when the partner is eligible', async () => {
+    selectMock.mockReturnValue(selectChain([row({ partnerStatus: 'suspended', domainStatus: 'suspended', domainStatusReason: 'platform_suspended' })]));
+    await expect(lookupPartnerLaneIdentity(PARTNER, 'support'))
+      .resolves.toEqual({ ok: false, reason: 'partner_ineligible' });
   });
 
   it('refuses a partner whose status is not active', async () => {
