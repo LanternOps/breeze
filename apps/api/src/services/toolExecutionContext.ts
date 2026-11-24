@@ -7,7 +7,7 @@ import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
 import type { ApprovalBinding } from './networkIsolation/service';
 import type { VerifiedDrPlan } from './drPlanDefinition';
-import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import type { PinnedDeviceEventLogRead, PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 import type { AiRunExportGrants } from '../db/schema/aiAgents';
@@ -275,6 +275,16 @@ export type ToolExecutionContext = {
    * the call that was classified.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * #12453: the strictly-parsed `browse_device_event_log` query / get_event the
+   * chat gate classified as Tier-2 read-only (System / Setup, canonical name).
+   * Set ONLY by `createSessionPreToolUse` from `checkGuardrails`' own parse —
+   * never from model arguments. The handler dispatches exactly these values and
+   * refuses a pin whose action differs from the call's, so the read that runs
+   * is the read that was classified. Device scope is still the call's own
+   * `deviceId` through `verifyDeviceAccess`.
+   */
+  pinnedDeviceEventLogRead?: PinnedDeviceEventLogRead;
   /**
    * #10973: the call a gate classified as one of the four unattended reads. Set
    * ONLY by `createSessionPreToolUse` and the troubleshooting run's pre-tool hook.
