@@ -2,7 +2,7 @@
   "id": "specialist-result-reaches-chat",
   "title": "A finished specialist's result reaches the next chat turn",
   "issue": 11671,
-  "expect": "known-red",
+  "expect": "pass",
   "door": "wisp",
   "steps": [
     { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,

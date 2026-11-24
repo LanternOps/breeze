@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { heldSendHttpResponse, isEmailSendHeldError } from '../../services/emailDomains/heldSend';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
@@ -45,9 +46,19 @@ export function invoiceActorFrom(c: { get: (k: string) => unknown }): InvoiceAct
   // org/site-scoped token is ever admitted here.
   return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
-export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+export function handleServiceError(
+  c: { json: (b: unknown, s: number, h?: Record<string, string>) => Response },
+  err: unknown,
+): Response {
   if (err instanceof InvoiceServiceError) {
     return c.json({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) }, err.status);
+  }
+  // #12249: a held send (daily cap, or a suspended sending domain) is a clear
+  // 4xx, not a 500. issueInvoice commits in its own transaction, so an issued
+  // invoice stays issued either way; the send can be retried after retryAt.
+  if (isEmailSendHeldError(err)) {
+    const held = heldSendHttpResponse(err);
+    return c.json(held.body, held.status, held.headers);
   }
   throw err;
 }

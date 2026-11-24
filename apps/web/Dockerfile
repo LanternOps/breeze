@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Base image with pnpm
-FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS base
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS base
 RUN npm install -g pnpm@10.34.5
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -68,7 +68,7 @@ FROM scratch AS release-dist
 COPY --from=builder /app/apps/web/dist /apps/web/dist
 
 # Stage 4: Production runner
-FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS runner
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runner
 WORKDIR /app
 
 # Refresh libcrypto3/libssl3 because the pinned base digest predates the fix for

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import DeviceHardwareInventory from './DeviceHardwareInventory';
 
-vi.mock('./DeviceWarrantyCard', () => ({ default: () => null }));
+vi.mock('./AssetCircuitCard', () => ({ default: () => null }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) =>
     new Response(

@@ -38,10 +38,12 @@ const STATUSES = [
 type ConnectionStatus = (typeof STATUSES)[number];
 
 // Actions mirrors the read lifecycle-outcome enum. Grant reconciliation reads
-// the app's appRoleAssignments, which Microsoft Graph gates on
-// Application.Read.All; the actions manifest does not hold it, so a tenant can
-// report `grant_reconciliation_unavailable` here too (#12085) and it needs
-// its own explanation rather than the generic `unknown` copy.
+// the app's appRoleAssignments and the Microsoft Graph role list, which Graph
+// can gate on Application.Read.All; the actions manifest does not hold it (and
+// granting it by hand is itself unexpected drift). The executor falls back to
+// its token and the manifest's fixed role ids, but when those cannot verify the
+// grants a tenant reports `grant_reconciliation_unavailable` here too (#12085)
+// and it needs its own explanation rather than the generic `unknown` copy.
 const STABLE_ERROR_CODES = [
   "consent_expired",
   "consent_state_mismatch",

@@ -74,6 +74,7 @@ import {
 } from '@breeze/shared';
 import { stripMcpPrefix } from './mcpToolNames';
 import {
+  neutralizeFenceTags,
   sanitizeUntrustedToolStdout,
   sanitizeUntrustedToolText,
   sanitizeUntrustedToolValue,
@@ -413,9 +414,11 @@ export function describeIntentOutcome(
       // Device text (#8852 W04): fenced here because the denial result carries
       // it under `message`, a key compactToolResultForChat's fence never sees.
       // Fence the WHOLE stdout first (decoding the agent's JSON), then cut.
+      // The cut can strand a fence name (`<tool_outputs>` cut after
+      // `<tool_output`), so the fence tags are neutralized again after it.
       const fenced = sanitizeUntrustedToolStdout(stdout);
       const truncated = fenced.length > MAX_SPLICED_RESULT_CHARS;
-      const body = truncated ? fenced.slice(0, MAX_SPLICED_RESULT_CHARS) : fenced;
+      const body = neutralizeFenceTags(truncated ? fenced.slice(0, MAX_SPLICED_RESULT_CHARS) : fenced);
       return {
         handoff: APPROVED_COMPLETED_STATUS,
         message:
@@ -430,10 +433,11 @@ export function describeIntentOutcome(
     const projected = projectHandoffResult(snapshot.result, call);
     if (projected !== null) {
       // Fence every string (a forged `</tool_output>` or instruction-shaped
-      // text cannot escape the block), serialize, then cut.
+      // text cannot escape the block), serialize, then cut; the cut is
+      // re-checked for a stranded fence name as above.
       const serialized = JSON.stringify(sanitizeUntrustedToolValue(projected));
       const truncated = serialized.length > MAX_PROJECTED_RESULT_CHARS;
-      const body = truncated ? serialized.slice(0, MAX_PROJECTED_RESULT_CHARS) : serialized;
+      const body = neutralizeFenceTags(truncated ? serialized.slice(0, MAX_PROJECTED_RESULT_CHARS) : serialized);
       return {
         handoff: APPROVED_COMPLETED_STATUS,
         message:

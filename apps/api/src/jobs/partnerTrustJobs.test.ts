@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   update, select, runOutside, withSystem, classify, tryAutoPromote,
   restrictOnHardDeny, partnerForDevice, ipClassifyProvider, runIpClassifyBackfill, offlineDataRefreshedAt,
-  runBillingFraudFlagSweep,
+  runBillingFraudFlagSweep, createSuspendedAbuseSetCache, getSuspendedSet,
 } = vi.hoisted(() => ({
+  createSuspendedAbuseSetCache: vi.fn(),
+  getSuspendedSet: vi.fn(),
   offlineDataRefreshedAt: vi.fn(),
   runIpClassifyBackfill: vi.fn(),
   update: vi.fn(),
@@ -41,7 +43,9 @@ vi.mock('../config/env', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config/env')>()),
   ipClassifyProvider,
 }));
-vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, restrictOnHardDeny }));
+vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, restrictOnHardDeny, createSuspendedAbuseSetCache }));
+
+const SHARED_SET = { loadedAt: new Date(0), cardsJson: '[]', recentJson: '[]', ipsJson: '[]' };
 vi.mock('../services/partnerTrust.repo', () => ({ partnerForDevice }));
 vi.mock('../services/partnerTrustFraudFlags', () => ({ runBillingFraudFlagSweep }));
 vi.mock('./ipClassifyBackfill', () => ({
@@ -95,6 +99,8 @@ describe('processPartnerTrustJob', () => {
     offlineDataRefreshedAt.mockReturnValue(null);
     set.mockReturnValue({ where });
     update.mockReturnValue({ set });
+    getSuspendedSet.mockResolvedValue(SHARED_SET);
+    createSuspendedAbuseSetCache.mockReturnValue({ get: getSuspendedSet });
   });
 
   it('iterates probation partners in batches and attempts promotion for each', async () => {
@@ -107,8 +113,35 @@ describe('processPartnerTrustJob', () => {
       .resolves.toEqual({ processed: 201, promoted: 1 });
 
     expect(tryAutoPromote).toHaveBeenCalledTimes(201);
-    expect(tryAutoPromote).toHaveBeenLastCalledWith('partner-200');
+    expect(tryAutoPromote).toHaveBeenLastCalledWith('partner-200', { suspendedSet: SHARED_SET });
     expect(limit).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one suspended-set cache across the whole run (#11560)', async () => {
+    withBatch(Array.from({ length: 200 }, (_, i) => probationRow({ id: `p-${i}` })), [probationRow({ id: 'p-200' })]);
+
+    await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
+
+    expect(createSuspendedAbuseSetCache).toHaveBeenCalledTimes(1);
+    expect(getSuspendedSet).toHaveBeenCalledTimes(201);
+    for (const [, options] of tryAutoPromote.mock.calls) {
+      expect(options).toEqual({ suspendedSet: SHARED_SET });
+    }
+  });
+
+  it('skips (never promotes) a partner when the suspended set cannot be built, and keeps going', async () => {
+    withBatch([probationRow({ id: 'partner-1' }), probationRow({ id: 'partner-2' })]);
+    getSuspendedSet.mockRejectedValueOnce(new Error('db exploded'));
+    tryAutoPromote.mockResolvedValue(true);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
+      .resolves.toEqual({ processed: 2, promoted: 1 });
+
+    expect(tryAutoPromote).toHaveBeenCalledTimes(1);
+    expect(tryAutoPromote).toHaveBeenCalledWith('partner-2', { suspendedSet: SHARED_SET });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('partner-1'), expect.any(Error));
+    warnSpy.mockRestore();
   });
 
   it('skips a partner whose promotion evaluation throws, without stopping the batch', async () => {
@@ -249,7 +282,7 @@ describe('processPartnerTrustJob', () => {
       await processPartnerTrustJob({ name: 'partner-trust-promote', data: {} });
 
       expect(classify).not.toHaveBeenCalled();
-      expect(tryAutoPromote).toHaveBeenCalledWith('partner-1');
+      expect(tryAutoPromote).toHaveBeenCalledWith('partner-1', { suspendedSet: SHARED_SET });
     });
 
     it('does not re-classify a partner that already has a class', async () => {
@@ -288,7 +321,7 @@ describe('processPartnerTrustJob', () => {
       await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
         .resolves.toEqual({ processed: 1, promoted: 0 });
 
-      expect(tryAutoPromote).toHaveBeenCalledWith('partner-1');
+      expect(tryAutoPromote).toHaveBeenCalledWith('partner-1', { suspendedSet: SHARED_SET });
       warnSpy.mockRestore();
     });
   });

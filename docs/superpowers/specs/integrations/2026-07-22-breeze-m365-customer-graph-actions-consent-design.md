@@ -226,9 +226,30 @@ and shown on the card:
 **Limit of `graph_token_only`.** A Graph token lists only Microsoft Graph app roles. An app
 role granted to the actions app on another resource (Exchange Online, SharePoint, …) is not
 detected, so a connection can be `active` while holding such drift. The card says so ("Graph
-permissions verified. Permissions on other Microsoft resources were not checked; grant
-Application.Read.All for a full check."), and granting `Application.Read.All` returns the
-connection to `exact` on the next Retest.
+permissions verified. Permissions on other Microsoft resources could not be checked."). It
+does not suggest granting `Application.Read.All`: that permission is outside the manifest, so
+the exact check would report it as unexpected drift and the connection would stay `degraded`.
+
+**Amendment (2026-11-23, #12085): denied resource lookup.** Some tenants answer the
+appRoleAssignments read but deny the second step, the resource service principal's
+`appRoles` read. That step now has its own resolution, still reported as **`exact`** because
+the whole inventory was read; only the role names come from elsewhere:
+
+- It runs only on a plain **403** for the *first* resource lookup. Any other failure, or a
+  denial after an earlier lookup succeeded, stays `grant_reconciliation_unavailable`.
+- The inventory must name exactly **one** resource, every assigned `appRoleId` must be one of
+  the manifest's Microsoft Graph app-role ids (fixed by Microsoft, the same in every tenant),
+  and the names those ids map to must **equal** the token's `roles` claim (same claim checks as
+  `graph_token_only`). A Graph-audience token lists exactly the roles held on the Graph service
+  principal, and every one of those is in the inventory, so the single resource is Microsoft
+  Graph. The appRoleAssignments payload carries no resource appId, and the display name is
+  never used as proof.
+- Two or more resources, an unknown `appRoleId` (including a real Graph role the manifest does
+  not hold), or any disagreement with the token, in either direction or with an absent or
+  empty `roles` claim, stays `grant_reconciliation_unavailable`. The executor log names the
+  reason (`stage: 'resource_crosscheck'`, code `grant_resource_unresolved`,
+  `grant_role_unknown`, `graph_token_roles_mismatch` or `graph_token_claims_invalid`). The wire
+  contract is unchanged.
 
 ## 10. Lifecycle, config, and boot validation
 

@@ -751,10 +751,13 @@ describe('sendQuote email delivery status', () => {
     delete process.env.EMAIL_DOMAINS_PARTNER_ALLOWLIST;
     try {
       const envelope = sendEmailMock.mock.calls[0]![0] as {
-        purpose: 'quote.sent'; partnerId: string | null; partnerName?: string | null;
+        purpose: 'quote.sent'; trigger: 'internal' | 'external'; partnerId: string | null; partnerName?: string | null;
       };
+      // #12249: staff send it, so it spends the partner's own (internal) bucket.
+      expect(envelope.trigger).toBe('internal');
       const resolved = await resolveSender({
         purpose: envelope.purpose,
+        trigger: envelope.trigger,
         partnerId: envelope.partnerId,
         partnerName: envelope.partnerName,
         defaultFrom: 'Breeze <no-reply@test.example>',

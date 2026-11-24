@@ -160,7 +160,7 @@
       "unexpectedAlert": "Unerwartete Berechtigungen erkannt",
       "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
       "grantsVerifiedAt": "Berechtigungen geprüft",
-      "graphTokenOnly": "Graph-Berechtigungen geprüft. Berechtigungen für andere Microsoft-Ressourcen wurden nicht geprüft. Erteilen Sie Application.Read.All für eine vollständige Prüfung."
+      "graphTokenOnly": "Graph-Berechtigungen geprüft. Berechtigungen für andere Microsoft-Ressourcen konnten nicht geprüft werden. Erteilen Sie deshalb keine zusätzlichen Berechtigungen: Jede Berechtigung außerhalb der erforderlichen Liste wird als unerwartet gemeldet."
     },
     "actions": {
       "connect": "Verbinden",

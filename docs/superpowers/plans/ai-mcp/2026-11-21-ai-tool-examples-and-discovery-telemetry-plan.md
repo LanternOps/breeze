@@ -87,7 +87,7 @@ branch_pattern: feature/12421-ai-tool-telemetry/wave-<subissue#>
 
 | Map / file | Change | Wave |
 |---|---|---|
-| `migrations/2027-01-30-110000-ai-tool-search-events.sql` (slot rule) | table + 4 policies + indexes; `ai_tool_executions.discovery` + CHECK, `ai_tool_executions.tool_use_id` | W01 |
+| `migrations/2027-01-30-140000-ai-tool-search-events.sql` (slot rule) | table + 4 policies + indexes; `ai_tool_executions.discovery` + CHECK, `ai_tool_executions.tool_use_id` | W01 |
 | `db/schema/ai.ts` | `aiToolSearchEvents`, `aiToolExecutions.discovery`, `aiToolExecutions.toolUseId` | W01 |
 | `__tests__/integration/rls-coverage.integration.test.ts:1268` | `['ai_tool_search_events', ['ai_sessions']]` | W01 |
 | `services/llm/toolCapture/sdkMessageWalk.ts` (new), `streamObserver.ts:60-80` | shared `walkSdkMessageContent` | W01 |
@@ -119,7 +119,7 @@ Test commands: from `apps/api`, `npx vitest run <file>` (never `pnpm --filter <p
 
 ## W01 — telemetry, dark
 
-Migration slot: **`2027-01-30-110000-ai-tool-search-events.sql`**, after `2027-01-28-200000-agent-versions-min-os.sql` (newest committed 2026-11-21). Before committing: `git fetch origin main` and the README Rule 3 `git ls-tree … localeCompare` one-liner against `origin/main`; if overtaken, take the next free name that `localeCompare`-sorts after the newest.
+Migration slot: **`2027-01-30-140000-ai-tool-search-events.sql`**, after `2027-01-28-200000-agent-versions-min-os.sql` (newest committed 2026-11-21). Before committing: `git fetch origin main` and the README Rule 3 `git ls-tree … localeCompare` one-liner against `origin/main`; if overtaken, take the next free name that `localeCompare`-sorts after the newest.
 
 ### Task 1: table, column, Drizzle schema, RLS registration
 

@@ -394,3 +394,26 @@ describe('DeviceCard list parity (#9037)', () => {
     expect(container.innerHTML).not.toContain('text-[10px]');
   });
 });
+
+// The item that opened the retired Device Settings modal now emits
+// "edit-details"; DevicesPage is tested by firing that string from a stub.
+describe('DeviceCard — "Edit details" in the actions menu', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+  });
+
+  it('emits edit-details with the device and does not open the card', async () => {
+    const onClick = vi.fn();
+    const onAction = vi.fn();
+    render(<DeviceCard device={baseDevice} onClick={onClick} onAction={onAction} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByTestId('device-device-1-actions-menu'));
+    fireEvent.click(screen.getByRole('button', { name: /^edit details$/i }));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('edit-details', baseDevice);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});

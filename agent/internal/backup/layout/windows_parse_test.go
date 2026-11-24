@@ -1,6 +1,9 @@
 package layout
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const windowsLayoutJSON = `{"firmware":"UEFI","os":"Microsoft Windows Server 2022 Standard","hostname":"WIN-A",
 "disks":[{"Number":0,"FriendlyName":"Msft Virtual Disk","SerialNumber":"6002248","Size":137438953472,"PartitionStyle":"GPT","IsSystem":true,"IsBoot":true,"LogicalSectorSize":512,"BusType":"SAS"},
@@ -86,5 +89,76 @@ func TestDiskNumberFromName(t *testing.T) {
 				t.Errorf("diskNumberFromName(%q) = (%d, %v), want (%d, %v)", tt.in, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+// #12576: on Windows Server 2016 (build 14393) Get-Partition returns the ESP
+// with no drive letter and an empty AccessPaths, and Get-Volume lists no
+// volume for it, so the collector cannot link the ESP to a volume. The
+// partition layout is the reported one: Recovery first, then ESP, MSR, C:.
+const windowsServer2016UnlinkedESPJSON = `{"firmware":"UEFI","os":"Microsoft Windows Server 2016 Standard","hostname":"DC01",
+"disks":[{"Number":0,"FriendlyName":"Msft Virtual Disk","SerialNumber":"","Size":137438953472,"PartitionStyle":"GPT","IsSystem":true,"IsBoot":true,"LogicalSectorSize":512,"BusType":"SCSI"}],
+"partitions":[
+ {"DiskNumber":0,"PartitionNumber":1,"Guid":"{bbbb-1}","GptType":"{de94bba4-06d1-4d40-a16a-bfd50179d6ac}","Offset":1048576,"Size":471859200,"DriveLetter":"\u0000","IsSystem":false,"IsBoot":false,"IsActive":false,"IsHidden":true,"Type":"Recovery","AccessPaths":["\\\\?\\Volume{rec-guid}\\"]},
+ {"DiskNumber":0,"PartitionNumber":2,"Guid":"{bbbb-2}","GptType":"{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}","Offset":472907776,"Size":104857600,"DriveLetter":"\u0000","IsSystem":true,"IsBoot":false,"IsActive":false,"IsHidden":true,"Type":"System","AccessPaths":null},
+ {"DiskNumber":0,"PartitionNumber":3,"Guid":"{bbbb-3}","GptType":"{e3c9e316-0b5c-4db8-817d-f92df00215ae}","Offset":577765376,"Size":16777216,"DriveLetter":"\u0000","IsSystem":false,"IsBoot":false,"IsActive":false,"IsHidden":true,"Type":"Reserved","AccessPaths":null},
+ {"DiskNumber":0,"PartitionNumber":4,"Guid":"{bbbb-4}","GptType":"{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}","Offset":594542592,"Size":136843362304,"DriveLetter":"C","IsSystem":false,"IsBoot":true,"IsActive":false,"IsHidden":false,"Type":"Basic","AccessPaths":["C:\\","\\\\?\\Volume{c-guid}\\"]}],
+"volumes":[
+ {"DriveLetter":"C","Path":"\\\\?\\Volume{c-guid}\\","UniqueId":"\\\\?\\Volume{c-guid}\\","FileSystem":"NTFS","FileSystemLabel":"","Size":136843362304,"SizeRemaining":100000000000},
+ {"DriveLetter":null,"Path":"\\\\?\\Volume{rec-guid}\\","UniqueId":"\\\\?\\Volume{rec-guid}\\","FileSystem":"NTFS","FileSystemLabel":"Recovery","Size":471859200,"SizeRemaining":100000000}],
+"bitlocker":[]}`
+
+// The UEFI spec requires FAT for the ESP, so an ESP the collector could not
+// link to a volume is recorded as fat32, not with an empty filesystem (which
+// the Windows rebuild treated like the MSR and never formatted).
+func TestParseWindowsLayout_UnlinkedESPIsRecordedAsFAT32(t *testing.T) {
+	m, err := parseWindowsLayout([]byte(windowsServer2016UnlinkedESPJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := m.Disks[0].Partitions
+	if len(p) != 4 {
+		t.Fatalf("partitions = %+v", p)
+	}
+	if p[0].Role != RoleRecovery || p[0].Filesystem != "ntfs" {
+		t.Errorf("recovery = %+v", p[0])
+	}
+	esp := p[1]
+	if esp.Role != RoleEFI || esp.Filesystem != "fat32" {
+		t.Errorf("esp role/filesystem = %q/%q, want %q/%q", esp.Role, esp.Filesystem, RoleEFI, "fat32")
+	}
+	// Nothing was read from a volume, so nothing else is invented.
+	if esp.Label != "" || esp.FSUUID != "" || esp.UsedBytes != 0 || esp.MountPoint != "" {
+		t.Errorf("esp carries volume details it could not have read: %+v", esp)
+	}
+	if p[2].Role != RoleMSR || p[2].Filesystem != "" {
+		t.Errorf("msr = %+v, want role msr with no filesystem", p[2])
+	}
+	if p[3].Role != RoleRoot || p[3].Filesystem != "ntfs" || p[3].MountPoint != `C:\` {
+		t.Errorf("C: = %+v", p[3])
+	}
+	if v := Assess(m); !v.Restorable {
+		t.Errorf("verdict = %+v", v)
+	}
+}
+
+// The fat32 default is only for an ESP the collector could not link to a
+// volume. An ESP linked to a volume that reports no filesystem (RAW) is
+// recorded as read; the rebuild plan defaults it to fat32 on its own.
+func TestParseWindowsLayout_LinkedRAWESPKeepsTheFilesystemItRead(t *testing.T) {
+	doc := strings.Replace(windowsServer2016UnlinkedESPJSON,
+		`"Type":"System","AccessPaths":null`, `"Type":"System","AccessPaths":["\\\\?\\Volume{efi-guid}\\"]`, 1)
+	doc = strings.Replace(doc, `"volumes":[`,
+		`"volumes":[{"DriveLetter":null,"Path":"\\\\?\\Volume{efi-guid}\\","UniqueId":"\\\\?\\Volume{efi-guid}\\","FileSystem":"","FileSystemLabel":"","Size":104857600,"SizeRemaining":0},`, 1)
+	if !strings.Contains(doc, `Volume{efi-guid}\\"]`) || !strings.Contains(doc, `"FileSystem":"","FileSystemLabel":""`) {
+		t.Fatal("fixture rewrite did not apply")
+	}
+	m, err := parseWindowsLayout([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	esp := m.Disks[0].Partitions[1]
+	if esp.Role != RoleEFI || esp.Filesystem != "" || esp.FSUUID != "efi-guid" {
+		t.Errorf("esp = %+v, want role efi linked to volume efi-guid with the empty filesystem it reported", esp)
 	}
 }

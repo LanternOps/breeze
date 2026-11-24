@@ -164,6 +164,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/alerts/channels', docsPath: '/features/alerts/', label: 'Notification Channels' },
   { pattern: '/alerts/correlations', docsPath: '/features/ml-insights/', label: 'Alert Correlations' },
   { pattern: '/alerts', docsPath: '/features/alerts/', label: 'Alerts' },
+  { pattern: '/tickets/import', docsPath: '/features/ticket-import/', label: 'Ticket Import' },
   { pattern: '/tickets', docsPath: '/features/ticketing/', label: 'Ticketing' },
   { pattern: '/timesheet', docsPath: '/features/ticketing/', label: 'Timesheet' },
   { pattern: '/billing/invoices', docsPath: '/features/invoices/', label: 'Invoices' },

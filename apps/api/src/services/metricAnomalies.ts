@@ -329,6 +329,66 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
   return { from, to };
 }
 
+/*
+ * Constant scan bounds for the self-joined `metric_rollups` probes (#11559).
+ *
+ * Every detector joins each new bucket `r` to the same series' history with a
+ * per-row window such as `b.bucket_start >= r.bucket_start - <lookback>`. Under
+ * the table's RLS policy that predicate cannot be an index condition: Postgres
+ * only lets quals built from LEAKPROOF functions run ahead of the policy qual,
+ * and `timestamp - interval` is not leakproof. So each probe walked the
+ * series' whole history in the month partition and discarded all but the
+ * window in a Filter (seen in EXPLAIN as breeze_app). Bare column-to-column
+ * compares such as `w.bucket_start <= a.anchor_bucket_start` are leakproof and
+ * were already index conditions; only the arithmetic bounds were not.
+ *
+ * A bare `b.bucket_start >= $param` compare is leakproof, so the bounds below
+ * are bound as plain timestamp params. They are supersets of the per-row
+ * windows (every `r` lies in [from, to)), and the per-row predicates stay in
+ * place, so the rows each detector reads — and its output — are unchanged;
+ * only the index range each probe walks shrinks, to the scan range plus the
+ * lookback. They are computed in JS, not as `$from::timestamp - interval` in
+ * SQL: a generic plan (postgres.js uses named prepared statements) would not
+ * constant-fold that expression, leaving a non-leakproof call again. The plan
+ * guard test plans with bound values, so it does not cover the generic case.
+ */
+
+/** `at` shifted by `ms`, as an ISO string for a `::timestamp` bind. */
+function shiftIso(at: Date, ms: number): string {
+  return new Date(at.getTime() + ms).toISOString();
+}
+
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Baseline window for r in [from, to): [r - BASELINE_LOOKBACK_HOURS,
+ * r - BASELINE_GAP_MINUTES) ⊆ [from - lookback, to - gap).
+ */
+function baselineScanBounds(from: Date, to: Date): { fromIso: string; toIso: string } {
+  return {
+    fromIso: shiftIso(from, -BASELINE_LOOKBACK_HOURS * HOUR_MS),
+    toIso: shiftIso(to, -BASELINE_GAP_MINUTES * MINUTE_MS),
+  };
+}
+
+/**
+ * Lower bounds only; the upper edges (`<= a.anchor_bucket_start`,
+ * `< r.window_start`) are bare column compares and already index conditions.
+ * Trend window for anchor a in [from, to): (a - span, a] with
+ * span = MIN_TREND_BUCKETS x RAW_BUCKET_SECONDS, so every window bucket is
+ * > from - span. Novelty window: [window_start - GROWTH_NOVELTY_LOOKBACK_DAYS,
+ * window_start) with window_start > from - span, so >= from - span - lookback.
+ */
+function growthScanBounds(from: Date): { windowFloorIso: string; noveltyFromIso: string } {
+  const trendSpanMs = MIN_TREND_BUCKETS * RAW_BUCKET_SECONDS * 1000;
+  return {
+    windowFloorIso: shiftIso(from, -trendSpanMs),
+    noveltyFromIso: shiftIso(from, -trendSpanMs - GROWTH_NOVELTY_LOOKBACK_DAYS * DAY_MS),
+  };
+}
+
 function anomalyUpsertAssignments(): SQL {
   return sql`
     observed_value = EXCLUDED.observed_value,
@@ -469,15 +529,21 @@ function readFallbackPairs(result: unknown): number {
   return Number.isFinite(pairs) && pairs > 0 ? pairs : 0;
 }
 
-async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<void> {
+/**
+ * The detection statement for `detectBaselineDeviations`. Exported so the
+ * integration suite can EXPLAIN the exact SQL the stage runs (#11559 plan
+ * guard); production code calls it only through the detector.
+ */
+export function buildBaselineDeviationsSql(options: MetricAnomalyRange): SQL {
   const { from, to } = normalizeRange(options.from, options.to);
   // bucket_start is timestamp-without-tz; bind ISO strings + ::timestamp so the
   // comparison stays in tz-free space (matches the rollup writer) and postgres.js
   // does not bind a raw Date as timestamptz.
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
+  const scan = baselineScanBounds(from, to);
 
-  const result = await db.execute(sql`
+  return sql`
     WITH recent AS (
       SELECT
         mr.org_id,
@@ -523,6 +589,10 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
        AND b.sample_count > 0
        AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
        AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
+       -- #11559: leakproof superset of the two lines above, so the probe's
+       -- index range is the scan range plus 24 h, not the whole partition.
+       AND b.bucket_start >= ${scan.fromIso}::timestamp
+       AND b.bucket_start < ${scan.toIso}::timestamp
       LEFT JOIN open_episode_buckets oeb
         ON oeb.device_id = b.device_id
        AND oeb.metric_name = b.metric_name
@@ -655,16 +725,22 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
     SELECT count(DISTINCT (c.device_id, c.metric_name))::integer AS "fallbackPairs"
     FROM chosen c
     WHERE c.used_fallback
-  `);
+  `;
+}
+
+async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<void> {
+  const result = await db.execute(buildBaselineDeviationsSql(options));
   recordBaselineFallback('baseline', readFallbackPairs(result));
 }
 
-async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
+/** The detection statement for `detectGrowthTrends` (exported for the #11559 plan guard). */
+export function buildGrowthTrendsSql(options: MetricAnomalyRange): SQL {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
+  const scan = growthScanBounds(from);
 
-  await db.execute(sql`
+  return sql`
     WITH anchors AS (
       -- Every raw bucket in [from, to) is a potential trend-window anchor (the
       -- window end). Evaluating per-anchor — like detectBaselineDeviations — means
@@ -717,6 +793,8 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
        AND w.sample_count > 0
        AND w.bucket_start > a.anchor_bucket_start - (${MIN_TREND_BUCKETS}::integer * ${RAW_BUCKET_SECONDS}::integer * interval '1 second')
        AND w.bucket_start <= a.anchor_bucket_start
+       -- #11559: leakproof superset of the lower bound above (see growthScanBounds).
+       AND w.bucket_start > ${scan.windowFloorIso}::timestamp
       GROUP BY
         a.org_id,
         a.device_id,
@@ -767,6 +845,8 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
             AND p.bucket_seconds = r.bucket_seconds
             AND p.bucket_start >= r.window_start - (${GROWTH_NOVELTY_LOOKBACK_DAYS}::integer * interval '1 day')
             AND p.bucket_start < r.window_start
+            -- #11559: leakproof superset of the 7-day lower bound above.
+            AND p.bucket_start >= ${scan.noveltyFromIso}::timestamp
             AND p.sample_count > 0
             AND p.avg_value >= r.last_value
         ))
@@ -828,15 +908,21 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
     ON CONFLICT (org_id, device_id, metric_name, anomaly_type, bucket_seconds, window_start)
     DO UPDATE SET ${anomalyUpsertAssignments()}
     WHERE metric_anomalies.status = 'open'
-  `);
+  `;
 }
 
-async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise<void> {
+async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
+  await db.execute(buildGrowthTrendsSql(options));
+}
+
+/** The detection statement for `detectProcessSampleRunaways` (exported for the #11559 plan guard). */
+export function buildProcessSampleRunawaysSql(options: MetricAnomalyRange): SQL {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
+  const scan = baselineScanBounds(from, to);
 
-  const result = await db.execute(sql`
+  return sql`
     WITH recent AS (
       SELECT
         mr.org_id,
@@ -892,6 +978,10 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
        AND b.sample_count > 0
        AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
        AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
+       -- #11559: leakproof superset of the two lines above, so the probe's
+       -- index range is the scan range plus 24 h, not the whole partition.
+       AND b.bucket_start >= ${scan.fromIso}::timestamp
+       AND b.bucket_start < ${scan.toIso}::timestamp
       LEFT JOIN open_episode_buckets oeb
         ON oeb.device_id = b.device_id
        AND oeb.metric_name = b.metric_name
@@ -1030,7 +1120,11 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
     SELECT count(DISTINCT (c.device_id, c.metric_name))::integer AS "fallbackPairs"
     FROM chosen c
     WHERE c.used_fallback
-  `);
+  `;
+}
+
+async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise<void> {
+  const result = await db.execute(buildProcessSampleRunawaysSql(options));
   recordBaselineFallback('process-runaway', readFallbackPairs(result));
 }
 

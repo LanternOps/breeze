@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "Impossible de résoudre l'outil distant configuré par le partenaire (erreur de configuration). Retour au bureau à distance intégré.",
       "emptyUrlTemplate": "L'outil distant configuré par le partenaire n'a aucun modèle d'URL défini. Retour au bureau à distance intégré.",
-      "missingIdentifier": "Cet appareil n’a pas l’identifiant requis par l’outil distant configuré par le partenaire (par exemple, l’ID d’homologue RustDesk). Retour au bureau à distance intégré. Définissez l’identifiant dans les paramètres de l’appareil → Champs personnalisés.",
+      "missingIdentifier": "Cet appareil n’a pas l’identifiant requis par l’outil distant configuré par le partenaire (par exemple, l’ID d’homologue RustDesk). Retour au bureau à distance intégré. Définissez l’identifiant dans l’onglet Détails de l’appareil → Champs personnalisés.",
       "providerDisabled": "L’outil distant configuré par le partenaire pour cet appareil est actuellement désactivé. Retour au bureau à distance intégré."
     },
     "launching": "Lancement...",

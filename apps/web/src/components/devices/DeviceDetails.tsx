@@ -1,12 +1,11 @@
 import TopologyEntry from '../topology/TopologyEntry';
-import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useReducer, useRef, useCallback, type ReactNode } from "react";
 import { useHashState } from "@/lib/useHashState";
 import { eventLogFilterFromHash, type EventLogFilter } from "@/lib/deviceEventLogLink";
 import { usePermissions } from "@/lib/permissions";
 import { ENABLE_ENDPOINT_MESSAGING } from "@/lib/featureFlags";
 import DeviceChatPanel from "../endpointMessages/DeviceChatPanel";
 import { fetchWithAuth } from "../../stores/auth";
-import { asList } from "@/lib/asList";
 import {
   Monitor,
   Container,
@@ -80,13 +79,12 @@ import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
-import DeviceWarrantyCard from "./DeviceWarrantyCard";
-import PhysicalPlacementCard from "./PhysicalPlacementCard";
-import AssetCircuitCard from "./AssetCircuitCard";
 import { EntityLink } from "@/components/shared/EntityLink";
 import WispTalkButton from "@/components/wisp/WispTalkButton";
-import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
+import DeviceHeaderFacts from "./DeviceHeaderFacts";
+import DeviceAssetRecord from "./DeviceAssetRecord";
+import { DEVICE_WARRANTY_SECTION_ID, revealDeviceTab } from "./revealDeviceTab";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
@@ -105,7 +103,6 @@ import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
-import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
 import ExtensionSlotHost, {
   useExtensionSlotDescriptors,
@@ -175,6 +172,9 @@ type DeviceDetailsProps = {
   workingOrgId?: string | null;
   /** Switch the working org to this device's org and stay on the record. */
   onSwitchToDeviceOrg?: () => void;
+  /** A field was saved in the Details tab; the page refetches the device in
+   *  place so the header reflects it. */
+  onDeviceUpdated?: () => void;
 };
 
 // Sub-line record links: foreground colour plus a quiet resting underline, so
@@ -322,86 +322,6 @@ function scriptExecutionIdFromHash(hash: string): string | undefined {
   return tab === "scripts" ? decodeScriptExecutionId(executionId) : undefined;
 }
 
-type LinkedNetworkAsset = { id: string; label: string };
-
-// Back-link to any discovered assets identity-linked to this device (#3261
-// Task 4). Renders nothing while loading or when there are zero matches —
-// most devices were never seen by network discovery, and a permanent empty
-// row would just be noise.
-function NetworkAssetRow({ deviceId, orgId }: { deviceId: string; orgId?: string }) {
-  const { t } = useTranslation("devices");
-  const [assets, setAssets] = useState<LinkedNetworkAsset[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setAssets(null);
-    // The endpoint 400s ("orgId is required") for partner/all-orgs sessions
-    // unless told which org owns the device.
-    const params = new URLSearchParams({ linkedDeviceId: deviceId });
-    if (orgId) params.set("orgId", orgId);
-    fetchWithAuth(`/discovery/assets?${params.toString()}`)
-      .then(async (res) => {
-        if (!res.ok) return [];
-        const data = await res.json();
-        const raw: any[] = asList(data, "assets");
-        return raw.map((a) => ({
-          id: a.id,
-          label: a.label || a.hostname || a.ipAddress || a.id,
-        }));
-      })
-      .catch(() => [])
-      .then((mapped) => {
-        if (!cancelled) setAssets(mapped);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId, orgId]);
-
-  if (!assets || assets.length === 0) return null;
-
-  if (assets.length === 1) {
-    const asset = assets[0]!;
-    return (
-      <div className="flex items-center justify-between gap-4 rounded-lg border bg-card px-5 py-3 text-sm">
-        <span className="text-muted-foreground">
-          {t("deviceDetails.networkAsset")}
-        </span>
-        <a
-          href={`/devices/network/${asset.id}`}
-          data-testid="device-network-asset-link"
-          className="font-medium text-primary hover:underline"
-        >
-          {asset.label}
-        </a>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="rounded-lg border bg-card px-5 py-3 text-sm"
-      data-testid="device-network-asset-list"
-    >
-      <p className="text-muted-foreground">
-        {t("deviceDetails.networkAssets")}
-      </p>
-      <ul className="mt-1 space-y-1">
-        {assets.map((asset) => (
-          <li key={asset.id}>
-            <a
-              href={`/devices/network/${asset.id}`}
-              className="font-medium text-primary hover:underline"
-            >
-              {asset.label}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** One cell of the Overview stat strip; an unknown value is muted so the eye
  *  lands on the stats that are actually there. */
 function HeaderStat({
@@ -446,6 +366,7 @@ export default function DeviceDetails({
   metricsSampledAt,
   workingOrgId,
   onSwitchToDeviceOrg,
+  onDeviceUpdated,
 }: DeviceDetailsProps) {
   // #9027: the record is in another org than the one the user is working in
   // (fleet view has no working org, so it never shows the cue).
@@ -509,6 +430,10 @@ export default function DeviceDetails({
     activityUserToggled.current = false;
     setActivityCollapsed(true);
   }, [device.id]);
+
+  // Placement and warranty are header facts whose records are edited on the
+  // Details tab; a save there bumps this so the header reloads them.
+  const [factsVersion, bumpFactsVersion] = useReducer((n: number) => n + 1, 0);
 
   const switchTab = (tab: Tab) => {
     window.location.hash = tab;
@@ -920,8 +845,8 @@ export default function DeviceDetails({
           capped at 70% so it wraps onto a second row instead of squeezing
           the title down to an ellipsis. */}
       <div className="rounded-lg border bg-card p-4 shadow-xs md:p-6">
-        <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
-          <div className="flex min-w-0 flex-1 items-start gap-4">
+        <div className="flex flex-col gap-4 2xl:flex-row 2xl:flex-wrap 2xl:items-start 2xl:justify-between">
+          <div className="order-1 flex min-w-0 flex-1 items-start gap-4">
             <div className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted md:flex">
               <Monitor className="h-7 w-7 text-muted-foreground" />
             </div>
@@ -1048,7 +973,26 @@ export default function DeviceDetails({
               )}
             </div>
           </div>
-          <div className="2xl:max-w-[70%] 2xl:shrink-0">
+          {/* Identity strip: model, serial, LAN IP, warranty, contact,
+              placement and linked network assets (see DeviceHeaderFacts for
+              the test a fact must pass to live here). A full-width line of
+              the header, not part of the title column, which is too narrow
+              beside the 2xl action cluster. Below 2xl it sits between the
+              title and the actions; at 2xl it wraps under both. Indented to
+              the title text (icon 3.5rem + gap 1rem) from md. */}
+          <div className="order-2 -mt-2 empty:hidden md:pl-[4.5rem] 2xl:order-3 2xl:mt-0 2xl:basis-full">
+            <DeviceHeaderFacts
+              device={device}
+              factsVersion={factsVersion}
+              onOpenTab={(tab) => {
+                // Its only link is "Warranty details": land on that section,
+                // also when the Details tab is already open.
+                switchTab(tab);
+                revealDeviceTab(tab, DEVICE_WARRANTY_SECTION_ID);
+              }}
+            />
+          </div>
+          <div className="order-3 2xl:order-2 2xl:max-w-[70%] 2xl:shrink-0">
             <DeviceActions
               device={device}
               onAction={onAction}
@@ -1078,10 +1022,15 @@ export default function DeviceDetails({
 
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-          <div className="min-w-0 flex-1 space-y-6">
+          <div data-testid="device-overview-main" className="min-w-0 flex-1 space-y-6">
             {/* #9029: blocks run in triage order — (1) state + what is open,
-                (2) health, (3) the performance chart, (4) contacts / warranty
-                / billing. Empty cards collapse to one line with a next step. */}
+                (2) health, (3) reliability, (4) the performance chart — and
+                Overview ENDS there. Contacts, warranty and placement surface
+                as header facts (DeviceHeaderFacts). Full records are on the
+                Details tab: warranty in DeviceInfoTab's "Warranty & purchase"
+                section; contacts, placement and billing in DeviceAssetRecord.
+                WAN/circuit is on Hardware.
+                DeviceDetails.overviewOrder.test.tsx holds the allowlist. */}
             <DeviceOverviewState
               deviceId={device.id}
               status={device.status}
@@ -1144,22 +1093,6 @@ export default function DeviceDetails({
               compact
               offlineSince={device.status === "offline" ? device.lastSeen : undefined}
             />
-
-            <ContactResponsibilitiesCard
-              orgId={device.orgId}
-              siteId={device.siteId}
-              deviceId={device.id}
-              assignHref={device.orgId ? `/organizations/${device.orgId}#contacts` : undefined}
-            />
-
-            <DeviceWarrantyCard deviceId={device.id} compact />
-
-            <PhysicalPlacementCard subject="device" id={device.id} />
-            <AssetCircuitCard subject="device" id={device.id} />
-
-            <DeviceBillingCard deviceId={device.id} />
-
-            <NetworkAssetRow deviceId={device.id} orgId={device.orgId || undefined} />
           </div>
 
           {/* #9030: the rail collapses instantly — animating `width` reflowed
@@ -1183,7 +1116,12 @@ export default function DeviceDetails({
         </div>
       )}
 
-      {activeTab === "details" && <DeviceInfoTab deviceId={device.id} />}
+      {activeTab === "details" && (
+        <div className="space-y-8">
+          <DeviceInfoTab deviceId={device.id} onSaved={onDeviceUpdated} onWarrantyChanged={bumpFactsVersion} />
+          <DeviceAssetRecord device={device} onPlacementSaved={bumpFactsVersion} />
+        </div>
+      )}
 
       {activeTab === "linked-profiles" && (
         <DeviceLinkedProfilesTab deviceId={device.id} />

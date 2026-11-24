@@ -481,7 +481,7 @@ On `PATCH`, an explicit `null` clears a field and an omitted key leaves it alone
 
 ### Responsible contacts
 
-A site's **Details** tab and a device's **Overview** tab show a read-only **Responsible contacts** card: for each contact role (Billing, Technical, Escalation, Administration, Local contact, After hours, Portal), who to call about this site or device. Each role shows its contacts with title, email and phone, a **Primary** marker, and the level the answer came from -- **Device group**, **This site**, or **Entire organization**.
+A site's **Details** tab and a device's **Details** tab (in its **Asset record** section) show a read-only **Responsible contacts** card: for each contact role (Billing, Technical, Escalation, Administration, Local contact, After hours, Portal), who to call about this site or device. Each role shows its contacts with title, email and phone, a **Primary** marker, and the level the answer came from -- **Device group**, **This site**, or **Entire organization**.
 
 The most specific assignment wins: a device group the device belongs to, then the device's site, then the organization. Roles with no one assigned at any level are left out, and the card says so when no role has anyone. Contacts and their roles are still managed on the organization's contacts; the card does not edit them.
 

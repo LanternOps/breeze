@@ -160,7 +160,7 @@
       "unexpectedAlert": "Beklenmeyen izinler algılandı",
       "unknownPermission": "Bilinmeyen izin (rol {{appRoleId}})",
       "grantsVerifiedAt": "İzinler doğrulandı",
-      "graphTokenOnly": "Graph izinleri doğrulandı. Diğer Microsoft kaynaklarındaki izinler denetlenmedi; tam denetim için Application.Read.All izni verin."
+      "graphTokenOnly": "Graph izinleri doğrulandı. Diğer Microsoft kaynaklarındaki izinler denetlenemedi. Bunu düzeltmek için ek izin vermeyin: gerekli kümenin dışındaki her izin beklenmeyen olarak bildirilir."
     },
     "actions": {
       "connect": "Bağlan",

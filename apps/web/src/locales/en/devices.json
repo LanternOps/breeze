@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Send a Wake-on-LAN packet via an online peer agent on the device's LAN",
     "power": "Power",
     "shutdown": "Shutdown",
-    "deviceSettings": "Device Settings",
+    "editDetails": "Edit details",
     "installHomebrew": "Install Homebrew",
     "restartAgent": "Restart agent",
     "runVendorUpdates": "Run vendor updates",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Remote Terminal",
     "runScript": "Run Script",
     "reboot": "Reboot",
-    "settings": "Settings",
+    "editDetails": "Edit details",
     "restore": "Restore",
     "decommission": "Remove",
     "permanentlyDelete": "Delete permanently",
@@ -886,6 +886,7 @@
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
+    "refreshAfterEditFailed": "Saved, but this page couldn't refresh. Reload to see the change everywhere.",
     "movedToOrg": "{{hostname}} moved to {{orgName}}",
     "online": "online",
     "offline": "offline",
@@ -1619,7 +1620,21 @@
     "customFields": "Custom Fields",
     "text2": "*",
     "edit": "Edit",
-    "roleNotAssessed": "Role not assessed yet"
+    "roleNotAssessed": "Role not assessed yet",
+    "noTags": "No tags",
+    "editTags": "Edit tags",
+    "addTag": "Add a tag",
+    "removeTag": "Remove tag {{tag}}",
+    "tagsSaved": "Tags saved",
+    "tagsSaveFailed": "Failed to save tags",
+    "purchaseDate": "Purchase date",
+    "editPurchaseDate": "Edit purchase date",
+    "purchaseDateNotSet": "Not set",
+    "purchaseDateFromVendor": "From manufacturer",
+    "purchaseDateSaved": "Purchase date saved",
+    "purchaseDateSaveFailed": "Failed to save purchase date",
+    "purchaseDateHelp": "Used by the Hardware Lifecycle report to plan replacement.",
+    "purchaseDateVendorHint": "Set from the manufacturer’s ship date. Enter a date to override it."
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1845,7 +1860,7 @@
     "reboot": "Reboot",
     "sendAWakeOnLanPacket": "Send a Wake-on-LAN packet via an online peer agent on the device's LAN",
     "wake": "Wake",
-    "settings": "Settings",
+    "editDetails": "Edit details",
     "enterMaintenance": "Enter Maintenance",
     "exitMaintenance": "Exit Maintenance",
     "restore": "Restore",
@@ -2500,31 +2515,6 @@
     "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
     "scanAlreadyQueued": "A scan is already queued for this device."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Add a tag...",
-    "dangerZone": "Danger Zone",
-    "decommissionDevice": "Remove Device",
-    "decommissionWarning": "Removing takes this device out of your active fleet. History is kept and you can restore it later.",
-    "decommissionedDescription": "This device has been removed. You can restore it or delete it permanently.",
-    "decommissionedTitle": "Removed Device",
-    "displayName": "Display Name",
-    "errors": {
-      "loadSites": "Failed to load sites",
-      "saveSettings": "Failed to save settings",
-      "siteChanged": "This device was moved by someone else — reload to see its current site"
-    },
-    "hostname": "Hostname: {{hostname}}",
-    "saved": "Device settings saved",
-    "permanentlyDelete": "Delete permanently",
-    "restoreDevice": "Restore Device",
-    "saveChanges": "Save Changes",
-    "site": "Site",
-    "tags": "Tags",
-    "title": "Device Settings",
-    "purchaseDate": "Purchase date",
-    "purchaseDateHelp": "Used by the Hardware Lifecycle report to plan replacement.",
-    "purchaseDateVendorHint": "Set from the manufacturer’s ship date. Enter a date to override it."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Uninstall",
@@ -2659,7 +2649,6 @@
     "compactTitle": "Warranty",
     "endDate": "End Date",
     "error": "Error: {{error}}",
-    "expires": "Expires",
     "lastChecked": "Last checked: {{time}}",
     "loadFailed": "Couldn't load warranty.",
     "lookupUnavailable": "Warranty lookup not available for this manufacturer",
@@ -2700,7 +2689,11 @@
       "import": "Imported",
       "importVendorEarlier": "Imported (vendor reports earlier end date)",
       "provider": "Vendor API"
-    }
+    },
+    "sectionTitle": "Warranty & purchase",
+    "coverage": "Coverage",
+    "coverageStarts": "Coverage starts",
+    "coverageEnds": "Coverage ends"
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",
@@ -5208,5 +5201,27 @@
       "invalid_target_version": "The existing record’s version is missing. Open the reattach again."
     },
     "stepUpHeld": "Your verification is still valid for this reattach."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Device facts",
+    "serial": "Serial number",
+    "serialShort": "SN",
+    "lanIp": "LAN IP",
+    "warranty": {
+      "active": "Warranty to {{date}}",
+      "expiring": "Warranty ends {{date}}",
+      "expired": "Warranty expired {{date}}"
+    },
+    "warrantyStatus": "Warranty: {{status}}",
+    "warrantyDetails": "Warranty details",
+    "manageContacts": "Manage contacts",
+    "more": "{{count}} more",
+    "showLess": "Show less",
+    "call": "Call {{name}}",
+    "loadFailed": "Some details didn't load"
+  },
+  "deviceAssetRecord": {
+    "title": "Asset record",
+    "description": "Who to contact, where it sits, and who pays for it."
   }
 }

@@ -41,7 +41,6 @@ vi.mock('./DeviceDetails', () => ({
     <button type="button" data-testid="kebab-move-org" onClick={() => onAction('move-org', device)}>Move</button>
   ),
 }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 vi.mock('./MaintenanceModeDialog', () => ({ default: () => null }));

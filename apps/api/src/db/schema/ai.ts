@@ -237,7 +237,7 @@ export const aiToolExecutions = pgTable('ai_tool_executions', {
 // Session-keyed FK child of ai_sessions with no org_id (parent-FK-join RLS,
 // registered in PARENT_FK_JOIN_POLICY_TABLES); deliberately absent from the
 // org cascade / merge / export registries, like ai_tool_executions. Migration:
-// 2027-01-30-110000-ai-tool-search-events.sql.
+// 2027-01-30-140000-ai-tool-search-events.sql.
 
 export const aiToolSearchEvents = pgTable('ai_tool_search_events', {
   id: uuid('id').primaryKey().defaultRandom(),

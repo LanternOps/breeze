@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { getM365PermissionProfile } from '@breeze/shared/m365';
 import type { OpaqueAccessToken } from './tokenClient';
 import {
   GraphClientError,
   createMicrosoftGraphClient,
 } from './graphClient';
+import { reconcileCustomerGraphActions } from './reconcile';
 
 const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const APPLICATION_ID = '22222222-2222-4222-8222-222222222222';
@@ -182,7 +184,10 @@ describe('MicrosoftGraphClient', () => {
     assertComplete();
   });
 
-  it('names the resource lookup when the resource service principal read is denied', async () => {
+  it('names the cross-check when the resource service principal read is denied and the token is unreadable', async () => {
+    // #12085: a denied resource lookup goes to the manifest-id/token
+    // cross-check; an opaque (non-JWT) token cannot be cross-checked, so
+    // reconciliation stays unavailable. No provider text reaches the result.
     const expected = routes();
     expected[3] = {
       ...expected[3]!,
@@ -193,7 +198,11 @@ describe('MicrosoftGraphClient', () => {
     const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
 
     expect(result.observedGrants).toBeNull();
-    expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code: 'graph_permission_missing' });
+    expect(result.grantReconciliationFailure).toEqual({
+      stage: 'resource_crosscheck',
+      code: 'graph_token_claims_invalid',
+    });
+    expect(JSON.stringify(result)).not.toContain('secret detail');
     assertComplete();
   });
 
@@ -615,15 +624,218 @@ describe('grant reconciliation fallback to the Graph token roles claim', () => {
     assertComplete();
   });
 
-  it('never falls back when the resource lookup (not the assignment read) is denied', async () => {
-    const accessToken = jwt(VALID_CLAIMS);
-    const expected = routes();
-    expected[3] = { ...expected[3]!, response: denied() };
-    const { graph } = tokenClient(expected, accessToken);
-    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
-    expect(result.observedGrants).toBeNull();
-    expect(result).not.toHaveProperty('graphTokenRoles');
-    expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code: 'graph_permission_missing' });
+  // #12085 (0.130.0 follow-up): the assignments read succeeded, Graph refused
+  // the Microsoft Graph service principal's role-list read. The executor
+  // resolves the role ids from the manifest's fixed Graph app-role ids and
+  // requires the token's roles claim to agree exactly. Anything it cannot
+  // match stays unavailable.
+  describe('resource lookup denied: manifest role ids cross-checked against the token', () => {
+    const USER_READWRITE_ID = '741f803b-c850-494e-b5df-cde7c675a1ca';
+    const ORGANIZATION_READ_ID = '498476ce-e0fe-48b0-b801-37ba7e2685c6';
+
+    function resourceDeniedRoutes(
+      assignments: Array<{ appRoleId: string; resourceId: string }>,
+      resourceResponse: Response = denied(),
+    ): Route[] {
+      const expected = routes({ assignments: { value: assignments } });
+      expected[3] = { ...expected[3]!, response: resourceResponse };
+      return expected;
+    }
+
+    const manifestAssignments = [
+      { appRoleId: USER_READWRITE_ID, resourceId: RESOURCE_SP_ID },
+      { appRoleId: ORGANIZATION_READ_ID, resourceId: RESOURCE_SP_ID },
+    ];
+
+    it('returns the inventory with manifest role names when ids and token roles agree', async () => {
+      const accessToken = jwt(VALID_CLAIMS);
+      const { graph, fetch, assertComplete } = tokenClient(resourceDeniedRoutes(manifestAssignments), accessToken);
+
+      await expect(graph.probeTenant({ tenantId: TENANT_ID, accessToken })).resolves.toEqual({
+        tenantId: TENANT_ID,
+        applicationId: APPLICATION_ID,
+        organizationDisplayName: 'Contoso Ltd',
+        observedGrants: [
+          { resourceApplicationId: GRAPH_APPLICATION_ID, appRoleId: ORGANIZATION_READ_ID, value: 'Organization.Read.All' },
+          { resourceApplicationId: GRAPH_APPLICATION_ID, appRoleId: USER_READWRITE_ID, value: 'User.ReadWrite.All' },
+        ],
+        resourceRolesFromManifest: true,
+      });
+      expect(fetch).toHaveBeenCalledTimes(4);
+      assertComplete();
+    });
+
+    it('reconciles the full manifest to active in exact mode', async () => {
+      const required = getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!;
+      const accessToken = jwt({ ...VALID_CLAIMS, roles: required.map((grant) => grant.value) });
+      const { graph } = tokenClient(
+        resourceDeniedRoutes(required.map((grant) => ({ appRoleId: grant.appRoleId, resourceId: RESOURCE_SP_ID }))),
+        accessToken,
+      );
+      const reconciled = reconcileCustomerGraphActions(await graph.probeTenant({ tenantId: TENANT_ID, accessToken }));
+      expect(reconciled).toMatchObject({
+        outcome: 'active',
+        grantReconciliation: 'complete',
+        grantReconciliationMode: 'exact',
+        missingGrants: [],
+        unexpectedGrants: [],
+      });
+    });
+
+    it('reconciles a manifest subset that the token confirms to missing, not active', async () => {
+      const accessToken = jwt(VALID_CLAIMS);
+      const { graph } = tokenClient(resourceDeniedRoutes(manifestAssignments), accessToken);
+      const reconciled = reconcileCustomerGraphActions(await graph.probeTenant({ tenantId: TENANT_ID, accessToken }));
+      expect(reconciled).toMatchObject({ outcome: 'missing', grantReconciliationMode: 'exact' });
+    });
+
+    it('is unavailable when an assigned role id is not one of the manifest Graph role ids', async () => {
+      // ROLE_ID is Application.Read.All: a real Graph role, but not in the
+      // Admin actions manifest, so its name cannot be resolved without the
+      // refused read — even though the token names it.
+      const accessToken = jwt({ ...VALID_CLAIMS, roles: [...VALID_CLAIMS.roles, 'Application.Read.All'] });
+      const { graph } = tokenClient(
+        resourceDeniedRoutes([...manifestAssignments, { appRoleId: ROLE_ID, resourceId: RESOURCE_SP_ID }]),
+        accessToken,
+      );
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result).not.toHaveProperty('graphTokenRoles');
+      expect(result).not.toHaveProperty('resourceRolesFromManifest');
+      expect(result.grantReconciliationFailure).toEqual({ stage: 'resource_crosscheck', code: 'grant_role_unknown' });
+    });
+
+    it.each([
+      ['carries an extra Graph role', ['User.ReadWrite.All', 'Organization.Read.All', 'User.Read.All']],
+      ['lacks an assigned role', ['User.ReadWrite.All']],
+      ['names a different role', ['User.ReadWrite.All', 'MailboxSettings.ReadWrite']],
+      ['carries an empty roles claim', []],
+    ])('is unavailable when the token %s', async (_label, roles) => {
+      const accessToken = jwt({ ...VALID_CLAIMS, roles });
+      const { graph } = tokenClient(resourceDeniedRoutes(manifestAssignments), accessToken);
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result).not.toHaveProperty('resourceRolesFromManifest');
+      expect(result.grantReconciliationFailure).toEqual({
+        stage: 'resource_crosscheck',
+        code: 'graph_token_roles_mismatch',
+      });
+    });
+
+    it('is unavailable when the token has no roles claim at all', async () => {
+      const { roles: _roles, ...withoutRoles } = VALID_CLAIMS;
+      const accessToken = jwt(withoutRoles);
+      const { graph } = tokenClient(resourceDeniedRoutes(manifestAssignments), accessToken);
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result.grantReconciliationFailure).toEqual({
+        stage: 'resource_crosscheck',
+        code: 'graph_token_roles_mismatch',
+      });
+    });
+
+    it.each([
+      ['audience', { aud: 'https://outlook.office365.com' }],
+      ['tenant', { tid: '66666666-6666-4666-8666-666666666666' }],
+      ['client', { appid: '88888888-8888-4888-8888-888888888888' }],
+      ['expiry', { exp: NOW_SECONDS - 1 }],
+      ['delegated scope', { scp: 'User.Read' }],
+    ])('is unavailable when the token %s claim does not match', async (_label, override) => {
+      const accessToken = jwt({ ...VALID_CLAIMS, ...override });
+      const { graph } = tokenClient(resourceDeniedRoutes(manifestAssignments), accessToken);
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result.grantReconciliationFailure).toEqual({
+        stage: 'resource_crosscheck',
+        code: 'graph_token_claims_invalid',
+      });
+    });
+
+    it('is unavailable, without reading the second resource, when grants span two resources', async () => {
+      // A second resource is an assignment the exact check would flag. Without
+      // the role-list read it cannot be named, so it is never matched.
+      const accessToken = jwt(VALID_CLAIMS);
+      const expected = resourceDeniedRoutes([
+        ...manifestAssignments,
+        { appRoleId: SECOND_ROLE_ID, resourceId: SECOND_RESOURCE_SP_ID },
+      ]);
+      const { graph, fetch, assertComplete } = tokenClient(expected, accessToken);
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result.grantReconciliationFailure).toEqual({
+        stage: 'resource_crosscheck',
+        code: 'grant_resource_unresolved',
+      });
+      expect(fetch).toHaveBeenCalledTimes(4);
+      assertComplete();
+    });
+
+    it('stays unavailable when a later resource read is denied after an earlier one was readable', async () => {
+      const accessToken = jwt(VALID_CLAIMS);
+      const expected: Route[] = [
+        ...routes({
+          assignments: {
+            value: [
+              { appRoleId: ROLE_ID, resourceId: RESOURCE_SP_ID },
+              { appRoleId: SECOND_ROLE_ID, resourceId: SECOND_RESOURCE_SP_ID },
+            ],
+          },
+        }),
+        { path: `/v1.0/servicePrincipals/${SECOND_RESOURCE_SP_ID}`, response: denied() },
+      ];
+      const { graph, assertComplete } = tokenClient(expected, accessToken);
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code: 'graph_permission_missing' });
+      assertComplete();
+    });
+
+    it.each([
+      ['a 500', () => new Response('', { status: 500 }), 'graph_provider_rejected'],
+      ['a 429', () => new Response('', { status: 429, headers: { 'retry-after': '5' } }), 'graph_throttled'],
+      ['a 401', () => new Response('', { status: 401 }), 'graph_provider_rejected'],
+      ['a 404', () => new Response('', { status: 404 }), 'graph_not_found'],
+      ['a license 403', () => new Response(
+        JSON.stringify({ error: { code: 'Authentication_RequestFromNonPremiumTenantOrB2CTenant' } }),
+        { status: 403 },
+      ), 'graph_license_required'],
+    ])('never cross-checks on %s from the resource read: reconciliation stays unavailable', async (_label, response, code) => {
+      const accessToken = jwt(VALID_CLAIMS);
+      const { graph } = tokenClient(resourceDeniedRoutes(manifestAssignments, response()), accessToken);
+      const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(result.observedGrants).toBeNull();
+      expect(result).not.toHaveProperty('resourceRolesFromManifest');
+      expect(result.grantReconciliationFailure).toEqual({ stage: 'resource', code });
+    });
+
+    it('still reports a hand-granted Application.Read.All as drift (the resource read then succeeds)', async () => {
+      const required = getM365PermissionProfile('customer-graph-actions').applicationPermissionAssignments!;
+      const accessToken = jwt(VALID_CLAIMS);
+      const assignments = [...required.map((grant) => grant.appRoleId), ROLE_ID]
+        .map((appRoleId) => ({ appRoleId, resourceId: RESOURCE_SP_ID }));
+      const { graph } = tokenClient(routes({
+        assignments: { value: assignments },
+        resource: {
+          appId: GRAPH_APPLICATION_ID,
+          appRoles: [
+            ...required.map((grant) => ({ id: grant.appRoleId, value: grant.value })),
+            { id: ROLE_ID, value: 'Application.Read.All' },
+          ],
+        },
+      }), accessToken);
+      const observation = await graph.probeTenant({ tenantId: TENANT_ID, accessToken });
+      expect(observation).not.toHaveProperty('resourceRolesFromManifest');
+      expect(reconcileCustomerGraphActions(observation)).toMatchObject({
+        outcome: 'unexpected',
+        grantReconciliationMode: 'exact',
+        missingGrants: [],
+        unexpectedGrants: [{
+          resourceApplicationId: GRAPH_APPLICATION_ID,
+          appRoleId: ROLE_ID,
+          value: 'Application.Read.All',
+        }],
+      });
+    });
   });
 
   it.each([
