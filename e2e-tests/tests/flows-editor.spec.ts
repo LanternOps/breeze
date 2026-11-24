@@ -206,7 +206,6 @@ test.describe('Flows editor', () => {
     await settleSession(page);
 
     const token = await readAccessToken(page);
-    await settleSession(page);
     const list = await apiJson<{ data?: Array<{ id: string }> }>(
       page.request, token, 'get', '/api/v1/automations?limit=1',
     );
