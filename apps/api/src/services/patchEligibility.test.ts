@@ -705,6 +705,36 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     expect(loadPolicyLocalPatchConfig).toHaveBeenCalledWith('cp-1');
   });
 
+  // The live path stripped a rule's autoApproveUnrated exactly as the job
+  // snapshot did; the Patches tab and the AI plan must agree with the job.
+  it.each([
+    ['true', { autoApproveUnrated: true }, [P1, P2]],
+    ['false', { autoApproveUnrated: false }, []],
+    ['absent', {}, []],
+    ['malformed', { autoApproveUnrated: 'true' }, []],
+  ])('category rule autoApproveUnrated %s decides unrated patches (#12626)', async (_label, flag, expected) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockDevice(true);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal({
+      ring: {
+        classification: 'valid_ring', valid: true, ringId: RING, ringName: 'Ring A',
+        categoryRules: [{ category: 'driver', autoApprove: true, autoApproveSeverities: ['critical'], ...flag }],
+        categories: [], excludeCategories: [], autoApprove: {},
+      },
+    }) as never);
+    mockRingRow(0);
+    mockEvaluatorReads([
+      row({ patchId: P1, category: 'driver', severity: 'unknown' }),
+      row({ patchId: P2, category: 'driver', severity: null }),
+      row({ patchId: P3, category: 'driver', severity: 'low' }),
+    ], []);
+    const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
+    expect(res.eligible.map((e) => e.patchId)).toEqual(expected);
+    expect(res.ineligible).toContainEqual({ patchId: P3, reason: 'awaiting_manual_approval' });
+    warn.mockRestore();
+  });
+
   it('with no patch policy at all, only a manual partner-wide approval can admit a patch', async () => {
     mockDevice(true);
     vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null);

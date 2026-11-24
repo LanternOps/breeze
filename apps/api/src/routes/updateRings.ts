@@ -132,7 +132,7 @@ const listRingsSchema = z.object({
   partnerId: z.string().guid().optional(),
 });
 
-const categoryRuleSchema = z.object({
+export const categoryRuleSchema = z.object({
   category: z.string().max(100).refine((c) => c.trim().toLowerCase() !== 'third_party_app', {
     message: "The 'third_party_app' category rule was replaced by autoApprove.thirdPartyApps on the ring.",
   }),

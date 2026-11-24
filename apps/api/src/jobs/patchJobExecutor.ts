@@ -58,11 +58,15 @@ import { attachWorkerObservability } from './workerObservability';
 // Strict shape for one patches.categoryRules entry as stored in the job JSONB.
 // Matches the evaluator's CategoryRule: severityFilter is the legacy stored
 // alias for autoApproveSeverities (pre-2026-08 snapshots), both read-only here.
-const jobCategoryRuleSchema = z.object({
+// zod strips undeclared keys, so a field missing here is silently off in jobs
+// (#12626); patchJobExecutor.categoryRules.test.ts guards the field list.
+export const jobCategoryRuleSchema = z.object({
   category: z.string().min(1),
   autoApprove: z.boolean(),
   autoApproveSeverities: z.array(z.string()).optional(),
   severityFilter: z.array(z.string()).optional(),
+  // A present non-boolean fails the parse, and the caller turns the rule into a deny.
+  autoApproveUnrated: z.boolean().optional(),
   deferralDaysOverride: z.number().int().min(0).nullable().optional(),
 });
 
