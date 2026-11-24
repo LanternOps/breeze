@@ -33,9 +33,7 @@ func (s *Session) startStreaming() {
 			_ = enc.ForceKeyframe()
 		}
 
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.runLoop("capture loop", func() {
 			// Local recover keeps the existing slog-with-stack diagnostic
 			// (captureLoop panics historically include native-side detail
 			// worth keeping inline) AND surfaces the event to Sentry via
@@ -58,27 +56,21 @@ func (s *Session) startStreaming() {
 				}
 			}()
 			s.captureLoop()
-		}()
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		})
+		s.runLoop("metrics logger", func() {
 			defer observability.Recoverer("desktop.metricsLogger")
 			s.metricsLogger()
-		}()
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		})
+		s.runLoop("adaptive loop", func() {
 			defer observability.Recoverer("desktop.adaptiveLoop")
 			s.adaptiveLoop()
-		}()
+		})
 		if s.cursorDC != nil {
 			if cp, ok := s.capturer.(CursorProvider); ok {
-				s.wg.Add(1)
-				go func() {
-					defer s.wg.Done()
+				s.runLoop("cursor stream", func() {
 					defer observability.Recoverer("desktop.cursorStreamLoop")
 					s.cursorStreamLoop(cp)
-				}()
+				})
 			}
 		}
 
@@ -119,11 +111,7 @@ func (s *Session) startStreaming() {
 		// window without IOHIDSystem). Send asynchronously because the control
 		// data channel may not be open yet at startStreaming time.
 		if !s.inputHandler.InputAvailable() {
-			s.wg.Add(1)
-			go func() {
-				defer s.wg.Done()
-				s.sendInputStatus()
-			}()
+			s.runLoop("input status", s.sendInputStatus)
 		}
 	})
 }

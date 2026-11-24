@@ -147,6 +147,9 @@ func desktopNameErr(hDesk uintptr) (string, error) {
 //
 // Returns true if a desktop switch was detected and capture was reconfigured.
 func (c *dxgiCapturer) checkDesktopSwitch() bool {
+	if c.closed {
+		return false
+	}
 	// Desktop attachment must be stable across calls in this loop.
 	c.pinCaptureThreadLocked()
 
@@ -225,11 +228,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 				"desktop", inputName)
 		} else if !onSecure && c.gdiFallback != nil {
 			// Recover DXGI if we're back on Default but still in fallback mode.
-			c.closeGDIFallbackLocked()
-			if err := c.initDXGI(); err != nil {
-				slog.Warn("DXGI reinit failed while leaving fallback mode", "error", err.Error())
-				c.switchToGDI()
-			}
+			c.tryLeaveGDIFallbackLocked(now)
 		}
 		if onSecure != wasSecure {
 			c.desktopSwitchFlag.Store(true)
@@ -252,6 +251,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 
 	slog.Info("Desktop change detected",
 		"from", currentName, "to", inputName)
+	c.dxgiRetry.reset() // whatever failed before, this desktop is tried afresh
 
 	// Release current capture resources
 	c.releaseDXGI()
@@ -313,6 +313,38 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.gdiNoFrameCount = 0
 	}
 	return true
+}
+
+// tryLeaveGDIFallbackLocked re-initialises DXGI while the GDI fallback keeps
+// delivering frames, and drops the fallback only once DXGI works: closing it
+// first stopped and rebuilt its capture thread on every failed attempt.
+// Attempts are paced and logged by c.dxgiRetry (#12624). Caller holds c.mu.
+func (c *dxgiCapturer) tryLeaveGDIFallbackLocked(now time.Time) {
+	gen := captureHealth.releaseGeneration()
+	if !c.dxgiRetry.due(now, gen) {
+		return
+	}
+	if err := c.initDXGI(); err != nil {
+		warn := c.dxgiRetry.failed(now, gen)
+		if c.lastDuplication != duplicationOK {
+			captureHealth.noteDuplicationFailed(c, c.config.DisplayIndex, c.lastDuplication, c.dxgiRetry.failures)
+		}
+		if warn {
+			slog.Warn("DXGI reinit keeps failing while leaving fallback mode; staying on GDI and retrying less often",
+				"error", err.Error(), "failures", c.dxgiRetry.failures, "display", c.config.DisplayIndex,
+				"nextRetry", dxgiRetryDelay(c.dxgiRetry.failures).String())
+		} else {
+			slog.Debug("DXGI reinit failed while leaving fallback mode",
+				"error", err.Error(), "failures", c.dxgiRetry.failures)
+		}
+		return
+	}
+	c.closeGDIFallbackLocked()
+	if n := c.dxgiRetry.reset(); n > 0 {
+		slog.Info("DXGI capture recovered from GDI fallback", "display", c.config.DisplayIndex, "failedAttempts", n)
+	}
+	// The D3D11 device is new: the session must rebind the encoder to it.
+	c.desktopSwitchFlag.Store(true)
 }
 
 func (c *dxgiCapturer) switchToGDI() {
@@ -382,8 +414,16 @@ func (c *dxgiCapturer) logDesktopCheckSkip(reason string) {
 //
 // MUST be called from the pinned capture goroutine: it relies on the OS
 // thread already being locked and desktop-attached (e.g. by the watchdog
-// calling switchThreadToInputDesktop before this method).
+// calling switchThreadToInputDesktop before this method). It takes c.mu: a
+// screenshot may be capturing on another thread, and two unlocked initDXGI
+// calls can leave a duplication nothing releases (#12624).
 func (c *dxgiCapturer) ForceReattach() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.dxgiRetry.reset()
 	c.releaseDXGI()
 	c.closeGDIFallbackLocked()
 	c.gdiNoFrameCount = 0

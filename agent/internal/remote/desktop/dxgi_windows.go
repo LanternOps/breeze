@@ -57,6 +57,7 @@ const (
 	uoiName = 2
 
 	// DXGI/D3D11 COM vtable indices
+	vtblRelease                = 2   // IUnknown
 	dxgiDeviceGetAdapter       = 7   // IDXGIDevice (after IUnknown+IDXGIObject)
 	dxgiAdapterEnumOutputs     = 7   // IDXGIAdapter
 	dxgiOutput1DuplicateOutput = 22  // IDXGIOutput1
@@ -166,6 +167,15 @@ type dxgiCapturer struct {
 	texHeight int
 	rotation  uint32 // DXGI_MODE_ROTATION (0=unspecified, 1=identity, 2=90, 3=180, 4=270)
 	inited    bool
+	// closed is set by Close and never cleared: a capturer that is called
+	// again after its session ended (a screenshot that borrowed it) must not
+	// create a duplication nothing would release (#12624). Guarded by mu.
+	closed bool
+
+	// What the last initDXGI said about DuplicateOutput, and the pacing of
+	// attempts to leave the GDI fallback. Guarded by mu.
+	lastDuplication duplicationErrorClass
+	dxgiRetry       dxgiRetry
 
 	// True when CaptureTexture has an in-flight AcquireNextFrame that hasn't been released yet.
 	textureFrameAcquired bool
@@ -254,7 +264,17 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	return c, nil
 }
 
+// initDXGI creates the device, the duplication and the textures. On failure
+// nothing is held. Caller holds c.mu (or is the constructor).
 func (c *dxgiCapturer) initDXGI() error {
+	c.lastDuplication = duplicationOK
+	if c.closed {
+		return fmt.Errorf("DXGI capturer is closed")
+	}
+	// Overwriting a live duplication would leak it, and DuplicateOutput would
+	// then fail against this capturer's own leftover.
+	c.releaseDXGI()
+
 	// D3D11CreateDevice
 	var device, context uintptr
 	featureLevel := uint32(d3dFeatureLevel11_0)
@@ -343,11 +363,12 @@ func (c *dxgiCapturer) initDXGI() error {
 
 	// DuplicateOutput
 	var duplication uintptr
-	_, err = comCall(output1, dxgiOutput1DuplicateOutput,
+	dupHR, err := comCall(output1, dxgiOutput1DuplicateOutput,
 		device,
 		uintptr(unsafe.Pointer(&duplication)),
 	)
 	if err != nil {
+		c.lastDuplication = classifyDuplicateOutput(uint32(dupHR))
 		comRelease(context)
 		comRelease(device)
 		return fmt.Errorf("IDXGIOutput1::DuplicateOutput: %w", err)
@@ -454,6 +475,7 @@ func (c *dxgiCapturer) initDXGI() error {
 	c.device = device
 	c.context = context
 	c.duplication = duplication
+	captureHealth.noteDuplicated(c, c.config.DisplayIndex)
 	c.staging = staging
 	c.gpuTexture = gpuTexture
 	c.texWidth = texW
@@ -483,19 +505,22 @@ func (c *dxgiCapturer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.gdiFallback != nil {
-		c.closeDesktopHandle()
-		return c.gdiFallback.Close()
-	}
+	c.closed = true
+	// Both backends, always: closing only the GDI fallback when it is set left
+	// the duplication alive if the capturer held one as well.
 	c.releaseDXGI()
 	c.closeDesktopHandle()
-	return nil
+	var err error
+	if c.gdiFallback != nil {
+		err = c.gdiFallback.Close()
+		c.setGDIFallbackLocked(nil)
+	}
+	return err
 }
 
+// releaseDXGI releases every DXGI object this capturer holds, whether or not
+// initialisation completed. Caller holds c.mu (or is the constructor).
 func (c *dxgiCapturer) releaseDXGI() {
-	if !c.inited {
-		return
-	}
 	// Best-effort: ensure we don't leave an acquired frame hanging.
 	if c.textureFrameAcquired && c.duplication != 0 {
 		syscall.SyscallN(comVtblFn(c.duplication, dxgiDuplReleaseFrame), c.duplication)
@@ -510,8 +535,9 @@ func (c *dxgiCapturer) releaseDXGI() {
 		c.staging = 0
 	}
 	if c.duplication != 0 {
-		comRelease(c.duplication)
+		releaseDuplication(c.duplication)
 		c.duplication = 0
+		captureHealth.noteDuplicationReleased(c)
 	}
 	if c.context != 0 {
 		comRelease(c.context)
@@ -522,6 +548,19 @@ func (c *dxgiCapturer) releaseDXGI() {
 		c.device = 0
 	}
 	c.inited = false
+}
+
+// duplicationStillReferenced limits the Warn below to once per process.
+var duplicationStillReferenced atomic.Bool
+
+// releaseDuplication drops our reference. Release returns the references that
+// remain: anything above zero keeps the output duplicated by this process, and
+// every later DuplicateOutput on it fails with E_INVALIDARG (#12624).
+func releaseDuplication(duplication uintptr) {
+	refs, _, _ := syscall.SyscallN(comVtblFn(duplication, vtblRelease), duplication)
+	if uint32(refs) != 0 && duplicationStillReferenced.CompareAndSwap(false, true) {
+		slog.Warn("DXGI duplication is still referenced after release", "refs", uint32(refs))
+	}
 }
 
 var (

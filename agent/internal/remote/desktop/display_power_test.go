@@ -548,9 +548,13 @@ func TestDisplayWakeWiring(t *testing.T) {
 	}
 
 	sess := read("session.go")
-	inOrder("session.go", sess[strings.Index(sess, "func (s *Session) doCleanup()"):],
-		"s.capturer.Close()",
+	inOrder("session.go", sess[strings.Index(sess, "func (s *Session) cleanup("):],
+		"s.releasePipeline()",
 		"s.displayWake.release()",
+	)
+	teardown := read("session_teardown.go")
+	inOrder("session_teardown.go", teardown[strings.Index(teardown, "func (s *Session) releasePipeline()"):],
+		"current.Close()",
 	)
 
 	capture := read("session_capture.go")
