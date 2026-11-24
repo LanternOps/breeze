@@ -95,6 +95,28 @@ describe('PatchesPage ring editor unsaved changes guard (#12305)', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('opens an existing ring for edit as unchanged, so a backdrop click still closes it', async () => {
+    const ring = {
+      id: 'ring-1', name: 'Pilot', description: null, enabled: true, ringOrder: 1, deferralDays: 3,
+      deadlineDays: 7, gracePeriodHours: 4, categoryRules: [{ category: 'security', autoApprove: true }],
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/update-rings') return json({ data: [ring] });
+      if (url.startsWith('/patches')) return json({ data: [] });
+      return json({}, false, 404);
+    });
+    render(<PatchesPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /^edit pilot$/i }));
+    await waitFor(() => expect(nameInput().value).toBe('Pilot'));
+    expect(useUiStore.getState().dirtyFormCount).toBe(0);
+
+    fireEvent.click(backdrop());
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(discardDialog()).not.toBeInTheDocument();
+  });
+
   it('blocks keyboard shortcuts only while the edited form is open', async () => {
     await openAndType();
     expect(useUiStore.getState().dirtyFormCount).toBe(1);
