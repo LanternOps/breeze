@@ -20,12 +20,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 
-const { publishEventMock } = vi.hoisted(() => ({
+const { publishEventMock, pendingAudits } = vi.hoisted(() => ({
   publishEventMock: vi.fn<(...args: unknown[]) => Promise<string>>(async () => 'test-event-id'),
+  pendingAudits: [] as Promise<void>[],
 }));
 vi.mock('../../services/eventBus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/eventBus')>();
   return { ...actual, publishEvent: publishEventMock };
+});
+// `recordRunTerminal` fires its audit write without awaiting it, on its own
+// connection, so the row can commit after `transitionRunStatus` has returned.
+// The REAL write still runs; its promise is only kept so `settleAudits` can
+// wait for it.
+vi.mock('../../services/auditService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/auditService')>();
+  return {
+    ...actual,
+    createAuditLogAsync: (...args: Parameters<typeof actual.createAuditLogAsync>) => {
+      const write = actual.createAuditLogAsync(...args);
+      pendingAudits.push(write);
+      return write;
+    },
+  };
 });
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
@@ -125,7 +141,18 @@ function expectCreated(result: CreateAgentRunResult) {
   return result.run;
 }
 
+/** Waits for every audit write started so far to finish its first attempt. */
+async function settleAudits(): Promise<void> {
+  await Promise.all(pendingAudits.splice(0));
+}
+
+/**
+ * Settles pending audit writes first, so a count is never read ahead of a row
+ * still being written: neither a missing row nor a late duplicate can be
+ * hidden by timing.
+ */
 async function circuitOpenedAuditCount(orgId: string, agentId: string): Promise<number> {
+  await settleAudits();
   const rows = await withSystemDbAccessContext(() =>
     db
       .select({ id: auditLogs.id })
@@ -185,7 +212,10 @@ beforeEach(() => {
   registerAgentRunEnqueuer(enqueuer);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Not every test reads the audit rows; leave no write to race the next
+  // test's TRUNCATE.
+  await settleAudits();
   registerAgentRunEnqueuer(null);
   vi.unstubAllEnvs();
 });
