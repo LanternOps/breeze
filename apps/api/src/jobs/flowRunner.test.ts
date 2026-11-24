@@ -226,6 +226,7 @@ vi.mock('../services/flowValidator', async () => {
   };
 });
 
+import { compileFlowForm, evaluateExpr, isTruthy, parseExpr, renderTemplates, type FlowDocumentV1, type FlowScope } from '@breeze/shared';
 import { processFlowRunJob } from './flowRunner';
 
 const RUN_ID = 'bbbbbbbb-0000-4000-8000-000000000001';
@@ -245,6 +246,7 @@ interface StepDef {
   onFailure?: 'stop' | 'continue';
   forEach?: { items: string; maxItems?: number; concurrency?: number };
   timeoutSec?: number;
+  when?: string;
 }
 
 function seed(opts: {
@@ -260,6 +262,7 @@ function seed(opts: {
     tool: s.tool ?? `tool_${s.id}`,
     input: s.input ?? {},
     ...(s.onFailure ? { onFailure: s.onFailure } : {}),
+    ...(s.when ? { when: s.when } : {}),
     ...(s.forEach ? { forEach: {
       items: s.forEach.items,
       ...(s.forEach.maxItems ? { maxItems: s.forEach.maxItems } : {}),
@@ -1359,5 +1362,418 @@ describe('processFlowRunJob — cancellation and fencing', () => {
     expect(execOrder()).toEqual(['a']);
     expect(stepRow('a')).toMatchObject({ status: 'running', output: null });
     expect(h.state.run!.status).toBe('running');
+  });
+});
+
+/**
+ * #12481 — a for-each step whose step-level `when` is false never fails the
+ * run because its items are not a list. The form's on-failure Notify block
+ * (emitFailureNoticeSteps) is `a<i>_failed` (resolve_targets) and one notify
+ * per channel looping over `steps.a<i>_failed.output.devices`, all under the
+ * same `when`; on a run where nothing failed `a<i>_failed` is skipped, its
+ * output is null, and the items are not a list.
+ */
+describe('processFlowRunJob — a for-each step whose when is false (#12481)', () => {
+  const SCRIPT_ID = '33333333-3333-4333-8333-333333333333';
+  const GROUP_ID = '44444444-4444-4444-8444-444444444444';
+  const CHANNEL_A = '55555555-5555-4555-8555-555555555555';
+  const CHANNEL_B = '55555555-5555-4555-8555-5555555555bd';
+
+  type ExecInput = {
+    step: { id: string; tool: string; when?: string; input: Record<string, unknown> };
+    itemIndex: number | null;
+    item?: unknown;
+    scope: Record<string, unknown>;
+  };
+
+  /** Units whose tool body ran (their `when` let them through). */
+  let ran: string[];
+  /** Notices the notify steps sent: [channelId, item]. */
+  let sent: Array<[string, unknown]>;
+
+  const unitName = (i: ExecInput) => (i.itemIndex === null ? i.step.id : `${i.step.id}[${i.itemIndex}]`);
+
+  /** The real executor's step 1 (`when` in the unit scope, `item` bound for a for-each item), then `body`. */
+  function whenAware(body: (i: ExecInput) => unknown) {
+    h.execute.mockImplementation(async (i: ExecInput) => {
+      if (i.step.when !== undefined) {
+        const scope = i.itemIndex !== null ? { ...i.scope, item: i.item ?? null } : i.scope;
+        const parsed = parseExpr(i.step.when);
+        if (!parsed.ok) return { kind: 'failed', code: 'render_failed', message: `when: ${parsed.error}`, policy: false };
+        const evaluated = evaluateExpr(parsed.ast, scope as FlowScope);
+        if (!evaluated.ok) return { kind: 'failed', code: 'render_failed', message: `when: ${evaluated.error}`, policy: false };
+        if (!isTruthy(evaluated.value)) return { kind: 'skipped' };
+      }
+      ran.push(unitName(i));
+      return body(i);
+    });
+  }
+
+  /** A fleet script, a resolve of its failed set and notify steps, answering as the built-ins would. */
+  function formTools(failedDeviceIds: string[]) {
+    whenAware((i) => {
+      switch (i.step.tool) {
+        case 'run_script_on_targets':
+          return completed({
+            dispatchedDeviceIds: ['d1', 'd2'],
+            succeededDeviceIds: ['d1', 'd2'].filter((d) => !failedDeviceIds.includes(d)),
+            failedDeviceIds,
+            succeededCount: 2 - failedDeviceIds.length,
+            failedCount: failedDeviceIds.length,
+          });
+        case 'resolve_targets':
+          return completed({ devices: failedDeviceIds.map((id) => ({ id, hostname: `host-${id}`, failureReason: 'exit 1' })) });
+        case 'notify':
+          sent.push([String(i.step.input.channelId), i.item ?? null]);
+          return completed({ sent: true });
+        default:
+          return completed({ from: i.step.id });
+      }
+    });
+  }
+
+  /** One script action, on-failure Notify per device (a flow moved from a Job) to two channels, then a second action — compiled by the form. */
+  function formDoc(): FlowDocumentV1 {
+    return compileFlowForm({
+      name: 'Nightly',
+      trigger: { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' },
+      target: { kind: 'target', target: { type: 'groups', groupIds: [GROUP_ID] } },
+      actions: [
+        { type: 'run_script', scriptId: SCRIPT_ID, whenOffline: 'queue' },
+        { type: 'notify', channelId: CHANNEL_A, title: 'Done', message: 'Cleanup finished', severity: 'info' },
+      ],
+      onFailure: { mode: 'notify', channelIds: [CHANNEL_A, CHANNEL_B], notice: 'perDevice' },
+    });
+  }
+
+  function seedDoc(doc: FlowDocumentV1, runOverrides?: Row): void {
+    seed({ steps: [], run: runOverrides });
+    h.state.publication!.definition = structuredClone(doc);
+    h.state.publication!.stepPins = doc.steps.map((st) => ({ stepId: st.id, tool: st.tool, source: 'builtin', tier: 1, approvalScope: null }));
+  }
+
+  const rowsOf = (stepId: string) => h.state.steps.filter((r) => r.stepId === stepId);
+  const scopeSeenBy = (stepId: string) => (h.execute.mock.calls.map(([i]) => i as ExecInput).find((i) => i.step.id === stepId)!)
+    .scope.steps as Record<string, { status: string; output: unknown }>;
+
+  beforeEach(() => {
+    ran = [];
+    sent = [];
+  });
+
+  it('the compiled form document has the shape this block covers (guards the fixture)', () => {
+    expect(formDoc().steps.map((st) => [st.id, st.tool, st.when !== undefined, st.forEach?.items ?? null])).toEqual([
+      ['a0_run_script', 'run_script_on_targets', false, null],
+      ['a0_failed', 'resolve_targets', true, null],
+      ['a0_failnotice_0', 'notify', true, 'steps.a0_failed.output.devices'],
+      ['a0_failnotice_1', 'notify', true, 'steps.a0_failed.output.devices'],
+      ['a1_notify', 'notify', false, null],
+    ]);
+  });
+
+  it('form on-failure Notify, no device failed: the run completes, both notices are skipped, none is sent, the next action runs', async () => {
+    seedDoc(formDoc());
+    formTools([]);
+    await run();
+    expect(h.state.run).toMatchObject({ status: 'completed', errorCode: null, error: null });
+    expect(ran).toEqual(['a0_run_script', 'a1_notify']);
+    expect(sent).toEqual([[CHANNEL_A, null]]); // the second action's own notice only
+    expect(stepRow('a0_failed')).toMatchObject({ status: 'skipped', output: null });
+    for (const id of ['a0_failnotice_0', 'a0_failnotice_1']) {
+      expect(rowsOf(id)).toHaveLength(1);
+      expect(stepRow(id)).toMatchObject({ itemIndex: null, attempt: 1, status: 'skipped', output: null, errorCode: null, error: null });
+      expect(stepRow(id)!.finishedAt).toBeInstanceOf(Date);
+    }
+    expect(scopeSeenBy('a1_notify').a0_failnotice_0).toEqual({ status: 'skipped', output: null });
+    expect(h.log).toContain('publish:flow.run.completed');
+    expect(h.log).not.toContain('publish:flow.run.failed');
+    expect(h.pauseFlow).not.toHaveBeenCalled();
+  });
+
+  it('form on-failure Notify, one device failed: one notice per channel for that device, as before', async () => {
+    seedDoc(formDoc());
+    formTools(['d2']);
+    await run();
+    const d2 = { id: 'd2', hostname: 'host-d2', failureReason: 'exit 1' };
+    expect(ran).toEqual(['a0_run_script', 'a0_failed', 'a0_failnotice_0[0]', 'a0_failnotice_1[0]', 'a1_notify']);
+    expect(sent).toEqual([[CHANNEL_A, d2], [CHANNEL_B, d2], [CHANNEL_A, null]]);
+    for (const id of ['a0_failnotice_0', 'a0_failnotice_1']) {
+      expect(rowsOf(id).map((r) => [r.itemIndex, r.status])).toEqual([[0, 'completed']]);
+    }
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('a resumed run never re-decides a notice step already recorded skipped', async () => {
+    seedDoc(formDoc(), {
+      status: 'running', currentStepId: 'a0_failnotice_1', currentItemIndex: null,
+      leaseToken: 'aaaaaaaa-0000-4000-8000-0000000000dd', leaseExpiresAt: new Date(Date.now() - 1),
+    });
+    const at = new Date();
+    ledger({ stepId: 'a0_run_script', status: 'completed', finishedAt: at, output: { dispatchedDeviceIds: ['d1'], succeededDeviceIds: ['d1'], failedDeviceIds: [] } });
+    ledger({ stepId: 'a0_failed', status: 'skipped', finishedAt: at });
+    ledger({ stepId: 'a0_failnotice_0', status: 'skipped', finishedAt: at });
+    formTools([]);
+    await run();
+    expect(rowsOf('a0_failnotice_0')).toHaveLength(1);
+    expect(stepRow('a0_failnotice_1')).toMatchObject({ itemIndex: null, status: 'skipped' });
+    expect(ran).toEqual(['a1_notify']);
+    expect(scopeSeenBy('a1_notify').a0_failnotice_0).toEqual({ status: 'skipped', output: null });
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it.each([
+    ['sequential', 1],
+    ['concurrent', 3],
+  ] as const)('false when, items not a list (%s): the step is skipped and the run completes', async (_label, concurrency) => {
+    seed({
+      steps: [{ id: 'fix', when: 'inputs.go', onFailure: 'continue', forEach: { items: 'inputs.hosts', concurrency } }, { id: 'after' }],
+      inputs: { go: false, hosts: null },
+    });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(rowsOf('fix')).toHaveLength(1);
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'skipped', output: null, errorCode: null });
+    expect(ran).toEqual(['after']);
+    expect(scopeSeenBy('after').fix).toEqual({ status: 'skipped', output: null });
+    expect(h.state.run).toMatchObject({ status: 'completed', errorCode: null });
+  });
+
+  it.each([
+    ['null', { go: null, hosts: null }],
+    ['a missing path', { hosts: null }],
+    ['a non-boolean', { go: 'yes', hosts: null }],
+    ['zero', { go: 0, hosts: null }],
+  ])('a when that evaluates to %s is not true, like the executor: the step is skipped', async (_label, inputs) => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', onFailure: 'continue', forEach: { items: 'inputs.hosts' } }, { id: 'after' }], inputs });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'skipped' });
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('the rescued step is the last step: the run completes with the cursor left on it', async () => {
+    seed({ steps: [{ id: 'first' }, { id: 'fix', when: 'inputs.go', forEach: { items: 'inputs.hosts' } }], inputs: { go: false, hosts: null } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'skipped' });
+    expect(h.state.run).toMatchObject({ status: 'completed', currentStepId: 'fix', currentItemIndex: null });
+  });
+
+  it('false when, items not a list, onFailure stop: skipped too (the step does not run, so nothing failed)', async () => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', forEach: { items: 'inputs.hosts' } }, { id: 'after' }], inputs: { go: false, hosts: 'h1,h2' } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'skipped' });
+    expect(ran).toEqual(['after']);
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it.each([
+    ['continue', 'step_failed'],
+    ['stop', 'input_invalid'],
+  ] as const)('a TRUE when with items not a list still fails input_invalid (onFailure %s)', async (onFailure, runCode) => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', onFailure, forEach: { items: 'inputs.hosts' } }, { id: 'after' }], inputs: { go: true, hosts: 'h1,h2' } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'failed', errorCode: 'input_invalid', error: 'forEach.items did not evaluate to a list.' });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: runCode });
+  });
+
+  it.each([
+    ['references the item variable', 'item != null'],
+    ['references the item variable beside a false step-level term', 'inputs.go && exists(item.name)'],
+    ['does not parse', 'inputs.go &&'],
+  ])('a when that %s never rescues items that are not a list: input_invalid as before', async (_label, when) => {
+    seed({ steps: [{ id: 'fix', when, onFailure: 'continue', forEach: { items: 'inputs.hosts' } }], inputs: { go: false, hosts: null } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'failed', errorCode: 'input_invalid' });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it('a false when does not rescue an items expression that does not parse', async () => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', onFailure: 'continue', forEach: { items: 'inputs.hosts &&' } }], inputs: { go: false } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'failed', errorCode: 'input_invalid' });
+    expect(stepRow('fix')!.error).toMatch(/^forEach\.items: /);
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it('a false when does not rescue too_many_items (a listable list over maxItems still fails)', async () => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', forEach: { items: 'inputs.hosts', maxItems: 2 } }], inputs: { go: false, hosts: ['h1', 'h2', 'h3'] } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'failed', errorCode: 'too_many_items' });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'too_many_items' });
+  });
+
+  it('item rows already written for the step: a false when never turns the step into a skip', async () => {
+    seed({
+      steps: [{ id: 'fix', when: 'inputs.go', onFailure: 'continue', forEach: { items: 'inputs.hosts' } }],
+      inputs: { go: false, hosts: null },
+      run: { status: 'running', currentStepId: 'fix', currentItemIndex: 1, leaseToken: 'aaaaaaaa-0000-4000-8000-0000000000dd', leaseExpiresAt: new Date(Date.now() - 1) },
+    });
+    ledger({ stepId: 'fix', itemIndex: 0, status: 'completed', output: { prev: 0 }, finishedAt: new Date() });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'failed', errorCode: 'input_invalid' });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it.each([
+    ['sequential', 1],
+    ['concurrent', 3],
+  ] as const)('a when that references the item keeps its per-item behaviour (%s)', async (_label, concurrency) => {
+    seed({ steps: [{ id: 'fix', when: 'item != "h2"', forEach: { items: 'inputs.hosts', concurrency } }, { id: 'after' }], inputs: { hosts: ['h1', 'h2', 'h3'] } });
+    whenAware((i) => completed({ item: i.item ?? null }));
+    await run();
+    expect([...ran].sort()).toEqual(['after', 'fix[0]', 'fix[2]']);
+    expect(rowsOf('fix').map((r) => [r.itemIndex, r.status]).sort()).toEqual([[0, 'completed'], [1, 'skipped'], [2, 'completed']]);
+    expect(scopeSeenBy('after').fix).toEqual({ status: 'completed', output: [{ item: 'h1' }, null, { item: 'h3' }] });
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it.each([
+    ['sequential', 1],
+    ['concurrent', 3],
+  ] as const)('pinned: a false when with LISTABLE items still walks every item and records completed with nulls (%s)', async (_label, concurrency) => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', forEach: { items: 'inputs.hosts', concurrency } }, { id: 'after' }], inputs: { go: false, hosts: ['h1', 'h2'] } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(rowsOf('fix').map((r) => [r.itemIndex, r.status]).sort()).toEqual([[0, 'skipped'], [1, 'skipped']]);
+    expect(ran).toEqual(['after']);
+    expect(scopeSeenBy('after').fix).toEqual({ status: 'completed', output: [null, null] });
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  describe("the editor's on-failure summary: one notice per channel per failing script (#12596)", () => {
+    /** Notices sent: [channelId, rendered title, rendered message]. */
+    let notices: Array<[string, string, string]>;
+
+    beforeEach(() => {
+      notices = [];
+    });
+
+    /** Two script actions with on-failure Notify as a summary to two channels — compiled by the form. */
+    function summaryDoc(): FlowDocumentV1 {
+      return compileFlowForm({
+        name: 'Nightly',
+        trigger: { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' },
+        target: { kind: 'target', target: { type: 'groups', groupIds: [GROUP_ID] } },
+        actions: [
+          { type: 'run_script', scriptId: SCRIPT_ID, whenOffline: 'queue' },
+          { type: 'run_script', scriptId: SCRIPT_ID, whenOffline: 'queue' },
+        ],
+        onFailure: { mode: 'notify', channelIds: [CHANNEL_A, CHANNEL_B], notice: 'summary' },
+      });
+    }
+
+    /**
+     * Fleet steps answer from `failed[stepId]` over devices d1–d4. Notify renders
+     * its input with the real template renderer in the unit scope (the executor's
+     * step 2), so the counts asserted are the counts the channel would receive.
+     */
+    function summaryTools(failed: Record<string, string[]>) {
+      const all = ['d1', 'd2', 'd3', 'd4'];
+      whenAware((i) => {
+        if (i.step.tool === 'run_script_on_targets') {
+          const failedIds = failed[i.step.id] ?? [];
+          const succeeded = all.filter((d) => !failedIds.includes(d));
+          return completed({
+            dispatchedDeviceIds: all, succeededDeviceIds: succeeded, failedDeviceIds: failedIds,
+            count: all.length, succeededCount: succeeded.length, failedCount: failedIds.length, warnings: [],
+          });
+        }
+        if (i.step.tool === 'notify') {
+          const r = renderTemplates(i.step.input, i.scope as FlowScope);
+          if (!r.ok) throw new Error(`render failed: ${r.error}`);
+          const input = r.value as { channelId: string; title: string; message: string };
+          notices.push([input.channelId, input.title, input.message]);
+          return completed({ sent: true });
+        }
+        return completed({ from: i.step.id });
+      });
+    }
+
+    it('the compiled form document has the summary shape (guards the fixture)', () => {
+      expect(summaryDoc().steps.map((st) => [st.id, st.tool, st.when !== undefined, st.forEach ?? null])).toEqual([
+        ['a0_run_script', 'run_script_on_targets', false, null],
+        ['a0_failsummary_0', 'notify', true, null],
+        ['a0_failsummary_1', 'notify', true, null],
+        ['a1_run_script', 'run_script_on_targets', false, null],
+        ['a1_failsummary_0', 'notify', true, null],
+        ['a1_failsummary_1', 'notify', true, null],
+      ]);
+    });
+
+    it('a clean run completes and every summary notice is recorded skipped, none sent', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({});
+      await run();
+      expect(h.state.run).toMatchObject({ status: 'completed', errorCode: null, error: null });
+      expect(ran).toEqual(['a0_run_script', 'a1_run_script']);
+      expect(notices).toEqual([]);
+      for (const id of ['a0_failsummary_0', 'a0_failsummary_1', 'a1_failsummary_0', 'a1_failsummary_1']) {
+        expect(rowsOf(id)).toHaveLength(1);
+        expect(stepRow(id)).toMatchObject({ itemIndex: null, status: 'skipped', output: null, errorCode: null, error: null });
+      }
+      expect(h.log).toContain('publish:flow.run.completed');
+    });
+
+    it('a run with failed devices sends exactly one notice per channel for the failing script, with its counts', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d2', 'd3', 'd4'] });
+      await run();
+      expect(h.state.run!.status).toBe('completed');
+      expect(ran).toEqual(['a0_run_script', 'a0_failsummary_0', 'a0_failsummary_1', 'a1_run_script']);
+      const message = 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 1 succeeded, 3 failed.';
+      expect(notices).toEqual([
+        [CHANNEL_A, 'Nightly action failed', message],
+        [CHANNEL_B, 'Nightly action failed', message],
+      ]);
+      for (const id of ['a0_failsummary_0', 'a0_failsummary_1']) {
+        expect(rowsOf(id).map((r) => [r.itemIndex, r.status])).toEqual([[null, 'completed']]);
+      }
+      for (const id of ['a1_failsummary_0', 'a1_failsummary_1']) expect(stepRow(id)).toMatchObject({ status: 'skipped' });
+    });
+
+    it('two failing scripts each send their own summary; the count of notices does not grow with failed devices', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d4'], a1_run_script: ['d1', 'd2'] });
+      await run();
+      expect(h.state.run!.status).toBe('completed');
+      expect(notices.map(([c, , m]) => [c, m])).toEqual([
+        [CHANNEL_A, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 3 succeeded, 1 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 3 succeeded, 1 failed.'],
+        [CHANNEL_A, 'Automation Nightly action 2 could not be sent to every device.\n\nDevices: 2 succeeded, 2 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 2 could not be sent to every device.\n\nDevices: 2 succeeded, 2 failed.'],
+      ]);
+    });
+
+    it('every device failed: one notice per channel says 0 succeeded', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d1', 'd2', 'd3', 'd4'] });
+      await run();
+      expect(notices.map(([c, , m]) => [c, m])).toEqual([
+        [CHANNEL_A, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 0 succeeded, 4 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 0 succeeded, 4 failed.'],
+      ]);
+    });
+
+    it('a notice that cannot be sent does not stop the other channel or the next action (onFailure continue)', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d2'] });
+      const sendAware = h.execute.getMockImplementation()!;
+      h.execute.mockImplementation(async (i: ExecInput) => (i.step.id === 'a0_failsummary_0'
+        ? { kind: 'failed', code: 'step_failed', message: 'channel down', policy: false, renderedInput: {} }
+        : sendAware(i)));
+      await run();
+      expect(stepRow('a0_failsummary_0')).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+      expect(notices.map(([c]) => c)).toEqual([CHANNEL_B]);
+      expect(ran).toContain('a1_run_script');
+      // The engine's continue rule: later steps run, and the run reports the failed step.
+      expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+    });
   });
 });

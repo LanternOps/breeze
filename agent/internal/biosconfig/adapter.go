@@ -1,11 +1,13 @@
 // Package biosconfig is the seam between the wake readiness collector and
 // vendor firmware (BIOS/UEFI) settings. It carries no Wake-on-LAN logic: it
-// only describes how a vendor adapter reads settings.
+// describes how a vendor adapter reads settings and, for Dell only, writes one.
 //
 // At the observe stage (#10838 observe-first amendment) the HP and Lenovo
-// adapters read and report; they write nothing. Apply returns ErrNotEnabled,
-// and no write class or method name appears in this package's source
-// (TestNoWriteMethodReachable).
+// adapters read and report; they write nothing, and Apply returns
+// ErrNotEnabled. The Dell adapter's Apply (W04) is the package's one write:
+// one SetAttribute call in one constant script (TestOnlyReadMethodInvoked). It
+// holds no policy: the caller (wakeconfig) owns the target list, the password
+// and BitLocker guards, the write limits and the activation switch.
 package biosconfig
 
 import (
@@ -46,8 +48,9 @@ func (p Protection) String() string {
 // ErrNotEnabled is Apply's answer at the observe stage: no adapter writes.
 var ErrNotEnabled = errors.New("firmware writes are not enabled for this vendor")
 
-// Adapter reads (and, from the act stage, writes) firmware settings for one
-// vendor.
+// Adapter reads firmware settings for one vendor and, where a write path ships
+// (Dell), writes one setting per Apply call. Apply on an adapter without one
+// returns ErrNotEnabled and runs nothing.
 type Adapter interface {
 	Vendor() string
 	Read(ctx context.Context) ([]Setting, error)
@@ -79,7 +82,35 @@ const (
 	VendorHP VendorSet = 1 << iota
 	VendorLenovo
 	VendorSurface
+	// VendorDell is never an observe lane (Dell's read adapter needs no
+	// grant). It appears only in a firmware_writes set.
+	VendorDell
 )
+
+// firmwareWriteVendors are the firmware_writes names this agent recognises:
+// only vendors whose write path ships here. Naming any other vendor grants
+// nothing.
+var firmwareWriteVendors = map[string]VendorSet{"dell": VendorDell}
+
+// ParseFirmwareWriteVendor maps one firmware_writes entry to its vendor bit.
+func ParseFirmwareWriteVendor(name string) (VendorSet, bool) {
+	v, ok := firmwareWriteVendors[strings.ToLower(strings.TrimSpace(name))]
+	return v, ok
+}
+
+// VendorBit is the vendor bit for an adapter vendor name ("dell", "hp",
+// "lenovo"), or 0.
+func VendorBit(vendor string) VendorSet {
+	switch vendor {
+	case "dell":
+		return VendorDell
+	case "hp":
+		return VendorHP
+	case "lenovo":
+		return VendorLenovo
+	}
+	return 0
+}
 
 // lanes are the observe_vendors names, the vendorCanary table's keys. Surface
 // is a lane name; its snapshot vendor is "microsoft".
@@ -142,8 +173,9 @@ func MakeOf(manufacturer string) string {
 // Detect returns the firmware adapter for a machine, or nil when there is none.
 //
 // Dell has an adapter on Windows whatever the grant (native BIOS WMI, built
-// against a capture from a lab OptiPlex 7060): it follows the plan's own path,
-// and reads without writing. HP and Lenovo get one only when the server has
+// against a capture from a lab OptiPlex 7060): it follows the plan's own path.
+// It can write (Apply), but only wakeconfig calls Apply, behind its guards and
+// activation switch. HP and Lenovo get one only when the server has
 // granted that vendor's observation; it reads and never writes. Surface has no
 // firmware settings to read. Any other make, or an ungranted one, reports
 // readiness "unproven" with reason firmware_adapter_unavailable.

@@ -537,6 +537,8 @@
     "createTicket": "Ticket erstellen"
   },
   "scriptProposal": {
+    "unavailable": "Dieser Vorschlag ist nicht mehr verfügbar. Er wurde möglicherweise entschieden, ist abgelaufen oder gehört zu einer anderen Organisation.",
+    "loadFailed": "Dieser Vorschlag konnte nicht geladen werden. Versuchen Sie es gleich noch einmal.",
     "title": "KI-erstelltes Skript",
     "goal": "Ziel",
     "expectedEffect": "Erwartete Wirkung",

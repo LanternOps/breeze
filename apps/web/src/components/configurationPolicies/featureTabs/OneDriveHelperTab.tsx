@@ -4,6 +4,8 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import OneDriveLibraryPicker, { type PickedLibrary } from './OneDriveLibraryPicker';
 
 type TargetingMode = 'everyone' | 'graph_group' | 'local_ad_group';
@@ -115,9 +117,10 @@ function siteHint(siteUrl?: string | null): string | null {
   }
 }
 
-export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink, orgId }: FeatureTabProps) {
+export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, parentLink, orgId }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<OneDriveHelperSettings>(() =>
     mergeSettings(defaults, effectiveLink?.inlineSettings as Partial<OneDriveHelperSettings> | undefined),
@@ -219,7 +222,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
   };
 
   const handleSave = () => persist(existingLink?.id ?? null);
-  const handleOverride = () => persist(null);
+
 
   const handleRemove = async () => {
     if (!existingLink) return;
@@ -239,10 +242,9 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
       saveDisabled={hasInvalidLibrary}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRemove : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {/* Base toggles */}
@@ -339,6 +341,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
               type="button"
               data-testid="onedrive-add-library-btn"
               onClick={() => setShowPicker(true)}
+              aria-haspopup="dialog"
               className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10"
             >
               <Plus className="h-4 w-4" />

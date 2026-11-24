@@ -19,7 +19,7 @@ import { writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { enqueueRecoveryMediaBuild } from '../../jobs/recoveryMediaWorker';
 import { PERMISSIONS } from '../../services/permissions';
 import { externalReferencePreflight } from '../../services/bareMetalRecoveryService';
-import { negotiateRecoveryCapabilities } from '../../services/recoveryCapabilities';
+import { negotiateRecoveryCapabilities, snapshotRequiresMembershipCapability } from '../../services/recoveryCapabilities';
 import { readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
@@ -41,6 +41,8 @@ import {
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
+  issueRecoverySessionRenewal,
+  verifyRecoverySessionRenewal,
   resolveRecoveryTokenPresentation,
   resolveServerUrl,
   resolveSnapshotProviderConfig,
@@ -61,7 +63,7 @@ import {
 } from '../../services/recoveryMediaService';
 import { getCurrentRecoverySigningKey, getRecoverySigningKey, getRecoverySigningKeys } from '../../services/recoverySigning';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
-import { rateLimiter } from '../../services/rate-limit';
+import { rateLimiter, refundRateLimitEntries } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { resolveScopedOrgId } from './helpers';
 import {
@@ -86,6 +88,32 @@ const idParamSchema = z.object({ id: z.string().guid() });
 const signingKeyParamSchema = z.object({ id: z.string().min(1) });
 const BMR_AUTHENTICATE_TOKEN_LIMIT = 3;
 const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;
+// #12566: the per-token authenticate limit is three buckets of the same size,
+// so one kind of caller cannot use up another's allowance:
+//   - first sign-ins (no renewal credential): `bmr:authenticate:token:<hash>`,
+//     charged before the token is looked up, punitive (rejections count);
+//   - renewals by a client holding the session renewal credential a previous
+//     successful sign-in returned: `bmr:authenticate-renewal:token:<hash>`,
+//     with refundOnReject so an honoured Retry-After actually works;
+//   - capability refusals on a proven-valid token (REFUND_TO_REFUSED_BUCKET):
+//     moved out of the first-sign-in bucket into
+//     `bmr:authenticate-refused:token:<hash>`, and left in it once that is full.
+// Before this, two refused browser Previews plus the helper's own first
+// sign-in used the whole hour, and the helper's 55-minute renewal (and its
+// own refused retries) were rejected until the restore aborted. A helper
+// that predates the credential renews on the first-sign-in bucket; for it,
+// moving the refused Previews out of that bucket is what keeps the renewal
+// possible. The three buckets together allow a valid token's holder up to
+// 3 first sign-ins, 3 refused ones and 3 renewals an hour; an unknown or
+// guessed token still gets only the first-sign-in bucket.
+const BMR_AUTHENTICATE_RENEWAL_TOKEN_LIMIT = BMR_AUTHENTICATE_TOKEN_LIMIT;
+const BMR_AUTHENTICATE_REFUSED_TOKEN_LIMIT = BMR_AUTHENTICATE_TOKEN_LIMIT;
+// Negotiation refusals reached only after the token row was found, was
+// neither expired, revoked nor used, matched its snapshot and passed the
+// integrity gate: the token itself is proven valid, so not counting them as
+// first sign-ins tells the caller nothing a token holder does not already
+// know. A guessed or unknown token never gets this far.
+const REFUND_TO_REFUSED_BUCKET: ReadonlySet<string> = new Set(['capability_downgrade', 'client_capability_required']);
 // D13: getAuthenticatedRecoveryDownloadTarget is fetched ONE OBJECT PER FILE, so
 // a legitimate bare-metal recovery of a 10,000+-file snapshot makes that many
 // requests against this per-token limit in the course of a normal restore — a
@@ -416,6 +444,58 @@ export async function enforceTokenRateLimit(
   return c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429);
 }
 
+// #12566: the per-token authenticate charge, in the bucket the caller is
+// entitled to (see BMR_AUTHENTICATE_RENEWAL_TOKEN_LIMIT). `entries` are the
+// members the charge added, kept so a later capability refusal on a proven-
+// valid token can move it out of the first-sign-in bucket.
+async function chargeAuthenticateTokenLimit(
+  c: any,
+  tokenHash: string,
+  isRenewal: boolean
+): Promise<{ limited: Response | null; entries: string[] }> {
+  const rateCheck = isRenewal
+    ? await rateLimiter(
+        getRedis(),
+        `bmr:authenticate-renewal:token:${tokenHash}`,
+        BMR_AUTHENTICATE_RENEWAL_TOKEN_LIMIT,
+        BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS,
+        1,
+        { refundOnReject: true }
+      )
+    : await rateLimiter(
+        getRedis(),
+        `bmr:authenticate:token:${tokenHash}`,
+        BMR_AUTHENTICATE_TOKEN_LIMIT,
+        BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS
+      );
+  if (rateCheck.allowed) return { limited: null, entries: rateCheck.entries ?? [] };
+
+  const retryAfter = Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000));
+  c.header('Retry-After', String(retryAfter));
+  return { limited: c.json({ error: 'Rate limit exceeded. Please wait before retrying.' }, 429), entries: [] };
+}
+
+// #12566: charge the refused-sign-in bucket first and only then give back the
+// first-sign-in slot. The first-sign-in slot is given back only when the
+// refused bucket accepted the charge; if that bucket is full, or Redis fails
+// at either step, the first-sign-in charge stays.
+async function moveRefusedSignInCharge(tokenHash: string, entries: string[]): Promise<void> {
+  if (entries.length === 0) return;
+  try {
+    const redis = getRedis();
+    const refused = await rateLimiter(
+      redis,
+      `bmr:authenticate-refused:token:${tokenHash}`,
+      BMR_AUTHENTICATE_REFUSED_TOKEN_LIMIT,
+      BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS
+    );
+    if (!refused.allowed) return;
+    await refundRateLimitEntries(redis, `bmr:authenticate:token:${tokenHash}`, entries);
+  } catch (err) {
+    console.warn('[bmr] could not move a refused sign-in out of the first-sign-in bucket:', err instanceof Error ? err.message : err);
+  }
+}
+
 function isDownloadableRecoveryTokenStatus(status: string, authenticatedAt?: Date | null): boolean {
   return status === 'authenticated' || (status === 'active' && Boolean(authenticatedAt));
 }
@@ -637,6 +717,8 @@ bmrRoutes.post(
       {
         ...toTokenSummary(row),
         token: plainToken,
+        // #12566: the web disables Preview when only the helper can sign in.
+        requiresRecoveryHelper: snapshotRequiresMembershipCapability(snapshot.referencedFiles),
         bootstrap: {
           version: BMR_BOOTSTRAP_VERSION,
           minHelperVersion: BMR_MIN_HELPER_VERSION,
@@ -1113,7 +1195,7 @@ bmrPublicRoutes.post(
 
     await expireUnusedRecoveryTokens();
 
-    const { token } = c.req.valid('json');
+    const { token, sessionRenewal: presentedRenewal } = c.req.valid('json');
     if (!isValidRecoveryTokenFormat(token)) {
       writeAuditEvent(c, {
         orgId: null,
@@ -1127,23 +1209,20 @@ bmrPublicRoutes.post(
     }
 
     const tokenHash = hashRecoveryToken(token);
-    const tokenRateLimited = await enforceTokenRateLimit(
-      c,
-      'authenticate',
-      tokenHash,
-      BMR_AUTHENTICATE_TOKEN_LIMIT,
-      BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS
-    );
-    if (tokenRateLimited) {
+    // A missing or wrong credential is an ordinary first sign-in: the same
+    // bucket and the same punitive counting as before #12566.
+    const isRenewal = presentedRenewal ? verifyRecoverySessionRenewal(tokenHash, presentedRenewal) : false;
+    const tokenCharge = await chargeAuthenticateTokenLimit(c, tokenHash, isRenewal);
+    if (tokenCharge.limited) {
       writeAuditEvent(c, {
         orgId: null,
         action: 'bmr.recovery.authenticate',
         resourceType: 'recovery_token',
-        details: { reason: 'rate_limited_token' },
+        details: { reason: 'rate_limited_token', sessionRenewal: isRenewal },
         result: 'denied',
         errorMessage: 'rate_limited_token',
       });
-      return tokenRateLimited;
+      return tokenCharge.limited;
     }
 
     // System-scoped on purpose (D9): the caller presents an opaque bearer
@@ -1171,7 +1250,11 @@ bmrPublicRoutes.post(
       return c.json({ error: 'Invalid recovery token' }, 401);
     }
 
-    return runInRecoveryOrgContext(row.orgId, async () => {
+    // Set inside the org context when a capability refusal on this proven-
+    // valid token should not count as a first sign-in; acted on after the
+    // context closes, so its Redis round-trips never hold a DB connection.
+    let refusedAfterValidToken = false;
+    const response = await runInRecoveryOrgContext(row.orgId, async () => {
       if (row.expiresAt < new Date()) {
         await db
           .update(recoveryTokens)
@@ -1331,6 +1414,7 @@ bmrPublicRoutes.post(
         await enqueueSnapshotFileIndexHydration(snapshot.id, 'authenticate');
       }
       if (!negotiation.ok) {
+        refusedAfterValidToken = REFUND_TO_REFUSED_BUCKET.has(negotiation.error);
         writeAuditEvent(c, {
           orgId: row.orgId,
           action: 'bmr.recovery.authenticate',
@@ -1403,6 +1487,7 @@ bmrPublicRoutes.post(
           deviceId: row.deviceId,
           restoreType: row.restoreType,
           authenticatedAt: authenticatedAt.toISOString(),
+          sessionRenewal: isRenewal,
         },
         result: 'success',
       });
@@ -1498,6 +1583,7 @@ bmrPublicRoutes.post(
         grantedCapabilities: negotiation.granted,
         fileIndex: negotiation.fileIndex,
         integrity,
+        sessionRenewal: issueRecoverySessionRenewal(tokenHash),
       });
 
       // #7081 R19: a prefixed snapshot is recoverable only through the
@@ -1525,6 +1611,11 @@ bmrPublicRoutes.post(
 
       return c.json(authenticatedPayload);
     });
+
+    if (refusedAfterValidToken && !isRenewal) {
+      await moveRefusedSignInCharge(tokenHash, tokenCharge.entries);
+    }
+    return response;
   }
 );
 

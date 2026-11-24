@@ -7,8 +7,29 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
+
+// backupHelperForwarder is what forwardToBackupHelper needs from the session
+// broker (*sessionbroker.Broker in production).
+type backupHelperForwarder interface {
+	GetOrSpawnBackupHelper(binaryPath string) (*sessionbroker.Session, error)
+	ForwardBackupCommand(commandID, commandType string, payload []byte, timeout time.Duration, async bool, queueAsync ...bool) (*ipc.Envelope, error)
+}
+
+// backupForwarder is the session broker, or the test override; nil when
+// neither is set (never a nil *Broker wrapped in a non-nil interface).
+func (h *Heartbeat) backupForwarder() backupHelperForwarder {
+	if h.backupForwarderOverride != nil {
+		return h.backupForwarderOverride
+	}
+	if h.sessionBroker == nil {
+		return nil
+	}
+	return h.sessionBroker
+}
 
 // backupRunAsyncCapability is the server-advertised WS capability that gates
 // the async backup_run flow (immediate {"started":true} ack over IPC, real
@@ -79,13 +100,22 @@ func backupResultToCommandResult(result backupipc.BackupCommandResult) tools.Com
 
 // forwardToBackupHelper sends a command to the backup binary via IPC and returns the result.
 func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) tools.CommandResult {
+	return forwardToBackupHelperWithin(h, cmd, func() (time.Duration, *tools.CommandResult) { return timeout, nil })
+}
+
+// forwardToBackupHelperWithin is forwardToBackupHelper with the forward wait
+// decided once the helper is up, immediately before the command is sent:
+// forwardTimeout returns the wait (also the IPC request's TimeoutMs), or a
+// result to answer with instead of sending the command at all.
+func forwardToBackupHelperWithin(h *Heartbeat, cmd Command, forwardTimeout func() (time.Duration, *tools.CommandResult)) tools.CommandResult {
 	start := time.Now()
 
-	if h.sessionBroker == nil {
+	broker := h.backupForwarder()
+	if broker == nil {
 		return tools.NewErrorResult(fmt.Errorf("session broker not available"), time.Since(start).Milliseconds())
 	}
 
-	_, err := h.sessionBroker.GetOrSpawnBackupHelper(h.backupBinaryPath)
+	_, err := broker.GetOrSpawnBackupHelper(h.backupBinaryPath)
 	if err != nil {
 		slog.Error("failed to get backup helper", "error", err.Error())
 		return tools.NewErrorResult(fmt.Errorf("backup helper unavailable: %w", err), time.Since(start).Milliseconds())
@@ -95,11 +125,18 @@ func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) too
 	if err != nil {
 		return tools.NewErrorResult(fmt.Errorf("failed to marshal command payload: %w", err), time.Since(start).Milliseconds())
 	}
+	timeout, refused := forwardTimeout()
+	if refused != nil {
+		if refused.DurationMs <= 0 {
+			refused.DurationMs = time.Since(start).Milliseconds()
+		}
+		return *refused
+	}
 	hasAsyncCapability := h.wsClient != nil && h.wsClient.HasServerCapability(backupRunAsyncCapability)
 	queueAsync := h.wsClient != nil && h.wsClient.HasServerCapability(backupQueueAsyncCapability) &&
 		backupipc.IsQueuedWorkload(cmd.Type)
 	async := queueAsync || shouldForwardBackupRunAsync(cmd.Type, hasAsyncCapability)
-	env, err := h.sessionBroker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout, async, queueAsync)
+	env, err := broker.ForwardBackupCommand(cmd.ID, cmd.Type, payload, timeout, async, queueAsync)
 	if err != nil {
 		return tools.NewErrorResult(fmt.Errorf("backup command failed: %w", err), time.Since(start).Milliseconds())
 	}

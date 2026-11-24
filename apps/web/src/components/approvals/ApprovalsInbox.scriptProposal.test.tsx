@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ApprovalsInbox from './ApprovalsInbox';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -154,6 +154,43 @@ describe('ApprovalsInbox + script proposals', () => {
     } finally {
       window.location.hash = '';
     }
+  });
+
+  describe('#proposal-<id> deep link to an unavailable proposal (#12557)', () => {
+    const id = '55555555-5555-4555-8555-555555555555';
+    afterEach(() => {
+      window.location.hash = '';
+    });
+    const mockError = (error: string, errorStatus: number | null) =>
+      useScriptProposal.mockReturnValue({ data: null, loading: false, error, errorStatus, reload: vi.fn() });
+
+    it.each([404, 403])('shows a sentence, never the raw code, for a %i', async (status) => {
+      window.location.hash = `#proposal-${id}`;
+      mockError('not_found', status);
+      renderInbox([]);
+      const alert = await screen.findByTestId('script-proposal-error');
+      expect(alert).toHaveTextContent('This proposal is no longer available');
+      expect(alert).not.toHaveTextContent('not_found');
+    });
+
+    it('shows a generic translated message for any other failure', async () => {
+      window.location.hash = `#proposal-${id}`;
+      mockError('internal_error', 500);
+      renderInbox([]);
+      const alert = await screen.findByTestId('script-proposal-error');
+      expect(alert).not.toHaveTextContent('internal_error');
+      expect(alert).not.toHaveTextContent('no longer available');
+      expect(alert).toHaveTextContent('This proposal could not be loaded');
+    });
+
+    it('dismiss clears the hash and removes the alert', async () => {
+      window.location.hash = `#proposal-${id}`;
+      mockError('not_found', 404);
+      renderInbox([]);
+      fireEvent.click(await screen.findByTestId('script-proposal-error-dismiss'));
+      await waitFor(() => expect(screen.queryByTestId('script-proposal-error')).not.toBeInTheDocument());
+      expect(window.location.hash).toBe('');
+    });
   });
 
   it('ignores a hash that is not a proposal deep link', async () => {

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Download, Save, Search } from 'lucide-react';
 
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { toCsv } from '@/lib/csvExport';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -68,6 +69,7 @@ export default function LogSearch() {
   const [savedQueriesError, setSavedQueriesError] = useState(false);
   const [savedQueriesVersion, setSavedQueriesVersion] = useState(0);
   const searchRequest = useRef<AbortController | null>(null);
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
   const [startTime, setStartTime] = useState(() => toDatetimeLocalInput(new Date(Date.now() - (24 * 60 * 60 * 1000))));
   const [endTime, setEndTime] = useState(() => toDatetimeLocalInput(new Date()));
@@ -196,6 +198,7 @@ export default function LogSearch() {
         body: JSON.stringify({
           name: name.trim(),
           isShared: false,
+          ...(currentOrgId ? { orgId: currentOrgId } : {}),
           filters: {
             query: query.trim() || undefined,
             source: source.trim() || undefined,

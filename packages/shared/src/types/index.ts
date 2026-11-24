@@ -899,6 +899,7 @@ export * from './snmp';
 // ============================================
 
 export * from './discovery';
+export * from './discoveryNetworkGate';
 
 // ============================================
 // Filter System Types
@@ -1060,3 +1061,6 @@ export * from './wispActivity';
 export * from './wispTimeline';
 export * from './wispCheckIns';
 export * from './wisp';
+
+// Configuration policy applies-to summary (#12306 W01a)
+export * from './configPolicyAppliesTo';

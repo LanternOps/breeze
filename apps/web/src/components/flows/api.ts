@@ -9,6 +9,7 @@
 
 import type {
   FlowDetailDto,
+  FlowDocumentV1,
   FlowEnableRequest,
   FlowEnableResultDto,
   FlowLimitsUpdate,
@@ -181,6 +182,10 @@ const FLOW_ERROR_KEYS: Record<string, string> = {
   already_terminal: 'flows:runDetail.alreadyTerminal',
   partner_wide_forbidden: 'flows:enable.partnerWideForbidden',
   interactive_session_required: 'flows:enable.interactiveRequired',
+  // Flows completion W01e: draft routes.
+  version_conflict: 'flows:enable.versionConflict',
+  slug_unavailable: 'flows:enable.slugUnavailable',
+  slug_conflict: 'flows:enable.slugUnavailable',
 };
 
 function flowFriendly(code: string): string | undefined {
@@ -215,6 +220,7 @@ const ENABLE_INLINE_CODES = new Set([
   'pre_approval_not_eligible',
   'webhook_secret_missing',
   'ai_budget_unavailable',
+  'flow_conversion_not_switched',
 ]);
 
 /** Failures the run dialog renders inline. */
@@ -279,6 +285,138 @@ export function startFlowRun(
     friendly: flowFriendly,
     successMessage: i18n.t('flows:toast.runStarted'),
   });
+}
+
+// ---- Flows completion W01e (#12438): hand-built drafts -------------------------
+//
+// Request types are declared here rather than imported from the shared
+// `flowDrafts` request schemas, so the editor does not depend on the API part's
+// shared module (the route validates the body either way).
+
+export interface CreateFlowDraftBody {
+  document: FlowDocumentV1 | Record<string, unknown>;
+  ownerScope?: 'organization' | 'partner';
+  orgId?: string;
+}
+
+export interface UpdateFlowDraftBody {
+  document: FlowDocumentV1 | Record<string, unknown>;
+  expectedVersion: number;
+}
+
+export interface ValidateFlowDraftBody {
+  document: unknown;
+  ownerScope?: 'organization' | 'partner';
+  orgId?: string;
+  flowId?: string;
+}
+
+export interface FlowDraftSaveResult {
+  flow: FlowDetailDto;
+  validation: FlowValidationResult;
+}
+
+/**
+ * Draft failures the editor and the detail page render inline: an invalid
+ * document (`invalid`, 422, with `validation`; `invalid_slug`, 422, without),
+ * a stale or no-longer-editable row, a delete refused for history, and the
+ * owner refusals. Unmapped failures still toast.
+ */
+const DRAFT_INLINE_CODES = new Set([
+  'invalid',
+  'invalid_slug',
+  'version_conflict',
+  'flow_not_draft',
+  'flow_has_history',
+  'flow_not_found',
+  'partner_wide_forbidden',
+  'owner_invalid',
+  'slug_unavailable',
+  'slug_conflict',
+]);
+
+function suppressDraftToast(status: number, code: string | undefined, body?: unknown): boolean {
+  return isDraftInlineFailure(status, errorToken(code, body));
+}
+
+/** True for a create/update failure the client does not toast, so the caller must render it. */
+export function isDraftInlineFailure(status: number, token: string | undefined): boolean {
+  return status === 422 || (token !== undefined && DRAFT_INLINE_CODES.has(token));
+}
+
+/** JSON init for a draft call; the org lives in the body, never the ambient switcher. */
+function draftInit(method: 'POST' | 'PUT' | 'DELETE', body: unknown) {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    orgIdOverride: null,
+  };
+}
+
+/** `POST /flows`: a new draft. 201 `{ flow, validation }`. */
+export function createFlowDraft(body: CreateFlowDraftBody): Promise<FlowDraftSaveResult> {
+  return runAction<FlowDraftSaveResult>({
+    request: () => fetchWithAuth(BASE, draftInit('POST', body)),
+    errorFallback: i18n.t('flows:errors.saveFailed'),
+    successMessage: i18n.t('flows:toast.draftSaved'),
+    suppressErrorToast: suppressDraftToast,
+    friendly: flowFriendly,
+  });
+}
+
+/** `PUT /flows/:id`: replace a draft's document. `expectedVersion` is required (409 when stale). */
+export function updateFlowDraft(flowId: string, body: UpdateFlowDraftBody): Promise<FlowDraftSaveResult> {
+  return runAction<FlowDraftSaveResult>({
+    request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}`, draftInit('PUT', body)),
+    errorFallback: i18n.t('flows:errors.saveFailed'),
+    successMessage: i18n.t('flows:toast.draftSaved'),
+    suppressErrorToast: suppressDraftToast,
+    friendly: flowFriendly,
+  });
+}
+
+/**
+ * `DELETE /flows/:id`: a never-published, never-converted draft. 204 on
+ * success. A 409 `flow_has_history` body carries `conversionId` and
+ * `automationId` when a conversion exists; read it from `ActionError.body`.
+ */
+export async function deleteFlowDraft(flowId: string, expectedVersion: number): Promise<void> {
+  await runAction<unknown>({
+    request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}`, draftInit('DELETE', { expectedVersion })),
+    errorFallback: i18n.t('flows:errors.deleteFailed'),
+    successMessage: i18n.t('flows:toast.draftDeleted'),
+    // Only `flow_has_history` is rendered inline (the detail page links the Job);
+    // every other refusal, a stale version included, is toasted.
+    suppressErrorToast: (_status, code, body) => errorToken(code, body) === 'flow_has_history',
+    friendly: flowFriendly,
+  });
+}
+
+/**
+ * `POST /flows/validate`: what a save would report, writing nothing. Returns
+ * the unwrapped `validation` (valid or not; validate is never a 422). A 404
+ * `flow_not_found` or a 400/403 `owner_invalid` throws an `ActionError` with
+ * the status and body, for the caller to render inline; nothing is toasted.
+ */
+export async function validateFlowDraftDocument(body: ValidateFlowDraftBody): Promise<FlowValidationResult> {
+  // runaction-exempt: read-only validation, inline feedback, no state change
+  const res = await fetchWithAuth(`${BASE}/validate`, draftInit('POST', body));
+  let parsed: unknown;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = undefined;
+  }
+  if (!res.ok) {
+    const token = errorToken(undefined, parsed);
+    throw new ActionError(extractApiError(parsed, `Request failed (${res.status})`), res.status, token, parsed);
+  }
+  const validation = parsed && typeof parsed === 'object' ? (parsed as { validation?: FlowValidationResult }).validation : undefined;
+  if (!validation || !Array.isArray(validation.issues)) {
+    throw new ActionError('Unexpected response shape: missing validation', res.status);
+  }
+  return validation;
 }
 
 // ---- W05 (#5220): webhook secret + delivery log, flow limits -----------------

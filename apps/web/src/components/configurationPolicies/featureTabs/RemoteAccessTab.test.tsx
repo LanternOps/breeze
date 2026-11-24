@@ -129,19 +129,21 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
     };
   }
 
-  it('shows Configured (inherited) and seeds the form from parentLink when only a parent link exists', () => {
+  it('shows From parent and seeds the form from parentLink when only a parent link exists', () => {
     render(<RemoteAccessTab {...inheritedProps} parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })} />);
 
-    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    expect(screen.getByText('From parent')).toBeTruthy();
     // maxConcurrentTunnels defaults to 5; the parent link's distinctive
     // override (12) must be reflected in the (read-only) field.
     expect((screen.getByDisplayValue('12') as HTMLInputElement).value).toBe('12');
   });
 
-  it("Override saves a copy of the inherited settings as the policy's own link", () => {
+  it("Change for this policy saves a copy of the inherited settings as the policy's own link", () => {
     render(<RemoteAccessTab {...inheritedProps} parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     expect(saveMock).toHaveBeenCalled();
     const [existingId, payload] = saveMock.mock.calls[0] as unknown as [
@@ -169,7 +171,7 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     // #5314: Revert to Parent now asks for confirmation first.
     fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
 

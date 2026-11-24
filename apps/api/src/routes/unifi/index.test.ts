@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // The holding-org refusal reads the org; the positional db mocks below do not model it.
 vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
@@ -102,10 +103,18 @@ vi.mock('../../db/schema', () => ({
 
 vi.mock('../../services/unifi/unifiConnectionService', () => ({
   getConnection: vi.fn(),
-  getDecryptedApiKey: vi.fn(),
   upsertConnection: vi.fn(),
   deleteConnection: vi.fn(),
   markStatus: vi.fn(),
+  UnifiMultiKeyError: class UnifiMultiKeyError extends Error {
+    readonly code = 'UNIFI_MULTI_KEY' as const;
+  },
+}));
+
+vi.mock('../../services/unifi/unifiKeyService', () => ({
+  getSyncKeys: vi.fn(),
+  listKeys: vi.fn(async () => []),
+  countEnabledKeys: vi.fn(async () => 1),
 }));
 
 vi.mock('../../services/unifi/unifiCollectorService', () => ({
@@ -144,11 +153,31 @@ vi.mock('../../services/topology/unifiAuthority', () => ({
 
 import { unifiRoutes } from './index';
 import * as svc from '../../services/unifi/unifiConnectionService';
+import * as keySvc from '../../services/unifi/unifiKeyService';
 import * as collectorSvc from '../../services/unifi/unifiCollectorService';
 import { db, runOutsideDbContext } from '../../db';
 import * as topologyAuthority from '../../services/topology/unifiAuthority';
 import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
 import { writeRouteAudit } from '../../services/auditEvents';
+
+function cloudConn() {
+  return {
+    id: CONN_ID,
+    partnerId: PARTNER_ID,
+    connectionType: 'cloud' as const,
+    baseUrl: 'https://api.ui.com',
+    accountLabel: null,
+    isActive: true,
+    status: 'connected' as const,
+    lastSyncAt: null,
+    lastSyncStatus: null,
+    lastSyncError: null,
+  };
+}
+
+function oneKey(apiKey: string) {
+  return { baseUrl: 'https://api.ui.com', keys: [{ id: 'key-1', label: 'Global', apiKey, keyLast4: null, lastSeenHostIds: null }] };
+}
 
 describe('unifi routes', () => {
   beforeEach(() => {
@@ -159,7 +188,9 @@ describe('unifi routes', () => {
     // Reset service mock implementations so mockResolvedValue from a previous
     // test doesn't persist (clearAllMocks only clears call history, not impls)
     vi.mocked(svc.getConnection).mockReset();
-    vi.mocked(svc.getDecryptedApiKey).mockReset();
+    vi.mocked(keySvc.getSyncKeys).mockReset();
+    vi.mocked(keySvc.listKeys).mockReset();
+    vi.mocked(keySvc.listKeys).mockResolvedValue([]);
     vi.mocked(svc.upsertConnection).mockReset();
     vi.mocked(svc.deleteConnection).mockReset();
     vi.mocked(collectorSvc.listCollectors).mockReset();
@@ -220,6 +251,199 @@ describe('unifi routes', () => {
 
     expect(res.status).toBe(200);
     expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /connect returns 409 UNIFI_MULTI_KEY when the connection has several keys', async () => {
+    vi.mocked(svc.upsertConnection).mockRejectedValue(new svc.UnifiMultiKeyError());
+    const res = await unifiRoutes.request('/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiKey: 'valid-key', baseUrl: 'https://other.example' }),
+    });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      code: 'UNIFI_MULTI_KEY',
+      message: 'This connection has several API keys. Manage them from the key list.',
+    });
+  });
+
+  it('GET / includes keys without any secret field', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    const summary = {
+      id: 'key-1', label: 'Global', keyLast4: 'ab12', isEnabled: true, status: 'connected' as const,
+      lastSyncAt: null, lastSyncStatus: null, lastSyncError: null, lastOkAt: null, hostsSeen: 3, sitesSeen: 4,
+      createdAt: new Date('2027-01-01T00:00:00.000Z'),
+    };
+    vi.mocked(keySvc.listKeys).mockResolvedValue([summary]);
+    const res = await unifiRoutes.request('/', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(keySvc.listKeys).toHaveBeenCalledWith(db, CONN_ID, PARTNER_ID);
+    expect(body.keys).toEqual([{ ...summary, createdAt: '2027-01-01T00:00:00.000Z' }]);
+    expect(JSON.stringify(body)).not.toMatch(/apiKey|encrypted/i);
+  });
+
+  it('GET / returns keys: [] for a self-hosted connection without reading keys', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({ ...cloudConn(), connectionType: 'self_hosted' });
+    const res = await unifiRoutes.request('/', { method: 'GET' });
+    await expect(res.json()).resolves.toMatchObject({ connected: true, keys: [] });
+    expect(keySvc.listKeys).not.toHaveBeenCalled();
+  });
+
+  it.each([['POST', '/test'], ['GET', '/hosts']])('%s %s reads the key through getSyncKeys', async (method, path) => {
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue(oneKey('key-from-row'));
+    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+    const res = await unifiRoutes.request(path, { method });
+    expect(res.status).toBe(200);
+    expect(keySvc.getSyncKeys).toHaveBeenCalledWith(db, CONN_ID, PARTNER_ID);
+    expect(createUnifiClient).toHaveBeenCalledWith({ baseUrl: 'https://api.ui.com', apiKey: 'key-from-row' });
+  });
+
+  describe('fan-out across keys (#11808 W2)', () => {
+    const twoKeys = () => ({
+      baseUrl: 'https://api.ui.com',
+      keys: [
+        { id: 'key-a', label: 'Independent', apiKey: 'secret-a', keyLast4: null, lastSeenHostIds: null },
+        { id: 'key-b', label: 'Fabric', apiKey: 'secret-b', keyLast4: null, lastSeenHostIds: null },
+      ],
+    });
+    const hostsClient = (hosts: string[], sites: Array<[string, string]>, fail?: Error) => ({
+      listHosts: vi.fn(async () => { if (fail) throw fail; return hosts.map((id) => ({ id, name: id, type: 'console', model: null })); }),
+      listSites: vi.fn(async () => { if (fail) throw fail; return sites.map(([hostId, id]) => ({ id, hostId, name: id })); }),
+      listSitesForSync: vi.fn(),
+      listDevicesByHost: vi.fn(),
+      listIspMetricsBySite: vi.fn(),
+    });
+    async function clients(...list: Array<ReturnType<typeof hostsClient>>) {
+      const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+      for (const c of list) vi.mocked(createUnifiClient).mockReturnValueOnce(c as any);
+      return createUnifiClient;
+    }
+
+    it('GET /hosts merges two keys and tags each host and site with keyIds', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient(['h1'], [['h1', 's1']]), hostsClient(['h1', 'h2'], [['h1', 's1'], ['h2', 's2']]));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.complete).toBe(true);
+      expect(body.keys).toEqual([{ id: 'key-a', label: 'Independent', ok: true }, { id: 'key-b', label: 'Fabric', ok: true }]);
+      expect(body.hosts).toEqual([
+        { id: 'h1', name: 'h1', model: null, type: 'console', keyIds: ['key-a', 'key-b'], sites: [{ id: 's1', name: 's1', keyIds: ['key-a', 'key-b'] }] },
+        { id: 'h2', name: 'h2', model: null, type: 'console', keyIds: ['key-b'], sites: [{ id: 's2', name: 's2', keyIds: ['key-b'] }] },
+      ]);
+      expect(JSON.stringify(body)).not.toContain('secret-');
+    });
+
+    it('GET /hosts returns complete:false and the failed key when one key fails', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      const { UnifiApiError } = await import('../../services/unifi/unifiClient');
+      await clients(hostsClient(['h1'], [['h1', 's1']]), hostsClient([], [], new UnifiApiError('Unauthorized', 401)));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.complete).toBe(false);
+      expect(body.keys[1]).toEqual({ id: 'key-b', label: 'Fabric', ok: false, error: 'Unauthorized' });
+      expect(body.hosts.map((h: { id: string }) => h.id)).toEqual(['h1']);
+    });
+
+    it('GET /hosts returns 502 when every key fails', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient([], [], new Error('first down')), hostsClient([], [], new Error('second down')));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(502);
+      await expect(res.json()).resolves.toEqual({ success: false, message: 'first down' });
+    });
+
+    it('GET /hosts reads keys inside the request context and calls UniFi outside it', async () => {
+      const { withAuthDbAccessContext } = await import('../../middleware/auth');
+      let inRequestContext = false;
+      vi.mocked(withAuthDbAccessContext).mockImplementationOnce(async (_auth: unknown, fn: () => Promise<unknown>) => {
+        inRequestContext = true;
+        try { return await fn(); } finally { inRequestContext = false; }
+      });
+      const seen: Record<string, boolean> = {};
+      vi.mocked(svc.getConnection).mockImplementation(async () => { seen.connection = inRequestContext; return cloudConn(); });
+      vi.mocked(keySvc.getSyncKeys).mockImplementation(async () => { seen.keys = inRequestContext; return twoKeys(); });
+      const a = hostsClient(['h1'], [['h1', 's1']]);
+      a.listHosts.mockImplementation(async () => { seen.unifi = inRequestContext; return []; });
+      await clients(a, hostsClient([], []));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(seen).toEqual({ connection: true, keys: true, unifi: false });
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('POST /test reports per-key results', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      const { UnifiApiError } = await import('../../services/unifi/unifiClient');
+      const created = await clients(hostsClient(['h1', 'h2'], []), hostsClient([], [], new UnifiApiError('Unauthorized', 401)));
+      const res = await unifiRoutes.request('/test', { method: 'POST' });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({
+        success: false,
+        hostsFound: 2,
+        message: '1 of 2 API keys failed: "Fabric"',
+        keys: [
+          { id: 'key-a', label: 'Independent', success: true, hostsFound: 2 },
+          { id: 'key-b', label: 'Fabric', success: false, message: 'Unauthorized' },
+        ],
+      });
+      expect(created).toHaveBeenCalledTimes(2);
+    });
+
+    it('POST /test counts distinct hosts across healthy keys', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient(['h1', 'h2'], []), hostsClient(['h2', 'h3'], []));
+      const res = await unifiRoutes.request('/test', { method: 'POST' });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ success: true, hostsFound: 3 });
+    });
+
+    it('POST /test returns 502 with each key when every key fails', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient([], [], new Error('first down')), hostsClient([], [], new Error('second down')));
+      const res = await unifiRoutes.request('/test', { method: 'POST' });
+      expect(res.status).toBe(502);
+      await expect(res.json()).resolves.toMatchObject({ success: false, message: 'first down', keys: [{ success: false }, { success: false }] });
+    });
+  });
+
+  it.each([['POST', '/test'], ['GET', '/hosts']])('%s %s answers 400 when the connection has no usable key', async (method, path) => {
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue({
+      baseUrl: 'https://api.ui.com',
+      keys: [{ id: 'key-1', label: 'Global', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: null }],
+    });
+    const res = await unifiRoutes.request(path, { method });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false });
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [] });
+    const none = await unifiRoutes.request(path, { method });
+    expect(none.status).toBe(400);
+    await expect(none.json()).resolves.toMatchObject({ success: false, message: 'No API key found' });
+  });
+
+  it('POST /sync refuses a self-hosted connection instead of queueing a job that does nothing', async () => {
+    const { enqueueUnifiSync } = await import('../../jobs/unifiWorker');
+    vi.mocked(svc.getConnection).mockResolvedValue({ ...cloudConn(), connectionType: 'self_hosted' });
+    const res = await unifiRoutes.request('/sync', { method: 'POST' });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, code: 'UNIFI_NOT_CLOUD' });
+    expect(enqueueUnifiSync).not.toHaveBeenCalled();
+
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    const ok = await unifiRoutes.request('/sync', { method: 'POST' });
+    expect(ok.status).toBe(200);
+    expect(enqueueUnifiSync).toHaveBeenCalledTimes(1);
   });
 
   it('GET / returns {connected:false} when no connection', async () => {
@@ -684,7 +908,7 @@ describe('unifi routes', () => {
       lastSyncStatus: null,
       lastSyncError: null,
     });
-    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue(oneKey('some-key'));
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
@@ -720,7 +944,7 @@ describe('unifi routes', () => {
       lastSyncStatus: null,
       lastSyncError: null,
     });
-    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue(oneKey('some-key'));
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [{ id: 'host-1', name: 'My Host', type: 'console', model: 'UDM Pro' }]),
@@ -750,7 +974,7 @@ describe('unifi routes', () => {
       lastSyncStatus: null,
       lastSyncError: null,
     });
-    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue(oneKey('some-key'));
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [
@@ -787,7 +1011,7 @@ describe('unifi routes', () => {
       lastSyncStatus: null,
       lastSyncError: null,
     });
-    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    vi.mocked(keySvc.getSyncKeys).mockResolvedValue(oneKey('some-key'));
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [{ id: 'console-1', name: 'Mappable UDM', type: 'console', model: 'UDM Pro' }]),
@@ -805,9 +1029,9 @@ describe('unifi routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.hosts).toEqual([
-      { id: 'console-1', name: 'Mappable UDM', model: 'UDM Pro', type: 'console', sites: [{ id: 'usite-1', name: 'HQ' }] },
-      { id: 'ghost-host', name: 'Unknown console', model: null, type: null, unknownConsole: true,
-        sites: [{ id: 'usite-9', name: 'Lost' }, { id: 'usite-8', name: 'Lost 2' }] },
+      { id: 'console-1', name: 'Mappable UDM', model: 'UDM Pro', type: 'console', keyIds: ['key-1'], sites: [{ id: 'usite-1', name: 'HQ', keyIds: ['key-1'] }] },
+      { id: 'ghost-host', name: 'Unknown console', model: null, type: null, unknownConsole: true, keyIds: ['key-1'],
+        sites: [{ id: 'usite-9', name: 'Lost', keyIds: ['key-1'] }, { id: 'usite-8', name: 'Lost 2', keyIds: ['key-1'] }] },
     ]);
     expect(body.omitted).toEqual({ hostsWithoutSites: 0, sitesWithoutHostId: 1 });
   });
@@ -1310,5 +1534,153 @@ describe('unifi routes', () => {
       expect(second.status).toBe(200);
       expect(writeRouteAudit).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('PUT /unifi/mappings explicit deletes (#11808 D9)', () => {
+  const MAP_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const MAP_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const put = (body: unknown) => unifiRoutes.request('/mappings', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const removalLookup = (rows: unknown[]) => {
+    const where = vi.fn(async () => rows);
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn(() => ({ where })) } as any);
+    return where;
+  };
+  const siteLookup = () => vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]) })) })),
+  } as any);
+  const rowA = { id: MAP_A, orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-a' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.delete).mockReset();
+    vi.mocked(svc.getConnection).mockReset();
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    vi.mocked(keySvc.countEnabledKeys).mockReset();
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(1);
+    authState.scope = 'partner';
+    authState.partnerId = PARTNER_ID;
+    authState.partnerOrgAccess = 'all';
+  });
+
+  it('PUT /mappings deletes only the listed removeMappingIds', async () => {
+    removalLookup([rowA]);
+    const deleteWhere = vi.fn(async () => undefined);
+    vi.mocked(db.delete).mockReturnValueOnce({ where: deleteWhere } as any);
+    const res = await put({ mappings: [], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(200);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+    const rendered = new PgDialect().sqlToQuery((deleteWhere.mock.calls[0] as unknown[])[0] as any);
+    expect(rendered.params).toContain(MAP_A);
+    expect(rendered.params).not.toContain(MAP_B);
+    // Explicit removal reads only the listed ids; no host-scoped replace-all read.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(topologyAuthority.revokeUnifiMappingDrift).toHaveBeenCalledWith(CONN_ID, [{ id: 'before-mapping' }]);
+    expect(vi.mocked(topologyAuthority.revokeUnifiMappingDrift).mock.invocationCallOrder[0]).toBeGreaterThan(deleteWhere.mock.invocationCallOrder[0]!);
+  });
+
+  it('PUT /mappings refuses a removeMappingId of another connection', async () => {
+    // The lookup is scoped to this connection: MAP_B (another connection's) is not found.
+    removalLookup([rowA]);
+    const res = await put({ mappings: [], removeMappingIds: [MAP_A, MAP_B] });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, code: 'UNIFI_UNKNOWN_MAPPING' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings refuses a removeMappingId outside the caller\'s org reach', async () => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner' as const, partnerId: PARTNER_ID, partnerOrgAccess: 'all' as const, orgId: null,
+        canAccessOrg: vi.fn((orgId: string) => orgId !== 'other-org'),
+        user: { id: '55555555-5555-5555-5555-555555555555', email: 'admin@example.com' },
+      });
+      return next();
+    });
+    removalLookup([{ ...rowA, orgId: 'other-org' }]);
+    const res = await put({ mappings: [], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(403);
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings refuses removing a mapping the same request upserts', async () => {
+    siteLookup();
+    removalLookup([{ ...rowA, unifiSiteId: 'site-1' }]);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('hostIds with two enabled keys returns 409 UNIFI_EXPLICIT_DELETES_REQUIRED and writes nothing', async () => {
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      code: 'UNIFI_EXPLICIT_DELETES_REQUIRED',
+      message: 'This connection has several API keys. Send removeMappingIds to remove mappings.',
+    });
+    expect(keySvc.countEnabledKeys).toHaveBeenCalledWith(db, CONN_ID, PARTNER_ID);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(topologyAuthority.snapshotUnifiMappings).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('a self-hosted connection keeps the hostIds replace-all (keys are cloud-only)', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({ ...cloudConn(), connectionType: 'self_hosted' });
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    siteLookup();
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(async () => [{ id: 'keep-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' }]) })),
+    } as any);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+    expect(res.status).toBe(200);
+    expect(keySvc.countEnabledKeys).not.toHaveBeenCalled();
+  });
+
+  it('an empty hostIds with two enabled keys is still refused', async () => {
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    const res = await put({ mappings: [], hostIds: [] });
+    expect(res.status).toBe(409);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('two enabled keys without hostIds still saves (upsert plus explicit deletes)', async () => {
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    siteLookup();
+    removalLookup([rowA]);
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) } as any);
+    vi.mocked(db.delete).mockReturnValueOnce({ where: vi.fn(async () => undefined) } as any);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(200);
+    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('a single-key connection keeps the hostIds replace-all', async () => {
+    siteLookup();
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(async () => [{ id: 'keep-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' }]) })),
+    } as any);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects more than 500 removeMappingIds', async () => {
+    const res = await put({ mappings: [], removeMappingIds: Array.from({ length: 501 }, () => MAP_A) });
+    expect(res.status).toBe(400);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

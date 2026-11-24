@@ -4,7 +4,7 @@
   "empty": {
     "title": "Ainda não há fluxos",
     "body": "Um fluxo é uma lista salva de etapas que o Breeze segue da mesma forma em cada execução. Ele pode começar em um agendamento, em um evento, a partir de um webhook ou quando você o inicia. Use um fluxo quando o trabalho tem várias etapas, precisa de uma aprovação ou chama outras ferramentas. Ele não usa IA, a menos que uma etapa peça. Para executar um script em um agendamento, um job é mais simples.",
-    "how": "Os fluxos estão em prévia. Para criar um, peça ao Breeze AI para elaborá-lo ou mova um job existente da página Jobs.",
+    "how": "Crie um com Nova automação, peça ao Breeze AI para elaborá-lo ou mova um job existente da página Jobs.",
     "jobsLink": "Ir para Jobs"
   },
   "list": {
@@ -43,7 +43,15 @@
     "version": "Versão {{version}}",
     "createdInChat": "Criado no Breeze AI",
     "movedFromJob": "Movido de um job",
-    "movedFromJobReverted": "(movido de volta)"
+    "movedFromJobReverted": "(movido de volta)",
+    "shadowingNotice": "Este fluxo está em sombra do job {{name}}. Ele entra em produção quando você faz a troca pelo job.",
+    "shadowingLink": "Abrir o diálogo Mover do job",
+    "edit": "Editar",
+    "delete": "Excluir rascunho",
+    "deleteConfirmTitle": "Excluir este rascunho?",
+    "deleteConfirmMessage": "O rascunho é removido permanentemente. Isso não pode ser desfeito.",
+    "deleteHasHistory": "Este fluxo foi ativado ou movido de um job, então não pode mais ser excluído. Desative-o em vez disso.",
+    "deleteHasHistoryLink": "Abrir o job"
   },
   "step": {
     "tool": "Ferramenta",
@@ -123,7 +131,9 @@
     "enableFailed": "Não foi possível ativar o fluxo.",
     "disableFailed": "Não foi possível desativar o fluxo.",
     "runFailed": "Não foi possível iniciar a execução.",
-    "cancelFailed": "Não foi possível cancelar a execução."
+    "cancelFailed": "Não foi possível cancelar a execução.",
+    "saveFailed": "Não foi possível salvar o fluxo.",
+    "deleteFailed": "Não foi possível excluir o rascunho."
   },
   "tabs": {
     "overview": "Visão geral",
@@ -176,6 +186,7 @@
     "generic": "Não foi possível ativar o fluxo.",
     "webhookSecretMissing": "Crie um segredo de webhook antes de ativar este fluxo.",
     "aiBudgetUnavailable": "Esta organização não tem orçamento de IA, então um fluxo com uma etapa de IA não pode ser ativado.",
+    "conversionNotSwitched": "Este fluxo está em sombra de um job, então ele entra em produção quando você faz a troca pelo job, não por aqui.",
     "webhookSecretInvalidated": "Ativar esta versão apagou o segredo do webhook, porque ele foi criado para um rascunho mais antigo. Todas as requisições são recusadas até que você crie um novo segredo e o entregue ao remetente."
   },
   "run": {
@@ -330,7 +341,9 @@
     "enabled": "Fluxo ativado",
     "disabled": "Fluxo desativado",
     "runStarted": "Execução iniciada",
-    "runCancelled": "Execução cancelada"
+    "runCancelled": "Execução cancelada",
+    "draftSaved": "Rascunho salvo",
+    "draftDeleted": "Rascunho excluído"
   },
   "disable": {
     "title": "Desativar fluxo",
@@ -775,5 +788,146 @@
       "bulkSummary": "{{created}} iniciados, {{skipped}} ignorados.",
       "newJobOpensFlows": "Novo fluxo"
     }
+  },
+  "flowEditor": {
+    "titleNew": "Nova automação",
+    "titleEdit": "Editar {{name}}",
+    "subtitle": "Crie o fluxo com o formulário ou edite o documento dele diretamente. As duas abas editam o mesmo documento.",
+    "backToFlow": "Voltar ao fluxo",
+    "tabs": {
+      "form": "Formulário",
+      "document": "Documento"
+    },
+    "owner": {
+      "title": "Proprietário",
+      "organization": "Somente esta organização",
+      "partner": "Todas as organizações"
+    },
+    "enabledReadOnly": "Este fluxo está ativado, então não pode ser editado. Desative-o para fazer alterações e ative-o novamente depois.",
+    "disableAndEdit": "Desativar e editar",
+    "disableMessage": "Desativar cancela as execuções na fila e em espera e as aprovações pendentes. As execuções já em andamento param no próximo ponto de verificação. Você pode ativar o fluxo novamente depois de editá-lo.",
+    "notFormShaped": "O formulário não consegue mostrar tudo o que há neste documento, então ele fica somente leitura aqui. Edite o documento.",
+    "openDocument": "Abrir o documento",
+    "validateFailed": "Não foi possível verificar o documento: {{message}}",
+    "conflict": "Outra pessoa salvou este fluxo enquanto você o editava. Suas alterações continuam aqui. Recarregue para obter a versão mais recente; recarregar descarta suas alterações.",
+    "reload": "Recarregar",
+    "saveInvalid": "O fluxo não foi salvo porque o documento tem erros. Corrija os problemas listados e salve novamente.",
+    "notDraft": "Este fluxo está ativado, então não pode ser salvo. Desative-o primeiro.",
+    "webhookNext": "Salvo. Fluxos de webhook são ativados na página do fluxo: crie lá o segredo do webhook, entregue-o ao remetente e depois ative o fluxo.",
+    "webhookTabLink": "Abrir a aba Webhook",
+    "limits": "Cada execução alcança no máximo {{devices}} dispositivos e envia no máximo {{notices}} notificações. Um fluxo tem no máximo {{steps}} etapas.",
+    "save": "Salvar",
+    "saveAndEnable": "Salvar e ativar",
+    "shadow": {
+      "title": "Redefinir a comparação?",
+      "message": "Este fluxo foi movido de um job e ainda está sendo comparado com ele. Salvar uma alteração redefine as evidências da comparação, e a comparação recomeça."
+    },
+    "document": {
+      "loading": "Carregando o editor…",
+      "loadError": "Não foi possível carregar o editor. Atualize a página para tentar novamente.",
+      "parseError": "O documento não é um JSON válido"
+    },
+    "form": {
+      "name": "Nome",
+      "description": "Descrição",
+      "remove": "Remover",
+      "listsFailed": "Não foi possível carregar seus scripts e canais de notificação. Atualize a página para tentar novamente.",
+      "trigger": {
+        "title": "Quando é executado",
+        "timezone": "Fuso horário",
+        "eventDeviceHelp": "As ações são executadas no dispositivo que gerou o evento.",
+        "eventNoDeviceNoRun": "Se um alerta chegar sem dispositivo, nenhuma execução é iniciada.",
+        "eventNoDeviceFails": "Se um evento chegar sem dispositivo, a execução falha.",
+        "filter": "Somente quando o evento corresponder",
+        "filterHelp": "Cada campo deve ser exatamente igual ao seu valor. Deixe vazio para executar em todo evento deste tipo.",
+        "filterKey": "Campo do evento",
+        "filterValue": "Valor",
+        "filterAdd": "Adicionar uma condição",
+        "resolverHelp": "Um fluxo para todas as organizações encontra a organização a partir do corpo da requisição: informe o campo do corpo que contém o identificador da organização e o sistema de onde esse identificador vem.",
+        "resolverPath": "Campo do corpo",
+        "resolverSystem": "Sistema",
+        "webhookHelp": "Salve o fluxo e depois crie o segredo do webhook e ative o fluxo na aba Webhook dele.",
+        "manualHelp": "O fluxo é executado somente quando alguém o inicia.",
+        "resolverKind": "O identificador vem de",
+        "resolverKindSystem": "Um sistema externo",
+        "resolverKindBreezeOrg": "Um ID de organização do Breeze"
+      },
+      "target": {
+        "title": "Dispositivos",
+        "triggerDevice": "O dispositivo que gerou o evento.",
+        "choose": "Escolha em quais dispositivos as ações são executadas. Todos os dispositivos é apenas o ponto de partida.",
+        "keep": "Usar todos os dispositivos",
+        "partnerWide": "Um fluxo para todas as organizações pode ter como alvo todos os dispositivos ou um filtro, não dispositivos ou grupos específicos."
+      },
+      "actions": {
+        "title": "Ações",
+        "empty": "Adicione pelo menos uma ação.",
+        "position": "Ação {{n}}",
+        "runScript": "Executar um script",
+        "notify": "Enviar uma notificação",
+        "alert": "Gerar um alerta",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "runAsDefault": "A configuração do script",
+        "runAsSystem": "Sistema",
+        "runAsUser": "Usuário conectado",
+        "parameters": "Parâmetros",
+        "parameterName": "Nome do parâmetro",
+        "parameterValue": "Valor do parâmetro",
+        "parameterAdd": "Adicionar um parâmetro",
+        "severityInfo": "Informação",
+        "severityWarning": "Aviso",
+        "severityCritical": "Crítico",
+        "title_": "Título",
+        "notifyHelp": "Uma mensagem é enviada a cada execução, não uma por dispositivo.",
+        "countsHelp": "O número de dispositivos que tiveram sucesso e falha é adicionado ao final da mensagem.",
+        "alertHelp": "Um alerta é gerado em cada dispositivo alcançado pelas ações.",
+        "commandHint": "Para executar um comando, salve-o primeiro como script.",
+        "scriptsLink": "Ir para Scripts"
+      },
+      "onFailure": {
+        "title": "Se o script não puder ser enviado a um dispositivo",
+        "stop": "Parar",
+        "stopHelp": "As ações seguintes ignoram os dispositivos aos quais o script não pôde ser enviado.",
+        "continue": "Continuar",
+        "continueHelp": "As ações seguintes também são executadas nos dispositivos aos quais o script não pôde ser enviado.",
+        "notify": "Notificar",
+        "notifyHelp": "Envia um aviso aos canais abaixo para cada dispositivo ao qual o script não pôde ser enviado. No máximo 20 avisos são enviados por execução.",
+        "notifySummaryHelp": "Envia um aviso aos canais abaixo para cada script que não pôde ser enviado a todos os dispositivos, com quantos dispositivos tiveram sucesso e quantos falharam.",
+        "noChannels": "Adicione um canal de notificação para usar Notificar."
+      }
+    },
+    "disableWebhookNote": "Este fluxo tem um gatilho de webhook. Ativá-lo novamente depois de editar apaga o segredo do webhook, e o remetente precisará do novo segredo.",
+    "shadowLine": "Este fluxo está em modo sombra para um job. Ele entra em produção pela troca do job, não por aqui.",
+    "validation": {
+      "name": "Dê um nome ao fluxo (até 120 caracteres).",
+      "steps": "Um fluxo precisa de pelo menos uma ação, sem passar do limite.",
+      "cron": "O agendamento não é uma expressão cron válida. Use cinco campos, por exemplo 0 2 * * *.",
+      "timezone": "Esse fuso horário não é reconhecido. Use um nome como UTC ou America/Sao_Paulo.",
+      "script": "Escolha um script para esta ação.",
+      "channel": "Escolha um canal de notificação para esta ação.",
+      "channels": "Escolha pelo menos um canal de notificação.",
+      "duplicateStepId": "Duas ações têm o mesmo id. Dê a cada ação o seu próprio id.",
+      "unknownStepReference": "Isto se refere a uma ação que não existe. Verifique o id da ação.",
+      "forwardReference": "Isto usa o resultado de uma ação executada depois. Mova essa ação para antes ou remova a referência.",
+      "eventUnknown": "O sistema não reconhece esse tipo de evento. Escolha um da lista.",
+      "toolNotFound": "Essa ação não está disponível para este fluxo. Escolha outra.",
+      "channelNotOwned": "Esse canal de notificação não pertence ao proprietário deste fluxo. Escolha um seu.",
+      "referenceNotOwned": "Isto se refere a algo que não pertence ao proprietário deste fluxo.",
+      "deviceNotOwned": "Esse dispositivo não pertence à organização deste fluxo.",
+      "resolverRequired": "Um fluxo para todas as organizações precisa do campo do corpo que nomeia a organização do cliente.",
+      "resolverNotAllowed": "O fluxo de webhook de uma organização sempre é executado nessa organização. Remova a busca de organização.",
+      "documentTooLarge": "O documento é grande demais. Remova algumas ações ou texto.",
+      "secretInDocument": "O documento contém algo que parece um segredo. Remova-o do documento.",
+      "event": "Escolha o evento que inicia este fluxo.",
+      "eventFilter": "O nome de um campo do filtro de eventos não é válido. Use letras, números, pontos e sublinhados, começando com uma letra.",
+      "orgResolver": "A busca da organização não é válida. Informe o campo do corpo como body.nome e, para um sistema externo, o nome dele.",
+      "title": "Dê um título a esta ação (até 200 caracteres).",
+      "message": "Escreva uma mensagem para esta ação (até 4000 caracteres).",
+      "parameters": "Um parâmetro do script não é válido. Dê um nome a cada parâmetro.",
+      "target": "Escolha em quais dispositivos este fluxo é executado.",
+      "inputInvalid": "Este valor não é válido. Confira o campo no caminho mostrado."
+    },
+    "enableOpenFailed": "O rascunho foi salvo, mas não foi possível abrir a caixa de diálogo de ativação. Abra o fluxo para ativá-lo."
   }
 }

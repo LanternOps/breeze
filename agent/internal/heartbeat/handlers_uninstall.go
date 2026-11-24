@@ -89,6 +89,10 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(fmt.Errorf("self_uninstall refused: %w; nothing was removed", err), time.Since(start).Milliseconds())
 	}
 
+	// From here until a failed hand-off, the user-helper logon task repair
+	// (#12580) must not put back what the teardown removes.
+	selfUninstallInProgress.Store(true)
+
 	removeConfig := tools.GetPayloadBool(cmd.Payload, "removeConfig", true)
 
 	log.Warn("self_uninstall command received — uninstalling agent",
@@ -97,12 +101,14 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	if err := releaseIsolationForUninstallFn(h); err != nil {
 		admissionDone()
+		selfUninstallInProgress.Store(false)
 		return tools.NewErrorResult(fmt.Errorf("self-uninstall refused: isolation release could not be confirmed; agent service remains installed: %w", err), time.Since(start).Milliseconds())
 	}
 
 	helperReports, err := prepareSelfUninstallFn(selfUninstallRequest{CommandID: cmd.ID, RemoveConfig: removeConfig})
 	if err != nil {
 		admissionDone()
+		selfUninstallInProgress.Store(false)
 		log.Error("self-uninstall preparation failed — teardown NOT handed off, agent service remains installed",
 			"error", err.Error(),
 		)

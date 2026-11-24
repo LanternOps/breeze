@@ -8,7 +8,7 @@ import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useHashState } from '@/lib/useHashState';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { badgeClass, modeTone, runStatusTone } from '../aiAgents/statusBadge';
@@ -17,6 +17,7 @@ import { EmptyState } from '../shared/EmptyState';
 import { PageHeader } from '../shared/PageHeader';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import AgentCreateFlow from './aiAgents/AgentCreateFlow';
+import AgentCircuitNotice from './aiAgents/AgentCircuitNotice';
 import WispPartnerSettingsCard from './WispPartnerSettingsCard';
 import { replaceUrl } from '../../lib/replaceUrl';
 
@@ -479,18 +480,25 @@ export default function AiAgentsPage() {
         }),
         successMessage: t('aiAgentsPage.toasts.runNowQueued'),
         errorFallback: t('aiAgentsPage.toasts.runNowFailed'),
-        friendly: (code) => (code === 'no_patch_agent'
-          ? t('aiAgentsPage.errors.noPatchAgent')
-          : undefined),
+        friendly: (code) => {
+          if (code === 'no_patch_agent') return t('aiAgentsPage.errors.noPatchAgent');
+          // #12347: the route's HTTP-200 decline now carries the skip reason
+          // as `code`, so an open circuit is named instead of the generic line.
+          if (code === 'circuit_open') return t('aiAgentsPage.errors.circuitOpen');
+          return undefined;
+        },
         onUnauthorized: UNAUTHORIZED,
       });
     } catch (err) {
       handleActionError(err, t('aiAgentsPage.toasts.runNowFailed'));
+      // The circuit may have opened since the list loaded: reload so the card
+      // shows it, with its Reset, right where the toast pointed.
+      if (err instanceof ActionError && err.code === 'circuit_open') void load();
     } finally {
       setRunningNowId(null);
       runningRef.current = false;
     }
-  }, [t]);
+  }, [load, t]);
 
   /** The Run now control, for an enabled patch agent only. Disabled — with the
    *  reason in its tooltip — while the page is on "All organizations": a patch
@@ -830,6 +838,16 @@ export default function AiAgentsPage() {
                   {lastRunCell(agent)}
                   {nextOccurrenceCell(agent)}
                 </p>
+                {/* #12347: an open circuit refuses this agent's runs in that
+                    org until a human resets it — said here, with the Reset. */}
+                <AgentCircuitNotice
+                  agentId={agent.id}
+                  agentName={agent.name}
+                  openCircuits={agent.openCircuits}
+                  selectedOrgId={orgScope.scope === 'org' ? orgScope.orgId : null}
+                  onUnauthorized={UNAUTHORIZED}
+                  onReset={() => void load()}
+                />
                 {justReenabledId === agent.id && (
                   <p
                     className="mt-1 text-xs text-muted-foreground"

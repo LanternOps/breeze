@@ -11,7 +11,7 @@ import { partnerAbuseSignals, abuseScriptHosts } from '../../db/schema/abuseSign
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches, scriptTags, scriptToTags, scriptVersions } from '../../db/schema/scripts';
-import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
+import { unifiIntegrations, unifiIntegrationKeys, unifiDevices } from '../../db/schema/unifi';
 import { oauthRevocationRetries } from '../../db/schema/oauth';
 import { portalUsers, portalUserIdentities } from '../../db/schema/portal';
 import { portalDirectoryActions, portalDirectoryRuns } from '../../db/schema/portalDirectory';
@@ -446,6 +446,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // partner_id for fast filtering. unifi_site_mappings and unifi_devices
   // are direct org_id (Shape 1) and are auto-discovered — not listed here.
   ['unifi_integrations', 'partner_id'],
+  // One encrypted Site Manager API key per row (#11808); partner_id is
+  // denormalized and pinned to the integration's by a composite FK.
+  ['unifi_integration_keys', 'partner_id'],
   ['unifi_sync_runs', 'partner_id'],
   // partner_login_branding (#2183): login-page branding for the MSP's own
   // technician login. Deliberately partner-ONLY (no org axis) — see
@@ -4926,6 +4929,128 @@ describe('unifi_integrations RLS — cross-partner forge enforcement (Shape 3)',
       expect(message).toMatch(/row-level security/i);
     },
   );
+});
+
+// ===========================================================================
+// unifi_integration_keys — partner-axis forge test (Shape 3, #11808)
+//
+// Each row holds one encrypted UniFi Site Manager API key. Partner A's context
+// must not insert, select, update or delete partner B's keys. Fixtures are
+// seeded in system context and torn down in afterAll (no TRUNCATE dependency).
+// ===========================================================================
+describe('unifi_integration_keys RLS: cross-partner forge enforcement (Shape 3)', () => {
+  const runSuffix = Math.random().toString(36).slice(2, 8);
+  let partnerAId = '';
+  let partnerBId = '';
+  let integrationAId = '';
+  let integrationBId = '';
+  let keyBId = '';
+
+  function partnerContext(partnerId: string) {
+    return { scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null };
+  }
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const [a, b] = await db.insert(partners).values([
+        { name: `RLS UniFi Keys A ${runSuffix}`, slug: `rls-unifi-keys-a-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+        { name: `RLS UniFi Keys B ${runSuffix}`, slug: `rls-unifi-keys-b-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+      ]).returning({ id: partners.id });
+      if (!a || !b) throw new Error('failed to seed partners for unifi_integration_keys forge test');
+      partnerAId = a.id;
+      partnerBId = b.id;
+      const [ia, ib] = await db.insert(unifiIntegrations).values([
+        { partnerId: partnerAId, apiKeyEncrypted: 'rls-forge-not-a-real-key' },
+        { partnerId: partnerBId, apiKeyEncrypted: 'rls-forge-not-a-real-key' },
+      ]).returning({ id: unifiIntegrations.id });
+      integrationAId = ia!.id;
+      integrationBId = ib!.id;
+      const [kb] = await db.insert(unifiIntegrationKeys).values({
+        integrationId: integrationBId,
+        partnerId: partnerBId,
+        label: 'B key',
+        apiKeyEncrypted: 'rls-forge-not-a-real-key',
+      }).returning({ id: unifiIntegrationKeys.id });
+      keyBId = kb!.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      for (const id of [partnerAId, partnerBId].filter(Boolean)) {
+        await db.delete(unifiIntegrations).where(eq(unifiIntegrations.partnerId, id));
+        await db.delete(partners).where(eq(partners.id, id));
+      }
+    });
+  });
+
+  function rlsMessage(err: unknown): string {
+    const e = err as { cause?: { message?: string }; message?: string } | undefined;
+    return e?.cause?.message ?? e?.message ?? '';
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)('partner A INSERT of a key with partner_id=B is rejected by RLS', async () => {
+    await ensureFixtures();
+    let caught: unknown;
+    try {
+      await withDbAccessContext(partnerContext(partnerAId), () =>
+        db.insert(unifiIntegrationKeys).values({
+          integrationId: integrationBId,
+          partnerId: partnerBId,
+          label: 'forged',
+          apiKeyEncrypted: 'rls-forge-not-a-real-key',
+        }),
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    expect(rlsMessage(caught)).toMatch(/row-level security/i);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)("partner A cannot SELECT, UPDATE or DELETE partner B's key", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(partnerContext(partnerAId), () =>
+      db.select({ id: unifiIntegrationKeys.id }).from(unifiIntegrationKeys).where(eq(unifiIntegrationKeys.id, keyBId)),
+    );
+    expect(visible).toHaveLength(0);
+
+    const updated = await withDbAccessContext(partnerContext(partnerAId), () =>
+      db.update(unifiIntegrationKeys).set({ label: 'hijacked' }).where(eq(unifiIntegrationKeys.id, keyBId))
+        .returning({ id: unifiIntegrationKeys.id }),
+    );
+    expect(updated).toHaveLength(0);
+
+    const deleted = await withDbAccessContext(partnerContext(partnerAId), () =>
+      db.delete(unifiIntegrationKeys).where(eq(unifiIntegrationKeys.id, keyBId)).returning({ id: unifiIntegrationKeys.id }),
+    );
+    expect(deleted).toHaveLength(0);
+
+    const [still] = await withSystemDbAccessContext(() =>
+      db.select({ label: unifiIntegrationKeys.label }).from(unifiIntegrationKeys).where(eq(unifiIntegrationKeys.id, keyBId)),
+    );
+    expect(still?.label).toBe('B key');
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)('partner A cannot move its own key onto partner B', async () => {
+    await ensureFixtures();
+    const [keyA] = await withSystemDbAccessContext(() =>
+      db.insert(unifiIntegrationKeys).values({
+        integrationId: integrationAId,
+        partnerId: partnerAId,
+        label: 'A key',
+        apiKeyEncrypted: 'rls-forge-not-a-real-key',
+      }).returning({ id: unifiIntegrationKeys.id }),
+    );
+    let caught: unknown;
+    try {
+      await withDbAccessContext(partnerContext(partnerAId), () =>
+        db.update(unifiIntegrationKeys).set({ partnerId: partnerBId, integrationId: integrationBId })
+          .where(eq(unifiIntegrationKeys.id, keyA!.id)),
+      );
+    } catch (err) { caught = err; }
+    expect(caught).toBeDefined();
+    expect(rlsMessage(caught)).toMatch(/row-level security/i);
+  });
 });
 
 // ===========================================================================

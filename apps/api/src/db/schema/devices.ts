@@ -129,6 +129,12 @@ export const devices = pgTable('devices', {
   // agent's heartbeat instead (#7067).
   lastLogAt: timestamp('last_log_at', { withTimezone: true }),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
+  // #8318 wave T2: when the CURRENT install enrolled. enrolled_at is the row's
+  // first enrollment and never moves; a re-enroll onto this row (the agent
+  // presented the row's own token) sets this. NULL on rows from before the
+  // column (read as enrolled_at). TPM reattach evidence counts only a key
+  // proof made after it (services/deviceReattach/evidence.ts).
+  installEnrolledAt: timestamp('install_enrolled_at', { withTimezone: true }).defaultNow(),
   // Bare-metal recovery W04a: stamped by the heartbeat check-in that completes
   // a recovery. recoveredFromSnapshotId is a soft reference to
   // backup_snapshots.id (no FK, like possibleReplacementOfDeviceId above) —
@@ -436,6 +442,14 @@ export const devices = pgTable('devices', {
   // assignment, so no wrong-site suggestion is computed. Cleared by the
   // breeze_devices_site_assignment_confirmation_reset trigger on any site/org change; no expiry.
   siteAssignmentConfirmedAt: timestamp('site_assignment_confirmed_at', { withTimezone: true }),
+  // Learned networks (#12369, spec §6): the last accepted network-attachment report — its install epoch and
+  // sequence, a digest of its normalized content plus WAN address, and when the server last saw it confirmed.
+  // Cleared, with the device's learned_network_devices rows, by the BEFORE UPDATE OF org_id trigger
+  // breeze_learned_networks_device_moved on a cross-org move (2027-01-29-100000-learned-networks.sql).
+  networkAttachmentEpoch: varchar('network_attachment_epoch', { length: 16 }),
+  networkAttachmentSequence: bigint('network_attachment_sequence', { mode: 'number' }),
+  networkAttachmentDigest: varchar('network_attachment_digest', { length: 64 }),
+  networkAttachmentsConfirmedAt: timestamp('network_attachments_confirmed_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()

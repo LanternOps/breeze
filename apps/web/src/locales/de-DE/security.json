@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Pi-hole API Endpunkt + API Schlüssel. Verwenden Sie den LAN-routbaren Hostnamen.",
         "apiKeyPlaceholder": "Pihole-API-Schlüssel von /admin",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Wähle die Hauptversion deines Pi-hole. v6 meldet sich mit einem App-Passwort an.",
+        "appPasswordPlaceholder": "App-Passwort aus Einstellungen → Weboberfläche / API"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "Konto-ID (optional)",
       "apiEndpoint": "API Endpunkt",
       "httpBasicUsername": "HTTP Einfacher Benutzername",
-      "httpBasicPassword": "HTTP Basispasswort"
+      "httpBasicPassword": "HTTP Basispasswort",
+      "piholeVersion": "Pi-hole-Version",
+      "appPassword": "App-Passwort"
     },
     "placeholders": {
       "displayName": "z.B. Acme-Hauptquartier-Gateway",
@@ -1693,6 +1697,10 @@
       "createFailed": "Die Integration konnte nicht erstellt werden",
       "createSuccess": "{{provider}} Integration „{{name}}“ hinzugefügt",
       "networkError": "Netzwerkfehler"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (alte Admin-API)",
+      "v6": "Pi-hole v6 (Session-API)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "Zugelassenen Datenverkehr speichern",
       "helpOff": "Nur blockierte und umgeleitete Anfragen werden gespeichert. Zugelassene Anfragen machen meist fast den gesamten Datenverkehr aus, und Ihr DNS-Anbieter führt sie in seinen eigenen Berichten.",
       "helpOn": "Zugelassene Anfragen werden ebenfalls gespeichert, meist etwa 100-mal so viele Zeilen. Wenn Sie dies später ausschalten, werden bereits gespeicherte zugelassene Anfragen nicht gelöscht; die Aufbewahrungsfrist entfernt sie."
+    },
+    "piholeVersion": {
+      "label": "Pi-hole-Version",
+      "v5": "Pi-hole v5 (alte Admin-API)",
+      "v6": "Pi-hole v6 (Session-API)",
+      "help": "Ändert, wie Breeze mit diesem Pi-hole kommuniziert. Für v6 die Integration mit einem App-Passwort neu anlegen, falls der gespeicherte Schlüssel ein v5-Token ist."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

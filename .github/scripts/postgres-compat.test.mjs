@@ -267,7 +267,7 @@ test('check-migrations-nonsuperuser: the Postgres-N step runs exactly what the 1
 
 test('ci.yml runs this contract in the lint job, before dependencies are installed', () => {
   const lint = steps(job(ci(), 'lint'));
-  const at = lint.findIndex((s) => s.lines.some((l) => l.trim() === 'run: node --test .github/scripts/postgres-compat.test.mjs'));
+  const at = lint.findIndex((s) => s.lines.some((l) => /^run: node --test --test-timeout=\d+ \.github\/scripts\/postgres-compat\.test\.mjs$/u.test(l.trim())));
   assert.ok(at !== -1, 'lint must run node --test .github/scripts/postgres-compat.test.mjs');
   assert.ok(at < lint.findIndex((s) => s.name === 'Install dependencies'), 'built-ins only: runs before pnpm install');
 });

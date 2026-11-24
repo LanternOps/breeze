@@ -132,6 +132,37 @@ describe('vendor update seam against real PostgreSQL', () => {
     });
   });
 
+  // #12266: a Run Now must not use up the night's scheduled attempt, nor erase one.
+  runDb('only a scheduled dispatch records the scheduled attempt; a later Run Now leaves it as it was', async () => {
+    const { org, deviceId } = await seed();
+
+    const scheduled = await dispatchOemUpdateRun(runInput(deviceId, org.id, { trigger: 'scheduled', occurrenceKey: '2027-01' }));
+    expect(scheduled.ok).toBe(true);
+    const afterScheduled = await statusRow(deviceId);
+    expect(afterScheduled!.lastScheduledAttemptAt).toBeInstanceOf(Date);
+    expect(afterScheduled!.lastScheduledAttemptAt!.getTime()).toBe(afterScheduled!.lastAttemptAt!.getTime());
+
+    // Settle it so the seam allows the next run.
+    await withSystemDbAccessContext(() => db.update(deviceCommands)
+      .set({ status: 'completed', completedAt: new Date() })
+      .where(eq(deviceCommands.id, (scheduled as { commandId: string }).commandId)));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const runNow = await dispatchOemUpdateRun(runInput(deviceId, org.id));
+    expect(runNow.ok).toBe(true);
+    const afterRunNow = await statusRow(deviceId);
+    expect(afterRunNow!.lastAttemptAt!.getTime()).toBeGreaterThan(afterScheduled!.lastAttemptAt!.getTime());
+    expect(afterRunNow!.lastScheduledAttemptAt!.getTime()).toBe(afterScheduled!.lastScheduledAttemptAt!.getTime());
+  });
+
+  runDb('a Run Now on a device that never had a scheduled run records no scheduled attempt', async () => {
+    const { org, deviceId } = await seed();
+    await expect(dispatchOemUpdateRun(runInput(deviceId, org.id))).resolves.toMatchObject({ ok: true });
+    const status = await statusRow(deviceId);
+    expect(status!.lastAttemptAt).toBeInstanceOf(Date);
+    expect(status!.lastScheduledAttemptAt).toBeNull();
+  });
+
   runDb('refuses at the seam with the flag off, and queues nothing', async () => {
     const { org, deviceId } = await seed();
     vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'false');

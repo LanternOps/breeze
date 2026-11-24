@@ -195,6 +195,33 @@ export function narrowAuthToCeiling(
 }
 
 /**
+ * #11677: the auth an org-less READ call of `toolName` with `input` would run
+ * under in this grant's chat, for context Breeze builds from the rows that call
+ * would list (the standing state, standingLoop.ts): the same tool term, human
+ * permission and reach cut as `enforceWispCeiling`, without a target org.
+ * Null — read nothing — when the auth cannot carry the grant, the ceiling
+ * refuses the tool or the action, or the call resolves to no permission at all
+ * (stricter than the gate, which lets an empty requirement through).
+ */
+export function wispReadAuthFor(
+  auth: AuthContext,
+  ceiling: GrantCeiling,
+  toolName: string,
+  input: Record<string, unknown>,
+): AuthContext | null {
+  if (auth.scope === 'system' || (auth.partnerId !== null && auth.partnerId !== ceiling.partnerId)) return null;
+  const permissionKeys = requiredPermissionKeys(toolName, input);
+  if (permissionKeys.length === 0) return null;
+  try {
+    assertWithinCeiling(ceiling, { toolName, toolAction: typeof input.action === 'string' ? input.action : null });
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return null;
+    throw err;
+  }
+  return narrowAuthToCeiling(auth, ceiling, undefined, permissionKeys);
+}
+
+/**
  * #11432: the org an org-less write of this call may land in: the thread's
  * focus org, and only when it is also `sessionOrgId`, the org the call is
  * checked against and its approval filed in (the session org at the chat gate,

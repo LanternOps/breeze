@@ -100,6 +100,19 @@ describe('rankCandidates', () => {
     ]);
   });
 
+  it('ranks a proven TPM key above every hardware identifier, as reason tpm (#8318 wave T2)', () => {
+    const ranked = rankCandidates(source, [
+      { target: c, evidence: 'system_uuid' },
+      { target: a, evidence: 'tpm_ek' },
+      { target: a, evidence: 'hostname' },
+    ]);
+    expect(ranked.map((r) => [r.target.id, r.evidence, r.reason])).toEqual([
+      ['a', 'tpm_ek', 'tpm'],
+      ['c', 'system_uuid', 'hardware'],
+    ]);
+    expect(evidenceReason('tpm_ek')).toBe('tpm');
+  });
+
   it('then the same OS first, then the most recently seen', () => {
     const ranked = rankCandidates(source, [
       { target: a, evidence: 'serial' },

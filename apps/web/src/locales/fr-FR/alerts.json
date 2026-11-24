@@ -835,6 +835,8 @@
       "userKeyTooLong": "La clé utilisateur doit faire 30 caractères ou moins",
       "tokenTooLong": "Le jeton doit faire 30 caractères ou moins",
       "deviceNameTooLong": "Le nom de l’appareil doit avoir 25 caractères ou moins",
+      "emailRequired": "Au moins un destinataire e-mail est requis",
+      "allEmailFormat": "Tous les destinataires e-mail doivent avoir une adresse valide (par exemple nom@example.com)",
       "phoneRequired": "Au moins un numéro de téléphone est requis",
       "phoneFormat": "Le numéro de téléphone doit être au format E.164 (par exemple +1234567890)",
       "allPhoneFormat": "Tous les numéros de téléphone SMS doivent utiliser le format E.164 (par exemple +1234567890)",

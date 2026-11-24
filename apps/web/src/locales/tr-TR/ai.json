@@ -537,6 +537,8 @@
     "createTicket": "Bilet oluştur"
   },
   "scriptProposal": {
+    "unavailable": "Bu öneri artık kullanılamıyor. Karara bağlanmış, süresi dolmuş veya başka bir kuruluşa ait olabilir.",
+    "loadFailed": "Bu öneri yüklenemedi. Biraz sonra tekrar deneyin.",
     "title": "Yapay zekâ tarafından yazılan betik",
     "goal": "Amaç",
     "expectedEffect": "Beklenen etki",

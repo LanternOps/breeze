@@ -3,9 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ArrowRightLeft } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
+import { discoverReauthTier } from '../../lib/reauthTier';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
-import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
+import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { usePermissions } from '@/lib/permissions';
 import { canonicalMoveOrgResource, moveOrgRequestBody } from '../../lib/moveOrgResource';
@@ -24,6 +25,8 @@ export interface MoveDeviceOrgDialogProps {
    */
   passkeyCount?: number;
   mfaMethod?: string | null;
+  /** Whether an authenticator app is enrolled (`GET /users/me`), as primary or backup. */
+  totpEnrolled?: boolean;
   onClose: () => void;
   onCompleted: (result: { targetOrgId: string; targetOrgName: string }) => void;
 }
@@ -37,6 +40,13 @@ interface CurrencyBlock {
   targetCurrency: string;
   unbilledTimeEntries: number;
   unbilledParts: number;
+}
+
+interface DevicePolicyAssignment {
+  assignment: { id: string };
+  policyName: string;
+  policyOrgId: string | null;
+  policyPartnerId: string | null;
 }
 
 /** Orgs a device can be moved INTO: any other org of the partner that is live. */
@@ -55,6 +65,7 @@ export default function MoveDeviceOrgDialog({
   device,
   passkeyCount,
   mfaMethod,
+  totpEnrolled,
   onClose,
   onCompleted,
 }: MoveDeviceOrgDialogProps) {
@@ -82,6 +93,7 @@ export default function MoveDeviceOrgDialog({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [discoveredTier, setDiscoveredTier] = useState<ReauthTier | null>(null);
+  const [policyAssignments, setPolicyAssignments] = useState<DevicePolicyAssignment[]>([]);
 
   // Reset on (re)open: a stale target would otherwise be minted into a grant
   // for the wrong move.
@@ -105,9 +117,35 @@ export default function MoveDeviceOrgDialog({
     if (open && organizations.length === 0) void fetchOrganizations();
   }, [open, organizations.length, fetchOrganizations]);
 
+  // #12491: the device's own policy assignments, to list those the move
+  // removes. A preview only: when the read fails (for example no
+  // configuration-policy read permission) the list stays empty and the move
+  // itself is unaffected.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setPolicyAssignments([]);
+    fetchWithAuth(`/configuration-policies/assignments/target?level=device&targetId=${device.id}`)
+      .then(async (res) => {
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled && Array.isArray(body.data)) setPolicyAssignments(body.data);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, device.id]);
+
   const targets = useMemo(
     () => organizations.filter((o) => o.id !== device.orgId && MOVE_TARGET_STATUSES.has(o.status)),
     [organizations, device.orgId],
+  );
+
+  // The engine removes an assignment whose policy cannot own a device in the
+  // target org: every org-owned one (it is the source org's), and a
+  // partner-owned one only when the target org is under another partner.
+  const targetOrg = targets.find((o) => o.id === targetOrgId);
+  const removedPolicyAssignments = policyAssignments.filter(
+    (a) => a.policyOrgId !== null || (targetOrg !== undefined && a.policyPartnerId !== targetOrg.partnerId),
   );
 
   // Load the chosen org's sites. The route requires the target site to belong
@@ -134,8 +172,8 @@ export default function MoveDeviceOrgDialog({
     () =>
       passkeyCount === undefined || mfaMethod === undefined
         ? discoveredTier
-        : pickReauthTier(passkeyCount, mfaMethod),
-    [passkeyCount, mfaMethod, discoveredTier],
+        : pickReauthTier(passkeyCount, mfaMethod, totpEnrolled),
+    [passkeyCount, mfaMethod, totpEnrolled, discoveredTier],
   );
   // `password` is not a valid step-up method for device_move_org and there is
   // no authenticated step-up SMS sender, so a submit could only ever 403.
@@ -197,18 +235,7 @@ export default function MoveDeviceOrgDialog({
         }
         if (tier === null) {
           try {
-            const [userResponse, passkeyResponse] = await Promise.all([
-              fetchWithAuth('/users/me'),
-              fetchWithAuth('/auth/passkeys'),
-            ]);
-            if (!userResponse.ok || !passkeyResponse.ok) throw new Error();
-            const user = await userResponse.json();
-            const passkeyData = await passkeyResponse.json();
-            const passkeys = Array.isArray(passkeyData) ? passkeyData : passkeyData?.passkeys;
-            if (!user || typeof user !== 'object' || !('mfaMethod' in user) || !Array.isArray(passkeys)) {
-              throw new Error();
-            }
-            setDiscoveredTier(pickReauthTier(passkeys.length, user.mfaMethod));
+            setDiscoveredTier(await discoverReauthTier());
           } catch {
             setError(t('moveDeviceOrgDialog.genericError'));
             return;
@@ -342,6 +369,16 @@ export default function MoveDeviceOrgDialog({
                   ))}
                 </select>
               )}
+            </div>
+          )}
+
+          {removedPolicyAssignments.length > 0 && (
+            <div className="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-3" data-testid="move-org-policy-assignments">
+              <p className="text-sm font-medium">{t('moveDeviceOrgDialog.policyAssignmentsHeading')}</p>
+              <p className="text-xs text-muted-foreground">{t('moveDeviceOrgDialog.policyAssignmentsDetail')}</p>
+              <ul className="list-disc pl-5 text-xs text-foreground">
+                {removedPolicyAssignments.map((a) => <li key={a.assignment.id}>{a.policyName}</li>)}
+              </ul>
             </div>
           )}
 

@@ -20,11 +20,13 @@ it('disables invalid settings and does not clamp partially typed values',()=>{
  expect((screen.getByRole('button',{name:/^save$/i}) as HTMLButtonElement).disabled).toBe(true);
  expect((screen.getByTestId('hardware-monitoring-raid-interval') as HTMLInputElement).value).toBe('1');
 });
-it('shows inherited values and creates an override without editing the parent',async()=>{
+it('shows inherited values and creates its own link on Change for this policy + Save without editing the parent',async()=>{
  const parent={id:'parent-link',featureType:'hardware_monitoring' as const,featurePolicyId:null,inlineSettings:{enabled:false,pollIntervalMinutes:30,diskHealthIntervalMinutes:180}};
  render(<HardwareMonitoringTab policyId="policy" existingLink={undefined} parentLink={parent} linkedPolicyId="parent" onLinkChanged={m.changed}/>);
  expect(screen.getByTestId('hardware-monitoring-enabled').closest('fieldset')!.disabled).toBe(true);
- fireEvent.click(screen.getByRole('button',{name:/override/i}));
+ fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+ expect(m.save).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:/^save$/i}));
  await waitFor(()=>expect(m.save).toHaveBeenCalledWith(null,expect.objectContaining({inlineSettings:parent.inlineSettings})));
 });
 it('does not notify the parent when save fails',async()=>{

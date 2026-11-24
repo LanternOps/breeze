@@ -14,4 +14,11 @@ describe('release command survives start version and trust gates', () => {
     expect(LIFECYCLE_COMMAND_TYPES).toContain('release_containment');
     expect(GATED_COMMAND_TYPES).toContain('execute_containment');
   });
+
+  it('registers the guarded discovery scan with a minimum version, a live offline class and a trust class (#12369)', () => {
+    expect(COMMAND_MIN_AGENT_VERSION.network_discovery_guarded).toBeDefined();
+    expect(defaultOfflinePolicy('network_discovery_guarded').kind).toBe('reject');
+    expect(EXPLICITLY_CLASSIFIED_COMMAND_TYPES.has('network_discovery_guarded')).toBe(true);
+    expect(GATED_COMMAND_TYPES).toContain('network_discovery_guarded');
+  });
 });

@@ -107,6 +107,8 @@ function discovered(): string[] {
     // W15 (#6785): explicitly classify this billing-only service as required by the wave contract.
     'services/pax8OrderPreview.ts',
     'services/actionIntents/pax8OrderDigest.ts',
+    // W05b (#12309): classified on purpose, so a later device read in Copy is seen.
+    'services/configPolicyCopy.ts',
   ]);
   for (const file of [...JOB_FILES, ...SERVICE_FILES, ...EE_FILES]) {
     const code = read(file);
@@ -120,6 +122,10 @@ function discovered(): string[] {
 const VISIBILITY_MODULES: Record<string, string> = {
   'services/aiToolsExportShared.ts': 'read model: export_dataset device set — reads only devices already frozen into an analysis run frame, under the caller ceiling; selects no fan-out targets',
   'services/aiToolsExportDatasets/customFields.ts': 'read model: custom_fields export — pages the custom field values of devices exportDeviceSet already resolved in the run org; selects no fan-out targets',
+  'services/configPolicyAppliesTo.ts': 'list and detail read model; no fan-out',
+  'services/configPolicyLegibleAssignments.ts': 'read model: which assignment rows of a policy the caller may see (W03a); resolves target orgs, selects no fan-out targets',
+  'services/configPolicyReach.ts': 'policy reach counts; no fan-out',
+  'services/configPolicyPrecedence.ts': 'per-feature outranked counts over a policy reach; no fan-out',
   'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
@@ -134,6 +140,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
   'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
+  'services/wisp/standingLoop.ts': 'read model (#11677): the Wisp standing state counts and names offline devices through deviceListReachConditions (query_devices\' own reach, parked and Quick Support devices out) for the per-turn prompt; selects no targets and runs nothing',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
   'services/portal/backupReadModel.ts': 'read model: portal backups',
@@ -222,6 +229,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/learnedNetworks/maintenance.ts': 'derived: refreshes learned-network last-seen times from device confirmations the heartbeat already accepted and applies retention; selects no device to act on',
   'services/aiAgents/analysisFrame.ts': 'analysis frame (W02 analysis sessions): expands one customer org or site the coordinator already checked against GrantCeiling.orgIds, which never contains a holding org, so a parked device cannot match; selects read scope for a run that cannot act',
   'services/aiAgents/analysisRunSite.ts': 'checks that the input devices an analysis run already names sit in its recorded site; selects no targets',
   'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
@@ -233,6 +241,7 @@ const EXEMPT: Record<string, string> = {
   'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
   'services/actionIntents/pax8OrderDigest.ts': 'W15 (#6785): one Pax8 order approval digest; billing evidence with no device access or fan-out',
   'services/pax8OrderPreview.ts': 'W15 (#6785): read-only Pax8 order billing evidence; no device access or fan-out',
+  'services/configPolicyCopy.ts': 'W05b (#12309): copies one policy and its own feature links into a new inactive policy with no assignments; no device access or fan-out',
   'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',
   'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',
@@ -373,7 +382,6 @@ const EXEMPT: Record<string, string> = {
   'services/aiToolsRestoreAuthorization.ts': 'org-pinned: target device must match the snapshot\'s org, always a real org',
   'services/aiToolsSLABackup.ts': 'org-pinned: writes require an explicit real org id; reads are org-scoped compliance views',
   'services/aiToolsSentinelOne.ts': 'org-pinned: actions require an active integration row for the org, which a person configures for real orgs only',
-  'services/aiToolsSiteScope.ts': 'derived: shared helper queries devices by a caller-supplied, already-scoped org id',
   'services/alertConditions/handlers/networkCheck.ts': 'derived: evaluates only the device the guarded alert sweep selected',
   'services/alertConditions/utils.ts': 'derived: per-device lookups keyed on a device handed in by a guarded sweep',
   'services/alertService.ts': 'derived: alert creation keyed on a device from guarded worker fan-out; auto-resolve only closes existing rows',
@@ -516,6 +524,8 @@ const EXEMPT: Record<string, string> = {
   'services/reinstallCandidates/clearLinks.ts': 'reinstall hints (#8318 §7.3): clears other devices\' links to ONE retired record (named by id) across its partner, parked sources included on purpose; selects no targets and dispatches nothing',
   'services/reinstallCandidates/ranking.ts': 'reinstall hints (#8318 §7.3): the pure target-qualification rule that leaves hidden-org targets out; selects and dispatches nothing',
   'services/deviceReattach/requestIntent.ts': 'reinstall reattach (#8318): eligibility of the ONE target a human named (a hidden-org target is refused); selects no targets and dispatches nothing',
+  'services/deviceReattach/evidence.ts': 'reinstall reattach (#8318 wave T2): the TPM key evidence of the TWO devices one reattach names (by id), plus a partner-wide COUNT of other holders of that key (parked ones counted on purpose, toward hint); selects no targets and dispatches nothing',
+  'services/tpmBaseline/index.ts': 'reviewing a held TPM key change (#8318 wave T2): reads ONE device the operator named (by id), to judge reach before locking it; a parked one is reviewed on purpose, by a full partner admin; selects no targets and dispatches nothing',
   'services/deviceReattach/reachability.ts': 'reinstall reattach (#8318 §8): reads where the TWO devices a human named are (by id) to decide reachability before any lock; selects no targets and dispatches nothing',
   'services/reinstallCandidates/viewer.ts': 'reinstall hints (#8318 §7.3): the read-only candidates view for ONE source (by id), ranked by ranking.ts so hidden-org targets stay out; parked sources only to full partner admins; selects no targets for work and dispatches nothing',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',
@@ -546,6 +556,12 @@ describe('contract: background selectors leave parked devices out', () => {
     expect(found).toContain('services/actionIntents/pax8OrderDigest.ts');
     expect(EXEMPT['services/actionIntents/pax8OrderDigest.ts']).toContain('no device');
     expect(DEVICE_READ.test(read('services/actionIntents/pax8OrderDigest.ts'))).toBe(false);
+  });
+
+  it('W05b classifies configuration policy Copy as a write with no device fan-out', () => {
+    expect(found).toContain('services/configPolicyCopy.ts');
+    expect(EXEMPT['services/configPolicyCopy.ts']).toContain('no device');
+    expect(DEVICE_READ.test(read('services/configPolicyCopy.ts'))).toBe(false);
   });
 
   it('discovers the expected shape of the tree (not vacuous)', () => {

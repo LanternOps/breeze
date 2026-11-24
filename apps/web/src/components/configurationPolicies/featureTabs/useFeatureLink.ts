@@ -2,6 +2,7 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { i18n } from '@/lib/i18n';
 import { useState, useCallback } from 'react';
+import { usePolicyCreate } from './policyCreateContext';
 import { YARA_MAX_RULE_SETS_PER_POLICY } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { showToast } from '../../shared/Toast';
@@ -17,6 +18,9 @@ type SavePayload = {
 export type FeatureLinkErrorDetail = { status: number; code?: string; body?: unknown };
 
 export function useFeatureLink(policyId: string) {
+  // On the create page there is no policy yet: the first Save asks the page to
+  // create it (inactive), then saves the feature on the new id (W03d C1).
+  const create = usePolicyCreate();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [errorDetail, setErrorDetail] = useState<FeatureLinkErrorDetail>();
@@ -30,10 +34,25 @@ export function useFeatureLink(policyId: string) {
       setSaving(true);
       setError(undefined);
       setErrorDetail(undefined);
+      let targetId = policyId;
+      let createdNow = false;
+      if (!targetId) {
+        // Never a request to `/configuration-policies//features`.
+        const ensured = create ? await create.ensurePolicy() : null;
+        if (!ensured || !ensured.ok) {
+          if (ensured?.message) setError(ensured.message);
+          else if (!ensured) setError(i18n.t('common:states.error'));
+          setSaving(false);
+          return null;
+        }
+        targetId = ensured.id;
+        createdNow = ensured.created;
+      }
+      let ok = false;
       try {
         const url = existingLinkId
-          ? `/configuration-policies/${policyId}/features/${existingLinkId}`
-          : `/configuration-policies/${policyId}/features`;
+          ? `/configuration-policies/${targetId}/features/${existingLinkId}`
+          : `/configuration-policies/${targetId}/features`;
         const method = existingLinkId ? 'PATCH' : 'POST';
 
         const body: Record<string, unknown> = { featureType: payload.featureType };
@@ -46,7 +65,7 @@ export function useFeatureLink(policyId: string) {
         }
         if (payload.inlineSettings) body.inlineSettings = payload.inlineSettings;
 
-        return await runAction<FeatureLink>({
+        const link = await runAction<FeatureLink>({
           request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
           parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
           errorFallback: i18n.t('common:states.error'),
@@ -71,6 +90,8 @@ export function useFeatureLink(policyId: string) {
             : { successMessage: opts.successMessage ?? i18n.t('common:states.saved') }),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
+        ok = true;
+        return link;
       } catch (err) {
         if (err instanceof ActionError && err.status === 401) return null;
         if (!(err instanceof ActionError)) showToast({ type: 'error', message: i18n.t('common:states.error') });
@@ -81,9 +102,10 @@ export function useFeatureLink(policyId: string) {
         return null;
       } finally {
         setSaving(false);
+        if (createdNow && create) create.reportFirstFeatureSave({ featureType: payload.featureType, ok });
       }
     },
-    [policyId]
+    [policyId, create]
   );
 
   /**
@@ -93,6 +115,8 @@ export function useFeatureLink(policyId: string) {
    */
   const remove = useCallback(
     async (linkId: string, opts: { successMessage?: string | null } = {}): Promise<boolean> => {
+      // A policy that does not exist yet has no link to remove.
+      if (!policyId) return false;
       setSaving(true);
       setError(undefined);
       setErrorDetail(undefined);

@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Descartar as alterações não salvas?",
+      "message": "Este anel tem alterações não salvas. Fechar o editor as descarta.",
+      "confirm": "Descartar"
+    },
     "validation": {
       "selectCategory": "Selecione uma categoria",
       "selectSeverity": "Selecione pelo menos uma severidade para aprovação automática.",

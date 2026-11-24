@@ -2258,6 +2258,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       };
     },
   },
+  {
+    // Learned networks W01b (#12369) — hourly last-seen refresh and daily retention.
+    name: 'learnedNetworkMaintenance',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/learnedNetworkMaintenance');
+      return {
+        init: m.initializeLearnedNetworkMaintenance,
+        shutdown: m.shutdownLearnedNetworkMaintenance,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

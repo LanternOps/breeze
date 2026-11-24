@@ -1,9 +1,11 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
+// No DashboardLayout: its session manager starts a token refresh on mount, and
+// this page navigates on its own (#9476). See RedirectLayout.astro.
+import RedirectLayout from '../../layouts/RedirectLayout.astro';
 import AutomationsRedirect from '../../components/automations/AutomationsRedirect';
 ---
 
-<DashboardLayout titleKey="titles.jobs">
+<RedirectLayout titleKey="titles.jobs">
   <AutomationsRedirect client:load />
   <noscript><a href="/jobs">/jobs</a></noscript>
-</DashboardLayout>
+</RedirectLayout>

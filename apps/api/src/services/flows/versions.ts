@@ -202,7 +202,7 @@ function currentOccurrenceKey(doc: FlowDocumentV1, now: Date): string | null {
 }
 
 /** Same answer for "absent" and "an org token looking at a partner-wide row it can read but never write". */
-function partnerWideReach(row: FlowRow, auth: AuthContext): 'ok' | 'not_found' | 'forbidden' {
+export function partnerWideReach(row: FlowRow, auth: AuthContext): 'ok' | 'not_found' | 'forbidden' {
   if (row.orgId) return 'ok';
   if (auth.scope !== 'partner' && auth.scope !== 'system') return 'not_found';
   return canManagePartnerWidePolicies(auth) ? 'ok' : 'forbidden';

@@ -4,6 +4,8 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import RuleSetPicker, { gateRuleSetIds, useRuleSetPolicyOwner } from "./RuleSetPicker";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -99,17 +101,11 @@ export default function SecurityTab({
   // own; FeatureTabShell renders the form read-only (opacity + pointer-events)
   // whenever isInherited is true.
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   // #6267 W04-4: an inherited link whose parent lists a rule set this policy
-  // cannot attach would be stuck (the gate 400s a one-click Override), so
-  // Override then opens a local draft instead; Save creates the link.
-  const [overrideDraft, setOverrideDraft] = useState(false);
+  // cannot attach: Change for this policy opens the form, Save stays blocked
+  // until the unavailable rule sets are removed, then creates the link.
   const [ruleSetsBlocking, setRuleSetsBlocking] = useState(false);
-  const shellInherited = isInherited && !overrideDraft;
-  // The draft ends once the policy has its own link; a later Revert must land
-  // back on the read-only inherited view, not a stale draft.
-  useEffect(() => {
-    if (existingLink) setOverrideDraft(false);
-  }, [existingLink]);
   const policyOwner = useRuleSetPolicyOwner(orgId, partnerId);
   const gateHighlightIds = gateRuleSetIds(errorDetail);
   const effectiveLink = existingLink ?? parentLink;
@@ -170,30 +166,14 @@ export default function SecurityTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      // Gated on THIS FEATURE's own parentLink, not the policy-level
-      // linkedPolicyId the older inline tabs (PamTab, DeviceLifecycleTab, ...)
-      // use. Policy-level gating shows "Revert to Parent" whenever the policy
-      // has ANY parent, even when that parent has no link for this particular
-      // feature — reverting then "falls back" to nothing, which is misleading.
-      // Feature-level gating shows plain "Remove" in that case instead, which
-      // is accurate: there is no parent value to revert to.
-      onRemove={!parentLink ? handleRemove : undefined}
-      isInherited={shellInherited}
-      onOverride={
-        shellInherited
-          ? ruleSetsBlocking
-            ? () => setOverrideDraft(true)
-            : handleSave
-          : undefined
-      }
-      onRevert={
-        !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
-      }
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
+      isInherited={isInherited}
+      {...change.shellProps}
       // Unavailable rule sets block Save (the gate would 400 it) — but never
       // the Override button, which must stay clickable to open the draft.
-      saveDisabled={!shellInherited && ruleSetsBlocking}
+      saveDisabled={ruleSetsBlocking}
     >
-      {overrideDraft && isInherited && (
+      {isInherited && !change.locked && ruleSetsBlocking && (
         <p
           data-testid="security-override-draft-banner"
           role="status"
@@ -327,7 +307,7 @@ export default function SecurityTab({
           value={settings.ruleSetIds}
           onChange={(ids) => update("ruleSetIds", ids)}
           policyOwner={policyOwner}
-          disabled={shellInherited || saving}
+          disabled={change.locked || saving}
           onBlockingChange={setRuleSetsBlocking}
           preselectBuiltin={!existingLink && !parentLink}
           highlightIds={gateHighlightIds}

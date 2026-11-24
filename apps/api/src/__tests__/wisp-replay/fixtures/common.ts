@@ -90,6 +90,9 @@ export function standingFacts(over: Partial<StandingStateFacts> = {}): StandingS
     recentAssessments: [{ orgName: 'Harbor Dental', at: minutesFromNow(-25) }],
     pictureUpdatedAt: minutesFromNow(-5),
     userActions: [],
+    tickets: { urgent: 0, high: 0, other: 0, unassignedUrgentHigh: 0, pastResponse: 0, top: [] },
+    offlineDevices: { count: 0, top: [] },
+    approvals: { pending: 0 },
     ...over,
   };
 }
