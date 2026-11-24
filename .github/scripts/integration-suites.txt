@@ -95,7 +95,11 @@ suite ai sources apps/api/src/services/ticketChecklistTemplateService.ts
 suite ai sources apps/api/src/services/ticketService.ts
 suite ai sources apps/api/src/services/topology/templateApplicationTypes.ts
 suite ai sources apps/api/src/services/wisp/budget.ts
+suite ai sources apps/api/src/services/wisp/checkInTriggers.ts
+suite ai sources apps/api/src/services/wisp/coordinator.ts
 suite ai sources apps/api/src/services/wisp/memoryService.ts
+suite ai sources apps/api/src/services/wisp/specialistLaunchers.ts
+suite ai sources apps/api/src/services/wisp/specialistResult.ts
 
 # ── alert ──
 suite alert tests apps/api/src/__tests__/integration/alert[!a-z0-9]*
