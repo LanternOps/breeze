@@ -1,5 +1,9 @@
 import type { CanonicalAppRoleAssignment } from '@breeze/shared/m365';
 import { graphApplicationRolesFromToken } from './graphTokenRoles';
+import {
+  crossCheckManifestRolesAgainstToken,
+  type ResourceCrossCheckFailureCode,
+} from './resourceRoleCrossCheck';
 import type { OpaqueAccessToken } from './tokenClient';
 
 const GRAPH_ORIGIN = 'https://graph.microsoft.com';
@@ -35,12 +39,15 @@ export class GraphClientError extends Error {
 /**
  * Why no grant observation exists: the step that failed and its typed code.
  * Safe to log — it never carries a provider body, token, or identifier.
- * `token_claims` means the appRoleAssignments read was denied and the token
- * fallback could not be used either.
+ * - `token_claims`: the appRoleAssignments read was denied and the token
+ *   fallback could not be used either.
+ * - `resource_crosscheck`: the assignments were read, the resource lookup was
+ *   denied, and the manifest-id/token cross-check did not verify them
+ *   (see resourceRoleCrossCheck.ts).
  */
 export interface GrantReconciliationFailure {
-  readonly stage: 'assignments' | 'resource' | 'token_claims';
-  readonly code: GraphClientErrorCode;
+  readonly stage: 'assignments' | 'resource' | 'token_claims' | 'resource_crosscheck';
+  readonly code: GraphClientErrorCode | ResourceCrossCheckFailureCode;
 }
 
 /**
@@ -56,6 +63,13 @@ export interface GraphTenantObservation {
   readonly applicationId: string;
   readonly organizationDisplayName: string;
   readonly observedGrants: readonly CanonicalAppRoleAssignment[] | null;
+  /**
+   * Present (true) only with a non-null `observedGrants` whose role names came
+   * from the manifest's fixed Graph role ids, cross-checked against the token,
+   * because Graph denied the resource lookup (#12085). The inventory itself
+   * was read in full, so it is still an exact observation.
+   */
+  readonly resourceRolesFromManifest?: true;
   /** Present only when `observedGrants` is null and the token fallback succeeded. */
   readonly graphTokenRoles?: readonly string[];
   /** Present exactly when there is neither `observedGrants` nor `graphTokenRoles`. */
@@ -485,7 +499,7 @@ export function createMicrosoftGraphClient(
     accessToken: OpaqueAccessToken,
     budget: RequestBudget,
   ): Promise<
-    | { grants: readonly CanonicalAppRoleAssignment[] }
+    | { grants: readonly CanonicalAppRoleAssignment[]; resourceRolesFromManifest?: true }
     | { grants: null; graphTokenRoles: readonly string[] }
     | { grants: null; failure: GrantReconciliationFailure }
   > {
@@ -531,11 +545,35 @@ export function createMicrosoftGraphClient(
       const resourceIds = [...new Set(assignments.map((assignment) => assignment.resourceId))].sort();
       const resources = new Map<string, { applicationId: string; values: Map<string, string | null> }>();
       for (const resourceId of resourceIds) {
-        const rawResource = await request(
-          graphUrl(`/servicePrincipals/${resourceId}`, { '$select': 'appId,appRoles' }),
-          accessToken,
-          budget,
-        );
+        let rawResource: unknown;
+        try {
+          rawResource = await request(
+            graphUrl(`/servicePrincipals/${resourceId}`, { '$select': 'appId,appRoles' }),
+            accessToken,
+            budget,
+          );
+        } catch (error) {
+          // #12085: a plain 403 on the FIRST resource lookup means no
+          // Application.Read.All. Resolve the ids from the manifest and require
+          // the token to agree (resourceRoleCrossCheck.ts). A license 403, 401,
+          // 404, 429, 5xx, timeout or malformed body never gets here, and
+          // neither does a denial after an earlier lookup succeeded (an
+          // inconsistent directory, not a missing permission).
+          if (resources.size === 0
+            && error instanceof GraphClientError
+            && error.code === 'graph_permission_missing') {
+            stage = 'resource_crosscheck';
+            const token = tokenRoles(tenantId, accessToken);
+            if ('failure' in token) {
+              return { grants: null, failure: { stage, code: token.failure.code } };
+            }
+            const checked = crossCheckManifestRolesAgainstToken(assignments, token.graphTokenRoles);
+            return 'failure' in checked
+              ? { grants: null, failure: { stage, code: checked.failure } }
+              : { grants: checked.grants, resourceRolesFromManifest: true };
+          }
+          throw error;
+        }
         if (!isRecord(rawResource)
           || typeof rawResource.appId !== 'string'
           || !CANONICAL_UUID.test(rawResource.appId)
@@ -601,7 +639,11 @@ export function createMicrosoftGraphClient(
         applicationId: config.applicationId,
         organizationDisplayName,
       };
-      if (observed.grants !== null) return { ...proof, observedGrants: observed.grants };
+      if (observed.grants !== null) {
+        return observed.resourceRolesFromManifest
+          ? { ...proof, observedGrants: observed.grants, resourceRolesFromManifest: true }
+          : { ...proof, observedGrants: observed.grants };
+      }
       if ('graphTokenRoles' in observed) {
         return { ...proof, observedGrants: null, graphTokenRoles: observed.graphTokenRoles };
       }
