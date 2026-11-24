@@ -1994,6 +1994,22 @@ describe('createSessionPreToolUse', () => {
         expect((result as any).context).toBeUndefined();
       });
     });
+
+    it('postToolUse resolves the SAME tier as the gate (chat opt-in passed there too)', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertValues();
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auth: chatAuth() });
+
+      await createSessionPostToolUse(session)('browse_device_event_log', input, JSON.stringify({ events: [] }), false, 3);
+
+      expect(checkGuardrails).toHaveBeenCalledWith(
+        'browse_device_event_log',
+        input,
+        expect.objectContaining({ chatSession: true }),
+      );
+    });
   });
 
   describe('#9854: input is validated before any approval is requested', () => {
