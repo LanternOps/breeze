@@ -41,6 +41,7 @@ import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
 import { CONFIG_POLICY_ORG_ID_DESCRIPTION, CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION } from './aiToolSchemas';
 import { resolveWritableToolOrgId, withOwnerScopeOption } from './aiToolWriteOrg';
 import { describeMaintenanceSchedule } from './maintenanceWindowProjection';
+import { assignmentWriteAllowed, brandingWriteError, hasHelperBranding, HELPER_BRANDING_ASSIGNMENT_REFUSAL } from './helperBranding';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -707,6 +708,15 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: siteAuth.error });
       }
 
+      // #12594: same rule as the route's checkAddLevel (assignmentGates.ts):
+      // the policy's OWN helper link (not the parent's) carrying branding
+      // refuses a site, device group or device assignment.
+      const ownLinks = await listFeatureLinks(policy.id);
+      const policyHasBranding = ownLinks.some((l) => l.featureType === 'helper' && hasHelperBranding(l.inlineSettings));
+      if (!assignmentWriteAllowed(input.level as string, policyHasBranding)) {
+        return JSON.stringify({ error: HELPER_BRANDING_ASSIGNMENT_REFUSAL });
+      }
+
       // #5511 W02 (contract D4): assigning a policy whose effective warranty
       // link collects is how HP CMSL collection REACHES devices — the HTTP
       // route gates that on devices:execute + MFA, because it installs HP
@@ -1306,6 +1316,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
+        // #12594: same Helper branding check as the HTTP route (featureLinks.ts).
+        if (featureType === 'helper') {
+          const refusal = await helperBrandingToolRefusal(configPolicyId, input.inlineSettings);
+          if (refusal) return refusal;
+        }
+
         if (featureType === 'containment' && input.featurePolicyId) {
           return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
         }
@@ -1370,6 +1386,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         const featureLinkId = input.featureLinkId as string | undefined;
         if (!featureLinkId) return JSON.stringify({ error: 'featureLinkId is required for update' });
+
+        // #12594: same Helper branding check as the HTTP route (featureLinks.ts).
+        if (existingFeatureType === 'helper' && input.inlineSettings !== undefined) {
+          const refusal = await helperBrandingToolRefusal(configPolicyId, input.inlineSettings);
+          if (refusal) return refusal;
+        }
 
         if (existingFeatureType === 'containment' && input.featurePolicyId) {
           return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
@@ -1449,6 +1471,20 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({ error: `Unknown action: ${action}` });
     }),
   });
+}
+
+/**
+ * #12594: the HTTP route's write-time Helper branding check (featureLinks.ts,
+ * add and update): invalid values are refused with their details, and branding
+ * is refused on a policy that has a site, device group or device assignment.
+ * Clearing (null or {}) stays allowed. Settings without a `branding` key skip
+ * the assignment lookup, since brandingWriteError would pass them anyway.
+ */
+async function helperBrandingToolRefusal(configPolicyId: string, inlineSettings: unknown): Promise<string | null> {
+  if (typeof inlineSettings !== 'object' || inlineSettings === null || !('branding' in inlineSettings)) return null;
+  const levels = (await listAssignments(configPolicyId)).map((a) => a.level);
+  const err = brandingWriteError(inlineSettings, levels);
+  return err ? JSON.stringify({ error: err.error, details: err.details }) : null;
 }
 
 /**

@@ -14,7 +14,7 @@
  */
 import type { AuthContext } from '../../middleware/auth';
 import type { UserPermissions } from '../../services/permissions';
-import { assignmentWriteAllowed, hasHelperBranding } from '../../services/helperBranding';
+import { assignmentWriteAllowed, hasHelperBranding, HELPER_BRANDING_ASSIGNMENT_REFUSAL } from '../../services/helperBranding';
 // Imported from configurationPolicy (its re-export), not partnerWideAccess: the
 // assignment route tests mock the capability on this module.
 import {
@@ -60,7 +60,7 @@ export function checkAddLevel(policy: LoadedPolicy, level: ConfigAssignmentLevel
     return {
       ok: false,
       status: 409,
-      body: { error: 'Helper branding is partner- and organization-scoped; this policy cannot take a site, device group or device assignment' },
+      body: { error: HELPER_BRANDING_ASSIGNMENT_REFUSAL },
     };
   }
   return OK;
