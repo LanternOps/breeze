@@ -761,6 +761,12 @@ func (c *Client) admitIntake() bool {
 // counted. When something is busy the hold lifts at once; otherwise it stays
 // until the process exits, or selfRestartIntakeHoldLimit passes.
 func (c *Client) holdForSelfRestart() string {
+	return c.holdIntakeFor(selfRestartIntakeHoldLimit, "a self-restart")
+}
+
+// holdIntakeFor is holdForSelfRestart with its own limit; what names the exit
+// that was expected, for the Warn when it does not happen.
+func (c *Client) holdIntakeFor(limit time.Duration, what string) string {
 	hold := make(chan struct{})
 	c.intakeMu.Lock()
 	c.intakeHold = hold
@@ -769,10 +775,9 @@ func (c *Client) holdForSelfRestart() string {
 		c.liftIntakeHold(hold)
 		return busy
 	}
-	limit := selfRestartIntakeHoldLimit
 	time.AfterFunc(limit, func() {
 		if c.liftIntakeHold(hold) {
-			log.Warn("helper did not exit after asking for a self-restart; taking work again",
+			log.Warn("helper was not ended after agreeing to "+what+"; taking work again",
 				"heldFor", limit.String())
 		}
 	})

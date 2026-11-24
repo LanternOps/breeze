@@ -177,6 +177,31 @@ func TestRecyclePrepareHoldsIntakeWhenIdle(t *testing.T) {
 	}
 }
 
+// The service may decline after Ready, and cannot tell the helper: work that
+// arrives during the hold must still be answered promptly.
+func TestRecyclePrepareHoldIsShortWhenTheServiceDeclines(t *testing.T) {
+	poisonForTest(t, "leaked")
+	prev := recycleIntakeHoldLimit
+	recycleIntakeHoldLimit = 200 * time.Millisecond
+	t.Cleanup(func() { recycleIntakeHoldLimit = prev })
+	_, agent, _ := pipedCommandLoop(t)
+	if res := prepareRecycle(t, agent); !res.Ready {
+		t.Fatalf("idle poisoned helper refused: %+v", res)
+	}
+	sent := time.Now()
+	if err := agent.Send(&ipc.Envelope{ID: "late", Type: ipc.TypeCommand, Payload: unparseablePayload}); err != nil {
+		t.Fatal(err)
+	}
+	_ = agent.SetReadDeadline(time.Now().Add(2 * time.Second))
+	reply, err := agent.Recv()
+	if err != nil || reply.ID != "late" {
+		t.Fatalf("command during the hold: %+v, %v", reply, err)
+	}
+	if waited := time.Since(sent); waited < 150*time.Millisecond || waited > time.Second {
+		t.Errorf("command answered after %s, want about the recycle hold (200ms), not the self-restart hold", waited)
+	}
+}
+
 func TestRecyclePrepareRefusesWhenBusy(t *testing.T) {
 	poisonForTest(t, "leaked")
 	c, agent, _ := pipedCommandLoop(t)

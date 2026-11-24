@@ -326,8 +326,9 @@ func (c *dxgiCapturer) tryLeaveGDIFallbackLocked(now time.Time) {
 	}
 	if err := c.initDXGI(); err != nil {
 		warn := c.dxgiRetry.failed(now, gen)
-		if c.lastDuplication != duplicationOK {
-			captureHealth.noteDuplicationFailed(c, c.config.DisplayIndex, c.lastDuplication, c.dxgiRetry.failures)
+		if c.lastDuplication != duplicationOK &&
+			captureHealth.noteDuplicationFailed(c, c.config.DisplayIndex, c.lastDuplication, c.dxgiRetry.failures) {
+			return // the leak Warn replaces the streak Warn
 		}
 		if warn {
 			slog.Warn("DXGI reinit keeps failing while leaving fallback mode; staying on GDI and retrying less often",

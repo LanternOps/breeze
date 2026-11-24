@@ -32,6 +32,13 @@ const (
 	recycleMaxGap = 30 * time.Minute
 )
 
+// recycleIntakeHoldLimit bounds how long the helper takes no work after
+// answering Ready. The service ends it within milliseconds of that answer; if
+// it declines instead (a desktop start arrived, the answer came too late, the
+// kill failed) the helper cannot be told, and a start queued behind the hold
+// must still be answered well inside the viewer's 15s. A var for tests.
+var recycleIntakeHoldLimit = 3 * time.Second
+
 // helperRecycleSupported limits the request to the one helper that captures
 // with DXGI and that the service's lifecycle manager can replace at once.
 func helperRecycleSupported(goos string, role ipc.HelperRole) bool {
@@ -107,13 +114,13 @@ func runRecycleWatch(done <-chan struct{}, cfg recycleWatchConfig) {
 
 // handleRecyclePrepare answers the service's helper_recycle_prepare. On Ready
 // the command loop takes nothing more until the service ends this process, or
-// selfRestartIntakeHoldLimit passes. It runs on its own goroutine: the hold
+// recycleIntakeHoldLimit passes. It runs on its own goroutine: the hold
 // waits out the message being dispatched now.
 func (c *Client) handleRecyclePrepare(env *ipc.Envelope) {
 	res := ipc.HelperRecyclePrepareResult{}
 	if captureProcessPoisoned() == "" {
 		res.Busy = "capture has recovered"
-	} else if busy := c.holdForSelfRestart(); busy != "" {
+	} else if busy := c.holdIntakeFor(recycleIntakeHoldLimit, "a replacement"); busy != "" {
 		res.Busy = busy
 	} else {
 		res.Ready = true

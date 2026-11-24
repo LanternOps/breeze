@@ -130,8 +130,10 @@ func (h *captureProcessHealth) releaseGeneration() uint64 {
 	return h.releases
 }
 
-// noteDuplicationFailed records a failed DuplicateOutput by owner.
-func (h *captureProcessHealth) noteDuplicationFailed(owner any, display int, class duplicationErrorClass, streak int) {
+// noteDuplicationFailed records a failed DuplicateOutput by owner. It reports
+// whether this failure is what concluded the output is held by a leak (and
+// then has already logged it at Warn).
+func (h *captureProcessHealth) noteDuplicationFailed(owner any, display int, class duplicationErrorClass, streak int) (concluded bool) {
 	h.mu.Lock()
 	others := 0
 	for o, d := range h.holders {
@@ -150,10 +152,11 @@ func (h *captureProcessHealth) noteDuplicationFailed(owner any, display int, cla
 	}
 	h.mu.Unlock()
 	if leaked {
-		slog.Warn("DXGI duplication of this output outlived its session; this process can no longer capture it with DXGI",
+		slog.Warn("DXGI duplication of this output outlived its session; this process can no longer capture it with DXGI, staying on GDI",
 			"display", display, "failures", streak)
 		h.signal()
 	}
+	return leaked
 }
 
 // noteAbandoned records that a session's capture pipeline could not be
