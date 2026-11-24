@@ -474,6 +474,9 @@ type helperLifecycleController interface {
 	// HelperRoleAvailable reports whether key's session can host that helper
 	// role right now (a user-role helper needs a signed-in user).
 	HelperRoleAvailable(key sessionbroker.HelperKey) (bool, error)
+	// RecycleHelper replaces the process behind session with a clean helper
+	// once prepare reports it idle (#12624).
+	RecycleHelper(session *sessionbroker.Session, reason string, prepare func() error) error
 }
 
 // lifecycleMode returns the resolved helper lifecycle mode, or "" when no
@@ -2148,6 +2151,17 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		if h.leaseRenewRequester != nil {
 			h.leaseRenewRequester(renew.SessionID)
 		}
+	case ipc.TypeHelperRecycleRequest:
+		// Waits for the helper's answer and for its process to exit, so it
+		// runs off the dispatch goroutine, like SAS.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in handleHelperRecycleRequest", "error", fmt.Sprint(r))
+				}
+			}()
+			h.handleHelperRecycleRequest(session, env)
+		}()
 	case ipc.TypeDesktopLocalICECandidate:
 		h.handleHelperLocalICECandidate(session, env)
 	case ipc.TypeDesktopPeerDisconnected:

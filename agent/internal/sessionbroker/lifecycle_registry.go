@@ -294,6 +294,17 @@ func (r *helperRegistry) processID(key HelperKey) uint32 {
 	return 0
 }
 
+// trackedByPID returns key's current entry when it is the process with pid.
+func (r *helperRegistry) trackedByPID(key HelperKey, pid uint32) *trackedHelper {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.current[key]
+	if entry == nil || entry.process == nil || entry.process.ProcessID() != pid {
+		return nil
+	}
+	return entry
+}
+
 func (r *helperRegistry) keys() []HelperKey {
 	r.mu.Lock()
 	defer r.mu.Unlock()
