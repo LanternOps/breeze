@@ -43,7 +43,7 @@ import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365C
 import type { AiTool } from './aiTools';
 import type { SecretToolResult } from './actionIntents/secretBearingTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
-import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
+import { sanitizeUntrustedToolText, sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import type { ActionIntent } from '../db/schema/actionIntents';
@@ -386,9 +386,6 @@ function pinnedConnectionError(error: unknown): string | null {
     : null;
 }
 
-const errorTemplate = (e: { code: string; message: string }): string =>
-  errorString(e.code, `Could not complete the M365 operation: ${e.message}`);
-
 /**
  * The helpdesk reads return prose ("M365 user profile: {...}"), so the
  * field-name fence in aiToolOutput.ts (RAW_TEXT_FIELDS_BY_TOOL) never parses
@@ -397,6 +394,28 @@ const errorTemplate = (e: { code: string; message: string }): string =>
  * are chosen in the customer's tenant, so every string in it is fenced here.
  */
 const fencedGraphJson = (data: unknown): string => JSON.stringify(sanitizeUntrustedToolValue(data));
+
+/**
+ * A backend error code is kept only when it is a plain identifier; anything
+ * else is replaced, never echoed. Today's codes are fixed Breeze/broker sets.
+ */
+const SAFE_ERROR_CODE = /^[A-Za-z0-9_.]{1,80}$/;
+const safeErrorCode = (code: unknown): string =>
+  typeof code === 'string' && SAFE_ERROR_CODE.test(code) ? code : 'unexpected';
+
+/**
+ * An error result whose message did not come from Breeze. A Graph error
+ * message (direct backend) or a broker error message can quote strings chosen
+ * in the customer's tenant, so the message is fenced on its own, before any
+ * Breeze prefix is added: a role label or tag is only filtered at the start of
+ * a line or sentence. These strings also reach the headless release path,
+ * which stores the handler's return without compactToolResultForChat.
+ */
+const fencedErrorString = (code: unknown, message: unknown, prefix = ''): string =>
+  errorString(safeErrorCode(code), `${prefix}${sanitizeUntrustedToolText(String(message))}`);
+
+const errorTemplate = (e: { code: string; message: string }): string =>
+  fencedErrorString(e.code, e.message, 'Could not complete the M365 operation: ');
 
 const unresolvedUser = (identifier: string): string =>
   errorString('user_not_found', `Could not find an M365 user matching "${identifier}".`);
@@ -595,9 +614,12 @@ async function runWrite(
   }
   const action = parsed.data as M365MutatingAction;
   const outcome = await executeM365WriteActionForAuth(auth, action, inputOrgId(input));
+  // The success arms are GUIDs, enums and booleans (strict schema at the
+  // executor client); a refusal's message is a plain string, fenced like any
+  // other backend error.
   return outcome.ok
     ? { ok: true, result: outcome.result as Record<string, unknown> }
-    : { ok: false, error: errorString(outcome.code, outcome.message) };
+    : { ok: false, error: fencedErrorString(outcome.code, outcome.message) };
 }
 
 function plainWriteHandler(actionId: M365WriteActionId) {
@@ -638,7 +660,10 @@ export async function m365CreateUserHandler(
       llmText: errorString('no_credential', 'The user was created but no temporary credential was returned.'),
     };
   }
-  const upn = typeof run.result.userPrincipalName === 'string' ? run.result.userPrincipalName : 'the new user';
+  // The result schema bounds the returned UPN only by length, so it is fenced.
+  const upn = typeof run.result.userPrincipalName === 'string'
+    ? sanitizeUntrustedToolText(run.result.userPrincipalName)
+    : 'the new user';
   return {
     kind: 'success',
     llmText: `Created M365 user ${upn}. The temporary credential is available for one-time reveal; the user must change it at first sign-in.`,
