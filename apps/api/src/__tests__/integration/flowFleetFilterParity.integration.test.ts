@@ -25,6 +25,7 @@ import { executeTool } from '../../services/aiTools';
 import { FLEET_FILTER_TIMEOUT_PROBLEM, resolveFleetFilterOnce } from '../../services/flows/builtins/fleetTargets';
 import { aiCeilingMessage, resolveFleetSelection, type RunScriptOnTargetsInput } from '../../services/flows/builtins/runScriptOnTargets';
 import { flowDbAccessContext } from '../../services/flows/flowAuthContext';
+import { validateBuiltinStep } from '../../services/flows/validateBuiltins';
 import type { BuiltinContext } from '../../services/flows/builtins/types';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -262,6 +263,27 @@ describe('flow fleetFilter resolves the set the stats tool counts (#12418 W02, r
       filterConditions: { operator: 'AND', conditions: [{ field: 'tags', operator: 'contains', value: 'x' }] },
     }).where(eq(deviceGroups.id, f.dynamicGroup));
     expect(await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).toMatchObject({ count: 0, deviceIds: [], problems: [expect.any(String)] });
+  });
+
+  runDb('save reads the group in the owner org, on its live rules', async () => {
+    const issuesAt = async (groupId: string) => (await validateBuiltinStep(
+      { id: 's1', tool: 'run_script_on_targets', input: { scriptId: randomUUID(), fleetFilter: { groupId } }, approval: 'default', onFailure: 'stop', timeoutSec: 60 } as never,
+      0, { owner: { orgId: f.orgA, partnerId: f.partnerId }, catalog: new Map() },
+    )).filter((i) => i.pointer === '/steps/0/input/fleetFilter/groupId').map((i) => i.code);
+    expect(await issuesAt(f.dynamicGroup)).toEqual([]);
+    expect(await issuesAt(f.staticGroup)).toEqual([]);
+    for (const groupId of [f.groupB, f.wide]) expect(await issuesAt(groupId)).toEqual(['reference_not_owned']);
+    // A group the owner holds whose rules name another org's group: that group's rules are not the owner's to check.
+    const [outer] = await getTestDb().insert(deviceGroups).values({
+      orgId: f.orgA, name: 'Names B', type: 'dynamic', filterFieldsUsed: ['groupId'],
+      filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'equals', value: f.groupB }] },
+    }).returning({ id: deviceGroups.id });
+    expect(await issuesAt(outer!.id)).toEqual(['input_invalid']);
+    expect((await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).problems).toHaveLength(1);
+    await getTestDb().update(deviceGroups).set({
+      filterConditions: { operator: 'OR', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }, { field: 'hostname', operator: 'contains', value: 'w' }] },
+    }).where(eq(deviceGroups.id, f.dynamicGroup));
+    expect(await issuesAt(f.dynamicGroup)).toEqual(['input_invalid']);
   });
 
   runDb('a group the run org does not hold is refused: a partner-wide group and another org\'s group', async () => {

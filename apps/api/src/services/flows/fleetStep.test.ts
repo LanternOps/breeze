@@ -266,6 +266,22 @@ describe('AI ceiling (#12418 W02, decision OD4)', () => {
     expect(m.inRunOrg).toHaveBeenCalledExactlyOnceWith({ orgId: ORG, partnerId: PARTNER }, ids(10));
   });
 
+  it('the approver count is the frozen list, even when the run org no longer holds one of its devices', async () => {
+    m.select.mockResolvedValue({ kind: 'set', requested: ids(3), found: ids(2), warnings: [] });
+    m.inRunOrg.mockResolvedValue(ids(2).map((d) => ({ id: d, hostname: `h${d.slice(-3)}`, name: 'n' })));
+    const d = deps(null);
+    await executeFleetStep(input(AI), FILTER_STEP, ctx, d);
+    expect(d.park.mock.calls[0]![0].deviceIds).toEqual(ids(3));
+    expect(d.park.mock.calls[0]![1]).toMatchObject({ count: 3, idsHash: groupTargetIdsHash(ids(3)) });
+  });
+
+  it.each(['target', 'deviceIds', 'fromStep'])('the refusal counter names the %s selector', async (selector) => {
+    const sel = selector === 'target' ? { target: { type: 'all' } } : selector === 'deviceIds' ? { deviceIds: [id(1)] } : { fromStep: { stepId: 'a0', set: 'succeeded' } };
+    m.select.mockResolvedValue({ kind: 'outcome', outcome: { ...overCap(11, 10, aiCeilingMessage(11)), output: { resolvedCount: 11, ceiling: 10, selectorKind: selector } } });
+    await executeFleetStep(input(AI), { scriptId: SCRIPT, whenOffline: 'queue', ...sel } as never, ctx, deps(null));
+    expect(m.refused).toHaveBeenCalledExactlyOnceWith({ selector });
+  });
+
   it('the sample is the first five hostnames in hostname order, whatever the id order', async () => {
     set(6);
     m.inRunOrg.mockResolvedValue(['zed', 'alpha', 'mike', 'bravo', 'yank', 'echo'].map((hostname, i) => ({ id: id(i + 1), hostname, name: 'n' })));

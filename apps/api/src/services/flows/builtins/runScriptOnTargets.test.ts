@@ -227,6 +227,12 @@ describe('resolveFleetSelection', () => {
     expect(await select(SELECTORS[name]!(500))).toMatchObject({ kind: 'set' });
   });
 
+  it('the ceiling counts every device a list names, not only those the run org holds', async () => {
+    m.inRunOrg.mockResolvedValue(devs(range(9)));
+    expect(await select({ deviceIds: range(12) }, { maxTargets: 10 })).toMatchObject({ kind: 'outcome', outcome: { code: 'targets_over_cap', output: { resolvedCount: 12 } } });
+    expect(m.inRunOrg).not.toHaveBeenCalled();
+  });
+
   it('the AI message is the exact copy', () => {
     expect(aiCeilingMessage(11)).toBe('The selection resolved to 11 devices; a run started by the AI assistant may target at most 10. Narrow the filter or name the devices. Nothing was run.');
   });

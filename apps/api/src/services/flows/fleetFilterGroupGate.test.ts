@@ -15,6 +15,21 @@ describe('classifyFleetFilterGroup', () => {
     expect(await classify(group(G(1), { filterFieldsUsed: null }))).toBe('ok');
   });
 
+  it('OR groups, at the root and nested, are read like AND groups', async () => {
+    const or = (...c: unknown[]) => ({ operator: 'OR', conditions: c });
+    expect(await classify(group(G(1), { filterConditions: or(rule('osType'), dyn(rule('siteId'))) }))).toBe('ok');
+    expect(await classify(group(G(1), { filterConditions: dyn(rule('osType'), or(rule('osType'), rule('hostname'))) }))).toBe('refused');
+  });
+
+  it('a condition on an allowed field that also carries conditions is refused', async () => {
+    expect(await classify(group(G(1), { filterConditions: dyn({ ...rule('osType'), conditions: [rule('hostname')] }) }))).toBe('refused');
+  });
+
+  it('a group reference in upper case finds the group', async () => {
+    const outer = group(G(1), { filterConditions: dyn(rule('groupId', G(2).toUpperCase())) });
+    expect(await classify(outer, group(G(2), { filterConditions: dyn(rule('osType')) }))).toBe('ok');
+  });
+
   it('a group the loader does not return is missing', async () => {
     expect(await classify()).toBe('missing');
   });

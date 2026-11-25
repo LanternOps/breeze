@@ -82,6 +82,7 @@ describe('listFleetFilterDeviceIds', () => {
     expect(m.trace).toEqual(['bound', 'filter-query']);
     expect(m.captured.limit).toBe(11);
     expect(render((m.captured.columns as { total: unknown }).total).sql).toMatch(/count\(\*\) over \(\)/i);
+    expect(render(m.captured.orderBy).sql).toMatch(/"devices"\."id" asc/i);
   });
 
   it('no matching row is total 0', async () => {
