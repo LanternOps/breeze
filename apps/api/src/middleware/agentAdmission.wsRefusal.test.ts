@@ -5,7 +5,7 @@
  * connect and back off 1 -> 60 s; they reconnect immediately after an ACCEPTED
  * socket closes. So a refusal must be an HTTP status line, never an upgrade.
  * And @hono/node-ws writes refusals itself as a bare status line, dropping the
- * response headers — the patch in patches/@hono__node-ws@1.3.1.patch forwards a
+ * response headers — the patch in patches/@hono__node-ws@1.3.2.patch forwards a
  * validated Retry-After so W09 agents get the delay hint.
  */
 import { connect, type Socket } from 'node:net';
