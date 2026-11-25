@@ -284,7 +284,7 @@ export function registerSoftwareCatalogTools(aiTools: Map<string, AiTool>): void
           let imported: Awaited<ReturnType<typeof importCatalogPackage>>;
           try {
             // importCatalogPackage runs in its own (nested, savepoint) transaction.
-            imported = await importCatalogPackage({ orgId: org.orgId, payload: parsed.data });
+            imported = await importCatalogPackage({ owner: { orgId: org.orgId, partnerId: null }, payload: parsed.data });
           } catch (err) {
             if (pgErrorCode(err) === '23505') return jsonError('A package or install method like this already exists', 'CONFLICT');
             throw err;

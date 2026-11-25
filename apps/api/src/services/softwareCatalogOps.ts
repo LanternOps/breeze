@@ -616,20 +616,28 @@ export type ImportCatalogPackagePayload = {
   }>;
 };
 
+/** Exactly one axis is set (CHECK software_catalog_one_owner_chk). */
+export type CatalogPackageOwner =
+  | { orgId: string; partnerId: null }
+  | { orgId: null; partnerId: string };
+
 /**
  * One-shot import: creates a catalog row and its install methods in ONE
  * transaction, so a catalog row is never left with zero install methods (or
- * vice versa) if the request is interrupted partway through. `orgId` must
- * already be resolved and access-checked by the caller.
+ * vice versa) if the request is interrupted partway through. `owner` must
+ * already be resolved and access-checked by the caller: the owning org, or for
+ * a partner-wide package the caller's own partner behind
+ * `canManagePartnerWidePolicies`.
  */
 export async function importCatalogPackage(params: {
-  orgId: string;
+  owner: CatalogPackageOwner;
   payload: ImportCatalogPackagePayload;
 }) {
-  const { orgId, payload } = params;
+  const { owner, payload } = params;
   const { catalogItem, methods } = await db.transaction(async (tx) => {
     const [catalogItem] = await tx.insert(softwareCatalog).values({
-      orgId,
+      orgId: owner.orgId,
+      partnerId: owner.partnerId,
       name: payload.name,
       vendor: payload.vendor,
       category: payload.category ?? 'application',

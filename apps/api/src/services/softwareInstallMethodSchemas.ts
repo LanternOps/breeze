@@ -54,6 +54,10 @@ export const importPackageSchema = z.object({
   homepageUrl: z.string().url().optional(),
   iconUrl: z.string().url().optional(),
   orgId: z.string().guid().optional(),
+  // Ownership axis (#2135, #12675): same rule as createCatalogSchema. 'partner'
+  // creates a package shared by every org under the caller's partner (org_id
+  // NULL). Create-only.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   methods: z.array(
     z.object({
       platform: z.enum(['windows', 'macos']),
