@@ -374,4 +374,3 @@ describe('fleetTargetNote (what the approver reads)', () => {
     expect(note).toMatch(/"h{62}…"\.$/);
   });
 });
-});
