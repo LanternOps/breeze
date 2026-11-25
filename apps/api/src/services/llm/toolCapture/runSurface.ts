@@ -44,6 +44,7 @@ import { resolveToolSearchPolicy, type ToolSearchOverride, type ToolSearchPolicy
 import { buildTenantSdkTools, tenantMcpToolNames } from '../../toolSources/sdkBridge';
 import type { TenantToolDescriptor } from '../../toolSources/resolver';
 import type { CaptureSurface, CaptureSurfaceId } from './surfaces';
+import type { ToolExamplesMode } from '../../aiToolExamples';
 
 export interface RunSurfaceOptions {
   surface: CaptureSurface;
@@ -80,6 +81,10 @@ export interface RunSurfaceOptions {
    * Unset: today's capture, unchanged.
    */
   profile?: MeasuredProfile;
+  /** #12421: called with every SDK message, in order, beside the observer (the raw stream `tool-capture --raw-out` writes). */
+  onRawMessage?: (message: unknown) => void;
+  /** #12421: the `breezeServerTools` registration option (`ai:tool-eval --examples`). Accepted in W02, behaviour lands in W03. */
+  toolExamples?: ToolExamplesMode;
 }
 
 export interface SurfaceCaptureResult {
@@ -186,11 +191,11 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
   // has either outcome tools (agent) or tenant tools (chat), never both.
   const outcomeTools = buildOutcomeSdkTools(surface.outcomeTools ?? []);
   // #11395: a profile capture registers exactly what the production resolvers give that profile.
-  const advertised = opts.profile ? advertisedRequest(surface, opts.profile, { tenantTools }) : null;
+  const advertised = opts.profile ? advertisedRequest(surface, opts.profile, { tenantTools, ...(opts.toolExamples ? { toolExamples: opts.toolExamples } : {}) }) : null;
   const mcpServer = advertised
     ? createSdkMcpServer({ name: surface.mcpServerName, version: '1.0.0', tools: advertised.serverTools })
     : surface.server === 'breeze'
-    ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, [...outcomeTools, ...tenantSdkTools], surface.onlyTools ? { onlyTools: surface.onlyTools } : undefined)
+    ? createBreezeMcpServer(denyAuth, denyPreToolUse, undefined, undefined, [...outcomeTools, ...tenantSdkTools], { ...(surface.onlyTools ? { onlyTools: surface.onlyTools } : {}), ...(opts.toolExamples ? { toolExamples: opts.toolExamples } : {}) })
     : createScriptBuilderMcpServer(denyAuth, denyPreToolUse);
   // Derived from the tools the server actually registers (buildBreezeSdkTools),
   // not TOOL_TIERS — TOOL_TIERS is a system-prompt promotion index, and the
@@ -237,7 +242,10 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         permissionMode: SDK_PERMISSION_MODE,
       },
     });
-    for await (const message of session) observer.onMessage(message);
+    for await (const message of session) {
+      opts.onRawMessage?.(message);
+      observer.onMessage(message);
+    }
     observation = observer.finish();
   } catch (err) {
     observation = observer.finish();
