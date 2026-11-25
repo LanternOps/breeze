@@ -169,6 +169,7 @@ describe('patch rollback on real Postgres (#12492)', () => {
     const nothing = { rollbacks: [], commands: [] };
 
     const ai = await aiRollback(fx, sites);
+    expect(ai.error).toBe('Device not found or access denied');
     expect(await rowsFor([stranger]), JSON.stringify(ai)).toEqual(nothing);
 
     const rest = await restRollback(fx);
