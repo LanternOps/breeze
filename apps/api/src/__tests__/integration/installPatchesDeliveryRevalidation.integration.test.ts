@@ -84,8 +84,9 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     env = await setupTestEnvironment({ scope: 'organization' });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllEnvs();
+    await clearStatementFaults();
   });
 
   function agentContext(): DbAccessContext {
@@ -608,7 +609,12 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     expect(row.result).toBeNull();
   });
 
-  it('a SQL failure inside the eligibility resolver HOLDS the install; the heartbeat still returns and delivers its other commands', async () => {
+  // One table per stage of the resolver: the config-policy resolution, the
+  // device's outstanding patches, and the partner-wide approvals. Nothing
+  // else in the claim reads them.
+  it.each(['config_policy_assignments', 'device_patches', 'patch_approvals'])(
+    'a SQL failure inside the eligibility resolver (%s) HOLDS the install; the heartbeat still returns and delivers its other commands',
+    async (faultTable) => {
     const { job, cmd } = await queuedAiInstall();
     const [other] = await getTestDb()
       .insert(deviceCommands)
@@ -623,10 +629,9 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
       })
       .returning();
 
-    // A real statement failure in one of the resolver's own reads (the
-    // partner-wide approvals), on the claim connection. Nothing else in the
-    // claim reads this table.
-    await failStatementsOn('patch_approvals');
+    // A real statement failure in one of the resolver's own reads, on the
+    // claim connection.
+    await failStatementsOn(faultTable);
     let claimed: Awaited<ReturnType<typeof claimAsAgent>>;
     try {
       claimed = await claimAsAgent(cmd.deviceId);
@@ -645,7 +650,8 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     const next = await claimAsAgent(cmd.deviceId);
     expect(next.map((c) => c.id)).toEqual([cmd.id]);
     expect((await commandRow(cmd.id)).status).toBe('sent');
-  });
+    },
+  );
   // -------------------------------------------------------------------------
   // Vendor lane: the one read path the fixtures above never reach. A driver
   // that a vendor lane starts delivering after dispatch is left to the lane
