@@ -5,7 +5,7 @@
  * calls (they are hoisted per file) and passes its own audit spy.
  */
 import { Hono } from 'hono';
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 import type { mcpServerRoutes as McpServerRoutes } from '../mcpServer';
 
 export type HarnessResponse = {
@@ -143,7 +143,30 @@ export const UNRESTRICTED_KEY = {
   scopes: ['ai:read', 'ai:write', 'ai:execute'], mcpDomains: null,
 } as Record<string, unknown>;
 
-export const harnessState = {
+// Explicit so the declaration does not have to name @vitest/spy's internals.
+type AnyFn = (...args: any[]) => any;
+export type HarnessState = {
+  realRegistry: boolean;
+  catalog: Record<string, FixtureTool>;
+  context: Record<string, unknown>;
+  writeAuditEvent: Mock<AnyFn>;
+  executeTool: Mock<(name: string, input: unknown) => Promise<string>>;
+  checkToolRateLimit: Mock<(...args: unknown[]) => Promise<string | null>>;
+  checkToolPermission: Mock<(...args: unknown[]) => Promise<string | null>>;
+  tenantTools: Array<{ tier: number; definition: { name: string; description: string; input_schema: Record<string, unknown> } }>;
+  flowTools: Array<{ name: string; description: string; tier: number; inputSchema: Record<string, unknown> }>;
+  sessions: Map<string, string>;
+  ledgerBegin: Mock<(...args: unknown[]) => Promise<unknown>>;
+  ledgerComplete: Mock<(...args: unknown[]) => Promise<undefined>>;
+  guardrailOverride: undefined | ((name: string, input: Record<string, unknown>) => { allowed: boolean; tier: number; reason?: string } | undefined);
+  executeTenantToolDetailed: Mock<(...args: unknown[]) => Promise<{ isError: boolean; text: string }>>;
+  callMcpFlowTool: Mock<(...args: unknown[]) => Promise<unknown>>;
+  observedSkipFlags: unknown[];
+  resolveTenantTools: Mock<(...args: unknown[]) => Promise<HarnessState['tenantTools']>>;
+  listMcpFlowTools: Mock<(...args: unknown[]) => Promise<HarnessState['flowTools']>>;
+};
+
+export const harnessState: HarnessState = {
   /** true → the real registry's definitions, tiers and domains. */
   realRegistry: false,
   catalog: { ...DEFAULT_FIXTURE_CATALOG } as Record<string, FixtureTool>,
@@ -265,7 +288,7 @@ export async function guardrailsMock(orig: Orig) {
   };
 }
 
-export function auditMock() {
+export function auditMock(): { writeAuditEvent: AnyFn; requestLikeFromSnapshot: AnyFn } {
   return {
     writeAuditEvent: (...args: unknown[]) => harnessState.writeAuditEvent(...args),
     requestLikeFromSnapshot: vi.fn(),

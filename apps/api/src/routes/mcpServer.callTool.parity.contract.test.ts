@@ -32,7 +32,7 @@ vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools
 vi.mock('../services/toolSources/execute', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).tenantExecuteMock(orig as never));
 vi.mock('../services/toolSources/guardrails', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).tenantGuardrailsMock(orig as never));
 vi.mock('../services/rate-limit', async () => (await import('./__tests__/mcpServerToolList.testHarness')).rateLimitMock());
-const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn(), loadOwnedMcpIntent: vi.fn(), countLiveMcpIntentsForOrigin: vi.fn(async () => 0), cancelOwnedMcpIntent: vi.fn() }));
+const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn(), loadOwnedMcpIntent: vi.fn(), countLiveMcpIntentsForOrigin: vi.fn(async (..._a: unknown[]) => 0), cancelOwnedMcpIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
   createMcpActionIntent: (...a: unknown[]) => intentMocks.createMcpActionIntent(...a),
   loadOwnedMcpIntent: (...a: unknown[]) => intentMocks.loadOwnedMcpIntent(...a),

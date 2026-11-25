@@ -88,11 +88,11 @@ describe('resolution', () => {
 
   it('the override is not session-persisted: the next request on the same session resolves from the default', async () => {
     const { sessionId } = await mcp.initialize(PROGRESSIVE);
-    const call = (headers: Record<string, string>) => mcp.app().request('/mcp/sse', {
+    const call = (headers: Record<string, string>) => Promise.resolve(mcp.app().request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': sessionId!, 'MCP-Protocol-Version': '2025-11-25', ...headers },
       body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: WHOAMI }),
-    }).then(async (r) => (await r.json()).result.structuredContent.toolListMode);
+    })).then(async (r: Response) => ((await r.json()) as any).result.structuredContent.toolListMode);
     expect(await call({ 'Mcp-Tool-List': 'progressive' })).toEqual({ mode: 'progressive', source: 'request' });
     expect(await call({})).toEqual({ mode: 'full', source: 'deployment_default' });
   });
