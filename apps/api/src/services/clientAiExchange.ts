@@ -447,12 +447,13 @@ export async function resolveAndMintClientSession(
         const winner = await selectLoginByEntraIdentity(claims);
         user = winner?.user;
         if (!user) {
-          // Not a race (a race leaves the winner findable): drift. Either the
-          // login's own unique index refused a second login for a (tid, oid)
-          // whose identity row is missing, or the identity insert collided
-          // with an identity the lookup could not see. The savepoint rolled
-          // back both inserts and the exchange fails closed as
-          // provisioning_failed below; report it so the denial is explainable.
+          // Not a race (a race leaves the winner findable): drift. The identity
+          // insert collided on its (issuer, subject) key with an identity the
+          // lookup could not see. The legacy portal_users.entra_* columns are
+          // no longer written, so their unique index cannot be the cause. The
+          // savepoint rolled back both inserts and the exchange fails closed
+          // as provisioning_failed below; report it so the denial is
+          // explainable.
           console.error('[client-ai] portal identity drift: JIT refused and no login holds this Entra identity', {
             orgId: mapping.orgId,
             constraint: constraintName,

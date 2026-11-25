@@ -448,18 +448,17 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     }
   });
 
-  it('an existing login whose identity row is missing fails closed (provisioning_failed) and is reported as drift', async () => {
-    // Release B reads identities only. A login that still holds the legacy
-    // entra_* columns but lost its identity is not found, the JIT insert hits
-    // the login's own unique index, and the re-select (by identity) finds
-    // nothing: denied, never a second login, never a silent fallback to the
-    // columns.
+  it('an identity collision with no findable owner fails closed (provisioning_failed) and is reported as drift', async () => {
+    // Identities are the only read and write path. The JIT insert collides on
+    // the identity's (issuer, subject) key with a row the lookup cannot see,
+    // and the re-select (by identity) finds nothing: denied, never a second
+    // login, never a silent fallback to the legacy columns.
     selectResult
       .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     insertReturning.mockRejectedValueOnce(Object.assign(new Error('dup'), {
-      cause: { code: '23505', constraint_name: 'portal_users_entra_identity_uniq' },
+      cause: { code: '23505', constraint_name: 'portal_user_identities_issuer_subject_uq' },
     }));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

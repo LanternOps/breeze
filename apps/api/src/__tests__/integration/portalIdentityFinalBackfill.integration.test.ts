@@ -173,6 +173,67 @@ describe(MIGRATION, () => {
     });
   });
 
+  describe('as the unprivileged application role under forced RLS', () => {
+    // The cases above run as a superuser, which bypasses RLS, so they prove
+    // only that the system-scope line is TEXT. These apply the same file as
+    // breeze_app (NOBYPASSRLS, subject to FORCE ROW LEVEL SECURITY) with the
+    // scope still unelected ('none') when the file starts. Seeding happens
+    // first, as the superuser; the role switch comes after.
+    const SCOPE_LINE = "SELECT set_config('breeze.scope', 'system', true);";
+
+    async function asAppRole(tx: Tx) {
+      await tx.unsafe('SET LOCAL ROLE breeze_app');
+      const [who] = await tx<{ u: string; bypass: boolean; scope: string }[]>`
+        SELECT current_user AS u,
+               (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user) AS bypass,
+               public.breeze_current_scope() AS scope`;
+      // Guards against a vacuous pass: a BYPASSRLS role, or a scope already
+      // elected by the fixtures, would make both cases below meaningless.
+      expect(who).toEqual({ u: 'breeze_app', bypass: false, scope: 'none' });
+    }
+
+    const identityCount = async (tx: Tx, userId: string) =>
+      (await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM portal_user_identities WHERE portal_user_id = ${userId}`)[0]!.n;
+
+    it('with the system-scope line the backfill writes the identity rows', async () => {
+      const orgId = await newOrg();
+      const tid = randomUUID();
+      const oid = randomUUID();
+      await inRolledBackTx(async (tx, notices) => {
+        const original = await seedLegacyLogin(tx, orgId, { tid, oid, status: 'disabled' });
+        await asAppRole(tx);
+
+        await tx.unsafe(await loadMigration());
+
+        expect(notices.some((n) => /final backfill inserted 1 identit/.test(n))).toBe(true);
+        expect(await identityCount(tx, original)).toBe(1);
+      });
+    });
+
+    it('CONTROL: the same file without the system-scope line writes zero rows, silently', async () => {
+      const orgId = await newOrg();
+      await inRolledBackTx(async (tx, notices) => {
+        const original = await seedLegacyLogin(tx, orgId, { tid: randomUUID(), oid: randomUUID() });
+        await asAppRole(tx);
+
+        const text = await loadMigration();
+        const withoutScope = text.replace(SCOPE_LINE, '');
+        // The mutation must have landed, or this control proves nothing.
+        expect(withoutScope).not.toBe(text);
+        expect(withoutScope).not.toContain("set_config('breeze.scope'");
+
+        await tx.unsafe(withoutScope);
+
+        // Forced RLS hides every portal_users row, so the INSERT ... SELECT
+        // matches nothing and the refusal check counts nothing: no error.
+        expect(notices.some((n) => /final backfill inserted 0 identities/.test(n))).toBe(true);
+        // Read back as the superuser again: the row exists and still has no identity.
+        await tx.unsafe('RESET ROLE');
+        expect(await identityCount(tx, original)).toBe(0);
+      });
+    });
+  });
+
   it('a re-apply inserts nothing', async () => {
     const orgId = await newOrg();
     await inRolledBackTx(async (tx, notices) => {
