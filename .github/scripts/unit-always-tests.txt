@@ -99,6 +99,7 @@ apps/api/src/__tests__/integration/localVaultDeviceOrgFk.integration.test.ts
 apps/api/src/__tests__/integration/m365ConnectionsRls.integration.test.ts
 apps/api/src/__tests__/integration/m365ConsentSessionsV2OnlyMigration.integration.test.ts
 apps/api/src/__tests__/integration/mcpDomainsColumns.integration.test.ts
+apps/api/src/__tests__/integration/mcpToolListModeMigration.integration.test.ts
 apps/api/src/__tests__/integration/mtlsHistoryReconcileMigration.integration.test.ts
 apps/api/src/__tests__/integration/multiCurrencyWave6ContractBilling.integration.test.ts
 apps/api/src/__tests__/integration/networkMonitorAlertEndpointDisplayBackfill.integration.test.ts
@@ -266,6 +267,7 @@ apps/api/src/db/migration-ticket-mailbox-permissions.test.ts
 apps/api/src/db/migration-topology-interface-samples.test.ts
 apps/api/src/db/migrationDeferredTriggerAlter.test.ts
 apps/api/src/db/migrationGucAttributes.test.ts
+apps/api/src/db/migrationMcpToolListMode.test.ts
 apps/api/src/db/migrationPartnerExportLocks.test.ts
 apps/api/src/db/migrationRlsScope.test.ts
 apps/api/src/db/offsetPaginationOrdering.test.ts
