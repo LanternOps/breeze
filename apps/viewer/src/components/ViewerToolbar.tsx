@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
 import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal, Eye, Lock, Camera, Activity } from 'lucide-react';
-import type { TransportCapabilities } from '../lib/transports/types';
-import { transportHasQualityControls } from '../lib/transportTuning';
-import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '../lib/transportAvailability';
-import { detectViewerOs, shortcutLabel } from '../lib/inputSafety';
+import type { TransportCapabilities } from '@breeze/remote-desktop-ui';
+import { transportHasQualityControls } from '@breeze/remote-desktop-ui';
+import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '@breeze/remote-desktop-ui';
+import { detectViewerOs, shortcutLabel } from '@breeze/remote-desktop-ui';
 import { ClipboardChip } from './ClipboardChip';
-import type { ClipboardChipInput } from '../lib/clipboardChip';
-import type { BlockLocalInputState } from '../lib/blockLocalInput';
-import type { ViewScaling } from '../lib/displayScaling';
-import type { KeyboardMode, KeyboardModeSupport } from '../lib/keyboardMode';
+import type { ClipboardChipInput } from '@breeze/remote-desktop-ui';
+import type { BlockLocalInputState } from '@breeze/remote-desktop-ui';
+import type { ViewScaling } from '@breeze/remote-desktop-ui';
+import type { KeyboardMode, KeyboardModeSupport } from '@breeze/remote-desktop-ui';
 import { KeyboardModeControl } from './KeyboardModeControl';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);

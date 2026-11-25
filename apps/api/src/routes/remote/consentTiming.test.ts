@@ -39,7 +39,7 @@ describe('viewerAnswerTimeoutMs', () => {
     expect(viewerAnswerTimeoutMs('consent')).toBeGreaterThan(DESKTOP_CONSENT_TIMEOUT_MS + AGENT_CONSENT_HELPER_WAIT_MS);
   });
 
-  it('stays under the viewer cap (MAX_ANSWER_TIMEOUT_MS in apps/viewer/src/lib/answerPoll.ts)', () => {
+  it('stays under the viewer cap (MAX_ANSWER_TIMEOUT_MS in packages/remote-desktop-ui/src/answerPoll.ts)', () => {
     expect(viewerAnswerTimeoutMs('consent')).toBeLessThan(180_000);
   });
 });

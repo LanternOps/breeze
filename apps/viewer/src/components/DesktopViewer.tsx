@@ -1,27 +1,27 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { type ConnectionParams } from '../lib/protocol';
-import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { createSessionHangUp, hangUpThenClose } from '../lib/sessionHangUp';
+import { type ConnectionParams } from '@breeze/remote-desktop-ui';
+import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '@breeze/remote-desktop-ui';
+import { createSessionHangUp, hangUpThenClose } from '@breeze/remote-desktop-ui';
 import { createNativeSessionEnd } from '../lib/nativeSessionEnd';
-import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
-import { IceFailureBudget, neverConnectedStopStep } from '../lib/iceFailure';
-import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
+import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '@breeze/remote-desktop-ui';
+import { IceFailureBudget, neverConnectedStopStep } from '@breeze/remote-desktop-ui';
+import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '@breeze/remote-desktop-ui';
 import {
   startRevocationLeaseRenewal,
   LEASE_LOST_MESSAGE,
-} from '../lib/revocationLease';
-import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
-import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
-import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
+} from '@breeze/remote-desktop-ui';
+import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '@breeze/remote-desktop-ui';
+import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '@breeze/remote-desktop-ui';
+import { capabilitiesFor, type TransportCapabilities } from '@breeze/remote-desktop-ui';
 // VncSessionWrapper is type-only — no runtime import (avoids bundling novnc into the main chunk).
 // connectVnc is loaded dynamically inside connectVncTransport so novnc's top-level await
 // is deferred until the VNC path is actually invoked.
-import type { VncSessionWrapper } from '../lib/transports/vnc';
-import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '../lib/tunnel';
-import { pollDesktopAccess } from '../lib/desktopAccess';
-import { createAttemptGeneration } from '../lib/attemptGeneration';
+import type { VncSessionWrapper } from '@breeze/remote-desktop-ui/transports/vnc';
+import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '@breeze/remote-desktop-ui';
+import { pollDesktopAccess } from '@breeze/remote-desktop-ui';
+import { createAttemptGeneration } from '@breeze/remote-desktop-ui';
 import {
   mapKey,
   getModifiers,
@@ -31,17 +31,17 @@ import {
   extendedKeyFields,
   keyNameModeFor,
   resolveKeyUpName,
-} from '../lib/keymap';
-import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
-import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
-import { InputSequencer } from '../lib/inputSequencer';
-import { ReliableInputRouter } from '../lib/reliableInput';
-import { GeometryHold } from '../lib/geometryHold';
-import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
-import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
+} from '@breeze/remote-desktop-ui';
+import { sendPasteText, pasteFailureMessage } from '@breeze/remote-desktop-ui';
+import { createInputCapabilitiesGate } from '@breeze/remote-desktop-ui';
+import { InputSequencer } from '@breeze/remote-desktop-ui';
+import { ReliableInputRouter } from '@breeze/remote-desktop-ui';
+import { GeometryHold } from '@breeze/remote-desktop-ui';
+import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '@breeze/remote-desktop-ui';
+import { ClipboardSync, type ClipboardSyncState } from '@breeze/remote-desktop-ui';
 import { createTauriClipboardIO } from '../lib/clipboardIO';
-import { clipboardFailureMessage, type ClipboardChipInput } from '../lib/clipboardChip';
-import { parseClipboardPolicy, type VncClipboardState } from '../lib/vncClipboard';
+import { clipboardFailureMessage, type ClipboardChipInput } from '@breeze/remote-desktop-ui';
+import { parseClipboardPolicy, type VncClipboardState } from '@breeze/remote-desktop-ui';
 import {
   detectViewerOs,
   defaultRemapCmdCtrl,
@@ -53,13 +53,13 @@ import {
   isPasteChord,
   isCopyChord,
   countsAsOperatorInput,
-} from '../lib/inputSafety';
-import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
-import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
-import { startFrameCounter } from '../lib/frameCounter';
-import { mediaFocusRing, videoHasFrame } from '../lib/mediaFocusRing';
-import { createStatsReporter } from '../lib/statsReporter';
-import { suppressedByViewOnly } from '../lib/viewOnly';
+} from '@breeze/remote-desktop-ui';
+import { isServiceModeRefusal, serviceModeRefusalMessage } from '@breeze/remote-desktop-ui';
+import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '@breeze/remote-desktop-ui';
+import { startFrameCounter } from '@breeze/remote-desktop-ui';
+import { mediaFocusRing, videoHasFrame } from '@breeze/remote-desktop-ui';
+import { createStatsReporter } from '@breeze/remote-desktop-ui';
+import { suppressedByViewOnly } from '@breeze/remote-desktop-ui';
 import {
   INITIAL_BLOCK_LOCAL_INPUT,
   BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS,
@@ -69,20 +69,20 @@ import {
   blockLocalInputTimedOut,
   parseBlockLocalInputResult,
   type BlockLocalInputState,
-} from '../lib/blockLocalInput';
-import { mediaClassName, scrollerClassName, type ViewScaling } from '../lib/displayScaling';
-import type { StatsSample } from '../lib/statsReporter';
-import { statsOverlayRows } from '../lib/statsOverlay';
+} from '@breeze/remote-desktop-ui';
+import { mediaClassName, scrollerClassName, type ViewScaling } from '@breeze/remote-desktop-ui';
+import type { StatsSample } from '@breeze/remote-desktop-ui';
+import { statsOverlayRows } from '@breeze/remote-desktop-ui';
 import { getTauriPrefsStore, loadDevicePrefs, loadKeyboardMode, saveDevicePrefs, saveKeyboardMode, type DevicePrefs } from '../lib/devicePrefs';
-import { DEFAULT_KEYBOARD_MODE, effectiveKeyboardMode, keyboardModeSupport, type KeyboardMode } from '../lib/keyboardMode';
-import { CompositionCapture, deliverComposedText } from '../lib/compositionCapture';
-import { captureFramePng, screenshotFailureMessage } from '../lib/screenshot';
+import { DEFAULT_KEYBOARD_MODE, effectiveKeyboardMode, keyboardModeSupport, type KeyboardMode } from '@breeze/remote-desktop-ui';
+import { CompositionCapture, deliverComposedText } from '@breeze/remote-desktop-ui';
+import { captureFramePng, screenshotFailureMessage } from '@breeze/remote-desktop-ui';
 import {
   createKeyboardLockController,
   getKeyboardLockApi,
   shouldLockKeyboard,
   type KeyboardLockController,
-} from '../lib/keyboardLock';
+} from '@breeze/remote-desktop-ui';
 import ViewerToolbar from './ViewerToolbar';
 import { ImeCaptureInput } from './ImeCaptureInput';
 import CredentialsPromptModal from './CredentialsPromptModal';
@@ -513,7 +513,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     try {
       // Lazy-load the VNC transport so novnc (which uses top-level await) is only
       // bundled into a separate async chunk and doesn't land in the main bundle.
-      const { connectVnc } = await import('../lib/transports/vnc');
+      const { connectVnc } = await import('@breeze/remote-desktop-ui/transports/vnc');
       if (isStale()) return false;
       // Set transport BEFORE RFB construction so the container <div> is visible
       // (the JSX hides it with `hidden` when transport !== 'vnc'). Otherwise RFB

@@ -7,7 +7,7 @@ package desktop
 
 // isCopyChord reports whether ev, injected now, is Ctrl/Cmd+C, Ctrl/Cmd+X or
 // Ctrl+Insert, counting modifiers already held via key_down. It mirrors the
-// viewer's isCopyChord (apps/viewer/src/lib/inputSafety.ts). Call it before
+// viewer's isCopyChord (packages/remote-desktop-ui/src/inputSafety.ts). Call it before
 // prepare, which drops held modifiers from a key_press. Worker goroutine only.
 //
 // A false positive costs a few cheap clipboard reads; a false negative leaves

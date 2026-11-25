@@ -3,9 +3,9 @@ import { describe, it, expect } from 'vitest';
 // the viewer has no React harness. The behaviour itself is unit-tested in
 // lib/inputSequencer.test.ts and lib/reliableInput.test.ts.
 import source from './DesktopViewer.tsx?raw';
-import webrtcLib from '../lib/webrtc.ts?raw';
-import wsTransport from '../lib/transports/websocket.ts?raw';
-import vncTransport from '../lib/transports/vnc.ts?raw';
+import webrtcLib from '../../../../packages/remote-desktop-ui/src/webrtc.ts?raw';
+import wsTransport from '../../../../packages/remote-desktop-ui/src/transports/websocket.ts?raw';
+import vncTransport from '../../../../packages/remote-desktop-ui/src/transports/vnc.ts?raw';
 
 function body(name: string): string {
   const start = source.indexOf(`const ${name} = useCallback(`);

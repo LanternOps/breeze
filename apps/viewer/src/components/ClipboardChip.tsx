@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import { Clipboard } from 'lucide-react';
-import { clipboardChipView, RECENT_TRANSFER_MS, type ClipboardChipInput } from '../lib/clipboardChip';
+import { clipboardChipView, RECENT_TRANSFER_MS, type ClipboardChipInput } from '@breeze/remote-desktop-ui';
 
 const ClipboardIcon = Clipboard as unknown as ComponentType<{ className?: string }>;
 

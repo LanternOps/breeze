@@ -217,7 +217,7 @@ describe('ci-success gating contract', () => {
     );
     const thinClause = (job: string) =>
       thinArms.has(job) ? `(?:${escape(` && !contains(needs.changes.outputs.thin_skip, ',${job},')`)})?` : '';
-    expect(thinArms.size, 'the W05 normalization block lists the 27 thinnable jobs').toBe(27);
+    expect(thinArms.size, 'the W05 normalization block lists the 28 thinnable jobs').toBe(28);
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';

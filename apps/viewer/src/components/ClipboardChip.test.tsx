@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ClipboardChip } from './ClipboardChip';
-import type { ClipboardChipInput } from '../lib/clipboardChip';
+import type { ClipboardChipInput } from '@breeze/remote-desktop-ui';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

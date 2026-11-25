@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { Keyboard, Check, ChevronDown } from 'lucide-react';
-import type { KeyboardMode, KeyboardModeSupport } from '../lib/keyboardMode';
+import type { KeyboardMode, KeyboardModeSupport } from '@breeze/remote-desktop-ui';
 
 const KeyboardIcon = Keyboard as unknown as ComponentType<{ className?: string }>;
 const CheckIcon = Check as unknown as ComponentType<{ className?: string }>;

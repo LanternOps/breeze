@@ -353,7 +353,7 @@ test('shadow catches each git/gh failure and the explicit delta failure cases', 
 });
 test('all changes-gated job expressions parse and evaluate with true/false flags', () => {
   const jobs = Object.values(queue.workflowJobs(workflow)).filter(j => j.condition?.includes('needs.changes.outputs.'));
-  assert.equal(jobs.length, 48);
+  assert.equal(jobs.length, 49);
   const keys = [...workflow.matchAll(/needs.changes.outputs.(\w+)/g)].map(m => m[1]);
   for (const { condition } of jobs) for (const value of ['true', 'false']) {
     assert.equal(queue.evaluateIf(queue.parseIfExpression(condition), Object.fromEntries(keys.map(k => [k, value]))), value === 'true', condition);
@@ -368,7 +368,8 @@ test('JOB_CLASSES covers each changes-gated job exactly once with the right area
   assert.equal(entries.length, new Set(entries).size);
   assert.deepEqual(entries.sort(), gated.sort());
   for (const [name, area] of Object.entries({ ...queue.JOB_CLASSES.build, ...queue.JOB_CLASSES.unit })) {
-    const pathArea = { viewer: 'apps/viewer', mobile: 'apps/mobile', shared: '@breeze/shared', document_ui: '@breeze/document-ui' }[area];
+    const pathArea = { viewer: 'apps/viewer', mobile: 'apps/mobile', shared: '@breeze/shared', document_ui: '@breeze/document-ui',
+      remote_desktop_ui: '@breeze/remote-desktop-ui' }[area];
     if (pathArea) assert.ok(jobs[name].body.includes(pathArea), name);
     else assert.ok(jobs[name].condition.includes(`needs.changes.outputs.${area} == 'true'`), name);
   }
@@ -750,6 +751,15 @@ test('T7: self-gated migrations/docs and shared path-area units remain selected'
   assert.equal(classify(DISJOINT_DELTA).api, 'false');
   assert.ok(select(DISJOINT_DELTA, ['apps/api/src/routes/x.ts']).thin_jobs.includes('build-api'), 'a build area present only in delta');
 });
+test('T7b: @breeze/remote-desktop-ui changes reach the viewer suite, and only its own suite when the viewer is untouched (#9557)', () => {
+  const pkg = 'packages/remote-desktop-ui/src/a.ts';
+  const viewerDelta = select([pkg], ['apps/viewer/src/b.ts']).thin_jobs;
+  assert.ok(viewerDelta.includes('test-viewer'), 'the viewer imports the package');
+  assert.ok(!viewerDelta.includes('test-remote-desktop-ui'), 'no package change in the delta');
+  const pkgDelta = select([pkg], ['packages/remote-desktop-ui/src/b.ts']).thin_jobs;
+  assert.ok(pkgDelta.includes('test-remote-desktop-ui') && pkgDelta.includes('test-viewer'));
+  assert.deepEqual(queue.routeOwnTest('packages/remote-desktop-ui/src/a.test.ts', context).jobs, ['test-remote-desktop-ui']);
+});
 
 // ── W02d (#10746): an injected record source; the default is unchanged ───
 
@@ -1088,7 +1098,7 @@ test('consume mirrors the gate: producer names, selection keys, value format and
 
 const THIN_JOBS = ['build-api', 'build-web', 'build-portal', 'build-agent', 'build-m365-graph-read-executor',
   'build-m365-graph-actions-executor', 'build-m365-communications-executor', 'rust-check',
-  'test-api', 'test-web', 'test-portal', 'test-mobile', 'test-viewer', 'test-shared', 'test-document-ui',
+  'test-api', 'test-web', 'test-portal', 'test-mobile', 'test-viewer', 'test-shared', 'test-document-ui', 'test-remote-desktop-ui',
   'test-office-addin-core', 'test-excel-addin', 'test-word-addin', 'test-powerpoint-addin', 'test-outlook-addin',
   'test-m365-graph-read-executor', 'test-m365-graph-actions-executor', 'test-m365-communications-executor',
   'test-agent', 'test-agent-windows', 'integration-test', 'path-read-contracts'];
@@ -1100,7 +1110,7 @@ const needsOf = body => {
   return list ? [...list.matchAll(/^      - ([\w-]+)/gm)].map(m => m[1]) : [];
 };
 
-test('B2: THINNABLE is the plan\'s 27 jobs, and exactly the jobs CI Success can count as satisfied', () => {
+test('B2: THINNABLE is the plan\'s 28 jobs, and exactly the jobs CI Success can count as satisfied', () => {
   assert.deepEqual([...thin.THINNABLE].sort(), [...THIN_JOBS].sort());
   assert.deepEqual(thin.thinnableAtBase(extractAggregator(workflow)), [...thin.THINNABLE]);
 });

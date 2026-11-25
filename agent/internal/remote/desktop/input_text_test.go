@@ -193,7 +193,7 @@ func TestCharToKeyPress(t *testing.T) {
 }
 
 // charToKeyPress must agree with the viewer's SHIFTED_TO_BASE table in
-// apps/viewer/src/lib/paste.ts — the two are the same contract, one per side.
+// packages/remote-desktop-ui/src/paste.ts. The two are the same contract, one per side.
 func TestCharToKeyPressMatchesViewerShiftTable(t *testing.T) {
 	viewer := map[rune]string{
 		'~': "`", '!': "1", '@': "2", '#': "3", '$': "4",

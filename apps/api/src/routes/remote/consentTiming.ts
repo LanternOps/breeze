@@ -34,7 +34,7 @@ export const AGENT_CONSENT_HELPER_WAIT_MS = 30_000;
 
 /**
  * The viewer's answer budget for a start with no end-user prompt. Matches
- * DEFAULT_ANSWER_TIMEOUT_MS in apps/viewer/src/lib/webrtc.ts.
+ * DEFAULT_ANSWER_TIMEOUT_MS in packages/remote-desktop-ui/src/webrtc.ts.
  */
 export const VIEWER_BASE_ANSWER_TIMEOUT_MS = 15_000;
 

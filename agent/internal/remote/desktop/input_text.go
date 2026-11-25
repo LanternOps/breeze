@@ -32,8 +32,8 @@ type textSegment struct {
 }
 
 // shiftedToBase maps a shifted US-layout symbol to the unshifted key that
-// produces it. Mirrors SHIFTED_TO_BASE in apps/viewer/src/lib/paste.ts — the two
-// halves of the same contract, and TestCharToKeyPressMatchesViewerShiftTable
+// produces it. Mirrors SHIFTED_TO_BASE in packages/remote-desktop-ui/src/paste.ts,
+// the two halves of the same contract; TestCharToKeyPressMatchesViewerShiftTable
 // pins them together.
 var shiftedToBase = map[rune]string{
 	'~': "`", '!': "1", '@': "2", '#': "3", '$': "4",
@@ -45,7 +45,7 @@ var shiftedToBase = map[rune]string{
 
 // splitTextSegments splits text into literal runs interleaved with the control
 // keys that have to be delivered as real key presses. CRLF collapses to a single
-// Return, matching textToKeyEvents in apps/viewer/src/lib/paste.ts.
+// Return, matching textToKeyEvents in packages/remote-desktop-ui/src/paste.ts.
 //
 // Scanning bytes is safe: '\r', '\n' and '\t' are ASCII, and no byte of a
 // multi-byte UTF-8 sequence is ever below 0x80.

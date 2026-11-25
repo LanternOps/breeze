@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ImeCaptureInput } from './ImeCaptureInput';
-import { CompositionCapture } from '../lib/compositionCapture';
+import { CompositionCapture } from '@breeze/remote-desktop-ui';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

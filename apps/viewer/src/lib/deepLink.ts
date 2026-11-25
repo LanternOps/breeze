@@ -1,27 +1,10 @@
+import type { ConnectionParams, DesktopConnectionParams, VncConnectionParams } from '@breeze/remote-desktop-ui';
+
 /**
  * Parse breeze:// deep link URLs
  * Format: breeze://connect?session=xxx&code=xxx&api=xxx
  *         breeze://vnc?tunnel=xxx&device=xxx&api=xxx&code=xxx
  */
-
-export interface DesktopConnectionParams {
-  mode: 'desktop';
-  sessionId: string;
-  connectCode: string;
-  apiUrl: string;
-  targetSessionId?: number;
-  deviceId?: string;
-}
-
-export interface VncConnectionParams {
-  mode: 'vnc';
-  tunnelId: string;
-  deviceId: string;
-  apiUrl: string;
-  code: string;
-}
-
-export type ConnectionParams = DesktopConnectionParams | VncConnectionParams;
 
 function isLocalhost(host: string): boolean {
   const normalized = host.toLowerCase();
@@ -31,13 +14,6 @@ function isLocalhost(host: string): boolean {
     normalized === '::1' ||
     normalized === '[::1]'
   );
-}
-
-function joinPaths(basePath: string, path: string): string {
-  const base = basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
-  const extra = path.startsWith('/') ? path : `/${path}`;
-  if (base === '' || base === '/') return extra;
-  return `${base}${extra}`;
 }
 
 function validateApiUrl(apiUrl: string): string | null {
@@ -66,7 +42,7 @@ export function parseDeepLink(url: string): ConnectionParams | null {
 
     const parsed = new URL(normalized);
 
-    // Extract path segment — e.g. "vnc", "connect", or "" for breeze://?...
+    // Extract path segment: e.g. "vnc", "connect", or "" for breeze://?...
     const pathSegment = parsed.pathname.replace(/^\//, '').replace(/\/$/, '');
 
     if (pathSegment === 'vnc') {
@@ -91,7 +67,7 @@ function parseDesktopDeepLink(parsed: URL): DesktopConnectionParams | null {
     return null;
   }
 
-  // Validate apiUrl — require https, or allow http for private/loopback (dev/LAN).
+  // Validate apiUrl: require https, or allow http for private/loopback (dev/LAN).
   let validatedApiUrl: string | null;
   try {
     validatedApiUrl = validateApiUrl(apiUrl);
@@ -134,7 +110,7 @@ function parseVncDeepLink(parsed: URL): VncConnectionParams | null {
     return null;
   }
 
-  // Validate apiUrl — same rule as desktop: https required, or http only for private hosts
+  // Validate apiUrl, same rule as desktop (https required, or http only for loopback hosts)
   let validatedApiUrl: string | null;
   try {
     validatedApiUrl = validateApiUrl(apiUrl);
@@ -152,19 +128,4 @@ function parseVncDeepLink(parsed: URL): VncConnectionParams | null {
     apiUrl: validatedApiUrl,
     code,
   };
-}
-
-/**
- * Build the WebSocket URL for a desktop session
- */
-export function buildWsUrl(apiUrl: string, sessionId: string, ticket: string): string {
-  const u = new URL(apiUrl);
-  if (u.protocol === 'https:') u.protocol = 'wss:';
-  else if (u.protocol === 'http:') u.protocol = 'ws:';
-  else throw new Error(`Unsupported API protocol for WebSocket: ${u.protocol}`);
-
-  u.pathname = joinPaths(u.pathname, `/api/v1/desktop-ws/${sessionId}/ws`);
-  u.search = new URLSearchParams({ ticket }).toString();
-  u.hash = '';
-  return u.toString();
 }

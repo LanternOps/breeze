@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isServiceModeRefusal, serviceModeRefusalMessage } from './serviceModeRefusal';
+import { isServiceModeRefusal, serviceModeRefusalMessage } from '@breeze/remote-desktop-ui';
 // apps/viewer has no React harness (see DesktopViewer.capsLock.test.ts), so the
 // wiring is guarded over the source text.
 import source from '../components/DesktopViewer.tsx?raw';

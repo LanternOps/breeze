@@ -8,8 +8,8 @@
 // choice becomes the default for devices that have none of their own (stored
 // under the `defaults` key).
 
-import { isViewScaling, type ViewScaling } from './displayScaling';
-import { DEFAULT_KEYBOARD_MODE, isKeyboardMode, type KeyboardMode } from './keyboardMode';
+import { isViewScaling, type ViewScaling } from '@breeze/remote-desktop-ui';
+import { DEFAULT_KEYBOARD_MODE, isKeyboardMode, type KeyboardMode } from '@breeze/remote-desktop-ui';
 
 export interface DevicePrefs {
   remapCmdCtrl?: boolean;

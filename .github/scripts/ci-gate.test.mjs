@@ -2177,9 +2177,9 @@ const thinCi = withThinBlock(realCi);
 const thinAggregator = gate.extractAggregator(thinCi);
 const blockOf = script => script.slice(script.indexOf('for thin_job'), script.indexOf('\ndone', script.indexOf('for thin_job')) + '\ndone'.length);
 
-test('THINNABLE: the W04 build, unit, integration and reader jobs, 27 of them; nothing always-run or never thinned', () => {
+test('THINNABLE: the W04 build, unit, integration and reader jobs, 28 of them; nothing always-run or never thinned', () => {
   const { JOB_CLASSES } = queueSelection;
-  assert.equal(thin.THINNABLE.length, 27);
+  assert.equal(thin.THINNABLE.length, 28);
   assert.deepEqual([...thin.THINNABLE].sort(), [...Object.keys(JOB_CLASSES.build), ...Object.keys(JOB_CLASSES.unit),
     ...JOB_CLASSES.integration, ...JOB_CLASSES.readers].sort());
   for (const job of [...JOB_CLASSES.always, ...JOB_CLASSES.self_gated, ...JOB_CLASSES.never_thinned]) assert.ok(!thin.THINNABLE.includes(job), job);

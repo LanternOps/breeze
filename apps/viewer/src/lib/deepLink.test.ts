@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildWsUrl, parseDeepLink } from './protocol';
+import { parseDeepLink } from './deepLink';
 
 describe('parseDeepLink', () => {
   it('parses breeze://connect URLs', () => {
@@ -102,7 +102,7 @@ describe('parseDeepLink', () => {
   });
 });
 
-describe('parseDeepLink — VNC', () => {
+describe('parseDeepLink: VNC', () => {
   it('parses a breeze://vnc URL with all required params (code-based)', () => {
     const url = 'breeze://vnc?tunnel=tun-1' +
                 '&device=dev-1&api=' + encodeURIComponent('https://api.example.com') +
@@ -146,7 +146,7 @@ describe('parseDeepLink — VNC', () => {
   });
 });
 
-describe('parseDeepLink — desktop (existing behavior preserved)', () => {
+describe('parseDeepLink: desktop (existing behavior preserved)', () => {
   it('returns mode:desktop for breeze://connect', () => {
     const url = 'breeze://connect?session=s1&code=c1&api=' + encodeURIComponent('https://api.example.com');
     const p = parseDeepLink(url);
@@ -155,28 +155,5 @@ describe('parseDeepLink — desktop (existing behavior preserved)', () => {
       expect(p.sessionId).toBe('s1');
       expect(p.connectCode).toBe('c1');
     }
-  });
-});
-
-describe('buildWsUrl', () => {
-  it('builds wss:// URL from https base', () => {
-    const wsUrl = buildWsUrl('https://example.com', 'sess', 'ticket');
-    expect(wsUrl).toBe('wss://example.com/api/v1/desktop-ws/sess/ws?ticket=ticket');
-  });
-
-  it('preserves base path prefix', () => {
-    const wsUrl = buildWsUrl('https://example.com/base', 'sess', 'ticket');
-    expect(wsUrl).toBe('wss://example.com/base/api/v1/desktop-ws/sess/ws?ticket=ticket');
-  });
-
-  it('builds ws:// URL from http base', () => {
-    const wsUrl = buildWsUrl('http://localhost:3000', 'sess', 'ticket');
-    expect(wsUrl).toBe('ws://localhost:3000/api/v1/desktop-ws/sess/ws?ticket=ticket');
-  });
-
-  it('encodes ticket via query params', () => {
-    const wsUrl = buildWsUrl('https://example.com', 'sess', 'a b&c');
-    const u = new URL(wsUrl);
-    expect(u.searchParams.get('ticket')).toBe('a b&c');
   });
 });

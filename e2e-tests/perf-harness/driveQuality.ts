@@ -7,7 +7,7 @@
  *   { "type": "set_fps",          "value": <frames-per-second> }
  *   { "type": "request_keyframe" }
  * Messages are JSON, sent over the ordered `control` RTCDataChannel that the
- * viewer opens in apps/viewer/src/lib/webrtc.ts.
+ * viewer opens in packages/remote-desktop-ui/src/webrtc.ts.
  *
  * With no live agent the `control` channel never opens; every call here returns
  * `false` (nothing sent) instead of throwing, so it is safe to script.
