@@ -36,7 +36,7 @@
     {"target":"/System/Volumes","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"folder","posix":"folder","windows":"unreadable"},"note":"parent of the macOS data volume path"},
     {"target":"/System/Volumes/DataX","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"folder","posix":"folder","windows":"unreadable"},"note":"sibling name of the macOS data volume path"},
     {"target":"/System/Volumes/Data/..","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"folder","posix":"folder","windows":"unreadable"},"note":"cleans to /System/Volumes"},
-    {"target":"/System/Volumes/Data/System/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"folder","posix":"folder","windows":"unreadable"},"note":"the data volume prefix is removed once"},
+    {"target":"/System/Volumes/Data/System/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"needs-confirmation"},"guard":{"darwin":"folder","posix":"folder","windows":"unreadable"},"note":"the data volume prefix is removed once; what is left ends in it again"},
     {"target":"","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"unreadable"},"note":"empty: the default staging location"},
     {"target":"restore","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"unreadable"},"note":"relative: the helper refuses it"},
     {"target":".\\restore","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"unreadable"},"note":"relative: the helper refuses it"},
@@ -58,6 +58,9 @@
     {"target":"C:\\ \\","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"root"},"note":"Win32 drops a space-only component"},
     {"target":"C:\\. .","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"root"},"note":"Win32 drops trailing dots and spaces"},
     {"target":"C:\\x. \\..","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"root"},"note":"trailing dot and space, then parent"},
+    {"target":"1:\\","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"windows":"unreadable","posix":"unreadable","darwin":"unreadable"},"note":"Go reads any character before a colon as a drive"},
+    {"target":"+:/","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"windows":"unreadable","posix":"unreadable","darwin":"unreadable"},"note":"Go reads any character before a colon as a drive"},
+    {"target":"1:\\restore","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"windows":"unreadable","posix":"unreadable","darwin":"unreadable"},"note":"folder on a non-letter drive"},
     {"target":"\\\\?\\C:\\","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"root"},"note":"\\\\?\\ prefix"},
     {"target":"\\\\?\\C:","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"root"},"note":"\\\\?\\ prefix, no separator"},
     {"target":"\\\\.\\C:\\","expect":{"windows":"root","posix":"not-root","darwin":"not-root"},"guard":{"darwin":"unreadable","posix":"unreadable","windows":"root"},"note":"\\\\.\\ prefix"},
@@ -158,6 +161,10 @@
     {"target":"/system/volumes/data/","expect":{"windows":"not-root","posix":"not-root","darwin":"root"},"guard":{"darwin":"root","posix":"folder","windows":"unreadable"},"note":"macOS data volume path, other case"},
     {"target":"/ſystem/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"root"},"guard":{"darwin":"root","posix":"folder","windows":"unreadable"},"note":"macOS data volume path, a letter that case-folds to s"},
     {"target":"/x/../System/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"root"},"guard":{"darwin":"root","posix":"folder","windows":"unreadable"},"note":"cleans to the macOS data volume path"},
-    {"target":"//System/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"root"},"guard":{"darwin":"root","posix":"folder","windows":"folder"},"note":"macOS data volume path, leading separators"}
+    {"target":"//System/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"root"},"guard":{"darwin":"root","posix":"folder","windows":"folder"},"note":"macOS data volume path, leading separators"},
+    {"target":"/Volumes/Macintosh HD/System/Volumes/Data","expect":{"windows":"not-root","posix":"not-root","darwin":"needs-confirmation"},"guard":{"windows":"unreadable","posix":"folder","darwin":"folder"},"note":"a path ending in the macOS data volume path"},
+    {"target":"/Volumes/Macintosh HD/System/Volumes/Data/.","expect":{"windows":"not-root","posix":"not-root","darwin":"needs-confirmation"},"guard":{"windows":"unreadable","posix":"folder","darwin":"folder"},"note":"a path ending in the macOS data volume path, dot component"},
+    {"target":"/System/Volumes/Data/Volumes/x/system/volumes/data","expect":{"windows":"not-root","posix":"not-root","darwin":"needs-confirmation"},"guard":{"windows":"unreadable","posix":"folder","darwin":"folder"},"note":"a path ending in the macOS data volume path, other case"},
+    {"target":"/Users/a/System/Volumes/Data/restore","expect":{"windows":"not-root","posix":"not-root","darwin":"not-root"},"guard":{"windows":"unreadable","posix":"folder","darwin":"folder"},"note":"folder beneath a folder spelled like the data volume path"}
   ]
 }

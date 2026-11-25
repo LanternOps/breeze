@@ -24,7 +24,11 @@ export const RESTORE_WOULD_OVERWRITE_ORIGINALS = 'restore_would_overwrite_origin
 export const RESTORE_TARGET_PATH_MAX_LENGTH = 32_767;
 
 const SEPARATOR = /[\\/]/;
-const DRIVE = /^[A-Za-z]:/;
+// Go's Windows filepath reads any first character before a colon as a
+// drive (`1:\` is absolute there), so this does too; only a letter names a
+// drive through a device prefix (DRIVE_ONLY), where anything else needs
+// confirmation anyway.
+const DRIVE = /^[^\\/]:/;
 const DRIVE_ONLY = /^[A-Za-z]:$/;
 // `\\?`, `\\.` and `\??` (either separator in every position), ending the
 // path or followed by a separator: Go's filepath reads exactly these as a
@@ -76,7 +80,8 @@ export function isVolumeRootRestoreTarget(targetPath: string): boolean {
  *   leaves nothing (`/`, `//./`, `/x\y/..`).
  * - darwin: posix, and `/System/Volumes/Data` (the data volume's own path,
  *   whose firmlinked folders are the ones under `/`) read as `/`. That
- *   over-refuses slightly: not every folder under `/` is firmlinked.
+ *   over-refuses slightly: not every folder under `/` is firmlinked. Any
+ *   other path ending in it needs confirmation.
  *
  * Linear in the length of the target: splits and single scans only.
  */
@@ -153,8 +158,14 @@ function deviceVolumeClass(volume: string, rest: string[]): RestoreTargetClass {
 function posixClass(path: string, darwin: boolean): RestoreTargetClass {
   if (path.charAt(0) !== '/') return 'not-root'; // relative: the helper refuses it
   let parts = resolveParts(path.split('/'), false);
-  if (darwin && parts.length >= 3 && isDataVolumePrefix(parts)) parts = parts.slice(3);
-  return countClass(parts);
+  if (!darwin) return countClass(parts);
+  if (parts.length >= 3 && isDataVolumeAt(parts, 0)) parts = parts.slice(3);
+  const cls = countClass(parts);
+  // Another path ending in the data volume path (`/Volumes/<boot volume>`
+  // is a link to /, so `/Volumes/Macintosh HD/System/Volumes/Data` is the
+  // data volume too) can name the same folders: confirm.
+  if (cls === 'not-root' && parts.length >= 3 && isDataVolumeAt(parts, parts.length - 3)) return 'needs-confirmation';
+  return cls;
 }
 
 // macOS compares names ignoring case (the helper folds them with Unicode case
@@ -163,8 +174,8 @@ function foldName(name: string): string {
   return name.normalize('NFC').toUpperCase().toLowerCase();
 }
 
-function isDataVolumePrefix(parts: string[]): boolean {
-  return foldName(parts[0]!) === 'system' && foldName(parts[1]!) === 'volumes' && foldName(parts[2]!) === 'data';
+function isDataVolumeAt(parts: string[], i: number): boolean {
+  return foldName(parts[i]!) === 'system' && foldName(parts[i + 1]!) === 'volumes' && foldName(parts[i + 2]!) === 'data';
 }
 
 function countClass(parts: string[]): RestoreTargetClass {
