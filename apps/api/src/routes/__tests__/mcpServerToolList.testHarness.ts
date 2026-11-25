@@ -6,7 +6,7 @@
  */
 import { Hono } from 'hono';
 import { vi } from 'vitest';
-import type { mcpServerRoutes as McpServerRoutes } from './mcpServer';
+import type { mcpServerRoutes as McpServerRoutes } from '../mcpServer';
 
 export type HarnessResponse = {
   status: number;
@@ -124,7 +124,7 @@ export function createMcpHarness(routes: typeof McpServerRoutes, writeAuditEvent
 
 // ---------------------------------------------------------------------------
 // Shared mock factories. A suite wires them with
-//   vi.mock('../db', async (orig) => (await import('./mcpServerToolList.testHarness')).dbMock(orig));
+//   vi.mock('../db', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).dbMock(orig));
 // and drives behaviour through `harnessState` (one module instance per file).
 // ---------------------------------------------------------------------------
 type Orig = <T>() => Promise<T>;
@@ -240,7 +240,7 @@ export async function permissionsMock(orig: Orig) {
 }
 
 export async function aiToolsMock(orig: Orig) {
-  const actual = await orig<typeof import('../services/aiTools')>();
+  const actual = await orig<typeof import('../../services/aiTools')>();
   return {
     ...actual,
     getToolDefinitions: () => (harnessState.realRegistry ? actual.getToolDefinitions() : fixtureDefinitions()),
@@ -251,7 +251,7 @@ export async function aiToolsMock(orig: Orig) {
 }
 
 export async function guardrailsMock(orig: Orig) {
-  const actual = await orig<typeof import('../services/aiGuardrails')>();
+  const actual = await orig<typeof import('../../services/aiGuardrails')>();
   return {
     ...actual,
     checkGuardrails: (name: string, input: Record<string, unknown>, context?: unknown) => (harnessState.guardrailOverride?.(name, input)

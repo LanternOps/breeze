@@ -7,24 +7,24 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../config/env', async (orig) => (await import('./mcpServerToolList.testHarness')).envMock(orig as never));
-vi.mock('../middleware/apiKeyAuth', async () => (await import('./mcpServerToolList.testHarness')).apiKeyAuthMock());
-vi.mock('../middleware/bearerTokenAuth', async () => (await import('./mcpServerToolList.testHarness')).bearerMock());
-vi.mock('../db', async (orig) => (await import('./mcpServerToolList.testHarness')).dbMock(orig as never));
-vi.mock('../services/permissions', async (orig) => (await import('./mcpServerToolList.testHarness')).permissionsMock(orig as never));
-vi.mock('../services/aiTools', async (orig) => (await import('./mcpServerToolList.testHarness')).aiToolsMock(orig as never));
-vi.mock('../services/aiGuardrails', async (orig) => (await import('./mcpServerToolList.testHarness')).guardrailsMock(orig as never));
-vi.mock('../services/auditEvents', async () => (await import('./mcpServerToolList.testHarness')).auditMock());
-vi.mock('../services/toolSources/resolver', async () => (await import('./mcpServerToolList.testHarness')).resolverMock());
-vi.mock('../services/flows/mcpFlowTools', async () => (await import('./mcpServerToolList.testHarness')).flowToolsMock());
-vi.mock('./mcpExecutionOrg', async () => (await import('./mcpServerToolList.testHarness')).executionOrgMock());
-vi.mock('../services/redis', async () => (await import('./mcpServerToolList.testHarness')).redisMock());
-vi.mock('../services/mcpToolExecutionLedger', async () => (await import('./mcpServerToolList.testHarness')).ledgerMock());
+vi.mock('../config/env', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).envMock(orig as never));
+vi.mock('../middleware/apiKeyAuth', async () => (await import('./__tests__/mcpServerToolList.testHarness')).apiKeyAuthMock());
+vi.mock('../middleware/bearerTokenAuth', async () => (await import('./__tests__/mcpServerToolList.testHarness')).bearerMock());
+vi.mock('../db', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).dbMock(orig as never));
+vi.mock('../services/permissions', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).permissionsMock(orig as never));
+vi.mock('../services/aiTools', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).aiToolsMock(orig as never));
+vi.mock('../services/aiGuardrails', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).guardrailsMock(orig as never));
+vi.mock('../services/auditEvents', async () => (await import('./__tests__/mcpServerToolList.testHarness')).auditMock());
+vi.mock('../services/toolSources/resolver', async () => (await import('./__tests__/mcpServerToolList.testHarness')).resolverMock());
+vi.mock('../services/flows/mcpFlowTools', async () => (await import('./__tests__/mcpServerToolList.testHarness')).flowToolsMock());
+vi.mock('./mcpExecutionOrg', async () => (await import('./__tests__/mcpServerToolList.testHarness')).executionOrgMock());
+vi.mock('../services/redis', async () => (await import('./__tests__/mcpServerToolList.testHarness')).redisMock());
+vi.mock('../services/mcpToolExecutionLedger', async () => (await import('./__tests__/mcpServerToolList.testHarness')).ledgerMock());
 vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
-vi.mock('../services/toolSources/execute', async (orig) => (await import('./mcpServerToolList.testHarness')).tenantExecuteMock(orig as never));
-vi.mock('../services/toolSources/guardrails', async (orig) => (await import('./mcpServerToolList.testHarness')).tenantGuardrailsMock(orig as never));
-vi.mock('../services/rate-limit', async () => (await import('./mcpServerToolList.testHarness')).rateLimitMock());
+vi.mock('../services/toolSources/execute', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).tenantExecuteMock(orig as never));
+vi.mock('../services/toolSources/guardrails', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).tenantGuardrailsMock(orig as never));
+vi.mock('../services/rate-limit', async () => (await import('./__tests__/mcpServerToolList.testHarness')).rateLimitMock());
 const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn(), loadOwnedMcpIntent: vi.fn(), countLiveMcpIntentsForOrigin: vi.fn(async () => 0), cancelOwnedMcpIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
   createMcpActionIntent: (...a: unknown[]) => intentMocks.createMcpActionIntent(...a),
@@ -39,7 +39,7 @@ vi.mock('../services/actionIntents/intentService', () => ({
 }));
 
 import { mcpServerRoutes } from './mcpServer';
-import { createMcpHarness, harnessState, resetHarnessState, UNRESTRICTED_KEY } from './mcpServerToolList.testHarness';
+import { createMcpHarness, harnessState, resetHarnessState, UNRESTRICTED_KEY } from './__tests__/mcpServerToolList.testHarness';
 import { mcpRequestStateKey, openMcpRequestState, sealMcpRequestState } from '../services/mcpRequestState';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 

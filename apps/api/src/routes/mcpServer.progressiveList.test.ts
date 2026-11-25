@@ -8,24 +8,24 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../config/env', async (orig) => (await import('./mcpServerToolList.testHarness')).envMock(orig as never));
-vi.mock('../middleware/apiKeyAuth', async () => (await import('./mcpServerToolList.testHarness')).apiKeyAuthMock());
-vi.mock('../middleware/bearerTokenAuth', async () => (await import('./mcpServerToolList.testHarness')).bearerMock());
-vi.mock('../db', async (orig) => (await import('./mcpServerToolList.testHarness')).dbMock(orig as never));
-vi.mock('../services/permissions', async (orig) => (await import('./mcpServerToolList.testHarness')).permissionsMock(orig as never));
-vi.mock('../services/aiTools', async (orig) => (await import('./mcpServerToolList.testHarness')).aiToolsMock(orig as never));
-vi.mock('../services/aiGuardrails', async (orig) => (await import('./mcpServerToolList.testHarness')).guardrailsMock(orig as never));
-vi.mock('../services/auditEvents', async () => (await import('./mcpServerToolList.testHarness')).auditMock());
-vi.mock('../services/toolSources/resolver', async () => (await import('./mcpServerToolList.testHarness')).resolverMock());
-vi.mock('../services/flows/mcpFlowTools', async () => (await import('./mcpServerToolList.testHarness')).flowToolsMock());
-vi.mock('./mcpExecutionOrg', async () => (await import('./mcpServerToolList.testHarness')).executionOrgMock());
-vi.mock('../services/redis', async () => (await import('./mcpServerToolList.testHarness')).redisMock());
-vi.mock('../services/mcpToolExecutionLedger', async () => (await import('./mcpServerToolList.testHarness')).ledgerMock());
+vi.mock('../config/env', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).envMock(orig as never));
+vi.mock('../middleware/apiKeyAuth', async () => (await import('./__tests__/mcpServerToolList.testHarness')).apiKeyAuthMock());
+vi.mock('../middleware/bearerTokenAuth', async () => (await import('./__tests__/mcpServerToolList.testHarness')).bearerMock());
+vi.mock('../db', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).dbMock(orig as never));
+vi.mock('../services/permissions', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).permissionsMock(orig as never));
+vi.mock('../services/aiTools', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).aiToolsMock(orig as never));
+vi.mock('../services/aiGuardrails', async (orig) => (await import('./__tests__/mcpServerToolList.testHarness')).guardrailsMock(orig as never));
+vi.mock('../services/auditEvents', async () => (await import('./__tests__/mcpServerToolList.testHarness')).auditMock());
+vi.mock('../services/toolSources/resolver', async () => (await import('./__tests__/mcpServerToolList.testHarness')).resolverMock());
+vi.mock('../services/flows/mcpFlowTools', async () => (await import('./__tests__/mcpServerToolList.testHarness')).flowToolsMock());
+vi.mock('./mcpExecutionOrg', async () => (await import('./__tests__/mcpServerToolList.testHarness')).executionOrgMock());
+vi.mock('../services/redis', async () => (await import('./__tests__/mcpServerToolList.testHarness')).redisMock());
+vi.mock('../services/mcpToolExecutionLedger', async () => (await import('./__tests__/mcpServerToolList.testHarness')).ledgerMock());
 vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }) }));
 
 import { mcpServerRoutes, buildToolsListEntries } from './mcpServer';
-import { ALL_FLAGS_ON, createMcpHarness, harnessState, resetHarnessState, UNRESTRICTED_KEY } from './mcpServerToolList.testHarness';
+import { ALL_FLAGS_ON, createMcpHarness, harnessState, resetHarnessState, UNRESTRICTED_KEY } from './__tests__/mcpServerToolList.testHarness';
 import { aiTools, getToolSearchHint } from '../services/aiTools';
 import { NO_MCP_CLIENT_EXTENSIONS } from '../services/mcpClientExtensions';
 import { MCP_SERVER_INSTRUCTIONS } from '../services/mcpGuidance';

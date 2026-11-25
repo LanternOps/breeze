@@ -103,7 +103,7 @@ vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools
 
 import { mcpServerRoutes } from './mcpServer';
 import { API_VERSION } from '../version';
-import { createMcpHarness } from './mcpServerToolList.testHarness';
+import { createMcpHarness } from './__tests__/mcpServerToolList.testHarness';
 
 const mcp = createMcpHarness(mcpServerRoutes, mocks.writeAuditEvent);
 const APPS = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
