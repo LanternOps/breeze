@@ -48,6 +48,37 @@ describe('aiToolNames leaf module (#4086 Task 5, chain (ii) break)', () => {
   // stageExtension.ts's own (unrelated, non-aiTools) import graph, which can
   // legitimately take a few seconds under the default 5000ms — this is a
   // slow-but-correct compile, not a hang (verified locally at ~6-8s).
+  // #12427: the external MCP server's meta-tools are server-intrinsic (never in
+  // the map), so only this reservation keeps an extension from shadowing one.
+  it('importing the leaf ALONE reserves the three MCP meta-tool names (and whoami)', async () => {
+    vi.resetModules();
+    const { hasCoreAiToolName, MCP_META_TOOL_NAMES } = await import('./aiToolNames');
+    expect([...MCP_META_TOOL_NAMES].sort()).toEqual(['call_tool', 'get_tool_details', 'search_tools']);
+    for (const name of ['search_tools', 'get_tool_details', 'call_tool', 'whoami']) expect(hasCoreAiToolName(name), name).toBe(true);
+    expect(hasCoreAiToolName('call_tools')).toBe(false);
+  });
+
+  it.each(['call_tool', 'search_tools'])('an extension AI tool named %s is rejected at staging', async (name) => {
+    vi.resetModules();
+    await import('./aiToolNames');
+    const { defaultStageExtension } = await import('../extensions/stageExtension');
+    const { ExtensionContributionRegistry } = await import('../extensions/contributionRegistry');
+    const manifest = {
+      apiVersion: 'breeze.extensions/v1', name: 'demo', version: '1.0.0', routeNamespace: 'demo',
+      requires: { breeze: '>=0.1.0', serverSdk: '^1.0.0', capabilities: [] },
+      server: { entry: 'server/index.cjs' }, migrationsDir: 'migrations', schemaCompatibilityFloor: '1.0.0',
+      publicRoutes: [], agentRoutes: false, jobs: [],
+      aiTools: [{ name, description: 'x', input_schema: {} }],
+      tenancy: { orgCascadeDeleteTables: [], deviceCascadeDeleteTables: [], deviceOrgDenormalizedTables: [], deviceOrgMoveDeleteTables: [] },
+    } as never;
+    const module: BreezeExtensionV1 = {
+      register(registrar) {
+        registrar.registerAiTool(name, { definition: { name, description: 'x', input_schema: {} }, tier: 1, handler: async () => 'x' });
+      },
+    };
+    await expect(defaultStageExtension(module, manifest, new ExtensionContributionRegistry())).rejects.toThrow(/already registered/);
+  }, 20_000);
+
   it('importing the leaf ALONE (no aiTools.ts) is enough to reject a colliding extension AI tool via stageExtension', async () => {
     vi.resetModules();
     const { aiTools } = await import('./aiToolNames');

@@ -11,7 +11,12 @@
  */
 import { createHmac, hkdfSync, timingSafeEqual } from 'node:crypto';
 
-export type McpRequestStatePayload = { v: 1; a: string; p: string; m: 'tools/call'; t: string; d: string; e: number };
+/**
+ * `w` (#12427, spec §3.4): the surface that issued the state — 0 a direct
+ * tools/call, 1 the inner call of call_tool. Always written; absent only on a
+ * state sealed before it existed, which reads as 0.
+ */
+export type McpRequestStatePayload = { v: 1; a: string; p: string; m: 'tools/call'; t: string; d: string; e: number; w?: 0 | 1 };
 
 export const MCP_REQUEST_STATE_TTL_S = 600;
 export const MCP_REQUEST_STATE_MAX_BYTES = 1024;
@@ -33,7 +38,7 @@ function mac(key: Buffer, part: string): Buffer {
 }
 
 export function sealMcpRequestState(
-  p: Omit<McpRequestStatePayload, 'v' | 'e'>,
+  p: Omit<McpRequestStatePayload, 'v' | 'e' | 'w'> & { w: 0 | 1 },
   key: Buffer,
   nowS: number,
 ): string {
@@ -60,7 +65,8 @@ function isPayload(v: unknown): v is McpRequestStatePayload {
     typeof o.t === 'string' &&
     typeof o.d === 'string' &&
     typeof o.e === 'number' &&
-    Number.isInteger(o.e)
+    Number.isInteger(o.e) &&
+    (o.w === undefined || o.w === 0 || o.w === 1)
   );
 }
 
