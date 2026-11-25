@@ -145,7 +145,7 @@ async function seedLogin(orgId: string, contactId: string | null = null) {
   const suffix = uniqueSuffix();
   const [row] = await admin()
     .insert(portalUsers)
-    .values({
+    .values({ browserAccess: 'granted',
       orgId,
       email: `login-${suffix}@example.test`,
       name: 'Login Person',
@@ -199,7 +199,7 @@ describe('portal_users_contact_org_fk — the composite same-org FK', () => {
 
     const forge = admin()
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: fx.orgId,
         email: `forge-${uniqueSuffix()}@example.test`,
         name: 'Cross-tenant login',

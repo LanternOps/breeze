@@ -493,7 +493,8 @@
       "ring_unavailable": "Omitido: el anillo de actualización se eliminó o deshabilitó antes de enviar a este dispositivo.",
       "all_managed_by_vendor_updates": "Omitido: todas las actualizaciones pendientes de este dispositivo las administran las actualizaciones del fabricante, por lo que no se requiere aprobación.",
       "requested_patches_not_eligible": "Omitido: ninguna de las actualizaciones seleccionadas para este trabajo se puede instalar en este dispositivo según su política de actualizaciones actual.",
-      "invalid_patch_ids": "Omitido: la lista de actualizaciones seleccionadas para este trabajo no era válida, por lo que no se instaló nada."
+      "invalid_patch_ids": "Omitido: la lista de actualizaciones seleccionadas para este trabajo no era válida, por lo que no se instaló nada.",
+      "requested_patches_no_longer_eligible": "Cancelado antes de la entrega: al menos una de las actualizaciones seleccionadas para este trabajo ya no es apta en este dispositivo. Vuelva a ejecutar la instalación para instalar las que todavía lo son."
     },
     "errors": {
       "load": "No se pudo cargar el trabajo de parche"

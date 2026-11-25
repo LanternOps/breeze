@@ -51,7 +51,7 @@ async function seedOrgATicketWithComment() {
 
   const [portalUser] = await adminDb
     .insert(portalUsers)
-    .values({
+    .values({ browserAccess: 'granted',
       orgId: orgA.id,
       email: `tc-edit-rls-portal-${unique}@example.test`,
       name: 'Portal Customer',

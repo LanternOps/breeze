@@ -81,14 +81,16 @@ BEGIN
       name,
       password_hash,
       auth_method,
-      status
+      status,
+      browser_access
     ) VALUES (
       v_org_id,
       'portal@breeze.local',
       'E2E Portal Customer',
       '$argon2id$v=19$m=65536,p=4,t=3$q5hKTRQYCXO6bbaMerNeMA$khldmE+NStz0U5xbEZGHFtSp7MVJ8eVmiGMZ0gAj5oE',
       'password',
-      'active'
+      'active',
+      'granted'
     )
     RETURNING id INTO v_portal_user_id;
   ELSE

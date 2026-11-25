@@ -57,8 +57,8 @@ func TestReadStoreErrorCode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := readStoreErrorCode(strings.NewReader(tc.body)); got != tc.want {
-				t.Fatalf("readStoreErrorCode = %q, want %q", got, tc.want)
+			if got, _ := readStoreError(strings.NewReader(tc.body)); got != tc.want {
+				t.Fatalf("readStoreError code = %q, want %q", got, tc.want)
 			}
 		})
 	}

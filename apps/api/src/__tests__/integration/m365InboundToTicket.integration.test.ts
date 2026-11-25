@@ -48,7 +48,7 @@ describe('M365 inbound → ticket (real DB)', () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
       // Known portal user → findPortalUserInPartner resolves the org (the 'created' path).
-      await db.insert(portalUsers).values({ orgId: org.id, email: custEmail, name: 'Cust' });
+      await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: custEmail, name: 'Cust' });
       return { partnerId: partner.id, orgId: org.id };
     });
 
@@ -103,7 +103,7 @@ describe('M365 inbound → ticket (real DB)', () => {
       const seeded = await withSystemDbAccessContext(async () => {
         const partner = await createPartner();
         const org = await createOrganization({ partnerId: partner.id });
-        await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+        await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
         await db.insert(ticketMailboxTenantOwnerships).values({
           tenantId, partnerId: partner.id, verifiedMicrosoftOid: randomUUID(),
         });
@@ -231,7 +231,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     const seeded = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
-      await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+      await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
       await db.insert(ticketMailboxTenantOwnerships).values({
         tenantId,
         partnerId: partner.id,
@@ -300,7 +300,7 @@ describe('M365 inbound → ticket (real DB)', () => {
       const seeded = await withSystemDbAccessContext(async () => {
         const partner = await createPartner();
         const org = await createOrganization({ partnerId: partner.id });
-        await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+        await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
         await db.insert(ticketMailboxTenantOwnerships).values({
           tenantId,
           partnerId: partner.id,
@@ -373,7 +373,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     const seeded = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
-      await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+      await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
       await db.insert(ticketMailboxTenantOwnerships).values({ tenantId, partnerId: partner.id, verifiedMicrosoftOid: microsoftOid });
       const [connection] = await db.insert(ticketMailboxConnections).values({
         partnerId: partner.id, tenantId, mailboxAddress, status: 'connected',
@@ -425,7 +425,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     const seeded = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
-      await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+      await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
       await db.insert(ticketMailboxTenantOwnerships).values({
         tenantId,
         partnerId: partner.id,
@@ -537,7 +537,7 @@ describe('M365 inbound → ticket (real DB)', () => {
     const seeded = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
-      await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+      await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
       await db.insert(ticketMailboxTenantOwnerships).values({
         tenantId,
         partnerId: partner.id,

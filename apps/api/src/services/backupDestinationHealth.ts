@@ -38,12 +38,17 @@ export const DESTINATION_LOOKBACK_MS = 72 * 60 * 60 * 1000;
  */
 export const DESTINATION_FAULT_CAUSES: ReadonlySet<BackupFailureCause> = new Set<BackupFailureCause>([
   'storage_access_denied',
+  'storage_cap_exceeded',
   'storage_not_found',
   'storage_clock_skew',
   'storage_operation_failed',
 ]);
 
-/** The destination refused outright or is gone: retrying will not fix it, so it opens at once. */
+/**
+ * The destination refused outright or is gone: retrying will not fix it, so it
+ * opens at once. A provider cap (#12623) is not here: daily caps reset on their
+ * own, so it needs the same repeated evidence as any other destination fault.
+ */
 export const PERMANENT_DESTINATION_CAUSES: ReadonlySet<BackupFailureCause> = new Set<BackupFailureCause>([
   'storage_access_denied',
   'storage_not_found',

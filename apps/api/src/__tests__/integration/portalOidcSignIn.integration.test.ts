@@ -142,7 +142,6 @@ async function seedAccount(orgId: string, seed: AccountSeed = {}) {
     browserAccess: seed.browserAccess ?? 'granted',
     passwordHash: seed.passwordHash === undefined ? 'argon2-hash' : seed.passwordHash,
     authEpoch: seed.authEpoch ?? 5,
-    ...(seed.identity ? { entraTenantId: seed.identity.tid, entraOid: seed.identity.oid } : {}),
   }).returning();
   if (seed.identity) {
     await admin().insert(portalUserIdentities).values({
@@ -241,7 +240,6 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     expect(out).toEqual({ kind: 'account_exists', orgId: org.id });
     expect(await identitiesFor({ oid })).toEqual([]);
     const after = await readAccount(existing.id);
-    expect(after.entraOid).toBeNull();
     expect(after.authEpoch).toBe(existing.authEpoch);
     expect(await admin().select().from(portalUsers).where(eq(portalUsers.orgId, org.id))).toHaveLength(1);
   });
@@ -275,7 +273,7 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     const account = await readAccount(session.portalUserId);
     expect(account).toMatchObject({
       orgId: org.id, email, name: 'New Person', status: 'active', browserAccess: 'granted', authMethod: 'entra',
-      passwordHash: null, entraTenantId: tid, entraOid: oid, authEpoch: session.authEpoch,
+      passwordHash: null, authEpoch: session.authEpoch,
     });
     expect(account.contactId).not.toBeNull();
     const [contact] = await admin().select().from(contacts).where(eq(contacts.id, account.contactId!));
@@ -351,7 +349,7 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     expect(out).toEqual({ kind: 'session', portalUserId: invited.id, orgId: org.id, authEpoch: 8, entraTenantId: tid, via: 'invite' });
     expect(consumer).toHaveBeenCalledWith('f'.repeat(64));
     expect(await readAccount(invited.id)).toMatchObject({
-      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8, entraTenantId: tid, entraOid: oid,
+      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8,
     });
     expect(await identitiesFor({ portalUserId: invited.id })).toEqual([expect.objectContaining({
       provider: 'entra', issuer: entraIssuer(tid), subject: oid, linkedVia: 'invite',
@@ -372,31 +370,8 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     });
     expect(out).toEqual({ kind: 'denied', reason: 'identity_conflict', orgId: org.id });
     expect(consumer).not.toHaveBeenCalled();
-    expect(await readAccount(invited.id)).toMatchObject({ status: 'invited', authEpoch: 7, entraOid: null });
+    expect(await readAccount(invited.id)).toMatchObject({ status: 'invited', authEpoch: 7 });
     expect(await identitiesFor({ portalUserId: invited.id })).toEqual([]);
-  });
-
-  it('invite while another login holds the legacy (entra_tenant_id, entra_oid) pair with no identity row → identity_conflict, invite NOT consumed', async () => {
-    const { org, tid } = await seedOrg();
-    const oid = randomUUID();
-    // Drift in ANOTHER partner's org (invisible to the org's RLS): the legacy
-    // columns are set, no portal_user_identities row exists, so step 1 finds nothing.
-    const { org: elsewhere } = await seedOrg();
-    const holder = await seedAccount(elsewhere.id, { authMethod: 'entra', passwordHash: null });
-    await admin().update(portalUsers).set({ entraTenantId: tid, entraOid: oid }).where(eq(portalUsers.id, holder.id));
-    const invited = await seedAccount(org.id, { status: 'invited', passwordHash: null, authEpoch: 7 });
-    const consumer = vi.fn(async () => ({ portalUserId: invited.id, orgId: org.id, authEpoch: 7 }));
-
-    const out = await signIn({
-      identity: entraIdentity(tid, oid, null),
-      purpose: { kind: 'invite', inviteTokenHash: 'b'.repeat(64) },
-      inviteConsumer: consumer,
-    });
-    expect(out).toEqual({ kind: 'denied', reason: 'identity_conflict', orgId: org.id });
-    expect(consumer).not.toHaveBeenCalled(); // the MSP's invite still works once the drift is fixed
-    expect(await readAccount(invited.id)).toMatchObject({ status: 'invited', authEpoch: 7, entraOid: null });
-    expect(await identitiesFor({ oid })).toEqual([]);
-    expect(await readAccount(holder.id)).toMatchObject({ entraTenantId: tid, entraOid: oid, authEpoch: 5 });
   });
 
   it('link adds self_link to a signed-in password user; under sso_only it also clears the hash', async () => {
@@ -409,7 +384,7 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     });
     expect(linked).toEqual({ kind: 'linked', portalUserId: allowedUser.id, orgId: org.id });
     expect(await readAccount(allowedUser.id)).toMatchObject({
-      passwordHash: 'kept-hash', authEpoch: 5, authMethod: 'password', entraTenantId: tid, entraOid: oidA,
+      passwordHash: 'kept-hash', authEpoch: 5, authMethod: 'password',
     });
     expect(await identitiesFor({ portalUserId: allowedUser.id })).toEqual([expect.objectContaining({ subject: oidA, linkedVia: 'self_link' })]);
 
@@ -421,7 +396,7 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
       purpose: { kind: 'link', portalUserId: ssoUser.id, orgId: org.id, authEpoch: 5 },
     });
     expect(linkedSso).toEqual({ kind: 'linked', portalUserId: ssoUser.id, orgId: org.id });
-    expect(await readAccount(ssoUser.id)).toMatchObject({ passwordHash: null, authEpoch: 5, entraOid: oidB });
+    expect(await readAccount(ssoUser.id)).toMatchObject({ passwordHash: null, authEpoch: 5 });
   });
 
   it('known identity signing in while the org is effectively sso_only (via a proof, no PATCH) loses its hash, epoch unchanged', async () => {
@@ -537,7 +512,7 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     expect(result).toMatchObject({ outcome: 'account_created', email, name: 'Ent Ra', source: 'entra' });
     const account = await readAccount(result.portalUserId);
     expect(account).toMatchObject({
-      status: 'active', browserAccess: 'granted', authMethod: 'entra', passwordHash: null, entraTenantId: tid, entraOid: oid,
+      status: 'active', browserAccess: 'granted', authMethod: 'entra', passwordHash: null,
     });
     expect(account.contactId).not.toBeNull();
     expect(await identitiesFor({ portalUserId: account.id })).toEqual([expect.objectContaining({
@@ -744,7 +719,7 @@ describe('portal Microsoft sign-in routes (real DB + router)', () => {
     const res = await callback(flow);
     expect(res.headers.get('location')).toBe(`${PORTAL}/profile?sso=linked`);
 
-    expect(await readAccount(account.id)).toMatchObject({ passwordHash: 'kept-hash', authEpoch: 5, entraTenantId: tid, entraOid: oid });
+    expect(await readAccount(account.id)).toMatchObject({ passwordHash: 'kept-hash', authEpoch: 5 });
     expect(await identitiesFor({ portalUserId: account.id })).toEqual([expect.objectContaining({ subject: oid, linkedVia: 'self_link' })]);
     expect(await linkStatus()).toEqual({ available: true, linked: true });
     expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
@@ -800,7 +775,7 @@ describe('portal Microsoft sign-in routes (real DB + router)', () => {
     expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in`);
 
     expect(await readAccount(invited.id)).toMatchObject({
-      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8, entraTenantId: tid, entraOid: oid,
+      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8,
     });
     expect(await identitiesFor({ portalUserId: invited.id })).toEqual([expect.objectContaining({ subject: oid, linkedVia: 'invite' })]);
     expect(await peekPortalCapabilityToken('invite', inviteToken!)).toBeNull();

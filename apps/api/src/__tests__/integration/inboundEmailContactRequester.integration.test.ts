@@ -253,7 +253,7 @@ describe('inbound email -> contact requester (#3258 W03)', () => {
     // The invite route's outcome: a login bound to that contact.
     const [login] = await admin()
       .insert(portalUsers)
-      .values({ orgId: fx.orgId, email: from, name: 'Linked Customer', contactId: contact.id })
+      .values({ browserAccess: 'granted', orgId: fx.orgId, email: from, name: 'Linked Customer', contactId: contact.id })
       .returning({ id: portalUsers.id, contactId: portalUsers.contactId });
 
     // The real predicate, compiled by Postgres — not a shape assertion.
@@ -267,7 +267,7 @@ describe('inbound email -> contact requester (#3258 W03)', () => {
     // predicate must NOT degenerate into `requester_contact_id = NULL`.
     const [stranger] = await admin()
       .insert(portalUsers)
-      .values({ orgId: fx.orgId, email: `stranger-${uniqueSuffix()}@${fx.senderDomain}`, contactId: null })
+      .values({ browserAccess: 'granted', orgId: fx.orgId, email: `stranger-${uniqueSuffix()}@${fx.senderDomain}`, contactId: null })
       .returning({ id: portalUsers.id, contactId: portalUsers.contactId });
     const strangerVisible = await admin()
       .select({ id: tickets.id })
@@ -496,7 +496,7 @@ describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
       .returning({ id: contacts.id });
     const [login] = await admin()
       .insert(portalUsers)
-      .values({ orgId: fx.orgId, email, name: 'Backfill Target', contactId: contact.id })
+      .values({ browserAccess: 'granted', orgId: fx.orgId, email, name: 'Backfill Target', contactId: contact.id })
       .returning({ id: portalUsers.id });
     // A pre-W03 ticket: a portal login, no contact link.
     const [legacy] = await admin()
@@ -547,7 +547,7 @@ describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
     try {
       const [login] = await admin()
         .insert(portalUsers)
-        .values({ orgId: fx.orgId, email: `drift-${suffix}@example.test`, name: 'Drifted', contactId: foreignContact.id })
+        .values({ browserAccess: 'granted', orgId: fx.orgId, email: `drift-${suffix}@example.test`, name: 'Drifted', contactId: foreignContact.id })
         .returning({ id: portalUsers.id });
       const [ticket] = await admin()
         .insert(tickets)

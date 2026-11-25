@@ -4698,6 +4698,7 @@
       "v0.118.0 — coturn peer restrictions and API stop grace",
       "v0.95.0 — stable Caddy address and proxy trust",
       "Version-specific notes",
+      "Next release — customer portal Microsoft sign-in links move to their own table",
       "v0.128.0 — customer portal sign-up options, remote access tool alerts, Wisp check-ins, partner-wide installers",
       "v0.127.0 — notifications for every alert, restore browsing for large snapshots, SLA performance report",
       "v0.126.0 — alerts to your PSA and webhooks, partner-wide device groups, Jobs moving to Flows",
@@ -4912,6 +4913,11 @@
         "heading": "Version-specific notes",
         "anchor": "version-specific-notes",
         "text": ""
+      },
+      {
+        "heading": "Next release — customer portal Microsoft sign-in links move to their own table",
+        "anchor": "next-release--customer-portal-microsoft-sign-in-links-move-to-their-own-table",
+        "text": "This release stops using the old `entra_oid` and `entra_tenant_id` columns on portal logins; Microsoft sign-in links have lived in the identities table since v0.128.0. On start, one migration copies across any link that was never moved. The API log shows `final backfill inserted N identit(ies)` when it copied something, or `inserted 0 identities` when it did not. A later release drops the old columns.\n\n**The API can refuse to start at this migration.** This happens only when a portal login holds an old Microsoft link that no identity reserves, and the login is already linked to a different Microsoft account. The migration does not guess which one is right. The start log shows `portal identity final backfill refused`, and nothing is changed. To fix it:\n\n1. Run `apps/api/migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql` against the database. It is read-only. Query `blocking_unreserved_pairs` lists the logins concerned.\n2. For each login, decide which Microsoft account should own it:\n   - If the old link should be free to sign in later as a new login, set that row's `entra_oid` and `entra_tenant_id` to `NULL`.\n   - If the old link is the right owner, point the login's Microsoft row in `portal_user_identities` at it. Set `subject` to `entra_oid`, and set `entra_tenant_id` and the issuer from the old `entra_tenant_id`.\n\n   Disabling the portal login does not clear the refusal.\n3. Restart the API. The migration runs again.\n\n**More than one API instance?** Do not skip this release. Upgrade every API and `worker` instance to it before you take the release that drops the columns. An older instance still running after the drop would fail when it writes those columns."
       },
       {
         "heading": "v0.128.0 — customer portal sign-up options, remote access tool alerts, Wisp check-ins, partner-wide installers",

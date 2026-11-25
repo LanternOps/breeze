@@ -220,13 +220,11 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
       .insert(contacts)
       .values({ orgId: fx.orgId, email, name: 'Jane From Email', roles: [] })
       .returning({ id: contacts.id });
-    const [prior] = await admin().insert(portalUsers).values({
+    const [prior] = await admin().insert(portalUsers).values({ browserAccess: 'none',
       orgId: fx.orgId,
       email,
       name: 'Jane Client',
       passwordHash: null,
-      entraOid: (c as { oid: string }).oid,
-      entraTenantId: fx.tid,
       authMethod: 'entra',
       status: 'active',
       contactId: null,
@@ -321,12 +319,10 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
     const otherOrg = await createOrganization({ partnerId: fx.partnerId, name: `Stale ${randomUUID().slice(0, 8)}` });
     seeded.orgIds.push(otherOrg.id);
     const c = claims();
-    const [stale] = await admin().insert(portalUsers).values({
+    const [stale] = await admin().insert(portalUsers).values({ browserAccess: 'none',
       orgId: otherOrg.id,
       email: (c as { email: string }).email,
       passwordHash: null,
-      entraOid: (c as { oid: string }).oid,
-      entraTenantId: fx.tid,
       authMethod: 'entra',
       status: 'active',
       contactId: null,

@@ -112,7 +112,7 @@ describe('report run requester tombstones', () => {
     const fixture = await seedReportFixture();
     try {
       const { portalUserId, runId } = await withSystemDbAccessContext(async () => {
-        const [portalUser] = await db.insert(portalUsers).values({
+        const [portalUser] = await db.insert(portalUsers).values({ browserAccess: 'granted',
           orgId: fixture.orgId,
           email: `portal-${fixture.suffix}@example.test`,
         }).returning({ id: portalUsers.id });
@@ -150,7 +150,7 @@ describe('report run requester tombstones', () => {
     const fixture = await seedReportFixture();
     try {
       const portalUserId = await withSystemDbAccessContext(async () => {
-        const [portalUser] = await db.insert(portalUsers).values({
+        const [portalUser] = await db.insert(portalUsers).values({ browserAccess: 'granted',
           orgId: fixture.orgId,
           email: `invalid-axis-${fixture.suffix}@example.test`,
         }).returning({ id: portalUsers.id });

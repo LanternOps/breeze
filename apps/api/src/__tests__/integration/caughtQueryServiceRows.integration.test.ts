@@ -171,7 +171,7 @@ describe('best-effort writes keep the caller commit', () => {
   runDb('clientAiUsage.recordClientUsage: the daily bucket fails, the monthly bucket is written', async () => {
     const t = await tenant();
     const [portalUser] = await getTestDb().insert(portalUsers)
-      .values({ orgId: t.orgId, email: `rows-${randomUUID()}@example.test`, authMethod: 'password' })
+      .values({ browserAccess: 'granted', orgId: t.orgId, email: `rows-${randomUUID()}@example.test`, authMethod: 'password' })
       .returning({ id: portalUsers.id });
     await failWritesOn('client_ai_usage', { ops: 'INSERT', when: "NEW.period = 'daily'" });
     const logged = errorLog();
@@ -365,7 +365,7 @@ describe('portalReports generatePortalReport: a failed generation stamps the run
   runDb('a failing completion write is caught, and the run row is committed as failed', async () => {
     const t = await tenant();
     const [portalUser] = await getTestDb().insert(portalUsers)
-      .values({ orgId: t.orgId, email: `rows-${randomUUID()}@example.test`, authMethod: 'password' })
+      .values({ browserAccess: 'granted', orgId: t.orgId, email: `rows-${randomUUID()}@example.test`, authMethod: 'password' })
       .returning({ id: portalUsers.id });
     const scope = { version: 1, kind: 'unrestricted', orgId: t.orgId } as const;
     const authority: UserReportExecutionAuthority = {

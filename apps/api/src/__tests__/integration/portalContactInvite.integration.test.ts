@@ -73,7 +73,7 @@ async function seedContact(orgId: string, email: string | null, name = 'Seeded C
 }
 
 async function seedLogin(values: Partial<typeof portalUsers.$inferInsert> & { orgId: string; email: string }) {
-  const [row] = await getTestDb().insert(portalUsers).values({ authMethod: 'password', status: 'invited', ...values }).returning({ id: portalUsers.id });
+  const [row] = await getTestDb().insert(portalUsers).values({ authMethod: 'password', status: 'invited', browserAccess: (values.authMethod ?? 'password') === 'password' ? 'granted' : 'none', ...values }).returning({ id: portalUsers.id });
   return row!.id;
 }
 
@@ -240,8 +240,6 @@ describe('invite from contacts — real Postgres / RLS', () => {
       email: 'addin@acme.example',
       authMethod: 'entra',
       status: 'active',
-      entraOid: crypto.randomUUID(),
-      entraTenantId: crypto.randomUUID(),
     });
 
     const res = await post(env, orgId, 'invite-contacts', { contactIds: [contactId] });
@@ -456,9 +454,9 @@ describe('invite from contacts × account state machine (W2) — real Postgres',
     const orgId = env.organization.id;
     const contactId = await seedContact(orgId, 'twin@acme.example');
     const suffix = crypto.randomUUID();
-    const loginId = await seedLogin({ orgId, email: 'twin@acme.example', status: 'invited', entraOid: `oid-${suffix}`, entraTenantId: `tid-${suffix}` });
+    const loginId = await seedLogin({ orgId, email: 'twin@acme.example', status: 'invited' });
     // The identity row is what makes it identity-managed since W3 (identities
-    // release B); the legacy columns above are the D4 dual-write, no longer read.
+    // release B); W10 retired the legacy portal_users.entra_* columns.
     await getTestDb().insert(portalUserIdentities).values({
       orgId, portalUserId: loginId, provider: 'entra', issuer: `https://login.microsoftonline.com/tid-${suffix}/v2.0`,
       subject: `oid-${suffix}`, entraTenantId: `tid-${suffix}`, linkedVia: 'migrated',

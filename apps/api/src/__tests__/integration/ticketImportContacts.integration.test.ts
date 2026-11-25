@@ -388,7 +388,7 @@ describe('created contacts (W4b): requesters of imported tickets become contacts
     const { contacts: c } = await importRequesters(fx, keys);
     const testDb = getTestDb();
     // Written straight, as the live paths would leave them; none moves the contact's updated_at.
-    await testDb.insert(portalUsers).values({
+    await testDb.insert(portalUsers).values({ browserAccess: 'granted',
       orgId: fx.orgA.id, contactId: c.get('portal')!.id, email: 'portal@customer.example', name: 'Portal', passwordHash: 'x', authMethod: 'password', status: 'active',
     });
     await testDb.insert(contactRoles).values({ contactId: c.get('role')!.id, orgId: fx.orgA.id, role: 'billing' });

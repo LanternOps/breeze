@@ -13,8 +13,9 @@ import type { PatchJobStatus } from './PatchJobsList';
 /**
  * Skip reasons that get a sentence on the device row: an update ring deleted or
  * disabled under a queued job (#8909), nothing approved, everything left to a
- * vendor lane, and the two a job that names its updates (an AI-initiated
- * install) records. Other skip codes are internal and stay unshown.
+ * vendor lane, the two a job that names its updates (an AI-initiated install)
+ * records at dispatch, and the one it records when its queued install is
+ * cancelled at delivery (#12493). Other skip codes are internal and stay unshown.
  */
 const RING_SKIP_REASONS: ReadonlySet<string> = new Set([
   'ring_deleted',
@@ -24,6 +25,7 @@ const RING_SKIP_REASONS: ReadonlySet<string> = new Set([
   'no_approved_patches',
   'requested_patches_not_eligible',
   'invalid_patch_ids',
+  'requested_patches_no_longer_eligible',
 ]);
 
 type PatchJobResultRow = {

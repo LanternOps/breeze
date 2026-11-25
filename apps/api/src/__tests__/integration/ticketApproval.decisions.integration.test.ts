@@ -49,7 +49,7 @@ async function logHeld(f: ApprovalFixture, minutes: number, o: { workTypeId?: st
 
 async function portalUser(orgId: string, email: string, status = 'active'): Promise<string> {
   // W8: disabled_by is set exactly when status = 'disabled' (CHECK portal_users_disabled_by_status_chk).
-  const [u] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({ orgId, email, name: 'Portal person', status, disabledBy: status === 'disabled' ? 'msp' : null })
+  const [u] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({ browserAccess: 'granted', orgId, email, name: 'Portal person', status, disabledBy: status === 'disabled' ? 'msp' : null })
     .returning({ id: portalUsers.id }));
   return u!.id;
 }

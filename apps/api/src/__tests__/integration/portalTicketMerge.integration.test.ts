@@ -34,7 +34,7 @@ function app(): Hono {
 async function portalUser(orgId: string, label: string): Promise<{ id: string; email: string }> {
   const email = `portal-merge-${label}-${crypto.randomUUID().slice(0, 8)}@example.test`;
   const [u] = await (getTestDb() as any).insert(portalUsers)
-    .values({ orgId, email, name: `Customer ${label}`, passwordHash: await hashPassword(PASSWORD), status: 'active' })
+    .values({ browserAccess: 'granted', orgId, email, name: `Customer ${label}`, passwordHash: await hashPassword(PASSWORD), status: 'active' })
     .returning();
   return { id: u.id, email };
 }

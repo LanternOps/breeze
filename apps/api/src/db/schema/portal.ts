@@ -136,13 +136,12 @@ export const portalUsers = pgTable('portal_users', {
   email: varchar('email', { length: 255 }).notNull(),
   name: varchar('name', { length: 255 }),
   passwordHash: text('password_hash'),
-  // Entra ID (AI for Office) identity. Partial unique index
-  // portal_users_entra_identity_uniq on (entra_tenant_id, entra_oid)
-  // WHERE entra_oid IS NOT NULL is created via SQL migration
-  // (2026-06-12-b-client-ai-foundation.sql), mirroring the ai_sessions
-  // partial-index convention.
-  entraOid: text('entra_oid'),
-  entraTenantId: text('entra_tenant_id'),
+  // The legacy Entra columns `entra_oid` / `entra_tenant_id` (and their
+  // partial unique index portal_users_entra_identity_uniq) are deliberately
+  // NOT declared: external identity lives only in portal_user_identities
+  // (portal registration W10, identities release C). Release N stopped every
+  // read and write; the drop migration follows one release later. Do not
+  // re-add them — __tests__/portalIdentityFacts.contract.test.ts pins raw SQL.
   authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' | 'google' (SQL CHECK portal_users_auth_method_check); only 'password' is password-eligible
   // Durable generation snapshotted by portal and client-AI sessions. Redis
   // deletion is cleanup; live authorization compares this column instead.
@@ -181,14 +180,14 @@ export const portalUsers = pgTable('portal_users', {
   // status='active' AND browser_access='granted'; an add-in (AI for Office)
   // session never grants it (spec §6 invariant 9).
   //
-  // The DB has NO column default. The BEFORE INSERT trigger
-  // `portal_users_browser_access_fill` (2027-01-22-211700-portal-account-
-  // foundations.sql) derives it from auth_method when an insert omits it, so an
-  // older API binary inserting during a rolling deploy cannot grant browser
-  // access to an add-in row. `.default` here only makes the field optional in
-  // Drizzle insert types (Drizzle emits DEFAULT, the trigger fills it).
-  // Production writers pass it explicitly via services/portalAccountState.ts.
-  browserAccess: text('browser_access').$type<PortalBrowserAccess>().notNull().default('none'),
+  // The DB has NO column default, and no Drizzle `.default` either, so every
+  // insert must name it (tsc refuses one that does not). Production writers
+  // pass it via services/portalAccountState.ts. The W2 BEFORE INSERT fill
+  // trigger `portal_users_browser_access_fill` (2027-01-22-230200-portal-
+  // account-foundations.sql), which served pre-W2 binaries during a rolling
+  // deploy, is dropped by W10 PR-B; after it an omitted value is a NOT NULL
+  // error, never a default grant.
+  browserAccess: text('browser_access').$type<PortalBrowserAccess>().notNull(),
   // Who disabled the account (portal registration W8, plan D2): set iff
   // status = 'disabled' (SQL CHECK portal_users_disabled_by_status_chk, plus
   // portal_users_disabled_by_chk for the values). Every status writer goes
@@ -212,8 +211,9 @@ export const portalUsers = pgTable('portal_users', {
  *
  * Release A (W2): backfilled from portal_users.entra_* and dual-written by the
  * AI for Office exchange. Release B (W3): every read of external identity
- * comes from this table (services/portalUserIdentities.ts); writers still
- * dual-write portal_users.entra_* until release C drops them.
+ * comes from this table (services/portalUserIdentities.ts). Release C (W10):
+ * nothing reads or writes the legacy columns any more, and they are dropped
+ * one release later.
  *
  * The real tenancy constraint lives in SQL only — the composite FK
  * `portal_user_identities_user_org_fk` (portal_user_id, org_id) →

@@ -48,7 +48,7 @@ async function seedSelectedOrgTechnician() {
   async function ticketIn(orgId: string, label: string) {
     const [portalUser] = await adminDb
       .insert(portalUsers)
-      .values({ orgId, email: `tc-parent-org-${label}-${unique}@example.test`, name: 'Customer' })
+      .values({ browserAccess: 'granted', orgId, email: `tc-parent-org-${label}-${unique}@example.test`, name: 'Customer' })
       .returning();
     const [ticket] = await adminDb
       .insert(tickets)

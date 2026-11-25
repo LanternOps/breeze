@@ -46,7 +46,7 @@ async function seedPortalUser() {
   const email = `portal-logout-${randomUUID()}@example.test`;
   const [user] = await getTestDb()
     .insert(portalUsers)
-    .values({ orgId: org.id, email, status: 'active', passwordHash: await hashPassword(PASSWORD) })
+    .values({ browserAccess: 'granted', orgId: org.id, email, status: 'active', passwordHash: await hashPassword(PASSWORD) })
     .returning({ id: portalUsers.id, orgId: portalUsers.orgId });
   return { user: user!, email };
 }

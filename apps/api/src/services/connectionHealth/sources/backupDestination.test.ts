@@ -27,6 +27,7 @@ const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
 // Raw store text carries the bucket, an endpoint and a key id; none may reach the notice.
 const DENIED = 'failed to upload file to https://s3.example.test/acme-backups/x: storage session: storage answered status 403 (InvalidAccessKeyId) key AKIAEXAMPLEKEY';
 const STORE_5XX = 'storage session: storage answered status 503';
+const CAPPED = 'failed to upload file to https://s3.example.test/acme-backups/x: storage session: storage answered status 403 (AccessDenied, provider_cap_exceeded)';
 const NOT_FOUND = 'storage session: storage answered status 404 (NoSuchBucket) acme-backups';
 
 let seq = 0;
@@ -74,12 +75,12 @@ describe('backup destination source (#11772)', () => {
   });
 
   it('the detail never carries raw error text, hosts, buckets or keys, and survives sanitize unchanged', () => {
-    for (const log of [DENIED, STORE_5XX, NOT_FOUND]) {
+    for (const log of [DENIED, STORE_5XX, NOT_FOUND, CAPPED]) {
       const { detail } = backupDestinationObservation(row([job('a', 2, 'failed', log), job('b', 1, 'failed', log)]), NOW);
       expect(detail).not.toBeNull();
       expect(detail!.length).toBeLessThanOrEqual(HEALTH_DETAIL_MAX);
       expect(sanitizeHealthDetail(detail)).toBe(detail);
-      for (const leak of ['acme-backups', 's3.example.test', 'AKIA', 'http', 'InvalidAccessKeyId', 'NoSuchBucket', '503']) {
+      for (const leak of ['acme-backups', 's3.example.test', 'AKIA', 'http', 'InvalidAccessKeyId', 'NoSuchBucket', 'provider_cap_exceeded', '503']) {
         expect(detail, leak).not.toContain(leak);
       }
     }
@@ -91,6 +92,13 @@ describe('backup destination source (#11772)', () => {
     const failing = backupDestinationObservation(row([job('a', 2, 'failed', STORE_5XX), job('b', 1, 'failed', STORE_5XX)]), NOW);
     expect(failing).toMatchObject({ state: 'broken', severity: 'transient', condition: 'destination_failing' });
     expect(failing.detail).toMatch(/^2 of 2 devices failing since 2026-11-11 10:00 UTC\. /);
+  });
+
+  it('a provider cap is transient and names the provider account, not the key or bucket (#12623)', () => {
+    const capped = backupDestinationObservation(row([job('a', 2, 'failed', CAPPED), job('b', 1, 'failed', CAPPED)]), NOW);
+    expect(capped).toMatchObject({ state: 'broken', severity: 'transient', condition: 'destination_failing' });
+    expect(capped.detail).toContain('an account cap or quota was reached');
+    expect(capped.detail).not.toMatch(/access key|bucket policy/);
   });
 
   it('a single device reads "1 of 1 device"', () => {

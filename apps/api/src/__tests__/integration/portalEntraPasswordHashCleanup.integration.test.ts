@@ -100,7 +100,6 @@ async function seed() {
   const db = getTestDb();
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
-  const tenantId = randomUUID();
 
   const insert = async (values: Partial<typeof portalUsers.$inferInsert>) => {
     const [row] = await db
@@ -109,6 +108,8 @@ async function seed() {
         orgId: org.id,
         email: `${randomUUID()}@cleanup.test`,
         updatedAt: STALE_UPDATED_AT,
+        // What the W2 fill trigger derived for an omitted value (dropped by W10 PR-B).
+        browserAccess: (values.authMethod ?? 'password') === 'password' ? 'granted' : 'none',
         ...values,
       })
       .returning({ id: portalUsers.id });
@@ -117,16 +118,12 @@ async function seed() {
 
   const entraWithHash = await insert({
     authMethod: 'entra',
-    entraTenantId: tenantId,
-    entraOid: randomUUID(),
     passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$fixture-entra$fixture',
     status: 'active',
     authEpoch: 3,
   });
   const entraDisabledWithHash = await insert({
     authMethod: 'entra',
-    entraTenantId: tenantId,
-    entraOid: randomUUID(),
     passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$fixture-disabled$fixture',
     status: 'disabled',
     // W8: CHECK portal_users_disabled_by_status_chk (an MSP disable).
@@ -134,8 +131,6 @@ async function seed() {
   });
   const entraWithoutHash = await insert({
     authMethod: 'entra',
-    entraTenantId: tenantId,
-    entraOid: randomUUID(),
     passwordHash: null,
     status: 'active',
   });

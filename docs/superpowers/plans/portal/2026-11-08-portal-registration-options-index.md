@@ -48,7 +48,7 @@ tracking_issue: LanternOps/breeze#11377
 | W7 Sign in with Google | `2026-11-11-portal-registration-options-w07-google-sign-in.md` (W07a API, W07b web + portal) | W4, W5 | High | plan written |
 | W8 Directory deprovisioning (Entra complete snapshots, Google Directory) | `2026-11-12-portal-registration-options-w08-directory-deprovisioning.md` (W08a API + jobs, W08b web + docs + lab leg) | W4 or W7 | High | plan written |
 | W9 Entra SCIM Users (#8278) | write at start | W4 | High | — |
-| Cleanup: drop `portal_users.entra_*` | write at start | W3 shipped + one release reconciled | Medium | — |
+| W10 Cleanup: drop `portal_users.entra_*` (identities release C) | `2026-11-21-portal-registration-options-w10-entra-columns-retire.md` (PR-A code + final backfill, release N; PR-B drop, release ≥ N+1) | W3 shipped + one release reconciled | High (destructive DDL) | plan written |
 
 W1 and W2 can run in parallel.
 
