@@ -45,13 +45,20 @@ type pathStyle int
 const (
 	stylePOSIX pathStyle = iota + 1
 	styleWindows
+	// styleDarwin is POSIX with names compared as the default macOS volume
+	// (APFS) compares them: ignoring case and Unicode normalisation.
+	styleDarwin
 )
 
 // hostPathStyle is the convention this host's filepath package (and so the
-// restore's placement) reads paths in.
+// restore's placement) reads paths in, and how its default volume compares
+// names.
 func hostPathStyle() pathStyle {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		return styleWindows
+	case "darwin":
+		return styleDarwin
 	}
 	return stylePOSIX
 }
@@ -94,6 +101,18 @@ func parsePathKey(p string, style pathStyle) (pathKey, bool) {
 			return pathKey{}, false
 		}
 		return pathKey{parts: cleanParts(strings.Split(p, "/"), false)}, true
+	case styleDarwin:
+		if !strings.HasPrefix(p, "/") {
+			return pathKey{}, false
+		}
+		// Folded (case and normalisation, foldObjectKey) because the
+		// default APFS volume treats such names as one. On a case-sensitive
+		// volume this only adds refusals, the safe direction.
+		parts := cleanParts(strings.Split(p, "/"), false)
+		for i, part := range parts {
+			parts[i] = foldObjectKey(part)
+		}
+		return pathKey{parts: parts}, true
 	case styleWindows:
 		return parseWindowsPathKey(p)
 	default:
@@ -141,13 +160,15 @@ func parseWindowsPathKey(p string) (pathKey, bool) {
 		volume, rest = `unc\`+server+`\`+share, tail
 	case len(p) >= 2 && p[1] == ':' && isASCIILetter(p[0]):
 		volume, rest = p[:2], p[2:]
-		if rest != "" && rest[0] != '\\' {
-			return pathKey{}, false // drive-relative, e.g. `C:foo`
+		if rest == "" || rest[0] != '\\' {
+			return pathKey{}, false // drive-relative: `C:foo`, or the bare `C:`
 		}
 	default:
 		return pathKey{}, false
 	}
-	return pathKey{volume: strings.ToLower(volume), parts: cleanParts(strings.Split(strings.ToLower(rest), `\`), win32)}, true
+	// Components fold to upper case, as NTFS compares names (its upcase
+	// table); a fold that differs only over-refuses.
+	return pathKey{volume: strings.ToLower(volume), parts: cleanParts(strings.Split(strings.ToUpper(rest), `\`), win32)}, true
 }
 
 func splitUNC(p string) (server, share, rest string, ok bool) {
@@ -187,6 +208,10 @@ func cleanParts(raw []string, trimWin32 bool) []string {
 // errUnplaceablePath is why the check could not read a path: it is not a
 // location the check can name on this host.
 var errUnplaceablePath = errors.New("the check cannot tell which location on this computer this path names")
+
+// errDestinationOutsideTarget is why a target fails the check: a computed
+// destination does not fall under it as the check reads it.
+var errDestinationOutsideTarget = errors.New("a restored file's location under this target does not fall under it as the check reads it; choose a folder on a drive or a share")
 
 // uncheckedPathError is a path the check could not read: the first one is
 // named in the refusal.
@@ -240,6 +265,11 @@ func newOriginalsGuard(targetBase string) *originalsGuard {
 func newOriginalsGuardFor(targetBase string, host pathStyle) *originalsGuard {
 	g := &originalsGuard{targetBase: targetBase, host: host}
 	g.target, g.targetOK = parsePathKey(targetBase, host)
+	if g.targetOK && host == styleWindows && g.target.volume == "unc" {
+		// `\\?\UNC` (any spelling) with no server and share names no
+		// folder: Go's volume rule and the parser part ways under it.
+		g.targetOK = false
+	}
 	return g
 }
 
@@ -376,6 +406,17 @@ func (g *originalsGuard) check(recorded []string, originals originalSource) over
 		}
 		if err != nil {
 			fail(err)
+			continue
+		}
+		if !g.target.contains(dest) {
+			// Every destination lies under the target by placement's
+			// construction; one that does not, as the guard reads it, means
+			// the guard and placement disagree about this target. With this
+			// held for every placed destination, the single
+			// originalsBeneath flag cannot hide a colliding original: an
+			// original whose key equals a destination's lies under the
+			// target too, so noteOriginal set the flag.
+			fail(&uncheckedPathError{what: "restore target", path: g.targetBase, err: errDestinationOutsideTarget})
 			continue
 		}
 		own, err := g.originalKey(p)

@@ -163,7 +163,7 @@ func TestRestoreDestinationKey_VolumeRootTargets(t *testing.T) {
 		// Windows, the volume the entry came from.
 		{`D:\`, `D:\Users\a\test\testfile1.dat`, true},
 		{`d:\`, `D:\Users\a\test\testfile1.dat`, true},
-		{`D:`, `D:\Users\a\test\testfile1.dat`, true}, // the helper refuses a non-absolute target anyway
+		{`D:`, `D:\Users\a\test\testfile1.dat`, false}, // drive-relative: a failed check (the helper refuses it earlier anyway)
 		{`D:/`, `D:\Users\a\test\testfile1.dat`, true},
 		{`\\?\D:\`, `D:\Users\a\test\testfile1.dat`, true},
 		{`\\.\D:\`, `D:\Users\a\test\testfile1.dat`, true},
@@ -228,6 +228,9 @@ func rootTargetCollides(t *testing.T, host pathStyle, target, source string) boo
 // was itself backed up: the destination of one entry is the original of
 // another. A target inside the tree with no such copy does not.
 func TestOverwritesOriginals_DestinationIsAnotherOriginal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX paths; the Windows half is TestOverwritesOriginals_DestinationIsAnotherOriginalOnWindows")
+	}
 	const root = "/nonexistent-12638"
 	example, count, err := overwritesOriginals(root+"/data", []string{
 		root + "/data/x",                        // → .../data/nonexistent-12638/data/x
@@ -240,9 +243,16 @@ func TestOverwritesOriginals_DestinationIsAnotherOriginal(t *testing.T) {
 	if _, count, err := overwritesOriginals(root+"/data", []string{root + "/data/x", root + "/other/y"}); err != nil || count != 0 {
 		t.Fatalf("target inside the tree with no nested copy: count %d, %v; want 0", count, err)
 	}
+}
+
+// The Windows half, run on Windows CI with the real filepath functions.
+func TestOverwritesOriginals_DestinationIsAnotherOriginalOnWindows(t *testing.T) {
 	withWindowsPaths(t)
-	if f := guardOn(styleWindows, `C:\data`, []string{`C:\data\x`, `c:\DATA\data\X`}, []string{`C:\data\x`}); f.uncheckedErr != nil || f.count != 1 {
-		t.Fatalf("Windows nested copy, other case: %+v; want 1", f)
+	if f := guardOn(styleWindows, `C:\data`, []string{`C:\data\x`, `c:\DATA\data\X`, `C:\other\y`}, []string{`C:\data\x`, `C:\other\y`}); f.uncheckedErr != nil || f.count != 1 || f.entry != `C:\data\x` {
+		t.Fatalf("Windows nested copy, other case: %+v; want the one entry", f)
+	}
+	if f := guardOn(styleWindows, `C:\data`, []string{`C:\data\x`, `C:\other\y`}, []string{`C:\data\x`}); f.uncheckedErr != nil || f.count != 0 {
+		t.Fatalf("target inside the tree with no nested copy: %+v; want 0", f)
 	}
 }
 
