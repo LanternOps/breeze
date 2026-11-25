@@ -58,6 +58,7 @@ export * from './backupReparseSkips';
 export * from './backupFailureCategory';
 export * from './backupJobAccounting';
 export * from './backupFileIndexNote';
+export * from './restoreTargetRoot';
 export * from './identityAccess';
 export * from './threatDetection';
 export * from './threatDetectionDisplay';

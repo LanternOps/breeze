@@ -404,3 +404,25 @@ func TestWinRestoreTree_KeepsJunctionTargetsAsCaptured(t *testing.T) {
 		t.Fatalf("called=%v asCaptured=%v, want the Windows rebuild to keep junction targets as captured", called, asCaptured)
 	}
 }
+
+// A rebuild restores onto the volume it is rebuilding, which the recovery
+// environment may even mount as C:: that is the point of the rebuild, so it
+// must never be refused as an overwrite of the originals (#12638).
+func TestWinRestoreTree_RestoresInPlace(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, _ := winFakeOptions(t, dir)
+	var allowed, called bool
+	orig := restoreSnapshotFiles
+	restoreSnapshotFiles = func(ctx context.Context, p providers.BackupProvider, cfg backup.RestoreConfig, fn backup.ProgressFunc) (*backup.RestoreResult, error) {
+		called, allowed = true, cfg.AllowOverwriteOriginals
+		return orig(ctx, p, cfg, fn)
+	}
+	t.Cleanup(func() { restoreSnapshotFiles = orig })
+	if _, err := Run(context.Background(), opts); err != nil && !called {
+		t.Fatal(err)
+	}
+	if !called || !allowed {
+		t.Fatalf("called=%v allowOverwriteOriginals=%v, want the Windows rebuild to restore in place", called, allowed)
+	}
+}

@@ -193,6 +193,25 @@ func TestRestoreTree_PassesIntegrityToFileRestore(t *testing.T) {
 	}
 }
 
+// The Linux rebuild restores the whole machine onto its staging root: in
+// place by design, never refused as an overwrite of the originals (#12638).
+func TestRestoreTree_RestoresInPlace(t *testing.T) {
+	dir := t.TempDir()
+	p := seedSnapshot(t, "snap-1", testLayout())
+	var got, called bool
+	orig := restoreSnapshotFiles
+	restoreSnapshotFiles = func(_ context.Context, _ providers.BackupProvider, cfg backup.RestoreConfig, _ backup.ProgressFunc) (*backup.RestoreResult, error) {
+		called, got = true, cfg.AllowOverwriteOriginals
+		return &backup.RestoreResult{Status: "completed"}, nil
+	}
+	t.Cleanup(func() { restoreSnapshotFiles = orig })
+	r := &run{opts: Options{SnapshotID: "snap-1", Provider: p, StateDir: dir}, staging: filepath.Join(dir, "mnt"), rootMount: filepath.Join(dir, "mnt"), result: &Result{}}
+	_ = restoreTree(context.Background(), r)
+	if !called || !got {
+		t.Fatalf("called=%v allowOverwriteOriginals=%v, want the rebuild to restore in place", called, got)
+	}
+}
+
 func TestAppendRestoreWarnings_DropsRepeatedUnattestedWarning(t *testing.T) {
 	r := &run{warnings: []string{integrity.UnattestedRestoreWarning}}
 	r.appendRestoreWarnings([]string{integrity.UnattestedRestoreWarning, "other"})
