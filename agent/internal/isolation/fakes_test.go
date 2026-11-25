@@ -287,8 +287,15 @@ func (d *fakeDialer) DialContext(ctx context.Context, network, address string) (
 			time.Sleep(ignore)
 			return nil, &net.OpError{Op: "dial", Net: network, Err: context.DeadlineExceeded}
 		}
-		<-ctx.Done()
-		return nil, &net.OpError{Op: "dial", Net: network, Err: ctx.Err()}
+		// A dropped SYN is reported as the timeout it would end in, without
+		// waiting for it: negativeProbe times the dial on the wall clock, so
+		// blocking until the deadline lets a stalled runner read as "failed
+		// too late".
+		err := context.DeadlineExceeded
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return nil, &net.OpError{Op: "dial", Net: network, Err: err}
 	}
 	switch mode {
 	case dialDrop:
