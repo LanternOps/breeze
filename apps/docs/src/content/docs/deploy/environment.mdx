@@ -987,6 +987,7 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | SSE connection rate limit per API key |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Message rate limit per API key |
 | `MCP_TOOLS_LIST_PAGE_SIZE` | `0` | 0/unset = single page; set to e.g. 50 once every connected client honours `nextCursor`. Cursor offsets are best-effort if the visible tool list changes or tenant-tool resolution fails. |
+| `MCP_TOOL_LIST_DEFAULT` | `full` | Default MCP tool list mode: `full` lists every tool, `progressive` lists a small core plus `search_tools`, `get_tool_details` and `call_tool`. Lab-only until the per-credential setting ships. |
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Max concurrent SSE sessions per API key |
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `true` | In production, Tier 3+ tools require the `ai:execute_admin` scope. Set to `false` to fall back to `ai:execute`. No effect outside production. |
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |

@@ -370,6 +370,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_TASK_POLL_INTERVAL_MS: 'timing knob',
   MCP_TASK_TTL_GRACE_MS: 'timing knob',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
+  MCP_TOOL_LIST_DEFAULT: 'tool list presentation default',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*
   METRICS_ACTIVE_DEVICE_WINDOW_SECONDS: 'timing knob',
