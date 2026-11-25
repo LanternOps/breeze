@@ -123,10 +123,27 @@ func TestOriginalsGuard_RecordedFormsAtVolumeRoot(t *testing.T) {
 		{`C:\`, `/Users/a/x`},
 		{`C:\`, `Users\a\x`},
 		{`C:\`, `C:Users\a\x`},
+		{`\\?\UNC`, `\srv.invalid\share\x`},
+		{`\\.\UNC`, `\srv.invalid\share\x`},
 	} {
 		f := guardOn(styleWindows, tc.target, []string{tc.recorded}, []string{tc.recorded})
 		if f.count != 1 {
 			t.Errorf("target %s, entry %s: count %d (err %v); want refused as an overwrite", tc.target, tc.recorded, f.count, f.uncheckedErr)
+		}
+	}
+}
+
+// On POSIX placement trims every leading separator, `\` included, so a
+// recorded `\etc/x` is written to <target>/etc/x: at the root target that
+// is where the guard must read it too.
+func TestOriginalsGuard_LeadingSeparatorsReadAsPlacementDoes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX placement")
+	}
+	withPOSIXPaths(t)
+	for _, recorded := range []string{`\etc/cron.d/x`, `\/home/a/x`, `\\x`} {
+		if f := guardOn(stylePOSIX, "/", []string{recorded}, []string{recorded}); f.count != 1 {
+			t.Errorf("entry %q at /: %+v; want refused", recorded, f)
 		}
 	}
 }

@@ -264,32 +264,28 @@ func (g *originalsGuard) destinationKey(recorded string) (dest pathKey, placed b
 }
 
 // originalKey is the location the recorded path names on this host. A fully
-// qualified path names itself. Any other is read beneath a volume root, as
-// an in-place restore would place it: its own volume's (`C:x` → `C:\x`)
-// or, when it has no volume by this host's filepath.VolumeName (the volume
-// rule placement strips: `\Users\x`, a POSIX path on Windows, any Windows
-// path on POSIX), the target's, the only reading under which placement's
-// join is the identity. Only a path whose volume the parser cannot read
-// (`\\srv` with no share, `\\?\c:x`) is an error: never assumed safe.
+// qualified path names itself. Any other is read where an in-place restore
+// would place it, by placement's own expression with the target at a
+// volume root: filepath.Join(root, stripVolumeAndLeadingSeparators(p)),
+// where root is the path's own volume (`C:x` → `C:\x`) or, when it has no
+// volume by this host's filepath.VolumeName (`\Users\x`, a POSIX path on
+// Windows, any Windows path on POSIX), the target's: the only reading
+// under which placement's join is the identity. A path that still does not
+// parse (`\\srv` with no share, `\\?\c:x`) is an error: never assumed safe.
 func (g *originalsGuard) originalKey(recorded string) (pathKey, error) {
 	if k, ok := parsePathKey(recorded, g.host); ok {
 		return k, nil
 	}
 	vol := volumeName(recorded)
-	var volume string
-	switch {
-	case vol == "" && g.targetOK:
-		volume = g.target.volume
-	case vol != "":
-		root, ok := parsePathKey(vol+g.separator(), g.host)
-		if !ok || len(root.parts) > 0 {
-			return pathKey{}, &uncheckedPathError{what: "recorded path", path: recorded, err: errUnplaceablePath}
-		}
-		volume = root.volume
-	default:
-		return pathKey{}, &uncheckedPathError{what: "recorded path", path: recorded, err: errUnplaceablePath}
+	if vol == "" {
+		vol = volumeName(g.targetBase)
 	}
-	return pathKey{volume: volume, parts: g.splitParts(recorded[len(vol):])}, nil
+	// vol + separator + rest is filepath.Join's operands; the parser does
+	// Join's cleaning (and reads it the same on a host emulating the other).
+	if k, ok := parsePathKey(vol+g.separator()+stripVolumeAndLeadingSeparators(recorded), g.host); ok {
+		return k, nil
+	}
+	return pathKey{}, &uncheckedPathError{what: "recorded path", path: recorded, err: errUnplaceablePath}
 }
 
 func (g *originalsGuard) separator() string {
@@ -297,14 +293,6 @@ func (g *originalsGuard) separator() string {
 		return `\`
 	}
 	return "/"
-}
-
-// splitParts splits a path's components as this host reads them.
-func (g *originalsGuard) splitParts(p string) []string {
-	if g.host == styleWindows {
-		return cleanParts(strings.FieldsFunc(strings.ToLower(p), func(r rune) bool { return r == '\\' || r == '/' }), true)
-	}
-	return cleanParts(strings.Split(p, "/"), false)
 }
 
 // noteOriginal sees a recorded path the snapshot holds, selected or not, and
