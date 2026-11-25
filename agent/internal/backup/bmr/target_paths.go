@@ -62,7 +62,7 @@ func isASCIILetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && 
 // of a drive or UNC path (`\\?\C:\x` → `C:\x`, `\\?\UNC\srv\sh` →
 // `\\srv\sh`). Any other `\\?\` path (a volume GUID, GLOBALROOT) is kept.
 func stripWindowsNamespacePrefix(p string) string {
-	for _, prefix := range []string{`\\?\`, `\\.\`, `//?/`, `//./`} {
+	for _, prefix := range []string{`\\?\`, `\\.\`} {
 		if !strings.HasPrefix(p, prefix) {
 			continue
 		}
@@ -176,6 +176,11 @@ func newTargetPathMap(overrides map[string]string, hostSep byte) (*targetPathMap
 	}
 	sort.Strings(sources)
 	for _, source := range sources {
+		if strings.TrimSpace(source) == "" || strings.TrimSpace(overrides[source]) == "" {
+			return nil, fmt.Errorf("target path mapping %q=%q needs a non-empty source and target", source, overrides[source])
+		}
+	}
+	for _, source := range sources {
 		mp, ok := parseMatchPath(source)
 		if !ok {
 			continue
@@ -213,7 +218,8 @@ type restoreTarget struct {
 // resolve returns the restore destination of a manifest entry whose
 // original path is origPath. It touches no filesystem. An error means the
 // entry cannot be placed safely under the mapping that covers it; the
-// caller refuses that entry.
+// caller refuses that entry; matched is still filled in, so the mapping
+// that covers it counts as matched.
 func (m *targetPathMap) resolve(origPath string) (restoreTarget, error) {
 	if m == nil {
 		return restoreTarget{path: origPath}, nil
@@ -242,7 +248,7 @@ func (m *targetPathMap) resolve(origPath string) (restoreTarget, error) {
 	}
 	if !parsed {
 		if len(m.folders) > 0 {
-			return restoreTarget{}, fmt.Errorf("path %q has a . or .. component and cannot be compared with the folder mappings", origPath)
+			return restoreTarget{matched: matched}, fmt.Errorf("path %q has a . or .. component and cannot be compared with the folder mappings", origPath)
 		}
 		return restoreTarget{path: origPath}, nil
 	}
@@ -260,7 +266,7 @@ func (m *targetPathMap) resolve(origPath string) (restoreTarget, error) {
 		// A POSIX name may contain `\`; on a Windows host it would split
 		// into more components (`..\..\x`), so it cannot be restored there.
 		if strings.ContainsRune(c, rune(m.hostSep)) || strings.ContainsRune(c, '/') {
-			return restoreTarget{}, fmt.Errorf("path %q has a component %q that cannot be a file name on this machine", origPath, c)
+			return restoreTarget{matched: matched}, fmt.Errorf("path %q has a component %q that cannot be a file name on this machine", origPath, c)
 		}
 	}
 	base := strings.TrimRight(best.target, `/`+sep)

@@ -178,6 +178,9 @@ func TestTargetPathMapResolve(t *testing.T) {
 		{name: "windows drive root", mappings: map[string]string{`C:\`: "/mnt/c"}, hostSep: '/', entry: `C:\Windows\win.ini`, want: "/mnt/c/Windows/win.ini", mapped: true, folder: "/mnt/c"},
 		{name: "windows bare drive", mappings: map[string]string{`c:`: "/mnt/c"}, hostSep: '/', entry: `C:\x`, want: "/mnt/c/x", mapped: true, folder: "/mnt/c"},
 		{name: "windows namespace prefix on the entry", mappings: map[string]string{`C:\Users`: "/r"}, hostSep: '/', entry: `\\?\C:\Users\a`, want: "/r/a", mapped: true, folder: "/r"},
+		{name: "windows namespace UNC entry", mappings: map[string]string{`\\srv\share`: "/r"}, hostSep: '/', entry: `\\?\UNC\srv\share\x`, want: "/r/x", mapped: true, folder: "/r"},
+		{name: "windows namespace prefix on the source", mappings: map[string]string{`\\?\C:\Users`: "/r"}, hostSep: '/', entry: `C:\Users\a`, want: "/r/a", mapped: true, folder: "/r"},
+		{name: "windows device namespace entry", mappings: map[string]string{`C:\Users`: "/r"}, hostSep: '/', entry: `\\.\C:\Users\a`, want: "/r/a", mapped: true, folder: "/r"},
 		{name: "windows UNC", mappings: map[string]string{`\\srv\share\dept`: "/r"}, hostSep: '/', entry: `\\SRV\Share\Dept\f.txt`, want: "/r/f.txt", mapped: true, folder: "/r"},
 		{name: "windows dot component", mappings: map[string]string{`C:\Users`: "/r"}, hostSep: '/', entry: `C:\Users\..\Windows\x`, wantErr: true},
 		{name: "windows source does not match a posix entry", mappings: map[string]string{`C:\home`: "/r"}, hostSep: '/', entry: "/home/a", want: "/home/a"},
@@ -226,11 +229,14 @@ func absPosix(p string) bool { return strings.HasPrefix(p, "/") }
 func TestPlanTargetPaths(t *testing.T) {
 	dir := func(p string) manifestFile { return manifestFile{SourcePath: p, Kind: "dir"} }
 	file := func(p string) manifestFile { return manifestFile{SourcePath: p, BackupPath: "k/" + p, Size: 1} }
+	winAbs := func(p string) bool { return pathStyleOf(p) == windowsPathStyle }
 	tests := []struct {
 		name     string
 		files    []manifestFile
 		mappings map[string]string
 		errHas   []string // empty = the plan is accepted
+		hostSep  byte     // default '/'
+		isAbs    func(string) bool
 	}{
 		{name: "no mappings", files: []manifestFile{file("/a")}},
 		{name: "every mapping matched", files: []manifestFile{file("/home/a"), file("/etc/x")}, mappings: map[string]string{"/home": "/r/home", "/etc/x": "/r/x"}},
@@ -238,7 +244,12 @@ func TestPlanTargetPaths(t *testing.T) {
 		{name: "unmatched exact file", files: []manifestFile{file("/home/a")}, mappings: map[string]string{"/home/b": "/r/b"}, errHas: []string{`"/home/b"`}},
 		{name: "empty manifest", mappings: map[string]string{"/home": "/r"}, errHas: []string{`"/home"`}},
 		{name: "a shadowed mapping still covers its entries", files: []manifestFile{file("/home/alice/a")}, mappings: map[string]string{"/home": "/r1", "/home/alice": "/r2"}},
-		{name: "a mapping covering only a refused entry counts as matched", files: []manifestFile{file("/home/../etc/passwd"), file("/srv/x")}, mappings: map[string]string{"/srv": "/r"}},
+		{name: "a mapping covering only a refused entry counts as matched", files: []manifestFile{file(`/home/a\b`)}, mappings: map[string]string{"/home": `D:\r`}, hostSep: '\\', isAbs: winAbs},
+		{name: "empty target", files: []manifestFile{file("/home/a")}, mappings: map[string]string{"/home": ""}, errHas: []string{"non-empty source and target"}},
+		{name: "blank source", files: []manifestFile{file("/home/a")}, mappings: map[string]string{" ": "/r"}, errHas: []string{"non-empty source and target"}},
+		{name: "windows host: names differing only in case collide", files: []manifestFile{file("/home/a"), file("/srv/A")}, mappings: map[string]string{"/home": `C:\r`, "/srv": `C:\r`}, hostSep: '\\', isAbs: winAbs, errHas: []string{"would both be restored"}},
+		{name: "windows host: two drives merged collide", files: []manifestFile{file(`C:\Users\a\f`), file(`D:\Data\A\F`)}, mappings: map[string]string{`C:\Users`: `E:\r`, `D:\Data`: `E:\r`}, hostSep: '\\', isAbs: winAbs, errHas: []string{"would both be restored"}},
+		{name: "shared subdirectory of two merged folders", files: []manifestFile{dir("/home/x"), dir("/srv/x"), file("/home/x/a"), file("/srv/x/b")}, mappings: map[string]string{"/home": "/r", "/srv": "/r"}},
 		{name: "relative folder target", files: []manifestFile{file("/home/a")}, mappings: map[string]string{"/home": "restore"}, errHas: []string{`"restore"`, "not an absolute path"}},
 		{name: "relative exact target keeps working", files: []manifestFile{file("/home/a")}, mappings: map[string]string{"/home/a": "restore/a"}},
 		{name: "folder mapping lands two entries on one path", files: []manifestFile{file("/home/a"), file("/srv/a")}, mappings: map[string]string{"/home": "/r", "/srv": "/r"}, errHas: []string{`"/home/a"`, `"/srv/a"`, "/r/a"}},
@@ -256,7 +267,11 @@ func TestPlanTargetPaths(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := planTargetPathsFor(&snapshotManifest{Files: tt.files}, tt.mappings, '/', absPosix)
+			sep, isAbs := tt.hostSep, tt.isAbs
+			if sep == 0 {
+				sep, isAbs = '/', absPosix
+			}
+			_, err := planTargetPathsFor(&snapshotManifest{Files: tt.files}, tt.mappings, sep, isAbs)
 			if len(tt.errHas) == 0 {
 				if err != nil {
 					t.Fatalf("plan refused: %v", err)
@@ -358,5 +373,50 @@ func TestRunRecoveryContext_FolderMappingRestoresUnderTarget(t *testing.T) {
 				t.Fatal("something was restored at the original path")
 			}
 		})
+	}
+}
+
+// planTargetPaths itself checks folder targets with this machine's notion of
+// an absolute path.
+func TestPlanTargetPaths_RefusesRelativeFolderTargetOnThisHost(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "home")
+	_, err := planTargetPaths(contentManifest(filepath.Join(src, "a")), map[string]string{src: "restore"})
+	if err == nil || !strings.Contains(err.Error(), "not an absolute path") {
+		t.Fatalf("err = %v, want a relative-target refusal", err)
+	}
+}
+
+// An entry the resolver refuses is reported as a failed file and never
+// falls back to its original path.
+func TestRestoreFiles_RefusedEntryIsNotRestoredInPlace(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "home")
+	dst := t.TempDir()
+	sep := string(filepath.Separator)
+	escaping := src + sep + ".." + sep + "etc" + sep + "x" // not cleaned on purpose
+	provider := &destRecorder{}
+	cfg := RecoveryConfig{TargetPaths: map[string]string{src: dst}}
+	_, _, warnings, failed, _ := restoreFilesPlanned(context.Background(), contentManifest(escaping, filepath.Join(src, "ok")), cfg, provider)
+	if failed != 1 || len(provider.dests) != 1 || provider.dests[0] != filepath.Join(dst, "ok") {
+		t.Fatalf("failed=%d dests=%v warnings=%v, want only the clean entry restored", failed, provider.dests, warnings)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "restore refused") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+}
+
+// On a Windows host a folder-mapped destination still goes through the
+// stream/alias name refusal.
+func TestRestoreFiles_FolderMappingWindowsHostRefusesStreamNames(t *testing.T) {
+	withRecoverHost(t, "windows")
+	src := filepath.Join(t.TempDir(), "home")
+	dst := t.TempDir()
+	provider := &destRecorder{}
+	cfg := RecoveryConfig{TargetPaths: map[string]string{src: dst}}
+	_, _, warnings, failed, _ := restoreFilesPlanned(context.Background(), contentManifest(filepath.Join(src, "a:stream"), filepath.Join(src, "trailing.")), cfg, provider)
+	if failed != 2 || len(provider.dests) != 0 {
+		t.Fatalf("failed=%d dests=%v, want both refused", failed, provider.dests)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "invalid_windows_name") {
+		t.Fatalf("warnings = %v", warnings)
 	}
 }

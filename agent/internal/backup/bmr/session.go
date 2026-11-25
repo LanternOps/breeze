@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -104,14 +105,19 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	// recovery before anything is downloaded (#12650).
 	var tokenPathsNotUsed string
 	tokenPaths, tokenPathsErr := targetPathsFromConfig(bootstrap.TargetConfig)
-	if len(effectiveCfg.TargetPaths) == 0 {
-		if tokenPathsErr != nil {
-			result.Error = fmt.Sprintf("recovery token target configuration refused: %s", tokenPathsErr.Error())
-			return completeAndReturn(tokenPathsErr)
-		}
+	switch {
+	case len(effectiveCfg.TargetPaths) == 0 && tokenPathsErr != nil:
+		result.Error = fmt.Sprintf("recovery token target configuration refused: %s", tokenPathsErr.Error())
+		return completeAndReturn(tokenPathsErr)
+	case len(effectiveCfg.TargetPaths) == 0:
 		effectiveCfg.TargetPaths = tokenPaths
-	} else if len(tokenPaths) > 0 || tokenPathsErr != nil {
-		tokenPathsNotUsed = "the recovery token's targetPaths were not used: the mappings given to this run (--target-path) replace them"
+	case tokenPathsErr != nil:
+		tokenPathsNotUsed = fmt.Sprintf("the recovery token's targetPaths could not be read (%s) and were not used; this run's own path mappings were used instead", tokenPathsErr.Error())
+	case len(tokenPaths) > 0:
+		tokenPathsNotUsed = "the recovery token's targetPaths were not used; this run's own path mappings replace them"
+	}
+	if tokenPathsNotUsed != "" {
+		slog.Warn("bmr: " + tokenPathsNotUsed)
 	}
 	if bootstrap.Snapshot != nil {
 		effectiveCfg.ExpectSystemState = SnapshotExpectsSystemState(bootstrap.Snapshot)
@@ -137,7 +143,8 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 		result = runResult
 	}
 	if tokenPathsNotUsed != "" {
-		result.Warnings = append(result.Warnings, tokenPathsNotUsed)
+		// First, so a bounded warnings list never drops this run-level note.
+		result.Warnings = append([]string{tokenPathsNotUsed}, result.Warnings...)
 	}
 	return completeAndReturn(runErr)
 }

@@ -152,7 +152,29 @@ func TestRunRecoveryWithToken_RunMappingsReplaceTokenMappings(t *testing.T) {
 	if len(got) != 1 || got["/srv"] != "/flag" {
 		t.Fatalf("TargetPaths = %v, want only the run's", got)
 	}
-	if !strings.Contains(strings.Join(result.Warnings, "\n"), "token's targetPaths were not used") {
+	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "token's targetPaths were not used") {
+		t.Fatalf("warnings = %v, want the note first", result.Warnings)
+	}
+}
+
+// A token whose targetPaths cannot be read does not block a run that brings
+// its own mappings, and the result says why the token's were not used.
+func TestRunRecoveryWithToken_RunMappingsOverUnreadableTokenMappings(t *testing.T) {
+	origRunRecovery := runRecovery
+	t.Cleanup(func() { runRecovery = origRunRecovery })
+	ran := false
+	runRecovery = func(_ context.Context, cfg RecoveryConfig, _ providers.BackupProvider) (*RecoveryResult, error) {
+		ran = true
+		return &RecoveryResult{Status: "completed"}, nil
+	}
+	var status, errText atomic.Value
+	server := tokenServer(t, map[string]any{"targetPaths": []any{"/mnt/recovery"}}, &status, &errText)
+
+	result, err := RunRecoveryWithToken(RecoveryConfig{RecoveryToken: "brz_rec_test", ServerURL: server.URL, TargetPaths: map[string]string{"/srv": "/flag"}})
+	if err != nil || !ran {
+		t.Fatalf("err = %v ran = %v, want the run to proceed", err, ran)
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "could not be read") {
 		t.Fatalf("warnings = %v", result.Warnings)
 	}
 }
