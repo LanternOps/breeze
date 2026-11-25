@@ -193,15 +193,17 @@ func TestDefaultVerifyURLIncludesEscapedAgentID(t *testing.T) {
 func TestFakeDialDropDoesNotWaitOnWallClock(t *testing.T) {
 	for _, mode := range []dialMode{dialDrop, dialDropUnattributed} {
 		iso, d := negHarness(mode)
+		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			_ = negativeProbe(context.Background(), d, iso, probeTarget, time.Hour)
+			_ = negativeProbe(ctx, d, iso, probeTarget, time.Hour)
 		}()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
 			t.Fatalf("mode %d: fake dial blocked on the probe timeout instead of returning its recorded drop", mode)
 		}
+		cancel()
 	}
 }
