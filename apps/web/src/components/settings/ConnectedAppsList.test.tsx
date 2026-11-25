@@ -171,3 +171,27 @@ describe('ConnectedAppsList', () => {
     });
   });
 });
+
+describe('ConnectedAppsList — MCP tool list (#12429)', () => {
+  it('keeps mcp_tool_list_mode per client and shows it read-only', async () => {
+    vi.clearAllMocks();
+    const app = (id: string, mcp_tool_list_mode?: string | null) => ({
+      client_id: id, client_name: id, created_at: '2026-04-20T15:00:00.000Z', last_used_at: null,
+      ...(mcp_tool_list_mode === undefined ? {} : { mcp_tool_list_mode }),
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ clients: [
+      app('c-full', 'full'), app('c-progressive', 'progressive'), app('c-default', 'default'), app('c-mixed', 'mixed'),
+      app('c-none', null), app('c-older-api'), app('c-unknown', 'bulk'),
+    ] }));
+    render(<ConnectedAppsList />);
+    await screen.findAllByText('c-full');
+    const badge = (id: string) => screen.queryByTestId(`connected-app-tool-list-${id}`)?.textContent ?? null;
+    expect(badge('c-full')).toBe('Tool list: Full');
+    expect(badge('c-progressive')).toBe('Tool list: Progressive');
+    expect(badge('c-default')).toBe('Tool list: deployment default');
+    expect(badge('c-mixed')).toBe('Tool list: varies by connection');
+    for (const id of ['c-none', 'c-older-api', 'c-unknown']) expect(badge(id)).toBeNull();
+    expect(screen.queryByTestId('mcp-tool-list-mode')).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
+  });
+});

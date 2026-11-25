@@ -2,7 +2,7 @@ import { i18n } from '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
-import type { McpGrantableDomain } from '@breeze/shared';
+import type { McpGrantableDomain, McpToolListMode, ResolvedMcpToolListMode } from '@breeze/shared';
 import { FilterSelect } from '../shared/FilterSelect';
 
 export type ApiKeyStatus = 'active' | 'revoked' | 'expired';
@@ -22,6 +22,10 @@ export type ApiKey = {
   source?: ApiKeySource;
   /** B-W02 #6156: null/absent = every MCP tool area. Only meaningful with an `ai:*` scope. */
   mcpDomains?: McpGrantableDomain[] | null;
+  /** #12429: null/absent = follow the deployment default. Only meaningful with an `ai:*` scope. */
+  mcpToolListMode?: McpToolListMode | null;
+  /** What the stored mode resolves to, and from where. */
+  mcpToolListModeEffective?: ResolvedMcpToolListMode;
 };
 
 type ApiKeyListProps = {

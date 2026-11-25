@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { McpGrantableDomain } from '@breeze/shared';
+import type { McpGrantableDomain, McpToolListMode, ResolvedMcpToolListMode } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import McpDomainPicker, { isMcpDomainSelectionValid } from '../shared/McpDomainPicker';
+import McpToolListModeField from '../shared/McpToolListModeField';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -17,6 +18,10 @@ interface PartnerOption {
   // older/partial responses degrade to the top-level `scopes` fallback
   // rather than crashing.
   effectiveScopes?: string[];
+  // #12429: the mode of the user's newest active connection to this app for
+  // THIS partner, and what it resolves to. Optional for an older API.
+  prior_mcp_tool_list_mode?: McpToolListMode | null;
+  effective_mcp_tool_list_mode?: ResolvedMcpToolListMode;
 }
 
 interface InteractionDetails {
@@ -44,6 +49,7 @@ interface InteractionDetails {
   scopes: string[];
   resource: string | null;
   partners: PartnerOption[];
+  mcp_tool_list_default?: McpToolListMode;
 }
 
 type ViewState =
@@ -113,6 +119,15 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   const [partnerId, setPartnerId] = useState<string>('');
   // null = every tool; a restricted list is posted as `mcp_domains` (#6156).
   const [mcpDomains, setMcpDomains] = useState<McpGrantableDomain[] | null>(null);
+  // null = inherit the deployment default; posted as `mcp_tool_list_mode` (#12429).
+  const [toolListMode, setToolListMode] = useState<McpToolListMode | null>(null);
+
+  // Re-consent starts from the selected partner's own prior mode, so choosing
+  // another partner starts over from that one's.
+  const selectPartner = (partner: PartnerOption | undefined) => {
+    setPartnerId(partner?.partnerId ?? '');
+    setToolListMode(partner?.prior_mcp_tool_list_mode ?? null);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -152,7 +167,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
           setState({ kind: 'no-tenants' });
           return;
         }
-        setPartnerId(details.partners[0]!.partnerId);
+        selectPartner(details.partners[0]);
         setState({ kind: 'ready', details });
       } catch (err) {
         if (cancelled) return;
@@ -168,7 +183,12 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
     try {
       const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}/consent`, {
         method: 'POST',
-        body: JSON.stringify({ partner_id: partnerId, approve, mcp_domains: approve ? mcpDomains : null }),
+        body: JSON.stringify({
+          partner_id: partnerId,
+          approve,
+          mcp_domains: approve ? mcpDomains : null,
+          mcp_tool_list_mode: approve ? toolListMode : null,
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -316,11 +336,25 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         disabled={submitting}
       />
 
+      <McpToolListModeField
+        idPrefix="consent"
+        variant="connection"
+        value={toolListMode}
+        effective={
+          toolListMode === (selectedPartner?.prior_mcp_tool_list_mode ?? null)
+            ? selectedPartner?.effective_mcp_tool_list_mode ?? null
+            : null
+        }
+        deploymentDefault={details.mcp_tool_list_default ?? 'full'}
+        onChange={setToolListMode}
+        disabled={submitting}
+      />
+
       {details.partners.length > 1 && (
         <TenantPicker
           partners={details.partners}
           value={partnerId}
-          onChange={setPartnerId}
+          onChange={(id) => selectPartner(details.partners.find((p) => p.partnerId === id))}
           disabled={submitting}
         />
       )}

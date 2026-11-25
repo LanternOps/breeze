@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plug, Loader2, ShieldAlert, AlertTriangle, X, ArrowLeft } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
+import type { McpConnectionToolListMode, McpToolListMode } from '@breeze/shared';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { handleActionError, runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import McpToolListModeField, { type McpToolListModeFieldValue } from '../shared/McpToolListModeField';
 import AccountSubNav from './AccountSubNav';
 import { formatAbsolute, formatRelative } from './relativeTime';
 import { useTranslation } from 'react-i18next';
@@ -17,12 +20,14 @@ interface OauthClient {
   lastUsedAt: string | null;
   lastApprovalDecidedAt: string | null;
   revokedAt: string | null;
+  /** #12429: absent from an older API. */
+  toolListMode?: McpConnectionToolListMode;
 }
 
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; clients: OauthClient[] };
+  | { kind: 'ready'; clients: OauthClient[]; mcpToolListDefault: McpToolListMode };
 
 interface ConfirmState {
   client: OauthClient;
@@ -45,8 +50,8 @@ export default function MyConnectedAppsPage() {
         setState({ kind: 'error', message: body.error ?? `Request failed (${res.status})` });
         return;
       }
-      const body = (await res.json()) as { clients: OauthClient[] };
-      setState({ kind: 'ready', clients: body.clients ?? [] });
+      const body = (await res.json()) as { clients: OauthClient[]; mcpToolListDefault?: McpToolListMode };
+      setState({ kind: 'ready', clients: body.clients ?? [], mcpToolListDefault: body.mcpToolListDefault ?? 'full' });
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
     }
@@ -216,6 +221,14 @@ export default function MyConnectedAppsPage() {
                       </button>
                     )}
                   </div>
+                  {active && client.toolListMode && client.toolListMode.kind !== 'none' && (
+                    <ConnectionToolListMode
+                      clientId={client.clientId}
+                      mode={client.toolListMode}
+                      deploymentDefault={state.mcpToolListDefault}
+                      onSaved={load}
+                    />
+                  )}
                 </li>
               );
             })}
@@ -232,6 +245,76 @@ export default function MyConnectedAppsPage() {
           onConfirm={handleConfirm}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * One control per app, as the list is one row per app: it writes every active
+ * connection the signed-in user has to it, across all partners, and says so.
+ */
+function ConnectionToolListMode({
+  clientId,
+  mode,
+  deploymentDefault,
+  onSaved,
+}: {
+  clientId: string;
+  mode: Exclude<McpConnectionToolListMode, { kind: 'none' }>;
+  deploymentDefault: McpToolListMode;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useTranslation('common');
+  const stored: McpToolListModeFieldValue = mode.kind === 'mixed' ? 'mixed' : mode.stored;
+  const [draft, setDraft] = useState<McpToolListModeFieldValue>(stored);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (draft === 'mixed') return;
+    setSaving(true);
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/me/oauth-clients/${encodeURIComponent(clientId)}/mcp-tool-list-mode`, {
+            method: 'PATCH',
+            body: JSON.stringify({ mcp_tool_list_mode: draft }),
+          }),
+        successMessage: t('longTail.mcpToolListMode.saved'),
+        errorFallback: t('longTail.mcpToolListMode.saveFailed'),
+        onUnauthorized: handleSessionExpired,
+      });
+      await onSaved();
+    } catch (err) {
+      handleActionError(err, t('longTail.mcpToolListMode.saveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div data-testid={`connection-tool-list-${clientId}`} className="mt-4 max-w-md space-y-2">
+      <McpToolListModeField
+        idPrefix={`connection-${clientId}`}
+        variant="connection"
+        value={draft}
+        effective={mode.kind === 'uniform' && draft === mode.stored ? mode.effective : null}
+        deploymentDefault={deploymentDefault}
+        onChange={setDraft}
+        disabled={saving}
+      />
+      {mode.kind === 'mixed' && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">{t('longTail.mcpToolListMode.mixedHelp')}</p>
+      )}
+      <p className="text-xs text-muted-foreground">{t('longTail.mcpToolListMode.allConnections')}</p>
+      <button
+        type="button"
+        data-testid="connection-tool-list-save"
+        onClick={save}
+        disabled={saving || draft === stored}
+        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {saving ? t('longTail.mcpToolListMode.saving') : t('longTail.mcpToolListMode.save')}
+      </button>
     </div>
   );
 }

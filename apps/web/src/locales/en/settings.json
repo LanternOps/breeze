@@ -5580,7 +5580,12 @@
     "networkError": "Network error",
     "networkErrorDuringRevoke": "Network error during revoke",
     "revoking": "Revoking…",
-    "revoke": "Revoke"
+    "revoke": "Revoke",
+    "toolListFull": "Tool list: Full",
+    "toolListProgressive": "Tool list: Progressive",
+    "toolListDefault": "Tool list: deployment default",
+    "toolListMixed": "Tool list: varies by connection",
+    "toolListHint": "Each person sets this for their own connection under Account → Connected apps."
   },
   "mFASettings": {
     "done": "Done",

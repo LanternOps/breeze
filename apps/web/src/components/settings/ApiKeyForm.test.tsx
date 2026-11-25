@@ -233,3 +233,37 @@ describe('ApiKeyForm — expiration date (#9654)', () => {
     expect(await submittedExpiry(onSubmit)).toBeNull();
   });
 });
+
+describe('ApiKeyForm — MCP tool list mode (#12429)', () => {
+  it('is offered, and posted, only while an ai:* scope is selected', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<ApiKeyForm isOpen onSubmit={onSubmit} onCancel={noop} mcpToolListDefault="full" />);
+    fireEvent.change(screen.getByPlaceholderText('My API Key'), { target: { value: 'CI key' } });
+    expect(screen.queryByTestId('mcp-tool-list-mode')).toBeNull();
+
+    fireEvent.click(screen.getByText('AI: Read'));
+    fireEvent.change(screen.getByTestId('mcp-tool-list-mode'), { target: { value: 'progressive' } });
+    fireEvent.click(screen.getByText('Create Key'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ mcpToolListMode: 'progressive' });
+
+    // Dropping the last ai:* scope drops the field and the value with it.
+    fireEvent.click(screen.getByText('AI: Read'));
+    fireEvent.click(screen.getByText('Devices: Read'));
+    expect(screen.queryByTestId('mcp-tool-list-mode')).toBeNull();
+    fireEvent.click(screen.getByText('Create Key'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit.mock.calls[1]![0]).not.toHaveProperty('mcpToolListMode');
+  });
+
+  it('posts null when left on inherit, and names the default it inherits', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<ApiKeyForm isOpen onSubmit={onSubmit} onCancel={noop} mcpToolListDefault="progressive" />);
+    fillNameAndScopes();
+    expect(screen.getByText('Inherit (deployment default: Progressive)')).toBeTruthy();
+    expect(screen.getByTestId('mcp-tool-list-effective').textContent).toContain('Progressive — deployment default');
+    fireEvent.click(screen.getByText('Create Key'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ mcpToolListMode: null });
+  });
+});

@@ -8,11 +8,14 @@ import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { ActionError, runAction, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import McpToolListModeField from '../shared/McpToolListModeField';
+import type { McpToolListMode } from '@breeze/shared';
 
 type ModalMode = 'closed' | 'create' | 'view' | 'rotate' | 'revoke';
 
 export default function ApiKeysPage() {
   const { t } = useTranslation('settings');
+  const { t: tc } = useTranslation('common');
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   // Background refetches (after create/rotate/revoke/page change) keep the rows
@@ -27,6 +30,10 @@ export default function ApiKeysPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [isAdmin, setIsAdmin] = useState(false);
+  // #12429: what a key with no mode of its own is shown; an API that does not
+  // say is an older one, whose only behaviour is `full`.
+  const [mcpToolListDefault, setMcpToolListDefault] = useState<McpToolListMode>('full');
+  const [toolListDraft, setToolListDraft] = useState<McpToolListMode | null>(null);
   // API keys are org-scoped objects. With an org context the key inherits it;
   // in fleet view (no org selected) the create form asks for the target org
   // up front instead of erroring after submit.
@@ -54,6 +61,7 @@ export default function ApiKeysPage() {
         setCurrentPage(pagination.page ?? page);
       }
       setIsAdmin(data.isAdmin ?? false);
+      setMcpToolListDefault(data.mcpToolListDefault ?? 'full');
       hasLoadedRef.current = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : t('apiKeysPage.anErrorOccurred'));
@@ -74,6 +82,7 @@ export default function ApiKeysPage() {
 
   const handleView = (apiKey: ApiKey) => {
     setSelectedKey(apiKey);
+    setToolListDraft(apiKey.mcpToolListMode ?? null);
     setModalMode('view');
   };
 
@@ -127,6 +136,37 @@ export default function ApiKeysPage() {
       handleCloseModal();
     } catch (err) {
       handleActionError(err, t('apiKeysPage.failedToCreateAPIKey'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // The view modal's one editable field (#12429). The modal shows a snapshot of
+  // the row, so a save updates both from the response instead of refetching.
+  const handleSaveToolListMode = async () => {
+    if (!selectedKey) return;
+    const { id } = selectedKey;
+    setSubmitting(true);
+    try {
+      const saved = await runAction<Pick<ApiKey, 'mcpToolListMode' | 'mcpToolListModeEffective'>>({
+        request: () =>
+          fetchWithAuth(`/api-keys/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ mcpToolListMode: toolListDraft })
+          }),
+        successMessage: tc('longTail.mcpToolListMode.saved'),
+        errorFallback: tc('longTail.mcpToolListMode.saveFailed'),
+        onUnauthorized: handleSessionExpired,
+      });
+      const patch = {
+        mcpToolListMode: saved.mcpToolListMode ?? null,
+        mcpToolListModeEffective: saved.mcpToolListModeEffective,
+      };
+      setApiKeys(keys => keys.map(k => (k.id === id ? { ...k, ...patch } : k)));
+      setSelectedKey(key => (key?.id === id ? { ...key, ...patch } : key));
+      setToolListDraft(patch.mcpToolListMode);
+    } catch (err) {
+      handleActionError(err, tc('longTail.mcpToolListMode.saveFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -263,6 +303,7 @@ export default function ApiKeysPage() {
           title={t('apiKeysPage.createAPIKey')}
           description={t('apiKeysPage.createANewAPIKeyWithSpecificPermissions')}
           isAdmin={isAdmin}
+          mcpToolListDefault={mcpToolListDefault}
           organizations={!currentOrgId ? organizations : undefined}
         />
       )}
@@ -332,6 +373,36 @@ export default function ApiKeysPage() {
                   </p>
                 </div>
               </div>
+              {selectedKey.scopes.some(s => s.startsWith('ai:')) && (
+                <div className="space-y-2">
+                  <McpToolListModeField
+                    idPrefix="api-key-view"
+                    variant="key"
+                    value={toolListDraft}
+                    effective={
+                      toolListDraft === (selectedKey.mcpToolListMode ?? null)
+                        ? selectedKey.mcpToolListModeEffective ?? null
+                        : null
+                    }
+                    deploymentDefault={mcpToolListDefault}
+                    onChange={setToolListDraft}
+                    disabled={submitting || selectedKey.status !== 'active'}
+                  />
+                  {selectedKey.status === 'active' && (
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        data-testid="api-key-tool-list-save"
+                        onClick={handleSaveToolListMode}
+                        disabled={submitting || toolListDraft === (selectedKey.mcpToolListMode ?? null)}
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {submitting ? tc('longTail.mcpToolListMode.saving') : tc('longTail.mcpToolListMode.save')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="mt-6 flex justify-end">
               <button
