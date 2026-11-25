@@ -531,6 +531,38 @@ describe('createActionIntent — built-in flow steps (#5220)', () => {
       expect(dbState.insertedActionIntentValues[0]).toMatchObject({ actionName: 'run_script_on_targets', approvalScope: 'four_eyes', riskTier: 3 });
     });
 
+    // #12418 W02: the note is the durable `reason` and the end of what the approver reads.
+    it('a flow-source intent stores reason and its approval rows\' riskSummary ends with the approverNote', async () => {
+      const NOTE = 'Fleet step resolved 3 devices via fleetFilter (ids sha256 abcdef012345); later membership changes do not change this run.';
+      const create = async (over: Partial<CreateActionIntentInput>) => {
+        flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'a'.repeat(64) } as never);
+        guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'x' } as never);
+        intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent());
+        dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+        await createActionIntent(flowAuth(), { ...fleetInput(), ...over });
+        return { intent: dbState.insertedActionIntentValues.at(-1)!, rows: dbState.insertedApprovalRequestsValues.at(-1) as Array<Record<string, unknown>> };
+      };
+      const without = await create({});
+      expect(without.intent.reason).toBeNull();
+      const withNote = await create({ reason: NOTE, approverNote: NOTE });
+      expect(withNote.intent.reason).toBe(NOTE);
+      // The base summary is kept; the note is appended once.
+      expect(withNote.intent.impactSummary).toBe(`${String(without.intent.impactSummary)} ${NOTE}`);
+      expect(withNote.rows[0]!.riskSummary).toBe(withNote.intent.impactSummary);
+      // Display text only: neither digest nor the stored arguments move.
+      expect(withNote.intent.argumentDigest).toBe(without.intent.argumentDigest);
+      expect(withNote.intent.arguments).toEqual(without.intent.arguments);
+      expect(withNote.rows[0]!.actionLabel).toBe(without.rows[0]!.actionLabel);
+    });
+
+    it('approverNote on a non-flow source is refused (no silent drop, no caller-written approval text)', async () => {
+      await expect(createActionIntent(userAuth(), { toolName: 'run_script', input: { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] }, source: 'chat', orgId: ORG_ID, approverNote: 'Approved by IT.' }))
+        .rejects.toMatchObject({ code: 'flow_source_mismatch' });
+      expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    });
+
     it('missing digest refuses intent creation', async () => {
       flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
       guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'x' } as never);

@@ -19,6 +19,7 @@ import {
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from './actionIntents/runScriptLimits';
 import { MAX_OFFSET, pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { FilterQueryTimeoutError, withFilterStatementTimeout } from './filterEngine';
 import { reportFilterPreviewTimeout } from './filterPreviewTimeout';
@@ -178,6 +179,9 @@ function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpm
  * cancelled the filtered or grouped query (#12655). Fixed copy: no SQL, no
  * tenant values. Same `code` as the filter preview endpoints' 422 body.
  */
+const FLEET_STATS_GROUP_NOTE =
+  'This count uses the group\'s last evaluated members. A flow step resolves the group from its current rules, so the devices it selects can differ; its approval names the exact count.';
+
 const FLEET_STATS_TIMEOUT_RESULT = {
   error: 'This filter took too long to evaluate. Narrow the filter (for example add orgId, siteId or osType, or drop a software term) and try again; the same call will time out again.',
   code: 'filter_query_timeout',
@@ -498,7 +502,11 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         filter: {
           fieldsUsed: fleetFilterFieldsUsed(filter),
           executionRefusedFields: fleetFilterExecutionRefusedFields(filter),
+          // #12418 W02: the one field this count and a flow step read differently.
+          ...(filter.groupId === undefined ? {} : { groupNote: FLEET_STATS_GROUP_NOTE }),
         },
+        // #12418 W02: the most devices an AI-initiated action may cover; a larger set is refused, not truncated.
+        aiActionLimit: RUN_SCRIPT_AI_MAX_DEVICES,
         ...pageEnvelope({
           key: 'devices',
           items: rows,

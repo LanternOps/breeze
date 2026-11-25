@@ -44,6 +44,11 @@ vi.mock('./builtins/index', async (importOriginal) => {
   return { ...actual, executeFlowBuiltin: vi.fn(actual.executeFlowBuiltin) };
 });
 vi.mock('./builtins/runCounters', () => ({ countRunBuiltinCalls: vi.fn() }));
+vi.mock('./builtins/fleetTargets', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./builtins/fleetTargets')>()),
+  resolveFleetFilterOnce: vi.fn(),
+  resolveDeviceIdsInRunOrg: vi.fn(),
+}));
 vi.mock('../actionIntents/runScriptSnapshot', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../actionIntents/runScriptSnapshot')>()),
   buildRunScriptSnapshot: vi.fn(),
@@ -61,6 +66,7 @@ import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { buildFlowAuthContext } from './flowAuthContext';
 import { currentFlowExecutionFrame } from './flowExecutionContext';
 import { preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding } from './preApproval';
+import { resolveDeviceIdsInRunOrg, resolveFleetFilterOnce } from './builtins/fleetTargets';
 import { executeFlowBuiltin } from './builtins/index';
 import { countRunBuiltinCalls } from './builtins/runCounters';
 import { UNATTENDED_NOTE_ACTIVE_LIMIT_MESSAGE, UNATTENDED_NOTE_UNAVAILABLE_MESSAGE } from '../deviceNoteBounds';
@@ -558,6 +564,57 @@ describe('executeFlowStep — tier 3', () => {
     const pending = executeFlowStep(input({ deadline: Date.now() + 5_000 }));
     await vi.advanceTimersByTimeAsync(5_001);
     await expect(pending).resolves.toMatchObject({ kind: 'unknown_outcome' });
+  });
+});
+
+// #12418 W02: a parked fleet step tells its approver what one approval covers.
+describe('executeFlowStep — a parked run_script_on_targets step', () => {
+  const FLEET_PIN: FlowStepPin = { stepId: 'fleet', tool: 'run_script_on_targets', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+  const ids = [DEVICE, DEVICE_2, '99999999-9999-4999-8999-999999999999'].sort();
+  const fleetStep = () => input({
+    run: run({ triggerKind: 'tool', triggeredVia: 'mcp', preApprovalsHonored: false }),
+    step: step('fleet', 'run_script_on_targets', { scriptId: SCRIPT, whenOffline: 'queue', fleetFilter: { osType: 'windows' } }),
+    pin: FLEET_PIN,
+  });
+  beforeEach(() => {
+    vi.mocked(resolveFleetFilterOnce).mockReset().mockResolvedValue({ count: 3, deviceIds: ids, problems: [] });
+    vi.mocked(resolveDeviceIdsInRunOrg).mockReset().mockResolvedValue(ids.map((id, n) => ({ id, hostname: `host-${n}`, name: 'n' })));
+  });
+
+  it('a parked fleet step passes the target note as reason and approverNote', async () => {
+    const out = await executeFlowStep(fleetStep(), noSleep);
+    expect(out).toMatchObject({ kind: 'park_approval', intentId: INTENT });
+    const note = expect.stringMatching(/resolved 3 devices via fleetFilter \(ids sha256 [0-9a-f]{12}\)/);
+    expect(createActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ source: 'flow', toolName: 'run_script_on_targets', reason: note, approverNote: note }));
+    const sent = vi.mocked(createActionIntent).mock.calls[0]![1];
+    expect(sent.reason).toBe(sent.approverNote);
+    expect(sent.reason).toContain('Sample: "host-0", "host-1", "host-2".');
+    // The intent still names exactly the frozen devices and no selector.
+    expect(sent.input).toEqual({ scriptId: SCRIPT, whenOffline: 'queue', deviceIds: ids });
+    expect(vi.mocked(resolveFleetFilterOnce)).toHaveBeenCalledExactlyOnceWith({ orgId: ORG, partnerId: PARTNER }, { osType: 'windows' }, 10);
+  });
+
+  it('over the AI ceiling no intent is created and the step records the refusal', async () => {
+    vi.mocked(resolveFleetFilterOnce).mockResolvedValue({ count: 11, deviceIds: [], problems: [] });
+    expect(await executeFlowStep(fleetStep(), noSleep)).toMatchObject({
+      kind: 'failed', code: 'targets_over_cap', policy: true, output: { resolvedCount: 11, ceiling: 10, selectorKind: 'fleetFilter' },
+    });
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('a fleetFilter group the run org does not hold is refused before the selector is resolved', async () => {
+    const i = fleetStep();
+    i.step = step('fleet', 'run_script_on_targets', { scriptId: SCRIPT, whenOffline: 'queue', fleetFilter: { groupId: '88888888-8888-4888-8888-888888888888' } });
+    expect(await executeFlowStep(i, noSleep)).toMatchObject({ kind: 'failed', code: 'reference_not_owned', policy: true });
+    expect(resolveFleetFilterOnce).not.toHaveBeenCalled();
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('every other parked step sends neither reason nor approverNote', async () => {
+    await executeFlowStep(input({ run: run({ preApprovalsHonored: false }) }), noSleep);
+    const sent = vi.mocked(createActionIntent).mock.calls[0]![1];
+    expect(sent).not.toHaveProperty('reason');
+    expect(sent).not.toHaveProperty('approverNote');
   });
 });
 

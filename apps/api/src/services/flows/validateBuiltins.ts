@@ -29,6 +29,8 @@ import {
   type FlowIssue,
 } from '@breeze/shared';
 import { checkGuardrails } from '../aiGuardrails';
+import { FilterQueryTimeoutError } from '../filterEngine';
+import { fleetFilterRefusedFieldsPresent } from '../fleetFilter';
 import { isChannelMessageType } from '../notificationSenders/channelMessageTypes';
 import { guardrailCheckForTenantTool } from '../toolSources/guardrails';
 import { compileTenantInputSchema, type ToolOwnerRef } from '../toolSources/resolver';
@@ -41,11 +43,13 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
+import { GROUP_CHECK_DOCUMENT_BUDGET_MS, judgeFleetFilterGroups, type FleetFilterGroupVerdict } from './fleetFilterGroupGate';
 import {
   findOwnedDeviceGroupIds,
   findOwnedDeviceIds,
   findOwnedNotificationChannel,
   findOwnedScriptIds,
+  withOwnedDeviceGroupReads,
   type ScriptReadExecutor,
 } from './ownedReferences';
 import { fleetApprovalScope } from './builtins/fleetApprovalScope';
@@ -60,6 +64,8 @@ export interface BuiltinValidationContext {
   earlierSteps?: readonly FlowStep[];
   /** W6 B3: the conversion switch's transaction, for the script-ownership read only (ownedReferences.ts). */
   scriptReadExecutor?: ScriptReadExecutor;
+  /** #12418 W02: the document's `fleetFilter` groups, judged together for this validation (`checkFleetFilterGroups`). */
+  fleetGroupChecks?: FleetGroupChecks;
 }
 
 /** A flow tool (`flow__<slug>`, W5 Decision 7) — never a step, never an `ai` tool. */
@@ -236,6 +242,8 @@ function aiIssues(input: Record<string, unknown>, stepId: string, base: string, 
 /** Built-ins whose output is a fleet device set a later step may chain on (`fromStep`). */
 export const FLEET_SET_BUILTINS: ReadonlySet<string> = new Set(['resolve_targets', 'run_script_on_targets']);
 
+const FLEET_FILTER_GROUP_PATH = '/fleetFilter/groupId';
+
 export interface FleetReference {
   kind: 'script' | 'group' | 'device';
   value: unknown;
@@ -248,8 +256,8 @@ export interface FleetReference {
  * where it sits. The generic owned-reference checks (FLOW_OWNED_REFERENCE_FIELDS,
  * `deviceArgs`) cover core tools only, so each W6 built-in lists its own: the
  * `run_script_on_targets` script; a `target`'s groups and devices; a legacy
- * `group` condition's value (the group id); literal `deviceIds`; the
- * `create_alert` device. Shared by save (literals only) and run-time
+ * `group` condition's value (the group id); literal `deviceIds`; a
+ * `fleetFilter`'s group (#12418); the `create_alert` device. Shared by save (literals only) and run-time
  * revalidation (rendered values).
  */
 export function fleetBuiltinReferences(name: string, input: Record<string, unknown>): FleetReference[] {
@@ -271,6 +279,9 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
       target(input.target);
       conditions(input.conditions);
       if (Array.isArray(input.deviceIds)) input.deviceIds.forEach((v, i) => out.push({ kind: 'device', value: v, path: `/deviceIds/${i}` }));
+      if (isRecord(input.fleetFilter) && input.fleetFilter.groupId !== undefined) {
+        out.push({ kind: 'group', value: input.fleetFilter.groupId, path: FLEET_FILTER_GROUP_PATH });
+      }
       break;
     case 'resolve_targets':
       target(input.target);
@@ -284,6 +295,46 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
       break;
   }
   return out;
+}
+
+/**
+ * The verdicts of one validation call, by org and group. A group with no entry
+ * was not judged (the check ran out of time, or it is not this org's check) and
+ * is refused.
+ */
+export type FleetGroupChecks = ReadonlyMap<string, FleetFilterGroupVerdict['verdict']>;
+
+const fleetGroupKey = (orgId: string, groupId: string): string => `${orgId}:${groupId.toLowerCase()}`;
+
+/**
+ * Judges the groups the steps' `fleetFilter`s name (literals; at most one per
+ * step, so at most `FLOW_LIMITS.maxSteps`) in one transaction under one time
+ * budget, each group once. The result is for the calling validation only: a run
+ * judges again when the step resolves.
+ */
+export async function checkFleetFilterGroups(orgId: string, steps: ReadonlyArray<Pick<FlowStep, 'tool' | 'input'>>): Promise<FleetGroupChecks> {
+  const ids = steps
+    .flatMap((s) => fleetBuiltinReferences(s.tool, s.input))
+    .filter((r) => r.path === FLEET_FILTER_GROUP_PATH && typeof r.value === 'string' && !containsTemplate(r.value))
+    .map((r) => r.value as string);
+  if (ids.length === 0) return new Map();
+  try {
+    const judged = await withOwnedDeviceGroupReads(orgId, GROUP_CHECK_DOCUMENT_BUDGET_MS, (reads) => judgeFleetFilterGroups(orgId, ids, reads));
+    return new Map([...judged].map(([id, v]) => [fleetGroupKey(orgId, id), v.verdict]));
+  } catch (error) {
+    if (!(error instanceof FilterQueryTimeoutError)) throw error;
+    return new Map();
+  }
+}
+
+function fleetFilterGroupIssues(verdict: FleetFilterGroupVerdict['verdict'] | undefined, at: { stepId: string; pointer: string }): FlowIssue[] {
+  if (verdict === undefined) {
+    return [issue('input_invalid', 'This device group could not be checked in time. Try again, or name the devices or another filter field.', at)];
+  }
+  if (verdict === 'missing') return [issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at)];
+  return verdict === 'ok'
+    ? []
+    : [issue('input_invalid', 'This device group is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.', at)];
 }
 
 async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationContext): Promise<FlowIssue[]> {
@@ -320,6 +371,25 @@ async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationC
       for (const r of groups) {
         if (!ok.has(r.value as string)) out.push(issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at(r.path)));
       }
+      // #12418 W02, Decision 10: a group a fleetFilter names is gated like every
+      // other execution target. Checked again when the step resolves.
+      const filterGroup = groups.find((r) => r.path === FLEET_FILTER_GROUP_PATH && ok.has(r.value as string));
+      if (filterGroup) {
+        const checks = ctx.fleetGroupChecks ?? await checkFleetFilterGroups(ctx.owner.orgId, [step]);
+        out.push(...fleetFilterGroupIssues(checks.get(fleetGroupKey(ctx.owner.orgId, filterGroup.value as string)), at(filterGroup.path)));
+      }
+    }
+  }
+  if (step.tool === 'run_script_on_targets') {
+    // #12418 W02: a field a device reports about itself counts devices, never selects script targets.
+    const { fleetFilter } = step.input;
+    if (isRecord(fleetFilter) && Object.values(fleetFilter).every((v) => v === undefined)) {
+      // An empty filter would select every device. Checked again when the step resolves.
+      out.push(issue('input_invalid', 'fleetFilter names no field, so it would select every device. Name at least one field.', at('/fleetFilter')));
+    }
+    const refused = fleetFilterRefusedFieldsPresent(fleetFilter);
+    if (refused.length > 0) {
+      out.push(issue('input_invalid', `fleetFilter matches on field(s) a device reports about itself (${refused.join(', ')}); a script cannot be targeted by them.`, at('/fleetFilter')));
     }
   }
   if (devices.length > 0) {

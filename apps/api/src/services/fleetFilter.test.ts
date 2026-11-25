@@ -8,6 +8,7 @@ import {
   fleetFilterExecutionRefusedFields,
   fleetFilterFieldsUsed,
   fleetFilterParamSchema,
+  fleetFilterRefusedFieldsPresent,
   fleetFilterZodShape,
 } from './fleetFilter';
 
@@ -191,5 +192,20 @@ describe('buildGroupSQL on a compiled filter', () => {
     const q = render(buildGroupSQL(compileFleetFilter(ALL_FIELDS)));
     expect(q.params).toContain(SITE);
     expect(q.params).toContain(GROUP);
+  });
+});
+
+describe('fleetFilterRefusedFieldsPresent (a flow step at save)', () => {
+  it('classifies every facade field as the validated form does, by presence', () => {
+    for (const key of Object.keys(ALL_FIELDS) as Array<keyof FleetFilter>) {
+      expect(fleetFilterRefusedFieldsPresent({ [key]: '{{inputs.x}}' }), key)
+        .toEqual(fleetFilterExecutionRefusedFields({ [key]: ALL_FIELDS[key] } as FleetFilter));
+    }
+    expect(Object.keys(ALL_FIELDS).sort()).toEqual(Object.keys(fleetFilterSchema.shape).sort());
+  });
+  it('a null value still counts; undefined, an unknown key and a non-object do not', () => {
+    expect(fleetFilterRefusedFieldsPresent({ hostnameContains: null })).toEqual(['hostname']);
+    expect(fleetFilterRefusedFieldsPresent({ hostnameContains: undefined, hostname: 'x' })).toEqual([]);
+    for (const v of [null, undefined, 'x', 5, ['hostnameContains']]) expect(fleetFilterRefusedFieldsPresent(v)).toEqual([]);
   });
 });

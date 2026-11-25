@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "Le budget d'IA de l'organisation est épuisé.",
       "ai_output_invalid": "Le résultat de l'IA ne correspondait pas au format attendu.",
       "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA.",
-      "targets_over_cap": "L'étape visait plus d'appareils qu'une étape de flux ne peut en traiter (500).",
+      "targets_over_cap": "L'étape visait plus d'appareils que cette exécution n'est autorisée à traiter.",
       "targets_unresolvable": "La cible d'appareils de l'étape n'a pas pu être résolue.",
       "alert_create_failed": "L'alerte n'a pas pu être créée.",
       "script_dispatch_failed": "Le script n'a pas pu être envoyé à un ou plusieurs appareils."

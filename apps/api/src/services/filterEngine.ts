@@ -959,7 +959,7 @@ function decommissionedScopeCondition(excludeDecommissioned: boolean | undefined
 // characters and still pathological — so a crafted short pattern could otherwise
 // pin a worker (ReDoS). This caps the *execution time* of any filter query with a
 // transaction-local statement_timeout, which the length cap cannot do on its own.
-const FILTER_QUERY_TIMEOUT_MS = 500;
+export const FILTER_QUERY_TIMEOUT_MS = 500;
 
 export type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 

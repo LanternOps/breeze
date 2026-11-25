@@ -13,6 +13,8 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceGroups, devices, notificationChannels, scripts } from '../../db/schema';
 import { scriptOwnershipCondition, type AutomationReferenceOwner } from '../automationReferenceAuthorization';
 import type { ToolOwnerRef } from '../toolSources/resolver';
+import { withFilterStatementTimeout } from '../filterEngine';
+import { GroupCheckBudget, loadGatedGroups, type GroupReads } from './fleetFilterGroupGate';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -67,6 +69,29 @@ export async function findOwnedDeviceGroupIds(orgId: string, ids: Iterable<strin
     'flowValidator.deviceGroups',
   );
   return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Reads of `orgId`'s device groups with what decides each one's membership, for
+ * the execution-provenance gate of `fleetFilter.groupId` (#12418 W02). All of
+ * `check`'s reads share ONE transaction and one time budget; `check` must read
+ * nothing else. Throws `FilterQueryTimeoutError` when a read is cancelled or
+ * the budget is used up.
+ */
+export function withOwnedDeviceGroupReads<T>(orgId: string, budgetMs: number, check: (reads: GroupReads) => Promise<T>): Promise<T> {
+  return system(
+    () => withFilterStatementTimeout((tx) => {
+      const budget = new GroupCheckBudget(budgetMs);
+      return check({
+        budget,
+        load: async (ids) => {
+          const wanted = uuidsOnly(ids);
+          return wanted.length === 0 ? [] : loadGatedGroups(tx, orgId, wanted, budget);
+        },
+      });
+    }),
+    'flowValidator.deviceGroupRules',
+  );
 }
 
 export async function findOwnedDeviceIds(orgId: string, ids: Iterable<string>): Promise<Set<string>> {

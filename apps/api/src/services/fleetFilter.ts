@@ -64,9 +64,47 @@ export function fleetFilterFieldsUsed(filter: FleetFilter): string[] {
   return [...new Set(keys)].sort();
 }
 
+/** No field is present: it counts every device, and may never select one (#12418 W02). */
+export function isEmptyFleetFilter(filter: FleetFilter): boolean {
+  return compileFleetFilter(filter).conditions.length === 0;
+}
+
 /** The subset of `fleetFilterFieldsUsed` a device reports about itself with targeting value. */
 export function fleetFilterExecutionRefusedFields(filter: FleetFilter): string[] {
   return fleetFilterFieldsUsed(filter).filter(isExecutionRefusedFilterField);
+}
+
+/** A valid value per facade field, so a field can be classified without reading the value a caller wrote. */
+const PROBE: Required<FleetFilter> = {
+  status: 'online',
+  osType: 'windows',
+  osVersionContains: 'x',
+  hostnameContains: 'x',
+  siteId: '00000000-0000-4000-8000-000000000000',
+  groupId: '00000000-0000-4000-8000-000000000000',
+  tags: ['x'],
+  agentVersion: 'x',
+  softwareInstalled: 'x',
+  softwareMissing: 'x',
+  softwareVersionBelow: { name: 'x', version: '1' },
+  pendingPatches: true,
+  criticalAlerts: true,
+  rebootRequired: true,
+  lastSeenDaysOver: 1,
+};
+
+/**
+ * `fleetFilterExecutionRefusedFields` for a filter that is not validated yet:
+ * a flow step at save may hold templates or malformed values. A field counts
+ * when its key is PRESENT, whatever its value; anything but an object has none
+ * (the schema check or, for a whole-object template, the resolve gate decides).
+ */
+export function fleetFilterRefusedFieldsPresent(filter: unknown): string[] {
+  if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) return [];
+  const present = Object.fromEntries(
+    Object.entries(PROBE).filter(([key]) => Object.hasOwn(filter, key) && (filter as Record<string, unknown>)[key] !== undefined),
+  ) as FleetFilter;
+  return fleetFilterExecutionRefusedFields(present);
 }
 
 const d = FLEET_FILTER_DESCRIPTIONS;

@@ -31,9 +31,9 @@ import { runOutsideDbContext, withDbAccessContext } from '../../db';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
 import type { UserPermissions } from '../permissions';
 import { resolveScriptRunTargets } from '../scriptRunTargets';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from './runScriptLimits';
 
-/** Keep equal to the `deviceIds.max(10)` in the run_script tool schemas and the handler's slice. */
-export const RUN_SCRIPT_AI_MAX_DEVICES = 10;
+export { RUN_SCRIPT_AI_MAX_DEVICES };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -17,13 +17,23 @@
  *    input is `{ scriptId, parameters, runAs, whenOffline, deviceIds }` with
  *    the resolved ids and no selector — so the approver sees the exact
  *    devices, the digest pins them, and the release dispatches exactly them.
+ *    A `fleetFilter` step always takes this path (#12418 Decision 5).
+ *
+ * The run's provenance sets its ceiling (#12418 W02, Decision 3): an
+ * AI-initiated run freezes at most RUN_SCRIPT_AI_MAX_DEVICES devices through
+ * any selector; every other run keeps FLEET_MAX_TARGETS. It is applied while
+ * the selection resolves, so it precedes both branches above.
  *
  * A selection with no device completes with `count: 0` (nothing to approve).
  */
-import type { FlowFleetStepOutput, FlowValue } from '@breeze/shared';
+import { FLEET_MAX_TARGETS, type FlowFleetStepOutput, type FlowValue } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import type { FlowRunRow } from '../../db/schema/flowRuns';
+import { groupTargetIdsHash } from '../actionIntents/runScriptGroupTarget';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from '../actionIntents/runScriptLimits';
 import { buildRunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
-import { executeRunScriptOnTargets, resolveFleetSelection, type RunScriptOnTargetsInput } from './builtins/runScriptOnTargets';
+import { resolveDeviceIdsInRunOrg } from './builtins/fleetTargets';
+import { executeRunScriptOnTargets, fleetSelectorName, resolveFleetSelection, type FleetSelectorName, type RunScriptOnTargetsInput } from './builtins/runScriptOnTargets';
 import type { BuiltinContext } from './builtins/types';
 import {
   fleetScriptMaterialFromSnapshot,
@@ -33,14 +43,76 @@ import {
 } from './fleetPreApproval';
 import type { FleetBindingV1 } from './fleetBindingSchema';
 import { loadDynamicGroupDefinitions } from './fleetGroups';
+import { recordFleetStepAiCeilingRefused } from './flowTriggerMetrics';
 import type { FlowPreApprovalBinding } from './preApproval';
 import type { StepExecutionInput, StepOutcome } from './stepExecutor';
+
+/**
+ * Started by an AI caller: chat or the ai_tool manual start, an MCP client, an
+ * agent run. UI, API, schedule, event and webhook runs are not.
+ */
+export function isAiInitiatedRun(run: Pick<FlowRunRow, 'triggerKind' | 'triggeredVia'>): boolean {
+  return run.triggerKind === 'tool' || run.triggeredVia === 'ai_tool';
+}
+
+/** The most devices a fleet step of this run may freeze. */
+export function fleetActionCeiling(run: Pick<FlowRunRow, 'triggerKind' | 'triggeredVia'>): number {
+  return isAiInitiatedRun(run) ? RUN_SCRIPT_AI_MAX_DEVICES : FLEET_MAX_TARGETS;
+}
+
+/** What a parked fleet step tells its approver. */
+export interface FleetTargetSummary {
+  count: number;
+  /** `groupTargetIdsHash` of the frozen, sorted ids. */
+  idsHash: string;
+  selector: FleetSelectorName;
+  /** At most FLEET_SAMPLE_SIZE, in hostname order. Device-reported text: render through `fleetTargetNote` only. */
+  sampleHostnames: string[];
+}
+
+const FLEET_SAMPLE_SIZE = 5;
+const SAMPLE_NAME_MAX_CHARS = 63;
+const NOTE_MAX_CHARS = 600;
+
+/**
+ * A device-reported hostname as an approval card may show it: cut to ASCII
+ * hostname characters, capped and quoted. An allowlist, so no quote or quote
+ * look-alike, space, blank-rendering letter, control character or markup
+ * survives: a name cannot leave its quotes. Compatibility and accented forms
+ * fold to their plain letter first. Null when nothing is left.
+ */
+function sampleName(hostname: string): string | null {
+  const clean = hostname
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!clean) return null;
+  return `"${clean.length > SAMPLE_NAME_MAX_CHARS ? `${clean.slice(0, SAMPLE_NAME_MAX_CHARS - 1)}…` : clean}"`;
+}
+
+/** The one sentence stored as the intent's `reason` and shown on the approval card. */
+export function fleetTargetNote(s: FleetTargetSummary): string {
+  const names = s.sampleHostnames.map(sampleName).filter((n): n is string => n !== null);
+  const note = `Fleet step resolved ${s.count} device${s.count === 1 ? '' : 's'} via ${s.selector} (ids sha256 ${s.idsHash}); later membership changes do not change this run.${names.length ? ` Sample: ${names.join(', ')}.` : ''}`;
+  return note.slice(0, NOTE_MAX_CHARS);
+}
+
+async function summarize(i: StepExecutionInput, input: RunScriptOnTargetsInput, ctx: BuiltinContext, deviceIds: string[]): Promise<FleetTargetSummary> {
+  const found = await resolveDeviceIdsInRunOrg({ orgId: i.run.orgId, partnerId: ctx.auth.partnerId! }, deviceIds);
+  return {
+    count: deviceIds.length,
+    idsHash: groupTargetIdsHash(deviceIds),
+    selector: fleetSelectorName(input),
+    sampleHostnames: found.map((d) => d.hostname).sort().slice(0, FLEET_SAMPLE_SIZE),
+  };
+}
 
 export interface FleetStepDeps {
   /** The step's stored binding on this publication; 'invalid' when unreadable. */
   binding: FlowPreApprovalBinding | null | 'invalid';
-  /** Park for approval with this (frozen) input. */
-  park: (frozenInput: Record<string, FlowValue>) => Promise<StepOutcome>;
+  /** Park for approval with this (frozen) input; the summary is what the approver is told about it. */
+  park: (frozenInput: Record<string, FlowValue>, summary: FleetTargetSummary) => Promise<StepOutcome>;
   /** Run the dispatch inside the run's flow frame, raced against the step deadline. */
   run: (fn: () => Promise<StepOutcome>, meta: { renderedInput: Record<string, FlowValue>; approvalMode?: 'pre_approved' }) => Promise<StepOutcome>;
 }
@@ -82,9 +154,12 @@ export async function executeFleetStep(
   }
   if (deps.binding === 'invalid') return policy('drift', 'This step\'s stored pre-approval is unreadable.', meta);
 
-  const selection = await resolveFleetSelection(input, ctx);
+  const selection = await resolveFleetSelection(input, ctx, undefined, { maxTargets: fleetActionCeiling(i.run) });
   if (selection.kind === 'outcome') {
     const o = selection.outcome;
+    if (o.kind === 'failed' && o.code === 'targets_over_cap' && isAiInitiatedRun(i.run)) {
+      recordFleetStepAiCeilingRefused({ selector: fleetSelectorName(input) });
+    }
     return o.kind === 'skipped' ? o : { ...o, ...meta };
   }
 
@@ -93,14 +168,15 @@ export async function executeFleetStep(
     // A fleet step can only carry a fleet binding; anything else is not what was enabled.
     return policy('binding_drift', 'This step no longer matches its pre-approval.', meta);
   }
-  if (bound && honoursFleetPreApproval(i.run)) {
+  // No pre-approval lane for a fleetFilter: such a step parks whatever binding is stored.
+  if (bound && !input.fleetFilter && honoursFleetPreApproval(i.run)) {
     return executePreApprovedFleet(i, input, selection, bound, ctx, deps);
   }
 
   if (selection.requested.length === 0) {
     return { kind: 'completed', output: emptyOutput(selection.warnings), truncated: false, ...meta };
   }
-  return deps.park(frozenInputOf(input, selection.requested));
+  return deps.park(frozenInputOf(input, selection.requested), await summarize(i, input, ctx, selection.requested));
 }
 
 async function executePreApprovedFleet(

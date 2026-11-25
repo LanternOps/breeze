@@ -727,6 +727,16 @@ describe('processFlowRunJob — failures', () => {
     expect(h.pauseFlow).not.toHaveBeenCalled();
   });
 
+  // #12418 W02 (E4): an over-limit fleet step's refusal record is stored on its step row.
+  it('a policy failure with an output stores the output on the failed step row', async () => {
+    seed({ steps: [{ id: 'a' }] });
+    const output = { resolvedCount: 11, ceiling: 10, selectorKind: 'fleetFilter' };
+    h.execute.mockResolvedValue({ kind: 'failed', code: 'targets_over_cap', message: 'too many', policy: true, output, renderedInput: {} });
+    await run();
+    expect(stepRow('a')).toMatchObject({ status: 'failed', errorCode: 'targets_over_cap', output });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'targets_over_cap' });
+  });
+
   it('binding_drift pauses the flow', async () => {
     seed({ steps: [{ id: 'a' }], tiers: { a: 3 } });
     h.execute.mockResolvedValue({ kind: 'failed', code: 'binding_drift', message: 'changed', policy: true, approvalMode: 'pre_approved' });
