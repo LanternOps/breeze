@@ -31,6 +31,8 @@ describe(MIGRATION, () => {
     const block = blocks.find((b) => b.includes(`UPDATE public.${table} `));
     expect(block, `a DO block updating ${table}`).toBeDefined();
     const guard = block!.indexOf('IF NOT EXISTS');
+    // Elected in the writing statement itself too, so a raw psql -f cannot skip the rows.
+    expect(block!.slice(guard, block!.indexOf(`UPDATE public.${table} `))).toContain("PERFORM set_config('breeze.scope', 'system', true);");
     const update = block!.indexOf(`UPDATE public.${table} `);
     const add = block!.indexOf(`ADD CONSTRAINT ${table}_mcp_tool_list_mode_check`);
     const endIf = block!.indexOf('END IF;');

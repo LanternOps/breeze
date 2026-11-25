@@ -25,6 +25,7 @@ import { replayMigration } from './replayMigration';
 const MIGRATION = '2027-01-30-160000-mcp-tool-list-mode.sql';
 const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
 const SCOPE_LINE = "SELECT set_config('breeze.scope', 'system', true);";
+const SCOPE_PERFORM = "PERFORM set_config('breeze.scope', 'system', true);";
 const TABLES = ['api_keys', 'oauth_grants'] as const;
 type Table = (typeof TABLES)[number];
 type Tx = postgres.TransactionSql;
@@ -163,6 +164,28 @@ describe(`${MIGRATION}: the first run, as a least-privileged owner under forced 
     });
   });
 
+  it.each([
+    ['the file as shipped', true, 'full'],
+    ['CONTROL: without the in-block elections', false, null],
+  ] as const)('one statement at a time, the scope expiring after each (psql -f): %s', async (_name, inBlock, expected) => {
+    await inRolledBackTx(async (tx) => {
+      const { schema, owner } = await createPreMigrationCopies(tx);
+      const seeded = await seedBoth(tx, schema);
+      const code = retarget(schema, inBlock ? migrationCode : migrationCode.replaceAll(SCOPE_PERFORM, ''));
+      const statements = code.match(/DO \$\$[\s\S]*?END \$\$;|(?:SELECT|ALTER)[^;]*;/g) ?? [];
+      expect(statements).toHaveLength(5);
+      await asRole(tx, schema, owner);
+      for (const statement of statements) {
+        await tx.unsafe(statement);
+        await tx`SELECT set_config('breeze.scope', 'none', true)`;
+      }
+      await tx.unsafe('RESET ROLE');
+      expect(await modes(tx, schema, 'api_keys')).toEqual({ [seeded.api_keys]: expected });
+      expect(await modes(tx, schema, 'oauth_grants')).toEqual({ [seeded.oauth_grants]: 'full' });
+      expect(await forcedTables(tx, schema)).toBe(2);
+    });
+  });
+
   it('CONTROL: without lifting FORCE, oauth_grants is silently not backfilled for that owner', async () => {
     await inRolledBackTx(async (tx) => {
       const { schema, owner } = await createPreMigrationCopies(tx);
@@ -178,12 +201,12 @@ describe(`${MIGRATION}: the first run, as a least-privileged owner under forced 
     });
   });
 
-  it('CONTROL: without the system-scope line, api_keys is silently not backfilled for that owner', async () => {
+  it('CONTROL: without any system-scope election, api_keys is silently not backfilled for that owner', async () => {
     await inRolledBackTx(async (tx) => {
       const { schema, owner } = await createPreMigrationCopies(tx);
       const seeded = await seedBoth(tx, schema);
-      const without = migrationCode.replace(SCOPE_LINE, '');
-      expect(without).not.toBe(migrationCode);
+      const without = migrationCode.replace(SCOPE_LINE, '').replaceAll(SCOPE_PERFORM, '');
+      expect(migrationCode.split(SCOPE_PERFORM)).toHaveLength(3);
       expect(without).not.toContain("set_config('breeze.scope'");
       await asRole(tx, schema, owner);
       await tx.unsafe(retarget(schema, without));

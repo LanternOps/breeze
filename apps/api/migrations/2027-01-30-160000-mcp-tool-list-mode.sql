@@ -26,6 +26,10 @@ BEGIN
      WHERE conname = 'api_keys_mcp_tool_list_mode_check'
        AND conrelid = 'public.api_keys'::regclass
   ) THEN
+    -- Again inside the statement that writes: applied raw without a transaction
+    -- (psql -f), the election above has already expired, and the CHECK below would
+    -- make the skipped backfill permanent.
+    PERFORM set_config('breeze.scope', 'system', true);
     UPDATE public.api_keys SET mcp_tool_list_mode = 'full' WHERE mcp_tool_list_mode IS NULL;
     GET DIAGNOSTICS n = ROW_COUNT;
     RAISE NOTICE 'mcp_tool_list_mode: % existing api_keys row(s) set to full', n;
@@ -44,6 +48,7 @@ BEGIN
      WHERE conname = 'oauth_grants_mcp_tool_list_mode_check'
        AND conrelid = 'public.oauth_grants'::regclass
   ) THEN
+    PERFORM set_config('breeze.scope', 'system', true);
     -- oauth_grants' only policy is TO breeze_app, so on a database whose owner is
     -- neither a superuser nor a member of breeze_app no policy admits the owner
     -- whatever the scope says: the UPDATE would match zero rows, silently, and
