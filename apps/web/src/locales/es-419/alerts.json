@@ -963,6 +963,7 @@
     "deleteEmptiesRoutingRules_other": "Deja {{count}} reglas de enrutamiento sin canales: {{names}}",
     "deleteReducesRoutingRules_one": "También se quita de {{count}} regla de enrutamiento: {{names}}",
     "deleteReducesRoutingRules_other": "También se quita de {{count}} reglas de enrutamiento: {{names}}",
+    "deleteRoutingImpactFailed": "No se pudo comprobar qué reglas de enrutamiento usan este canal. Eliminarlo puede dejar algunas reglas sin canales.",
     "deleting": "Eliminando",
     "editRoutingRule": "Editar regla de enrutamiento",
     "newRoutingRule": "Nueva regla de enrutamiento",

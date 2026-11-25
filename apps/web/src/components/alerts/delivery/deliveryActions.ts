@@ -65,7 +65,7 @@ export async function runChannelDelete(
 export type ChannelRoutingImpact = { emptied: AffectedRoutingRule[]; reduced: AffectedRoutingRule[] };
 type AffectedRoutingRule = { id: string; name: string; isDefault: boolean };
 
-/** The routing rules deleting this channel will change; null when the check fails (the dialog then shows only its usual text). */
+/** The routing rules deleting this channel will change; null when the check fails (the dialog then says the rules could not be checked). */
 export async function fetchChannelRoutingImpact(channelId: string): Promise<ChannelRoutingImpact | null> {
   try {
     const res = await fetchWithAuth(`/alerts/channels/${channelId}/routing-impact`);

@@ -963,6 +963,7 @@
     "deleteEmptiesRoutingRules_other": "{{count}} yönlendirme kuralını kanalsız bırakır: {{names}}",
     "deleteReducesRoutingRules_one": "Ayrıca {{count}} yönlendirme kuralından kaldırılır: {{names}}",
     "deleteReducesRoutingRules_other": "Ayrıca {{count}} yönlendirme kuralından kaldırılır: {{names}}",
+    "deleteRoutingImpactFailed": "Bu kanalı hangi yönlendirme kurallarının kullandığı kontrol edilemedi. Silmek bazı kuralları kanalsız bırakabilir.",
     "deleting": "Siliniyor",
     "editRoutingRule": "Yönlendirme Kuralını Düzenle",
     "newRoutingRule": "Yeni Yönlendirme Kuralı",

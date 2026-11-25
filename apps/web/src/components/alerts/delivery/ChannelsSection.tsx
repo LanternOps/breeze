@@ -23,7 +23,8 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [channelOwnerScope, setChannelOwnerScope] = useState<'organization' | 'partner'>('organization');
-  const [impact, setImpact] = useState<ChannelRoutingImpact & { channelId: string } | null>(null);
+  // 'pending' and 'failed' keep the dialog from deleting silently before the routing check has answered (#12002).
+  const [impact, setImpact] = useState<{ channelId: string; result: ChannelRoutingImpact | 'pending' | 'failed' } | null>(null);
   const handleCreate = () => {
     setChannelOwnerScope(defaultOwnerScope);
     setSelectedChannel(null);
@@ -38,12 +39,13 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
   const handleDelete = (channel: NotificationChannel) => {
     setSelectedChannel(channel);
     setModalMode('delete');
-    setImpact(null);
-    void fetchChannelRoutingImpact(channel.id).then((data) => data && setImpact({ ...data, channelId: channel.id }));
+    setImpact({ channelId: channel.id, result: 'pending' });
+    void fetchChannelRoutingImpact(channel.id).then((data) => setImpact({ channelId: channel.id, result: data ?? 'failed' }));
   };
   const ruleNames = (rules: ChannelRoutingImpact['emptied']) =>
     rules.map((rule) => (rule.isDefault ? t('deliveryPage.routing.everythingElse') : rule.name)).join(', ');
-  const shownImpact = impact && impact.channelId === selectedChannel?.id ? impact : null;
+  const impactResult = impact && impact.channelId === selectedChannel?.id ? impact.result : 'pending';
+  const shownImpact = typeof impactResult === 'object' ? impactResult : null;
 
   const handleTest = async (channel: NotificationChannel) => {
     await runChannelTest(channel, {
@@ -365,6 +367,11 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
                 {t('notificationChannelsPage.deleteEmptiesRoutingRules', { count: shownImpact.emptied.length, names: ruleNames(shownImpact.emptied) })}
               </p>
             )}
+            {impactResult === 'failed' && (
+              <p data-testid="channel-delete-impact-failed" className="mt-2 text-sm font-medium text-warning">
+                {t('notificationChannelsPage.deleteRoutingImpactFailed')}
+              </p>
+            )}
             {shownImpact && shownImpact.reduced.length > 0 && (
               <p data-testid="channel-delete-reduced-rules" className="mt-2 text-sm text-muted-foreground">
                 {t('notificationChannelsPage.deleteReducesRoutingRules', { count: shownImpact.reduced.length, names: ruleNames(shownImpact.reduced) })}
@@ -383,7 +390,7 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
                 type="button"
                 onClick={handleConfirmDelete}
                 data-testid="channel-delete-confirm"
-                disabled={submitting}
+                disabled={submitting || impactResult === 'pending'}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? t('notificationChannelsPage.deleting') : t('common:actions.delete')}

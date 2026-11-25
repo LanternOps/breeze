@@ -963,6 +963,7 @@
     "deleteEmptiesRoutingRules_other": "Deixa {{count}} regras de roteamento sem canais: {{names}}",
     "deleteReducesRoutingRules_one": "Também removido de {{count}} regra de roteamento: {{names}}",
     "deleteReducesRoutingRules_other": "Também removido de {{count}} regras de roteamento: {{names}}",
+    "deleteRoutingImpactFailed": "Não foi possível verificar quais regras de roteamento usam este canal. Excluí-lo pode deixar algumas regras sem canais.",
     "deleting": "Excluindo",
     "editRoutingRule": "Editar regra de roteamento",
     "newRoutingRule": "Nova regra de roteamento",

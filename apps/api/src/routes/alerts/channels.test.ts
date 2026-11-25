@@ -198,6 +198,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq, type SQL } from 'drizzle-orm';
 import { channelsRoutes } from './channels';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { writeRouteAudit } from '../../services/auditEvents';
 
 function makeApp() {
@@ -530,6 +531,30 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       const deleted = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
       expect(preview).toEqual(deleted);
       expect(preview.sql).toBe('(jsonb_exists($1, $2::text) and ($3 is not null and $4 = $5))');
+    });
+
+    it('403s a site-restricted caller, as the delete does, without reading any rule (#12002)', async () => {
+      setPartnerAuth('all');
+      authRef.current = { ...authRef.current, scope: 'organization', orgId: 'org-1', allowedSiteIds: ['site-1'] } as typeof authRef.current;
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, orgId: 'org-1', partnerId: null };
+      routingUpdateRef.selectRows = [{ id: 'other-site', name: 'Site B pager', isDefault: false, channelIds: [CHANNEL_ID] }];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(SITE_CEILING_WRITE_DENIED_MESSAGE);
+      expect(routingUpdateRef.where).toBeUndefined();
+    });
+
+    it('403s a partner-wide channel without the partner-wide capability, as the delete does (#12002)', async () => {
+      setPartnerAuth('none');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(routingUpdateRef.where).toBeUndefined();
     });
 
     it('returns 404 for a channel the caller cannot see (#12002)', async () => {

@@ -963,6 +963,7 @@
     "deleteEmptiesRoutingRules_other": "{{count}} Weiterleitungsregeln bleiben ohne Kanäle: {{names}}",
     "deleteReducesRoutingRules_one": "Außerdem aus {{count}} Weiterleitungsregel entfernt: {{names}}",
     "deleteReducesRoutingRules_other": "Außerdem aus {{count}} Weiterleitungsregeln entfernt: {{names}}",
+    "deleteRoutingImpactFailed": "Es konnte nicht geprüft werden, welche Weiterleitungsregeln diesen Kanal nutzen. Das Löschen kann Regeln ohne Kanäle zurücklassen.",
     "deleting": "Löschen",
     "editRoutingRule": "Routing-Regel bearbeiten",
     "newRoutingRule": "Neue Routing-Regel",

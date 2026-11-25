@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '../../../lib/i18n';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NotificationChannel } from '../NotificationChannelList';
@@ -59,12 +59,23 @@ describe('ChannelsSection delete confirm (#12002)', () => {
     expect(screen.queryByTestId('channel-delete-reduced-rules')).toBeNull();
   });
 
-  it('adds nothing when the delete changes no routing rule or the check fails', async () => {
-    vi.mocked(fetchChannelRoutingImpact).mockResolvedValue(null);
+  it('keeps Delete disabled until the routing check answers', async () => {
+    let answer!: (value: { emptied: never[]; reduced: never[] }) => void;
+    vi.mocked(fetchChannelRoutingImpact).mockReturnValue(new Promise((resolve) => { answer = resolve; }));
     openDeleteConfirm();
-    expect(screen.getByText(/Alerts routed only to it will stop being delivered/)).toBeInTheDocument();
-    await Promise.resolve();
+    expect(screen.getByTestId('channel-delete-confirm')).toBeDisabled();
+    answer({ emptied: [], reduced: [] });
+    await waitFor(() => expect(screen.getByTestId('channel-delete-confirm')).toBeEnabled());
     expect(screen.queryByTestId('channel-delete-emptied-rules')).toBeNull();
     expect(screen.queryByTestId('channel-delete-reduced-rules')).toBeNull();
+    expect(screen.queryByTestId('channel-delete-impact-failed')).toBeNull();
+  });
+
+  it('says the routing rules could not be checked when the check fails, then allows Delete', async () => {
+    vi.mocked(fetchChannelRoutingImpact).mockResolvedValue(null);
+    openDeleteConfirm();
+    expect(await screen.findByTestId('channel-delete-impact-failed')).toHaveTextContent('Could not check which routing rules use this channel');
+    expect(screen.getByTestId('channel-delete-confirm')).toBeEnabled();
+    expect(screen.queryByTestId('channel-delete-emptied-rules')).toBeNull();
   });
 });

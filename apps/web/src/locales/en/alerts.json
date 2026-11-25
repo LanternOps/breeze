@@ -963,6 +963,7 @@
     "deleteEmptiesRoutingRules_other": "Leaves {{count}} routing rules with no channels: {{names}}",
     "deleteReducesRoutingRules_one": "Also removed from {{count}} routing rule: {{names}}",
     "deleteReducesRoutingRules_other": "Also removed from {{count}} routing rules: {{names}}",
+    "deleteRoutingImpactFailed": "Could not check which routing rules use this channel. Deleting it may leave some rules with no channels.",
     "deleting": "Deleting",
     "editRoutingRule": "Edit Routing Rule",
     "newRoutingRule": "New Routing Rule",

@@ -963,6 +963,7 @@
     "deleteEmptiesRoutingRules_other": "Laisse {{count}} règles de routage sans canal : {{names}}",
     "deleteReducesRoutingRules_one": "Également retiré de {{count}} règle de routage : {{names}}",
     "deleteReducesRoutingRules_other": "Également retiré de {{count}} règles de routage : {{names}}",
+    "deleteRoutingImpactFailed": "Impossible de vérifier quelles règles de routage utilisent ce canal. Le supprimer peut laisser certaines règles sans canal.",
     "deleting": "Suppression",
     "editRoutingRule": "Modifier la règle de routage",
     "newRoutingRule": "Nouvelle règle de routage",
