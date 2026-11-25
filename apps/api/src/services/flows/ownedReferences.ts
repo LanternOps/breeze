@@ -13,6 +13,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceGroups, devices, notificationChannels, scripts } from '../../db/schema';
 import { scriptOwnershipCondition, type AutomationReferenceOwner } from '../automationReferenceAuthorization';
 import type { ToolOwnerRef } from '../toolSources/resolver';
+import { withFilterStatementTimeout } from '../filterEngine';
 import { loadGatedGroups, type GatedGroup } from './fleetFilterGroupGate';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -72,13 +73,14 @@ export async function findOwnedDeviceGroupIds(orgId: string, ids: Iterable<strin
 
 /**
  * `findOwnedDeviceGroupIds` with what decides each group's membership, for the
- * execution-provenance gate of a `fleetFilter.groupId` (#12418 W02).
+ * execution-provenance gate of a `fleetFilter.groupId` (#12418 W02). Throws
+ * `FilterQueryTimeoutError` when the read outruns the engine's statement bound.
  */
 export async function findOwnedDeviceGroups(orgId: string, ids: Iterable<string>): Promise<GatedGroup[]> {
   const wanted = uuidsOnly(ids);
   if (wanted.length === 0) return [];
   return system(
-    () => loadGatedGroups(db, orgId, wanted),
+    () => withFilterStatementTimeout((tx) => loadGatedGroups(tx, orgId, wanted)),
     'flowValidator.deviceGroupRules',
   );
 }

@@ -262,7 +262,7 @@ describe('flow fleetFilter resolves the set the stats tool counts (#12418 W02, r
       filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'equals', value: f.dynamicGroup }] },
     }).returning({ id: deviceGroups.id });
     await getTestDb().insert(deviceGroupMemberships).values({ groupId: outer!.id, deviceId: f.w1, orgId: f.orgA });
-    // Resolved from the named group's rules (windows), not from what this group's own rows say.
+    // Resolved through the named group's rules (windows).
     expect((await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).deviceIds).toEqual([f.w1, f.w2].sort());
     await getTestDb().update(deviceGroups).set({
       filterConditions: { operator: 'AND', conditions: [{ field: 'tags', operator: 'contains', value: 'x' }] },

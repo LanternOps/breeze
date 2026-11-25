@@ -34,7 +34,7 @@ import { fleetFilterExecutionRefusedFields, isEmptyFleetFilter } from '../../fle
 import { pgErrorCode } from '../../../utils/pgErrors';
 import { notParkedDeviceCondition } from '../../unassignedPool/selectorPredicate';
 import { flowDbAccessContext } from '../flowAuthContext';
-import { judgeFleetFilterGroup, loadGatedGroups } from '../fleetFilterGroupGate';
+import { judgeFleetFilterGroup, loadGatedGroups, type FleetFilterGroupVerdict } from '../fleetFilterGroupGate';
 
 export interface FleetRunOrg {
   orgId: string;
@@ -151,6 +151,8 @@ export const FLEET_FILTER_EMPTY_PROBLEM = 'fleetFilter names no field, so it wou
 const GROUP_REFUSED_PROBLEM =
   'The device group this filter names is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.';
 
+export const GROUP_CHECK_TIMEOUT_PROBLEM = 'The device group this filter names could not be checked in time. Name the devices or another filter field. Nothing was run.';
+
 /** A comparison the types do not have, and a value the driver cannot bind (it never reaches Postgres). */
 const RULE_EVALUATION_CODES: ReadonlySet<string> = new Set(['42804', '42846', '42883', '42P18', 'ERR_INVALID_ARG_TYPE', 'UNDEFINED_VALUE', 'MAX_PARAMETERS_EXCEEDED']);
 
@@ -167,7 +169,15 @@ function isRuleEvaluationError(error: unknown): boolean {
  * checked. Call inside a run-org context.
  */
 async function fleetFilterGroupMembers(orgId: string, groupId: string): Promise<{ members: SQL } | { problem: string }> {
-  const judged = await judgeFleetFilterGroup(orgId, groupId, (ids) => withFilterStatementTimeout((tx) => loadGatedGroups(tx, orgId, ids)));
+  let judged: FleetFilterGroupVerdict;
+  try {
+    judged = await judgeFleetFilterGroup(orgId, groupId, (ids) => withFilterStatementTimeout((tx) => loadGatedGroups(tx, orgId, ids)));
+  } catch (error) {
+    // Cancelled inside its own savepoint; the run-org transaction is still usable.
+    if (!(error instanceof FilterQueryTimeoutError)) throw error;
+    reportFilterPreviewTimeout(orgId);
+    return { problem: GROUP_CHECK_TIMEOUT_PROBLEM };
+  }
   if (judged.verdict === 'ok') return { members: judged.members };
   return { problem: judged.verdict === 'missing' ? 'The device group this filter names is not available to this flow run.' : GROUP_REFUSED_PROBLEM };
 }

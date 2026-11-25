@@ -64,7 +64,7 @@ vi.mock('../../filterEngine', async (orig) => ({
 }));
 
 import { FilterQueryTimeoutError } from '../../filterEngine';
-import { FLEET_FILTER_EMPTY_PROBLEM, FLEET_FILTER_TIMEOUT_PROBLEM, listFleetFilterDeviceIds, resolveFleetFilterOnce } from './fleetTargets';
+import { FLEET_FILTER_EMPTY_PROBLEM, FLEET_FILTER_TIMEOUT_PROBLEM, GROUP_CHECK_TIMEOUT_PROBLEM, listFleetFilterDeviceIds, resolveFleetFilterOnce } from './fleetTargets';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -161,6 +161,13 @@ describe('resolveFleetFilterOnce', () => {
   it.each([['{}', {}], ['only undefined values', { osType: undefined }]])('an empty filter (%s) is a problem without a query', async (_l, filter) => {
     expect(await resolveFleetFilterOnce(RUN, filter, 10)).toEqual({ count: 0, deviceIds: [], problems: [FLEET_FILTER_EMPTY_PROBLEM] });
     expect(m.trace).toEqual([]);
+  });
+
+  it('a group check that outruns its bound has its own problem, with no device query', async () => {
+    m.bound.mockImplementationOnce(() => { throw new FilterQueryTimeoutError(); });
+    expect(await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10)).toEqual({ count: 0, deviceIds: [], problems: [GROUP_CHECK_TIMEOUT_PROBLEM] });
+    expect(m.trace).not.toContain('filter-query');
+    expect(m.timeout).toHaveBeenCalledExactlyOnceWith(ORG);
   });
 
   it('a group filter never reaches the device statement without its judged definition', async () => {

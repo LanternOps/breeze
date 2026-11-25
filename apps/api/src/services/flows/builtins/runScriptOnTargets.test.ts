@@ -234,7 +234,9 @@ describe('resolveFleetSelection', () => {
   });
 
   it('the AI message is the exact copy', () => {
-    expect(aiCeilingMessage(11)).toBe('The selection resolved to 11 devices; an AI-started run may target at most 10. A person can start this flow from the Breeze web app instead, where the limit is 500. Nothing was run.');
+    expect(aiCeilingMessage(11)).toBe('The selection resolved to 11 devices; an AI-started run may target at most 10. A person can start this flow from the Breeze web app instead. Nothing was run.');
+    expect(aiCeilingMessage(500)).toContain('web app');
+    expect(aiCeilingMessage(501)).toBe('The selection resolved to 501 devices; an AI-started run may target at most 10. No flow run may target more than 500. Nothing was run.');
   });
 
   it('a fleetFilter selector resolves in the run org at the cap, and no other resolver is consulted', async () => {

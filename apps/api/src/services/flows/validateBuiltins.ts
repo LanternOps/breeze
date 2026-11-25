@@ -29,6 +29,7 @@ import {
   type FlowIssue,
 } from '@breeze/shared';
 import { checkGuardrails } from '../aiGuardrails';
+import { FilterQueryTimeoutError } from '../filterEngine';
 import { fleetFilterRefusedFieldsPresent } from '../fleetFilter';
 import { isChannelMessageType } from '../notificationSenders/channelMessageTypes';
 import { guardrailCheckForTenantTool } from '../toolSources/guardrails';
@@ -42,7 +43,7 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
-import { judgeFleetFilterGroup } from './fleetFilterGroupGate';
+import { judgeFleetFilterGroup, type FleetFilterGroupVerdict } from './fleetFilterGroupGate';
 import {
   findOwnedDeviceGroupIds,
   findOwnedDeviceGroups,
@@ -295,7 +296,13 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
 }
 
 async function fleetFilterGroupIssues(orgId: string, ref: FleetReference, at: { stepId: string; pointer: string }): Promise<FlowIssue[]> {
-  const { verdict } = await judgeFleetFilterGroup(orgId, ref.value as string, (ids) => findOwnedDeviceGroups(orgId, ids));
+  let verdict: FleetFilterGroupVerdict['verdict'];
+  try {
+    ({ verdict } = await judgeFleetFilterGroup(orgId, ref.value as string, (ids) => findOwnedDeviceGroups(orgId, ids)));
+  } catch (error) {
+    if (!(error instanceof FilterQueryTimeoutError)) throw error;
+    return [issue('input_invalid', 'This device group could not be checked in time. Try again, or name the devices or another filter field.', at)];
+  }
   if (verdict === 'missing') return [issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at)];
   return verdict === 'ok'
     ? []

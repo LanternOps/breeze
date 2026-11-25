@@ -2,7 +2,7 @@
  * Integration test — #12418 W02: a device group named by `fleetFilter.groupId`
  * is resolved from the group's definition, against real Postgres as the
  * unprivileged `breeze_app` role. Who is in a group: the device ids a fleet
- * step resolves; nothing about the group's rows is asserted.
+ * step resolves; nothing else is asserted.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -25,6 +25,7 @@ vi.mock('../../services/flows/fleetFilterGroupGate', async (orig) => {
 });
 
 import { deviceGroupMemberships, deviceGroups, devices, groupMembershipLog } from '../../db/schema';
+import { GROUP_CHECK_TIMEOUT_PROBLEM } from '../../services/flows/builtins/fleetTargets';
 import { resolveFleetSelection, type RunScriptOnTargetsInput } from '../../services/flows/builtins/runScriptOnTargets';
 import type { BuiltinContext } from '../../services/flows/builtins/types';
 import { validateBuiltinStep } from '../../services/flows/validateBuiltins';
@@ -154,7 +155,7 @@ describe('a group named by a fleetFilter resolves from its definition (#12418 W0
     }
   });
 
-  runDb('a static group with a member whose pin was withdrawn is refused until the device is added again', async () => {
+  runDb('a static group member counts as added by hand from its latest add', async () => {
     const g = await group({ type: 'static' });
     await member(g, win1);
     const log = () => getTestDb().insert(groupMembershipLog).values({ groupId: g, deviceId: win1, orgId, action: 'added', reason: 'pinned' });
@@ -180,6 +181,32 @@ describe('a group named by a fleetFilter resolves from its definition (#12418 W0
       rule('lastSeenAt', 'after', 1700000000000), rule('lastSeenAt', 'after', { amount: 7, unit: 'days' })]) {
       expect(await resolve(await group({ filterConditions: all(bad) })), JSON.stringify(bad)).toEqual(refused);
     }
+  });
+
+  runDb('a group check that outruns the statement bound is refused at save and at resolve, and leaves nothing behind', async () => {
+    const g = await group({ type: 'static' });
+    await member(g, win1);
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => { locked = r; });
+    const holder = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`LOCK TABLE group_membership_log IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await Promise.race([released, new Promise((r) => setTimeout(r, 4_000))]);
+    });
+    await Promise.race([isLocked, holder]);
+    const started = Date.now();
+    try {
+      expect(await resolve(g)).toMatchObject({ kind: 'outcome', outcome: { code: 'targets_unresolvable', message: GROUP_CHECK_TIMEOUT_PROBLEM } });
+      expect(await saveIssues(g)).toEqual(['input_invalid']);
+    } finally {
+      release();
+      await holder;
+    }
+    expect(Date.now() - started).toBeLessThan(3_500);
+    expect(await resolve(g)).toEqual(set(win1));
+    expect(await saveIssues(g)).toEqual([]);
   });
 
   runDb('the group rows and the devices are read in one snapshot, in the run org\'s own context', async () => {

@@ -11,6 +11,7 @@ vi.mock('./ownedReferences', () => ({
 import type { FlowIssue } from '@breeze/shared';
 import type { TenantToolDescriptor } from '../toolSources/resolver';
 import type { FlowCatalog, FlowCatalogEntry } from './catalog';
+import { FilterQueryTimeoutError } from '../filterEngine';
 import { findOwnedDeviceGroupIds, findOwnedDeviceGroups, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
 import { builtinStepTier, fleetBuiltinReferences, validateBuiltinStep, validateNoticesChannel } from './validateBuiltins';
 
@@ -240,6 +241,13 @@ describe('validateBuiltinStep', () => {
       it('a group that stops being owned between the two reads is reference_not_owned, never accepted', async () => {
         vi.mocked(findOwnedDeviceGroups).mockResolvedValue([]);
         expect(await issuesFor({ groupId: GROUP })).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
+      });
+
+      it('a group that cannot be checked in time is an issue; any other failure propagates', async () => {
+        vi.mocked(findOwnedDeviceGroups).mockRejectedValueOnce(new FilterQueryTimeoutError());
+        expect((await issuesFor({ groupId: GROUP })).map((i) => [i.code, i.pointer])).toEqual([['input_invalid', '/steps/0/input/fleetFilter/groupId']]);
+        vi.mocked(findOwnedDeviceGroups).mockRejectedValueOnce(new Error('connection lost'));
+        await expect(issuesFor({ groupId: GROUP })).rejects.toThrow('connection lost');
       });
 
       it('a partner-wide flow cannot name a group in fleetFilter', async () => {

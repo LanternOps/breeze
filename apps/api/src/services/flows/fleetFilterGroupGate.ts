@@ -205,9 +205,9 @@ export async function loadGatedGroups(executor: Pick<typeof db, 'select' | 'sele
     .selectDistinct({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(and(inStaticGroup, ne(deviceGroupMemberships.addedBy, 'manual')));
-  // A withdrawn pin is not an add by hand; the log tells the two apart. A join,
+  // The log tells an add by hand from a member kept for another reason. A join,
   // so the log (no index on its group) is read once.
-  const withdrawnPin = await executor
+  const notByHand = await executor
     .selectDistinct({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .innerJoin(groupMembershipLog, and(
@@ -222,6 +222,6 @@ export async function loadGatedGroups(executor: Pick<typeof db, 'select' | 'sele
       eq(groupMembershipLog.orgId, orgId),
       eq(groupMembershipLog.reason, 'pinned'),
     ));
-  const withRuleMembers = new Set([...ruleAdded, ...withdrawnPin].map((r) => r.groupId));
+  const withRuleMembers = new Set([...ruleAdded, ...notByHand].map((r) => r.groupId));
   return rows.map((r) => ({ ...r, hasRuleMembers: withRuleMembers.has(r.id) }));
 }
