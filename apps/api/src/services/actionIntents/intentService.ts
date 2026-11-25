@@ -656,10 +656,11 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
           : 'Installs the selected patches on the selected devices. Devices may restart to finish installing.';
       case 'scan':
         return `Scans ${deviceCount ?? 'the selected devices'} for missing patches. Nothing is installed.`;
-      // The handler records one pending patch_rollbacks row for deviceIds[0]
-      // and queues no command, so no uninstall or restart is claimed.
+      // The handler queues rollback_patches on every listed device that has
+      // the patch installed (#12492); the agent runs it through the install
+      // path, which may restart the device.
       case 'rollback':
-        return `Records a rollback request for the patch on one device${Array.isArray(input.deviceIds) && input.deviceIds.length > 1 ? ' (the first listed)' : ''}. Nothing is uninstalled or restarted now.`;
+        return `Uninstalls the patch from ${deviceCount ?? 'the selected devices'}. Devices that do not have it installed are skipped. ${oneDevice ? 'The device' : 'Devices'} may restart to finish uninstalling.`;
       // Approval status is partner-wide unless `ringId` names one update ring:
       // the handler upserts patch_approvals with that ring, or null
       // (aiToolsFleet.ts). bulk_approve always writes null; decline with

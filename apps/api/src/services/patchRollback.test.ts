@@ -78,4 +78,28 @@ describe('queuePatchRollbacks (#12492)', () => {
       { deviceId: 'dev-c', error: 'Rollback command was not queued' },
     ]);
   });
+
+  it('queues one device at a time, never two queue calls in flight on the shared transaction', async () => {
+    patchLookup([PATCH_ROW]);
+    mockSelect.mockReturnValueOnce({
+      from: () => ({
+        leftJoin: () => ({
+          where: () => Promise.resolve(['dev-a', 'dev-b', 'dev-c'].map((id) => ({ ...device(id), observationId: `dp-${id}` }))),
+        }),
+      }),
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const queue = vi.fn(async (d: { id: string }) => {
+      maxInFlight = Math.max(maxInFlight, ++inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight--;
+      return { command: { id: `cmd-${d.id}`, status: 'sent' } };
+    });
+
+    const result = await queuePatchRollbacks(input(queue));
+
+    expect(maxInFlight).toBe(1);
+    expect(result!.queued.map((entry) => entry.deviceId)).toEqual(['dev-a', 'dev-b', 'dev-c']);
+  });
 });

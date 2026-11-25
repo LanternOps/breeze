@@ -97,28 +97,26 @@ export async function queuePatchRollbacks(input: {
     .map((device) => device.id);
 
   const payload = { patchIds: [id], patches: [patch], reason };
-  const results = await Promise.all(
-    accessibleDevices.map(async (device): Promise<QueueCommandForExecutionResult> => {
-      try {
-        return await queue(device, CommandTypes.ROLLBACK_PATCHES, payload);
-      } catch {
-        // A thrown database error aborts the caller's transaction, so the
-        // insert below then throws too and nothing is reported as queued.
-        return {};
-      }
-    })
-  );
-
   const queued: Array<{ deviceId: string; commandId: string; commandStatus: string }> = [];
   const failed: Array<{ deviceId: string; error: string }> = [];
-  results.forEach((result, i) => {
-    const deviceId = accessibleDevices[i]!.id;
-    if (result.command) {
-      queued.push({ deviceId, commandId: result.command.id, commandStatus: result.command.status });
-    } else {
-      failed.push({ deviceId, error: result.error ?? 'Rollback command was not queued' });
+  // One device at a time: every queue call shares the caller's transaction,
+  // and a failed push opens a savepoint that must not run beside a sibling's
+  // statements (docs/agents/tenancy-rls.md).
+  for (const device of accessibleDevices) {
+    let result: QueueCommandForExecutionResult;
+    try {
+      result = await queue(device, CommandTypes.ROLLBACK_PATCHES, payload);
+    } catch {
+      // A thrown database error aborts the caller's transaction, so the
+      // insert below then throws too and nothing is reported as queued.
+      result = {};
     }
-  });
+    if (result.command) {
+      queued.push({ deviceId: device.id, commandId: result.command.id, commandStatus: result.command.status });
+    } else {
+      failed.push({ deviceId: device.id, error: result.error ?? 'Rollback command was not queued' });
+    }
+  }
 
   if (queued.length > 0) {
     await db

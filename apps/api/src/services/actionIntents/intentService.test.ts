@@ -3466,20 +3466,20 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Scans 2 devices for missing patches. Nothing is installed.',
     },
     {
-      // The handler inserts one pending patch_rollbacks row for deviceIds[0]
-      // and queues no command (aiToolsFleet.ts): no uninstall, no restart.
-      name: 'manage_patches rollback records a request for one device and claims no uninstall',
+      // The handler queues rollback_patches on each listed device that has the
+      // patch installed (#12492): an uninstall that may restart the device.
+      name: 'manage_patches rollback on one device says it uninstalls and may restart',
       toolName: 'manage_patches',
       input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1'] },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Records a rollback request for the patch on one device. Nothing is uninstalled or restarted now.',
+      expected: 'Uninstalls the patch from 1 device. Devices that do not have it installed are skipped. The device may restart to finish uninstalling.',
     },
     {
-      name: 'manage_patches rollback on several devices names the one device the handler uses',
+      name: 'manage_patches rollback on several devices counts every listed device',
       toolName: 'manage_patches',
       input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1', 'd2'] },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Records a rollback request for the patch on one device (the first listed). Nothing is uninstalled or restarted now.',
+      expected: 'Uninstalls the patch from 2 devices. Devices that do not have it installed are skipped. Devices may restart to finish uninstalling.',
     },
     {
       // Approvals are partner-wide unless a ringId names one update ring
