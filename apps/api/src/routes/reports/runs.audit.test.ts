@@ -8,12 +8,14 @@ const {
   selectRows,
   rowsToCsvMock,
   rowsToXlsxMock,
+  loadBrandingMock,
 } = vi.hoisted(() => ({
   auditSensitiveReadMock: vi.fn(),
   getReportRunMock: vi.fn(),
   selectRows: [] as unknown[][],
   rowsToCsvMock: vi.fn((_type: unknown, rows: unknown[]) => `csv:${JSON.stringify(rows)}`),
   rowsToXlsxMock: vi.fn(),
+  loadBrandingMock: vi.fn(),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -133,6 +135,12 @@ vi.mock('@breeze/shared', async (importOriginal) => {
   };
 });
 
+// #12048: the PDF download carries the run's org branding; the loader's RLS
+// behaviour is proven in reportBrandingPartnerVisibility.integration.test.ts.
+vi.mock('../../services/reportBranding', () => ({
+  loadReportBrandingForOrg: loadBrandingMock,
+}));
+
 vi.mock('../../services/sensitiveReadAudit', () => ({
   auditSensitiveRead: auditSensitiveReadMock,
 }));
@@ -170,6 +178,8 @@ describe('report run sensitive-read audit', () => {
     vi.clearAllMocks();
     selectRows.length = 0;
     getReportRunMock.mockResolvedValue(runAccess());
+    loadBrandingMock.mockReset();
+    loadBrandingMock.mockResolvedValue(null);
     rowsToCsvMock.mockImplementation((_type: unknown, rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
   });
 
@@ -560,5 +570,69 @@ describe('report run sensitive-read audit', () => {
 
     expect(res.status).toBe(200);
     expect(rowsToCsvMock).toHaveBeenCalledWith('ticket_sla_performance', rows);
+  });
+});
+
+describe('PDF download branding for org-scoped staff (#12048)', () => {
+  const branding = { name: 'Example MSP', logoDataUrl: 'data:image/png;base64,AAAA', logoAspect: 4, pageSize: 'letter' };
+  const pdfRow = (format = 'pdf') => ({
+    id: RUN_ID, orgId: ORG_ID, status: 'completed',
+    result: { rows: [{ hostname: 'pc-1' }], rowCount: 1 },
+    reportType: 'device_inventory', reportName: 'Inventory', reportFormat: format,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectRows.length = 0;
+    getReportRunMock.mockResolvedValue(runAccess());
+    loadBrandingMock.mockReset();
+  });
+
+  it("attaches the run org's branding, resolved from the access-checked row's org", async () => {
+    loadBrandingMock.mockResolvedValue(branding);
+    selectRows.push([pdfRow()]);
+    const res = await app().request(`/reports/runs/${RUN_ID}/download`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.branding).toEqual(branding);
+    expect(loadBrandingMock).toHaveBeenCalledExactlyOnceWith(ORG_ID);
+  });
+
+  it('never loads branding for a run the caller cannot access', async () => {
+    getReportRunMock.mockResolvedValueOnce(null);
+    const res = await app().request(`/reports/runs/${RUN_ID}/download`);
+    expect(res.status).toBe(404);
+    expect(loadBrandingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not take the org from the request', async () => {
+    loadBrandingMock.mockResolvedValue(branding);
+    selectRows.push([pdfRow()]);
+    await app().request(`/reports/runs/${RUN_ID}/download?orgId=99999999-9999-4999-8999-999999999999`);
+    expect(loadBrandingMock).toHaveBeenCalledExactlyOnceWith(ORG_ID);
+  });
+
+  it('omits branding on JSON downloads and for a partner-owned report (no org)', async () => {
+    loadBrandingMock.mockResolvedValue(branding);
+    selectRows.push([pdfRow('json')]);
+    expect((await (await app().request(`/reports/runs/${RUN_ID}/download`)).json()).branding).toBeUndefined();
+    selectRows.push([{ ...pdfRow(), orgId: null }]);
+    expect((await (await app().request(`/reports/runs/${RUN_ID}/download`)).json()).branding).toBeUndefined();
+    expect(loadBrandingMock).not.toHaveBeenCalled();
+  });
+
+  it('exports unbranded, and still succeeds, when the loader throws or finds no partner', async () => {
+    loadBrandingMock.mockRejectedValueOnce(new Error('db down'));
+    selectRows.push([pdfRow()]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const failed = await app().request(`/reports/runs/${RUN_ID}/download`);
+    expect(failed.status).toBe(200);
+    expect((await failed.json()).branding).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('branding'), expect.objectContaining({ runId: RUN_ID }));
+    warn.mockRestore();
+
+    loadBrandingMock.mockResolvedValueOnce({ name: null, logoDataUrl: null, logoAspect: null });
+    selectRows.push([pdfRow()]);
+    expect((await (await app().request(`/reports/runs/${RUN_ID}/download`)).json()).branding).toBeUndefined();
   });
 });
