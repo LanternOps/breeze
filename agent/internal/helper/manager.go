@@ -55,6 +55,9 @@ type Config struct {
 	// Branding is the persisted runtime branding (OD3); omitted when unset so
 	// an unbranded config is byte-identical to before.
 	Branding *Branding `yaml:"branding,omitempty"`
+	// Locale is the catalog locale of this user session (OD1). Omitted when
+	// unknown, so the Helper falls back to its own OS UI language.
+	Locale string `yaml:"locale,omitempty"`
 }
 
 // SpawnFunc launches a helper in the given session with extra CLI args.
@@ -195,8 +198,10 @@ type Manager struct {
 	ctx               context.Context
 	spawnFunc         SpawnFunc
 	sessionEnumerator SessionEnumerator
-	sessions          map[string]*sessionState
-	isOurProcessFunc  func(pid int, binaryPath string) bool
+	// sessionLocale is the per-session UI language source (OD1); nil writes no locale.
+	sessionLocale    SessionLocaleProbe
+	sessions         map[string]*sessionState
+	isOurProcessFunc func(pid int, binaryPath string) bool
 	// stopIfOursFunc terminates a helper by PID only after confirming, on the
 	// SAME OS process handle it kills with, that the PID is a Breeze helper.
 	// This is the single-handle check-and-terminate that closes the PID-reuse
@@ -513,6 +518,7 @@ func (m *Manager) Apply(settings *Settings) {
 			// Each session keeps its own branding, read from its own file so a
 			// missing decision keeps the last-known value across restarts.
 			cfg := m.sessionConfig(state, baseCfg, settings.Branding)
+			cfg.Locale = resolveSessionLocale(si, m.sessionLocale)
 			if !state.configUnchanged(cfg) {
 				if err := m.writeSessionConfig(state, cfg, si); err != nil {
 					log.Error("failed to write per-session config", "session", si.Key, "error", err.Error())
@@ -522,6 +528,7 @@ func (m *Manager) Apply(settings *Settings) {
 					// The legacy file is shared by all sessions, so it carries no branding.
 					legacyCfg := *cfg
 					legacyCfg.Branding = nil
+					legacyCfg.Locale = ""
 					if err := m.writeLegacyConfig(&legacyCfg); err != nil {
 						log.Warn("failed to write legacy helper config fallback", "error", err.Error())
 					}

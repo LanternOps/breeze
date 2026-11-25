@@ -126,6 +126,7 @@ func (s *sessionState) configUnchanged(cfg *Config) bool {
 		s.lastConfig.DeviceName == cfg.DeviceName &&
 		s.lastConfig.DeviceStatus == cfg.DeviceStatus &&
 		s.lastConfig.LastCheckin == cfg.LastCheckin &&
+		s.lastConfig.Locale == cfg.Locale &&
 		brandingEqual(s.lastConfig.Branding, cfg.Branding)
 }
 
