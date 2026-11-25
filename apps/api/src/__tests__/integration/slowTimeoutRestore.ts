@@ -5,7 +5,7 @@ import { getTestDb } from './setup';
 interface Executor { execute: (query: SQL) => PromiseLike<unknown> }
 
 /**
- * Makes the NEXT unqualified `set_config` on a transaction take 2 s, so the
+ * Makes every later unqualified `set_config` on a transaction take 2 s, so the
  * statement that restores `statement_timeout` outruns the limit in force and
  * Postgres itself cancels it (#12656). Call `slow` inside the bounded callback,
  * after its last read: it puts a schema holding a slow `set_config` ahead of

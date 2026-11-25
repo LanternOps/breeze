@@ -330,7 +330,7 @@ describe('get_fleet_device_stats typed filter against real Postgres (#12418 W01)
 
   runDb('groupBy keeps the 50 largest groups after merging empty with unknown, breaks ties by byte order and sums the rest', async () => {
     const version = (agentVersion: string) => seedDevice({ orgId: f.orgA, siteId: f.s2, name: 'v', extra: { agentVersion } });
-    // Two each, so every one of these ranks by count; '' and 'unknown' reach three only once merged.
+    // Two '' and one 'unknown': merged before ranking they are one group of three.
     for (const v of ['', '', 'unknown']) await version(v);
     // 60 singles: byte order puts every upper-case key before every lower-case one.
     const singles = (prefix: string) => Array.from({ length: 30 }, (_, i) => `${prefix}${String(i).padStart(2, '0')}`);

@@ -775,7 +775,7 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     expectTimeoutWrappedQuery();
   });
 
-  // #12656. A throw rolls the savepoint back, and that reverts the limit (held
+  // #12656. A throw rolls `tx` back, and that reverts the limit (held
   // against real Postgres in aiToolsFleetDeviceStatsFilter.integration.test.ts).
   // A restore statement there could itself fail and replace the real error.
   it('sends nothing more after a query error, so the error is the one reported', async () => {
