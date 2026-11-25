@@ -6,17 +6,20 @@ const m = vi.hoisted(() => ({
   loadScript: vi.fn(),
   resolve: vi.fn(),
   inRunOrg: vi.fn(),
+  filterOnce: vi.fn(),
   stepOutput: vi.fn(),
   dispatch: vi.fn(),
   scope: vi.fn(),
 }));
 
-vi.mock('./fleetTargets', () => ({ resolveTargetsOnce: m.resolve, resolveDeviceIdsInRunOrg: m.inRunOrg }));
+vi.mock('./fleetTargets', () => ({ resolveTargetsOnce: m.resolve, resolveDeviceIdsInRunOrg: m.inRunOrg, resolveFleetFilterOnce: m.filterOnce }));
 vi.mock('./stepOutputs', () => ({ loadFleetStepOutput: m.stepOutput }));
 vi.mock('./fleetScripts', () => ({ loadOwnedScriptForRun: m.loadScript, loadRunVariableScope: m.scope }));
 vi.mock('../../scriptFleetDispatch', () => ({ dispatchScriptToDevices: m.dispatch }));
 
-import { executeRunScriptOnTargets, type RunScriptOnTargetsInput } from './runScriptOnTargets';
+import { FLEET_MAX_TARGETS } from '@breeze/shared';
+import { aiCeilingMessage, executeRunScriptOnTargets, fleetSelectorName, resolveFleetSelection, type RunScriptOnTargetsInput } from './runScriptOnTargets';
+import { overCapMessage } from './resolveTargets';
 import type { BuiltinContext } from './types';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -45,7 +48,7 @@ function dispatchAll(outcome: (deviceId: string) => string = () => 'dispatched')
 }
 
 beforeEach(() => {
-  for (const k of ['loadScript', 'resolve', 'inRunOrg', 'stepOutput', 'dispatch', 'scope'] as const) m[k].mockReset();
+  for (const k of ['loadScript', 'resolve', 'inRunOrg', 'filterOnce', 'stepOutput', 'dispatch', 'scope'] as const) m[k].mockReset();
   m.loadScript.mockResolvedValue(script);
   m.scope.mockResolvedValue(undefined);
   dispatchAll();
@@ -177,5 +180,90 @@ describe('executeRunScriptOnTargets', () => {
     const out = await executeRunScriptOnTargets({ ...base, conditions: [] } as RunScriptOnTargetsInput, ctx);
     const bytes = Buffer.byteLength(JSON.stringify((out as { output: unknown }).output), 'utf8');
     expect(bytes).toBeLessThan(64 * 1024);
+  });
+});
+
+// ── #12418 W02: the typed fleetFilter selector and the per-run ceiling ──
+describe('resolveFleetSelection', () => {
+  const range = (n: number) => Array.from({ length: n }, (_, i) => id(i + 1));
+  const FILTER = { osType: 'windows' as const, pendingPatches: true };
+
+  /** Arrange `n` devices behind each selector; returns the step input that names them. */
+  const SELECTORS: Record<string, (n: number) => Partial<RunScriptOnTargetsInput>> = {
+    fleetFilter: (n) => {
+      // As fleetTargets.ts answers it: above the limit the count is exact and the ids are empty.
+      m.filterOnce.mockImplementation(async (_run: unknown, _filter: unknown, limit: number) => ({ count: n, deviceIds: n <= limit ? range(n) : [], problems: [] }));
+      return { fleetFilter: FILTER };
+    },
+    deviceIds: (n) => { m.inRunOrg.mockResolvedValue(devs(range(n))); return { deviceIds: range(n) }; },
+    fromStep: (n) => {
+      m.stepOutput.mockResolvedValue({ succeededDeviceIds: range(n), dispatchedDeviceIds: range(n), failedDeviceIds: [] });
+      m.inRunOrg.mockResolvedValue(devs(range(n)));
+      return { fromStep: { stepId: 'a0', set: 'succeeded' } };
+    },
+    target: (n) => { m.resolve.mockResolvedValue({ deviceIds: range(n), devices: devs(range(n)), warnings: [], problems: [] }); return { target: { type: 'all' } as never }; },
+    conditions: (n) => { m.resolve.mockResolvedValue({ deviceIds: range(n), devices: devs(range(n)), warnings: [], problems: [] }); return { conditions: [] }; },
+  };
+  const NAMES = Object.keys(SELECTORS);
+  const select = (sel: Partial<RunScriptOnTargetsInput>, opts?: { maxTargets?: number }) =>
+    resolveFleetSelection({ ...base, ...sel } as RunScriptOnTargetsInput, ctx, undefined, opts);
+
+  it.each(NAMES)('maxTargets 10 refuses 11 via %s with ceiling 10 in output, naming the count; 10 resolves', async (name) => {
+    const refused = await select(SELECTORS[name]!(11), { maxTargets: 10 });
+    expect(refused).toEqual({ kind: 'outcome', outcome: {
+      kind: 'failed', code: 'targets_over_cap', policy: true, message: aiCeilingMessage(11),
+      output: { resolvedCount: 11, ceiling: 10, selectorKind: name },
+    } });
+    const ok = await select(SELECTORS[name]!(10), { maxTargets: 10 });
+    expect(ok).toMatchObject({ kind: 'set', requested: range(10), found: range(10) });
+  });
+
+  it.each(NAMES)('without a maxTargets, %s keeps FLEET_MAX_TARGETS and its message (501 refused, 500 resolves)', async (name) => {
+    expect(await select(SELECTORS[name]!(501))).toEqual({ kind: 'outcome', outcome: {
+      kind: 'failed', code: 'targets_over_cap', policy: true, message: overCapMessage(501),
+      output: { resolvedCount: 501, ceiling: FLEET_MAX_TARGETS, selectorKind: name },
+    } });
+    expect(FLEET_MAX_TARGETS).toBe(500);
+    expect(await select(SELECTORS[name]!(500))).toMatchObject({ kind: 'set' });
+  });
+
+  it('the AI message is the exact copy', () => {
+    expect(aiCeilingMessage(11)).toBe('The selection resolved to 11 devices; a run started by the AI assistant may target at most 10. Narrow the filter or name the devices. Nothing was run.');
+  });
+
+  it('a fleetFilter selector resolves in the run org at the cap, and no other resolver is consulted', async () => {
+    await select(SELECTORS.fleetFilter!(3), { maxTargets: 10 });
+    expect(m.filterOnce).toHaveBeenCalledExactlyOnceWith({ orgId: ORG, partnerId: PARTNER }, FILTER, 10);
+    expect(m.resolve).not.toHaveBeenCalled();
+    expect(m.inRunOrg).not.toHaveBeenCalled();
+    await select(SELECTORS.fleetFilter!(3));
+    expect(m.filterOnce).toHaveBeenLastCalledWith(expect.anything(), FILTER, FLEET_MAX_TARGETS);
+  });
+
+  it('requested equals found for a fleetFilter set, sorted', async () => {
+    m.filterOnce.mockResolvedValue({ count: 2, deviceIds: [id(2), id(1)], problems: [] });
+    expect(await select({ fleetFilter: FILTER })).toEqual({ kind: 'set', requested: [id(1), id(2)], found: [id(1), id(2)], warnings: [] });
+  });
+
+  it('a fleetFilter problem is targets_unresolvable, never an empty set', async () => {
+    m.filterOnce.mockResolvedValue({ count: 0, deviceIds: [], problems: ['p1'] });
+    expect(await select({ fleetFilter: FILTER })).toEqual({ kind: 'outcome', outcome: { kind: 'failed', code: 'targets_unresolvable', message: 'p1', policy: true } });
+  });
+
+  it('an input with no selector is refused: it never falls back to an empty condition list', async () => {
+    expect(await select({})).toMatchObject({ kind: 'outcome', outcome: { kind: 'failed', code: 'targets_unresolvable', policy: true } });
+    expect(m.resolve).not.toHaveBeenCalled();
+    expect(m.filterOnce).not.toHaveBeenCalled();
+  });
+
+  it('a verified (released) set is not re-resolved and keeps FLEET_MAX_TARGETS', async () => {
+    m.inRunOrg.mockResolvedValue(devs(range(11)));
+    const out = await resolveFleetSelection({ ...base, deviceIds: range(11) } as RunScriptOnTargetsInput, ctx, { script, deviceIds: range(11) });
+    expect(out).toMatchObject({ kind: 'set', requested: range(11) });
+    expect(m.filterOnce).not.toHaveBeenCalled();
+  });
+
+  it.each(NAMES)('fleetSelectorName names %s', (name) => {
+    expect(fleetSelectorName({ ...base, ...SELECTORS[name]!(1) } as RunScriptOnTargetsInput)).toBe(name);
   });
 });

@@ -5,8 +5,8 @@
  * guarantees (services/scriptFleetDispatch.ts).
  *
  * Selectors: a target, a legacy condition array, a literal / templated device
- * list (`['{{trigger.device.id}}']`), or an earlier fleet step's set
- * (`fromStep`). On release (an approved parked step) the release worker hands
+ * list (`['{{trigger.device.id}}']`), an earlier fleet step's set
+ * (`fromStep`), or the typed `fleetFilter` (#12418). On release (an approved parked step) the release worker hands
  * the VERIFIED context — the script snapshot it re-checked and the device list
  * frozen at intent creation — and exactly those devices are dispatched; no
  * selector is re-resolved.
@@ -27,13 +27,15 @@
 import {
   FLEET_MAX_TARGETS,
   type DeploymentTargetConfig,
+  type FleetFilter,
   type FlowFleetStepOutput,
   type FlowValue,
   type LegacyCondition,
 } from '@breeze/shared';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from '../../actionIntents/runScriptLimits';
 import { dispatchScriptToDevices } from '../../scriptFleetDispatch';
 import type { StepOutcome } from '../stepExecutor';
-import { resolveDeviceIdsInRunOrg, resolveTargetsOnce } from './fleetTargets';
+import { resolveDeviceIdsInRunOrg, resolveFleetFilterOnce, resolveTargetsOnce } from './fleetTargets';
 import { loadOwnedScriptForRun, loadRunVariableScope, type FleetScriptRow } from './fleetScripts';
 import { overCapMessage } from './resolveTargets';
 import { loadFleetStepOutput } from './stepOutputs';
@@ -49,6 +51,21 @@ export interface RunScriptOnTargetsInput {
   conditions?: LegacyCondition[];
   deviceIds?: string[];
   fromStep?: { stepId: string; set: 'succeeded' | 'dispatched' };
+  fleetFilter?: FleetFilter;
+}
+
+/** The step input key that names the devices (exactly one is set). */
+const FLEET_SELECTORS = ['fleetFilter', 'target', 'conditions', 'deviceIds', 'fromStep'] as const;
+export type FleetSelectorName = (typeof FLEET_SELECTORS)[number];
+
+export function fleetSelectorName(input: RunScriptOnTargetsInput): FleetSelectorName {
+  const name = FLEET_SELECTORS.find((k) => input[k] !== undefined);
+  if (!name) throw new Error('run_script_on_targets step has no selector');
+  return name;
+}
+
+export function aiCeilingMessage(count: number): string {
+  return `The selection resolved to ${count} devices; a run started by the AI assistant may target at most ${RUN_SCRIPT_AI_MAX_DEVICES}. Narrow the filter or name the devices. Nothing was run.`;
 }
 
 /**
@@ -70,16 +87,22 @@ export type FleetSelection =
 
 /**
  * The device set, resolved ONCE in the run org: the verified (frozen) list, a
- * literal/templated device list, an earlier fleet step's set, or a target /
- * legacy condition list through the legacy resolver. `requested` is what the
- * selector named; `found` the run org's devices among them (sorted).
+ * literal/templated device list, an earlier fleet step's set, the typed fleet
+ * filter, or a target / legacy condition list through the legacy resolver.
+ * `requested` is what the selector named; `found` the run org's devices among
+ * them (sorted).
+ *
+ * `maxTargets` (#12418 W02, Decision 12) is the run's ceiling, checked on every
+ * selector. A set above it is refused naming the count, never truncated.
  */
 export async function resolveFleetSelection(
   input: RunScriptOnTargetsInput,
   ctx: BuiltinContext,
   verified?: FleetVerifiedContext,
+  opts: { maxTargets?: number } = {},
 ): Promise<FleetSelection> {
   const run = { orgId: ctx.run.orgId, partnerId: ctx.auth.partnerId! };
+  const cap = opts.maxTargets ?? FLEET_MAX_TARGETS;
   if (verified || input.deviceIds || input.fromStep) {
     let ids: string[];
     if (verified) {
@@ -92,20 +115,45 @@ export async function resolveFleetSelection(
       ids = input.fromStep!.set === 'succeeded' ? sets.succeededDeviceIds : sets.dispatchedDeviceIds;
     }
     const requested = sorted(ids);
-    if (requested.length > FLEET_MAX_TARGETS) return { kind: 'outcome', outcome: policy('targets_over_cap', overCapMessage(requested.length)) };
+    if (requested.length > cap) return overCap(requested.length, cap, input);
     const found = sorted((await resolveDeviceIdsInRunOrg(run, requested)).map((d) => d.id));
     return { kind: 'set', requested, found, warnings: [] };
   }
-  const resolved = await resolveTargetsOnce(run, input.target ? { target: input.target } : { conditions: input.conditions ?? [] });
+  if (input.fleetFilter) {
+    const resolved = await resolveFleetFilterOnce(run, input.fleetFilter, cap);
+    if (resolved.problems.length > 0) return { kind: 'outcome', outcome: policy('targets_unresolvable', resolved.problems.join('; ')) };
+    if (resolved.count > cap) return overCap(resolved.count, cap, input);
+    const set = sorted(resolved.deviceIds);
+    return { kind: 'set', requested: set, found: set, warnings: [] };
+  }
+  if (!input.target && !input.conditions) {
+    // An empty legacy condition list matches every device, so a step with no
+    // selector must never be read as one.
+    return { kind: 'outcome', outcome: policy('targets_unresolvable', 'This step names no devices.') };
+  }
+  const resolved = await resolveTargetsOnce(run, input.target ? { target: input.target } : { conditions: input.conditions! });
   if (resolved.problems.length > 0) return { kind: 'outcome', outcome: policy('targets_unresolvable', resolved.problems.join('; ')) };
   const requested = sorted(resolved.deviceIds);
-  if (requested.length > FLEET_MAX_TARGETS) return { kind: 'outcome', outcome: policy('targets_over_cap', overCapMessage(requested.length)) };
+  if (requested.length > cap) return overCap(requested.length, cap, input);
   return { kind: 'set', requested, found: requested, warnings: resolved.warnings };
 }
 
 const sorted = (ids: Iterable<string>): string[] => [...new Set(ids)].sort();
 
-function policy(code: 'targets_unresolvable' | 'targets_over_cap' | 'reference_not_owned' | 'tool_blocked' | 'binding_drift', message: string): StepOutcome {
+/** The refusal record is durable on the failed step row (`flow_run_steps.output`). */
+function overCap(count: number, cap: number, input: RunScriptOnTargetsInput): FleetSelection {
+  return {
+    kind: 'outcome',
+    outcome: {
+      ...policy('targets_over_cap', cap < FLEET_MAX_TARGETS ? aiCeilingMessage(count) : overCapMessage(count)),
+      output: { resolvedCount: count, ceiling: cap, selectorKind: fleetSelectorName(input) },
+    },
+  };
+}
+
+type PolicyFailure = Extract<StepOutcome, { kind: 'failed' }>;
+
+function policy(code: 'targets_unresolvable' | 'targets_over_cap' | 'reference_not_owned' | 'tool_blocked' | 'binding_drift', message: string): PolicyFailure {
   return { kind: 'failed', code, message, policy: true };
 }
 
