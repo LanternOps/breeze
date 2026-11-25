@@ -109,6 +109,8 @@ vi.mock('../services/aiTools', () => ({
   executeTool: (...a: any[]) => mocks.executeTool(...a),
   getToolTier: (...a: any[]) => mocks.getToolTier(...a),
   getToolDomain: (...a: any[]) => mocks.getToolDomain(...a),
+  // #12427: search_tools reads hints; the fixture tools have none.
+  getToolSearchHint: () => undefined,
 }));
 
 vi.mock('../services/aiGuardrails', async (importOriginal) => ({
@@ -211,7 +213,7 @@ function toolDefinitions() {
 // Requests
 // ---------------------------------------------------------------------------
 
-type Case = { label: string; method: string; params?: Record<string, unknown>; stepUp?: boolean };
+type Case = { label: string; method: string; params?: Record<string, unknown>; stepUp?: boolean; headers?: Record<string, string> };
 
 const CASES: Case[] = [
   { label: 'tools/list', method: 'tools/list' },
@@ -223,13 +225,19 @@ const CASES: Case[] = [
   { label: 'resources/read outside the grant', method: 'resources/read', params: { uri: 'breeze://scripts' } },
   { label: 'tools/call unknown tool', method: 'tools/call', params: { name: 'no_such_tool', arguments: {} } },
   { label: 'resources/templates/list', method: 'resources/templates/list' },
+  // #12427: progressive disclosure and the meta-tools are one surface across eras.
+  { label: 'tools/list with Mcp-Tool-List: progressive', method: 'tools/list', headers: { 'Mcp-Tool-List': 'progressive' } },
+  { label: 'tools/call search_tools', method: 'tools/call', params: { name: 'search_tools', arguments: { query: 'alert summary' } } },
+  { label: 'tools/call get_tool_details', method: 'tools/call', params: { name: 'get_tool_details', arguments: { names: ['get_alert_summary', 'list_patches'] } } },
+  { label: 'tools/call call_tool → get_alert_summary', method: 'tools/call', params: { name: 'call_tool', arguments: { name: 'get_alert_summary', arguments: {} } } },
+  { label: 'tools/call call_tool → list_patches (outside the [monitoring] grant)', method: 'tools/call', params: { name: 'call_tool', arguments: { name: 'list_patches', arguments: {} } } },
 ];
 
 function app() {
   return new Hono().route('/mcp', mcpServerRoutes);
 }
 
-async function legacyCall(method: string, params?: Record<string, unknown>, initCapabilities?: Record<string, unknown>) {
+async function legacyCall(method: string, params?: Record<string, unknown>, initCapabilities?: Record<string, unknown>, extraHeaders: Record<string, string> = {}) {
   const init = await app().request('/mcp/sse', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
@@ -246,17 +254,19 @@ async function legacyCall(method: string, params?: Record<string, unknown>, init
       'Content-Type': 'application/json', 'X-API-Key': 'k',
       ...(sid ? { 'Mcp-Session-Id': sid } : {}),
       'MCP-Protocol-Version': '2025-11-25',
+      ...extraHeaders,
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 2, method, ...(params ? { params } : {}) }),
   });
   return capture(res);
 }
 
-async function modernCall(method: string, params?: Record<string, unknown>, clientCapabilities: Record<string, unknown> = {}) {
+async function modernCall(method: string, params?: Record<string, unknown>, clientCapabilities: Record<string, unknown> = {}, extraHeaders: Record<string, string> = {}) {
   mocks.writeAuditEvent.mockClear();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json', 'X-API-Key': 'k',
     'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': method,
+    ...extraHeaders,
   };
   if (method === 'tools/call') headers['Mcp-Name'] = String(params?.name);
   if (method === 'resources/read') headers['Mcp-Name'] = String(params?.uri);
@@ -340,8 +350,8 @@ describe.each(PRINCIPALS)('stateless parity — $label', (principal) => {
 
   it.each(CASES)('$label', async (testCase) => {
     if (testCase.stepUp !== undefined) process.env.MCP_INSUFFICIENT_SCOPE_HTTP_403 = String(testCase.stepUp);
-    const legacy = await legacyCall(testCase.method, testCase.params);
-    const modern = await modernCall(testCase.method, testCase.params);
+    const legacy = await legacyCall(testCase.method, testCase.params, undefined, testCase.headers);
+    const modern = await modernCall(testCase.method, testCase.params, {}, testCase.headers);
 
     expect(modern.body?.error ?? null).toEqual(legacy.body?.error ?? null);
     expect(stripModernDecoration(modern.body?.result)).toEqual(legacy.body?.result);
@@ -556,5 +566,95 @@ describe('cacheable results', () => {
     current = PRINCIPALS[0]!;
     const allAgain = await modernCall('tools/list');
     expect(names(allAgain)).toEqual(names(all));
+  });
+});
+
+// #12427 W01 T8: the deprecated HTTP+SSE transport (`GET /sse` + `POST /message`)
+// is left out of the comparison above by design (its POST answers 202 and the
+// JSON-RPC response arrives on the stream). Here the payload read FROM THE
+// STREAM is compared with the stateless response for the progressive-disclosure
+// cases. Apps `_meta.ui`, Tasks and cache hints differ as documented.
+describe('legacy HTTP+SSE: progressive disclosure parity with the stateless era (#12427)', () => {
+  const SSE_CASES = CASES.filter((c) => c.headers?.['Mcp-Tool-List'] || /search_tools|get_tool_details|call_tool/.test(c.label));
+
+  /** Open GET /sse, POST the request to the announced /message endpoint, read the matching frame. */
+  async function httpSseCall(testCase: Case) {
+    const stream = await app().request('/mcp/sse', { method: 'GET', headers: { 'X-API-Key': 'k' } });
+    expect(stream.status).toBe(200);
+    const reader = stream.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const nextEvent = async (event: string): Promise<string> => {
+      for (;;) {
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          const lines = frame.split('\n');
+          if (lines.includes(`event: ${event}`)) return lines.filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('\n');
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`stream ended before a ${event} event`);
+        buffer += decoder.decode(value, { stream: true });
+      }
+    };
+    try {
+      const endpoint = new URL(await nextEvent('endpoint'));
+      mocks.writeAuditEvent.mockClear();
+      const post = await app().request(`/mcp/message${endpoint.search}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k', ...testCase.headers },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: testCase.method, ...(testCase.params ? { params: testCase.params } : {}) }),
+      });
+      expect(post.status).toBe(202);
+      const payload = JSON.parse(await nextEvent('message'));
+      const auditRows = mocks.writeAuditEvent.mock.calls.map((call) => call[1] as Record<string, any>);
+      return { payload, requestAudit: auditRows.find((r) => r.resourceType === 'mcp_request') };
+    } finally {
+      await reader.cancel();
+    }
+  }
+
+  it('covers the five progressive-disclosure cases', () => {
+    expect(SSE_CASES).toHaveLength(5);
+  });
+
+  describe.each([PRINCIPALS[0]!, PRINCIPALS[1]!, PRINCIPALS[3]!])('$label', (principal) => {
+    beforeEach(() => { current = principal; });
+
+    it.each(SSE_CASES)('$label: the HTTP+SSE stream payload == the stateless response', async (testCase) => {
+      const sse = await httpSseCall(testCase);
+      const modern = await modernCall(testCase.method, testCase.params, {}, testCase.headers);
+      expect(sse.payload.id).toBe(7);
+      expect(modern.body?.error ?? null).toEqual(sse.payload.error ?? null);
+      expect(stripModernDecoration(modern.body?.result)).toEqual(sse.payload.result);
+      expect(omitCorrelation(modern.requestAudit?.details)).toEqual(omitCorrelation(sse.requestAudit?.details));
+    });
+  });
+
+  it('the progressive HTTP+SSE list is the meta-tools plus the intrinsics (nothing else is alwaysLoad in this fixture)', async () => {
+    current = PRINCIPALS[0]!;
+    const sse = await httpSseCall(SSE_CASES[0]!);
+    expect((sse.payload.result.tools as Array<{ name: string }>).map((t) => t.name))
+      .toEqual(['call_tool', 'cancel_action', 'get_action_status', 'get_tool_details', 'search_tools', 'whoami']);
+  });
+});
+
+describe('cache hints in the stateless era (#12427)', () => {
+  beforeEach(() => { current = PRINCIPALS[0]!; });
+
+  it('a progressive tools/list keeps ttlMs 60000 / cacheScope private', async () => {
+    const res = await modernCall('tools/list', undefined, {}, { 'Mcp-Tool-List': 'progressive' });
+    expect(res.body.result).toMatchObject({ ttlMs: 60000, cacheScope: 'private' });
+  });
+
+  it('search_tools and get_tool_details results carry neither', async () => {
+    for (const params of [
+      { name: 'search_tools', arguments: { query: 'alerts' } },
+      { name: 'get_tool_details', arguments: { names: ['get_alert_summary'] } },
+    ]) {
+      const res = await modernCall('tools/call', params);
+      expect(res.body.result).not.toHaveProperty('ttlMs');
+      expect(res.body.result).not.toHaveProperty('cacheScope');
+    }
   });
 });

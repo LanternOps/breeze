@@ -672,17 +672,65 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 This release stops using the old `entra_oid` and `entra_tenant_id` columns on portal logins; Microsoft sign-in links have lived in the identities table since v0.128.0. On start, one migration copies across any link that was never moved. The API log shows `final backfill inserted N identit(ies)` when it copied something, or `inserted 0 identities` when it did not. A later release drops the old columns.
 
-**The API can refuse to start at this migration.** This happens only when a portal login holds an old Microsoft link that no identity reserves, and the login is already linked to a different Microsoft account. The migration does not guess which one is right. The start log shows `portal identity final backfill refused`, and nothing is changed. To fix it:
+**The API can refuse to start at this migration.** This happens only when a portal login holds an old Microsoft link that no identity reserves, and the login is already linked to a different Microsoft account. The migration does not guess which one is right. The start log shows `portal identity final backfill refused`, and nothing is changed. The migration retries at every start, so the API keeps failing until you repair the rows. To fix it:
 
 <Steps>
-1. Run `apps/api/migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql` against the database. It is read-only. Query `blocking_unreserved_pairs` lists the logins concerned.
-2. For each login, decide which Microsoft account should own it:
-   - If the old link should be free to sign in later as a new login, set that row's `entra_oid` and `entra_tenant_id` to `NULL`.
-   - If the old link is the right owner, point the login's Microsoft row in `portal_user_identities` at it. Set `subject` to `entra_oid`, and set `entra_tenant_id` and the issuer from the old `entra_tenant_id`.
+1. Copy the read-only preflight out of the API image. It lives at `./migrations/preflight/` relative to the API image's working directory, not in your install directory. A one-off container reads it even while the API keeps crashing:
+
+   ```bash
+   dc run --rm --no-deps -T --entrypoint cat api ./migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql > portal-entra-preflight.sql
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < portal-entra-preflight.sql
+   ```
+
+   (`dc` stands for `docker compose -f docker-compose.yml --env-file .env`, as in [PostgreSQL 16 to 18](#postgresql-16-to-18).) `psql` does not print the query names. The file prints a one-row `set_config` result, then six result sets in the order `sanity`, `schema_state`, `drift_counts`, `drift_samples`, `blocking_unreserved_pairs` and `fence_writes`. Find `blocking_unreserved_pairs` by its columns, `portal_user_id | org_id | current_identity_id`: it lists every login that blocks the migration. If `sanity` shows `portal_users` of `0` on an install that has portal users, the connection is blind: do not read an empty list as clean. The output names portal user and organization ids, so keep it out of tickets and public issues.
+
+2. For each listed login, decide which Microsoft account should own it, and pick one repair:
+   - **The old link may sign in later as a new login.** Clear it on the login.
+   - **The old link is the right owner.** Point the login's Microsoft row in `portal_user_identities` at it. This sets `subject` to `entra_oid`, and `entra_tenant_id` and the issuer from the old `entra_tenant_id`.
 
    Disabling the portal login does not clear the refusal.
-3. Restart the API. The migration runs again.
+
+3. Run the repair in one transaction. **Keep the first statement after `BEGIN`.** The portal tables force row-level security, so a database role that is subject to it and has not elected system scope sees no rows: without that line its `UPDATE` matches zero rows, reports `UPDATE 0`, and the migration refuses again at the next start. A superuser role bypasses row-level security and is unaffected, but keep the line anyway. Replace the placeholder with one `portal_user_id` per run, and keep only the repair you chose:
+
+   ```bash
+   dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+   BEGIN;
+   SELECT set_config('breeze.scope', 'system', true);
+
+   -- Repair A: free the old link
+   UPDATE portal_users
+      SET entra_oid = NULL, entra_tenant_id = NULL
+    WHERE id = '<portal_user_id>';
+
+   -- Repair B: make the old link the login's identity
+   UPDATE portal_user_identities i
+      SET subject = pu.entra_oid,
+          entra_tenant_id = pu.entra_tenant_id,
+          issuer = 'https://login.microsoftonline.com/' || pu.entra_tenant_id || '/v2.0'
+     FROM portal_users pu
+    WHERE pu.id = i.portal_user_id AND i.provider = 'entra'
+      AND pu.id = '<portal_user_id>';
+
+   -- Row-count check, before COMMIT: how many logins still block the migration
+   SELECT count(*) AS still_blocking
+     FROM portal_users pu
+     JOIN portal_user_identities i ON i.portal_user_id = pu.id AND i.provider = 'entra'
+    WHERE pu.entra_oid IS NOT NULL AND pu.entra_tenant_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM portal_user_identities r
+                       WHERE r.issuer = 'https://login.microsoftonline.com/' || pu.entra_tenant_id || '/v2.0'
+                         AND r.subject = pu.entra_oid);
+   COMMIT;
+   SQL
+   ```
+
+   Each `UPDATE` must print `UPDATE 1`. `UPDATE 0` means the scope line did not apply or the id is wrong. `still_blocking` must reach `0` once you have repaired every listed login. If it does not, the transaction has already committed, so run the preflight again and repair what it still lists.
+
+4. Restart the API: `dc up -d api`. The migration runs again, and the log shows `final backfill inserted N identit(ies)` or `inserted 0 identities`.
 </Steps>
+
+**`AUTO_MIGRATE=false`.** The migration does not run by itself, so apply it before the new release serves any portal or add-in traffic. The file is at `./migrations/2027-01-30-140000-portal-identity-final-backfill.sql` in the same image directory (read it out the same way as the preflight); run it with `psql -1` (one transaction) as the database owner, after you have run the preflight above. Running it by hand does not record it as applied, so a later start with `AUTO_MIGRATE=true` runs it again and logs `inserted 0 identities`, which is harmless. Until it has run, the new release no longer reads the old columns. A person whose Microsoft link was never copied to the identities table can then get a **new active login** from the Office add-in, even when an MSP has disabled their original account.
+
+**Rolling back.** Rolling back to v0.130.0 after this release has run is safe for the database, because the migration only adds rows, but it is stricter than a normal rollback. This release no longer clears the old columns when an MSP removes a Microsoft sign-in link, so those logins keep a link v0.130.0 still checks. v0.130.0 then refuses that person's Microsoft sign-in (the add-in exchange answers `provisioning_failed`, portal Microsoft sign-in answers `identity_conflict`) instead of creating a login, and its daily drift job reports the rows. Nothing is deleted. To let that person sign in again, clear the old link on their login with Repair A above. Take the `portal_user_id` from the `missing_identity` rows of the preflight's `drift_samples` result.
 
 **More than one API instance?** Do not skip this release. Upgrade every API and `worker` instance to it before you take the release that drops the columns. An older instance still running after the drop would fail when it writes those columns.
 

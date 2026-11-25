@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { validateToolInput } from './aiToolSchemas';
 import { buildBreezeSdkTools } from './aiAgentSdkTools';
+import { FLEET_FILTER_GROUP_BY, fleetFilterSchema } from '@breeze/shared';
 
 const TEST_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -187,5 +188,21 @@ describe('network_discovery / subnet (#8799)', () => {
 
   it('accepts a CIDR subnet', () => {
     expect(validateToolInput('network_discovery', { deviceId: TEST_UUID, subnet: '10.0.0.0/24' }).success).toBe(true);
+  });
+});
+
+describe('get_fleet_device_stats typed filter (#12418 W01)', () => {
+  it('the emitted SDK schema lists filter.properties equal to fleetFilterSchema.shape keys, and the groupBy enum', () => {
+    const schema = emittedInputSchema('get_fleet_device_stats') as { properties: Record<string, any> };
+    expect(Object.keys(schema.properties.filter.properties).sort()).toEqual(Object.keys(fleetFilterSchema.shape).sort());
+    expect(schema.properties.filter.additionalProperties).toBe(false);
+    expect(schema.properties.groupBy.enum).toEqual([...FLEET_FILTER_GROUP_BY]);
+    expect(schema.properties.filter.properties.softwareVersionBelow.properties.version.pattern).toBe('^\\d');
+  });
+
+  it('validateToolInput enforces what the schema shows', () => {
+    expect(validateToolInput('get_fleet_device_stats', { filter: { status: 'decommissioned' } }).success).toBe(false);
+    expect(validateToolInput('get_fleet_device_stats', { filter: { softwareVersionBelow: { name: '7-Zip', version: 'v2' } } }).success).toBe(false);
+    expect(validateToolInput('get_fleet_device_stats', { filter: { osType: 'windows' }, groupBy: 'siteId' })).toEqual({ success: true });
   });
 });

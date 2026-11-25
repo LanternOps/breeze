@@ -6,7 +6,9 @@ import { safeErrorMessage } from '../services/aiModels/safeDbError';
  * BullMQ queues whose job code was deleted. Deleting a repeatable job's module
  * leaves its repeat key and its next delayed occurrence in Redis, where no
  * worker will ever consume them. `cleanupRetiredQueues` removes both at boot.
- * It is idempotent and never throws, so a Redis hiccup cannot fail boot.
+ * It is idempotent. Each queue's cleanup is caught and reported in its result,
+ * so a Redis hiccup cannot fail boot. Constructing the Queue sits outside that
+ * catch, so a connection that cannot even be built would still throw.
  *
  * An entry stays for at least one release after the queue's last producer
  * shipped. Keep it longer when an upgrade may skip that release: a

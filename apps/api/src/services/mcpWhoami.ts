@@ -15,6 +15,7 @@
 import { AI_TOOL_DOMAINS, type AiToolDomain } from '@breeze/shared';
 import { MCP_WHOAMI_TOOL_NAME } from './aiToolNames';
 import type { McpDomainGrant } from './mcpDomains';
+import type { ResolvedMcpToolListMode } from './mcpToolListMode';
 
 export const MCP_WHOAMI_TOOL_DEFINITION = {
   name: MCP_WHOAMI_TOOL_NAME,
@@ -56,6 +57,8 @@ export type WhoamiInput = {
    */
   approvalGate: { tier3?: McpTier3Handling; tier3RequiresWebApp: boolean; unattendedPrincipal: boolean };
   mfaGatedActionsUnavailable: boolean;
+  /** #12427: this request's tool list mode and where it came from. */
+  toolListMode: ResolvedMcpToolListMode;
 };
 
 export type McpTier3Handling = 'approval_intent' | 'web_app_only' | 'unattended';
@@ -67,6 +70,7 @@ export type WhoamiResult = WhoamiInput['principal'] & {
   domains: { restricted: boolean; granted: AiToolDomain[]; available: AiToolDomain[] };
   approvalGate: { tier3: McpTier3Handling; tier3RequiresWebApp: boolean; unattendedPrincipal: boolean };
   notes: string[];
+  toolListMode: ResolvedMcpToolListMode;
 };
 
 export function buildWhoamiResult(input: WhoamiInput): WhoamiResult {
@@ -121,5 +125,6 @@ export function buildWhoamiResult(input: WhoamiInput): WhoamiResult {
       unattendedPrincipal: input.approvalGate.unattendedPrincipal,
     },
     notes,
+    toolListMode: { ...input.toolListMode },
   };
 }

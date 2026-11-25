@@ -37,6 +37,8 @@ export const CORS_ALLOW_HEADERS: readonly string[] = Object.freeze([
   'Mcp-Session-Id',
   'Mcp-Method',
   'Mcp-Name',
+  // #12427: per-request tool list mode.
+  'Mcp-Tool-List',
 ]);
 
 export const CORS_EXPOSE_HEADERS: readonly string[] = Object.freeze([

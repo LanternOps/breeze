@@ -1,14 +1,27 @@
-import { buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
+import type { AiToolDomain } from '@breeze/shared';
+import { buildMcpGuardrailsCore, UNTRUSTED_TOOL_OUTPUT_RULE } from './aiAgentSystemPrompt';
+import { renderMcpDomainIndex } from './aiToolIndex';
 
-// Approximate tool count stated in the instructions below. Kept as a rounded
-// literal (not derived from the aiTools registry at runtime) so this string
-// module stays decoupled from the heavy tool registry — mcpGuidancePromptTools
-// .test.ts asserts it stays within tolerance of the live count and fails loudly
-// if the two drift apart.
+// Approximate tool count stated in the full instructions below. Kept as a
+// rounded literal (not derived from the aiTools registry at runtime) so the
+// text does not change with every tool a wave adds; mcpGuidancePromptTools
+// .test.ts asserts it stays within tolerance of the live count. (The
+// progressive body, #12427, reads the domain index through aiToolIndex.)
 export const MCP_TOOL_COUNT_APPROX = 372;
 
-/** Server instructions; approval wording follows the action-intents flag (D-B34). */
-export function buildMcpServerInstructions(intentsEnabled: boolean): string {
+/**
+ * #12427: what a progressive tool list's instructions may name — the domains of
+ * the caller's listable registry tools, and every name the caller can list.
+ */
+export type McpProgressiveGuidance = { domains: readonly AiToolDomain[]; listableNames: ReadonlySet<string> };
+
+/**
+ * Server instructions; approval wording follows the action-intents flag (D-B34).
+ * `progressive` (#12427) selects the compact body; undefined is today's text,
+ * byte for byte.
+ */
+export function buildMcpServerInstructions(intentsEnabled: boolean, progressive?: McpProgressiveGuidance): string {
+  if (progressive) return buildProgressiveMcpInstructions(intentsEnabled, progressive);
   return `You are connected to Breeze RMM — a multi-tenant Remote Monitoring and Management platform for MSPs. This server exposes ~${MCP_TOOL_COUNT_APPROX} tools for managing devices, alerts, patches, backups, security, tickets, and configuration policies.
 
 ## Tenant hierarchy
@@ -26,6 +39,44 @@ List results carry hasMore and nextCursor. When hasMore is true and you need mor
 
 ## Common workflows
 For frequent MSP tasks, use the guided prompts: breeze-fleet-triage, breeze-device-investigate, breeze-patch-remediate, breeze-incident-kickoff, breeze-turnkey-setup.`;
+}
+
+/** The progressive recipe; the meta-tools are listed for every principal. */
+export const MCP_PROGRESSIVE_RECIPE = 'Start with search_tools({ query }) to find a tool, get_tool_details({ names }) to read its schema, then call_tool({ name, arguments }) or call the tool by name.';
+
+/**
+ * #12427: the progressive-mode instructions. A separate, compact body (the
+ * full one is ~3.8 KB before any index): the caller's domain index, the
+ * recipe, the tenant and approval rules condensed, and the untrusted-output
+ * rule verbatim. Every tool it names is checked against `listableNames`, so a
+ * restricted caller learns of no tool it could not list in full mode.
+ */
+export function buildProgressiveMcpInstructions(intentsEnabled: boolean, guidance: McpProgressiveGuidance): string {
+  const has = (name: string) => guidance.listableNames.has(name);
+  const index = renderMcpDomainIndex(guidance.domains, guidance.listableNames);
+  const destructive = 'Destructive operations (restarts, deletes, scripts, commands, patches, registry edits, elevation, policies arming unattended action)';
+  const approval = intentsEnabled
+    ? [
+      `${destructive} need approval in the Breeze mobile or web app unless this connection runs unattended: the call returns "pending_approval" with an actionId and nothing runs until approved.`,
+      has('get_action_status') ? 'Poll get_action_status; do not re-issue the call.' : 'Do not re-issue the call.',
+      ...(has('cancel_action') ? ['Use cancel_action if it is no longer wanted.'] : []),
+      'Only "completed" is success; "failed" means the outcome is uncertain. MCP_APPROVAL_REQUIRED means not filed: the user can run it from the Breeze web app AI assistant.',
+    ].join(' ')
+    : `${destructive} need interactive approval, which this connection lacks: unless it runs unattended, the server refuses them with MCP_APPROVAL_REQUIRED and nothing runs. Tell the user they can run it from the Breeze web app AI assistant; do not retry. Report success only when a call returns success.`;
+  const paging = [
+    'A list with hasMore: repeat the call with cursor set to nextCursor.',
+    ...(has('read_artifact') ? ['A result with artifact.handle is stored in full: page it with read_artifact.'] : []),
+  ].join(' ');
+  return `Breeze RMM (multi-tenant RMM for MSPs) lists only a small core of tools here. ${MCP_PROGRESSIVE_RECIPE}
+${index ? `
+## Tool domains
+${index}
+` : ''}
+## Rules
+1. Partner (MSP) → Organization → Site → Device Group → Device. Act only within the organizations this connection grants; resolve the exact target and echo it back before any change. Read before write. Never fabricate data or retry a rejected call blindly.
+2. ${approval}
+3. ${UNTRUSTED_TOOL_OUTPUT_RULE}
+4. ${paging}`;
 }
 
 /** Flag-off value; existing importers keep this name. */

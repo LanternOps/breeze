@@ -8,6 +8,7 @@
     "ai:tool-eval": "tsx src/services/llm/__scripts__/tool-eval.ts",
     "ai:discovery-report": "tsx src/services/llm/__scripts__/discovery-report.ts",
     "ai:research-eval": "tsx src/services/llm/__scripts__/research-eval.ts",
+    "mcp:tools-list-measure": "tsx src/services/llm/__scripts__/mcp-tools-list-measure.ts",
     "build": "tsup",
     "clean": "rm -rf dist",
     "db:check-drift": "tsx scripts/check-drift.ts",
