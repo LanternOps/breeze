@@ -9,7 +9,7 @@
  * - resolve_device_context (Tier 2): Mark context entry as resolved
  * - manage_tags (Tier 2): List/add/remove device tags
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
- * - get_fleet_device_stats (Tier 1): Exact fleet-wide device counts by status
+ * - get_fleet_device_stats (Tier 1): Exact fleet-wide device counts by status, typed filter, group-by, device sample
  */
 
 import {
@@ -19,7 +19,14 @@ import {
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
-import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { MAX_OFFSET, pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import {
+  fleetFilterExecutionRefusedFields,
+  fleetFilterFieldsUsed,
+  fleetFilterParamSchema,
+  fleetFilterZodShape,
+  fleetGroupByParamSchema,
+} from './fleetFilter';
 import { orgNameOf, readReachSpansOrgs, splitOrgLegend } from './aiToolOrgLegend';
 import { db } from '../db';
 import {
@@ -34,6 +41,7 @@ import {
 } from '../db/schema';
 import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
+import { z } from 'zod';
 import { sqlTextArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
@@ -41,7 +49,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { deviceListReachConditions, resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
-import { queryDeviceStats } from './deviceStats';
+import { pageFleetDevices, queryDeviceStats, queryFleetDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
 import { getDeviceWorkloadsView } from './workloads/view';
@@ -128,6 +136,12 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
 // server can report 48+ slots; the list is capped like disks/NICs, while the
 // summary is computed from every slot first so free-slot counts stay exact.
 const MEMORY_MODULES_TOOL_LIMIT = 32;
+
+// get_fleet_device_stats device sample (#12418 W01): offset paging over a
+// stable hostname, id order.
+const FLEET_STATS_PAGE_DEFAULT = 10;
+const FLEET_STATS_PAGE_MAX = 100;
+const fleetStatsArgsSchema = z.object(fleetFilterZodShape());
 
 type MemoryModuleRow = typeof deviceMemoryModules.$inferSelect;
 
@@ -382,7 +396,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       ),
   });
 
-  // get_fleet_device_stats - Tier 1 (auto-execute). #6797
+  // get_fleet_device_stats - Tier 1 (auto-execute). #6797; typed filter,
+  // groupBy and a paged device sample #12418 W01.
   registerTool({
     tier: 1,
     domain: 'devices',
@@ -390,11 +405,14 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_fleet_device_stats',
       description:
-        'Exact live fleet device counts: total, online, offline, byStatus, migrationRequiredCount, logShippingFailingCount. Use for "how many devices" instead of paging query_devices. Excludes decommissioned, parked and Quick Support devices. Optional orgId narrows to one org.',
+        'Exact live fleet device counts (total, online, offline, byStatus, migration and log-shipping counts), optionally narrowed by a typed filter, grouped by one dimension, with a paged device sample. Use instead of paging query_devices to count. Excludes decommissioned, parked and Quick Support devices.',
       input_schema: {
         type: 'object' as const,
         properties: {
           orgId: { type: 'string', format: 'uuid', description: 'Narrow to one organization' },
+          filter: fleetFilterParamSchema(),
+          groupBy: fleetGroupByParamSchema(),
+          ...pageParamSchema(FLEET_STATS_PAGE_DEFAULT, FLEET_STATS_PAGE_MAX),
         },
       },
     },
@@ -412,7 +430,48 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         deviceScopeCondition(auth, devices.id),
         orgId ? eq(devices.orgId, orgId) : undefined,
       );
-      return JSON.stringify(await queryDeviceStats(scope));
+      if (input.filter === undefined && input.groupBy === undefined) {
+        // Unchanged contract: exactly today's counts.
+        return JSON.stringify(await queryDeviceStats(scope));
+      }
+
+      // validateToolInput already applied this shape; parse again so a direct
+      // handler call can never hand the SQL builder an unchecked value.
+      const parsed = fleetStatsArgsSchema.safeParse({ filter: input.filter, groupBy: input.groupBy });
+      if (!parsed.success) {
+        return JSON.stringify({ error: `Invalid filter or groupBy: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}` });
+      }
+      const { filter, groupBy } = parsed.data;
+
+      if (!filter) {
+        return JSON.stringify(await queryFleetDeviceStats({ scope, groupBy }));
+      }
+      const page = readPageArgs('get_fleet_device_stats', input, {
+        defaultLimit: FLEET_STATS_PAGE_DEFAULT,
+        maxLimit: FLEET_STATS_PAGE_MAX,
+      });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
+      const stats = await queryFleetDeviceStats({ scope, filter, groupBy });
+      const rows = await pageFleetDevices({ scope, filter, limit, offset });
+      return JSON.stringify({
+        ...stats,
+        filter: {
+          fieldsUsed: fleetFilterFieldsUsed(filter),
+          executionRefusedFields: fleetFilterExecutionRefusedFields(filter),
+        },
+        ...pageEnvelope({
+          key: 'devices',
+          items: rows,
+          limit,
+          offset,
+          fingerprint,
+          total: stats.total,
+          totalMode: 'exact',
+          maxOffset: MAX_OFFSET,
+        }),
+      });
     },
   });
 

@@ -58,6 +58,7 @@ import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, aiWorkspaceEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
+import { fleetFilterZodShape } from './fleetFilter';
 import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
@@ -3156,7 +3157,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     tool(
       'get_fleet_device_stats',
       registryDescription('get_fleet_device_stats'),
-      { orgId: uuid.optional() },
+      { orgId: uuid.optional(), ...fleetFilterZodShape(), ...pageZodShape(10, 100) },
       makeHandler('get_fleet_device_stats')
     ),
 
