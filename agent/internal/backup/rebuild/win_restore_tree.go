@@ -106,6 +106,10 @@ func winRestoreTree(ctx context.Context, r *run) error {
 		// root is C: again once it boots, not on the recovery-time volume
 		// path the restore writes through.
 		JunctionTargetsAsCaptured: true,
+		// The rebuilt root volume may be the recovery environment's C:, so
+		// it can be the original location by any measure: restoring onto
+		// it is the point of a rebuild, never an overwrite (#12638).
+		AllowOverwriteOriginals: true,
 	}, func(_ string, cur, total int64, msg string) {
 		r.progress(PhaseRestore, msg, cur, total)
 	})

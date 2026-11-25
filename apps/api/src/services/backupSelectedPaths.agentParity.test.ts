@@ -61,11 +61,28 @@ describe('pathSelectionMatches mirrors the agent', () => {
     expect(goFunc(source, 'func restoreSelection(')).toContain(
       'return func(f *SnapshotFile) bool { return restoreSelected(f, selectedPaths) }',
     );
-    expect(goFunc(source, 'func downloadVerifiedManifest(')).toContain(
-      'decodeSnapshotManifestFile(tmpPath, restoreSelection(selectedPaths))',
+    // The restore builds that predicate from its selection and decodes the
+    // verified manifest with it; the originals guard (#12638) only observes
+    // each entry and passes the predicate's verdict through unchanged.
+    const restoreFn = goFunc(source, 'func RestoreFromSnapshotContext(');
+    expect(restoreFn).toContain('keep := restoreSelection(cfg.SelectedPaths)');
+    expect(restoreFn).toContain('keep = guard.observing(keep)');
+    expect(restoreFn).toContain(
+      'downloadVerifiedManifestRetained(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, keep)',
     );
-    expect(goFunc(source, 'func RestoreFromSnapshotContext(')).toContain(
-      'downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, cfg.SelectedPaths)',
+    expect(goFunc(source, 'func downloadVerifiedManifestRetained(')).toContain(
+      'snapshot, err := decodeSnapshotManifest(f, keep)',
+    );
+    const guardSource = readFileSync(path.join(AGENT_DIR, 'restore_overwrite_guard.go'), 'utf8');
+    const observing = goFunc(guardSource, 'func (g *originalsGuard) observing(');
+    expect(observing).toContain('return keep == nil || keep(f)');
+    expect(observing.match(/\breturn\b/g)).toHaveLength(2); // the closure, and its one verdict
+    // The other manifest readers apply the same rule.
+    expect(goFunc(source, 'func downloadVerifiedManifest(')).toContain(
+      'downloadVerifiedManifestKeeping(ctx, provider, snapshotID, workRoot, e, restoreSelection(selectedPaths))',
+    );
+    expect(goFunc(source, 'func downloadVerifiedManifestKeeping(')).toContain(
+      'downloadVerifiedManifestRetained(ctx, provider, snapshotID, workRoot, e, keep)',
     );
   });
 

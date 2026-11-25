@@ -39,6 +39,16 @@ type RestoreConfig struct {
 	// payload.
 	SecurityDescriptorsAsCaptured bool
 
+	// AllowOverwriteOriginals says the restore is meant to write every entry back over its
+	// original: the target is the entries' own volume root (`C:\`, `/`) or
+	// otherwise resolves onto the backed-up locations. Without it, a restore
+	// to TargetPath whose destinations would land on any original is
+	// refused before anything is written under the target (#12638; see
+	// restore_overwrite_guard.go). Set from the backup_restore payload's
+	// `allowOverwriteOriginals` and by the rebuild engines, which restore onto a volume
+	// that may be the recovery environment's view of the original root.
+	AllowOverwriteOriginals bool
+
 	// JunctionTargetsAsCaptured recreates every junction (#7325) pointing
 	// at its target exactly as recorded, never rewritten under TargetPath.
 	// Only for a whole-machine rebuild: the restore writes through a
@@ -168,7 +178,18 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		result.Status = "failed"
 		return result, err
 	}
-	snapshot, manifestWarnings, err := downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, cfg.SelectedPaths)
+	// An alternate-location restore must not write over the originals
+	// (#12638): the guard sees every original while the manifest is
+	// decoded, selected or not, and checks the selection below, before
+	// anything is written under the target, streaming the verified
+	// manifest again rather than holding the originals (#11234).
+	keep := restoreSelection(cfg.SelectedPaths)
+	var guard *originalsGuard
+	if cfg.TargetPath != "" && !cfg.AllowOverwriteOriginals {
+		guard = newOriginalsGuard(targetBase)
+		keep = guard.observing(keep)
+	}
+	snapshot, manifestWarnings, manifest, err := downloadVerifiedManifestRetained(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, keep)
 	if err != nil {
 		result.Status = "failed"
 		if ctx.Err() == nil && endsVerifyRun(err) {
@@ -182,6 +203,11 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		result.Code = integrityResultCode(cfg.Integrity, err)
 		return result, fmt.Errorf("download manifest: %w", err)
+	}
+	// Kept open only for the originals guard's second pass (below).
+	defer manifest.release()
+	if guard == nil {
+		manifest.release()
 	}
 	if w := cfg.Integrity.UnattestedWarning(); w != "" {
 		result.Warnings = append(result.Warnings, w)
@@ -218,6 +244,27 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 		return result, nil
 	}
+	// Checked before anything below creates a directory or file under the
+	// target (#12638).
+	if guard != nil {
+		for _, j := range snapshot.Junctions {
+			guard.noteOriginal(j.restorePath())
+		}
+		originals := func(yield func(string)) error {
+			if err := manifest.rescan(func(f *SnapshotFile) { yield(restoreSourcePath(*f)) }); err != nil {
+				return err
+			}
+			for _, j := range snapshot.Junctions {
+				yield(j.restorePath())
+			}
+			return nil
+		}
+		if refuseRestoreOverOriginals(guard, contentFiles, links, dirs, junctions, originals, result) {
+			return result, nil
+		}
+		manifest.release() // nothing below reads it again
+	}
+
 	// NTFS security descriptors (W06a): Windows only — see restore_sd.go.
 	// The restore privilege scope (SeRestore/SeTakeOwnership/SeSecurity) is
 	// held for this run only and released when it returns.
@@ -551,6 +598,62 @@ func plainDownload(_ context.Context, p providers.BackupProvider, key, dest stri
 // file entries selectedPaths selects are kept (see filterFiles; empty keeps
 // all); junctions and every other manifest field are returned whole.
 func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation, selectedPaths []string) (*Snapshot, []string, error) {
+	return downloadVerifiedManifestKeeping(ctx, provider, snapshotID, workRoot, e, restoreSelection(selectedPaths))
+}
+
+// downloadVerifiedManifestKeeping is downloadVerifiedManifest with the
+// per-entry predicate given directly (nil keeps every file entry), so a
+// caller can also see each entry as it is decoded.
+func downloadVerifiedManifestKeeping(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation, keep func(*SnapshotFile) bool) (*Snapshot, []string, error) {
+	snapshot, warnings, manifest, err := downloadVerifiedManifestRetained(ctx, provider, snapshotID, workRoot, e, keep)
+	if err != nil {
+		return nil, nil, err
+	}
+	manifest.release()
+	return snapshot, warnings, nil
+}
+
+// retainedManifest is the verified manifest file a restore decoded, kept
+// open so its entries can be streamed again without holding them.
+type retainedManifest struct {
+	file *os.File
+	path string
+}
+
+// rescan streams every file entry of the manifest to observe, selected or
+// not, retaining none. It reads the same open file that was verified and
+// decoded.
+func (m *retainedManifest) rescan(observe func(*SnapshotFile)) error {
+	if m.file == nil {
+		return errors.New("manifest already released")
+	}
+	if _, err := m.file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind manifest: %w", err)
+	}
+	_, err := decodeSnapshotManifest(m.file, func(f *SnapshotFile) bool {
+		observe(f)
+		return false
+	})
+	if err != nil {
+		return fmt.Errorf("decode manifest: %w", err)
+	}
+	return nil
+}
+
+// release closes and removes the manifest file; later calls do nothing.
+func (m *retainedManifest) release() {
+	if m.file == nil {
+		return
+	}
+	_ = m.file.Close()
+	_ = os.Remove(m.path)
+	m.file = nil
+}
+
+// downloadVerifiedManifestRetained is downloadVerifiedManifestKeeping that
+// also returns the verified manifest file, open, for a second streaming
+// pass. The caller must release it (on success; on error nothing is kept).
+func downloadVerifiedManifestRetained(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation, keep func(*SnapshotFile) bool) (*Snapshot, []string, *retainedManifest, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
 	if workRoot == "" {
 		workRoot = os.TempDir()
@@ -558,21 +661,27 @@ func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProv
 	tmpPath, warnings, err := integrity.DownloadVerifiedControlObjectVia(ctx, plainDownload, provider, e, integrity.RoleManifest, manifestKey, workRoot)
 	if err != nil {
 		if e.Attested() {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return nil, nil, fmt.Errorf("download manifest: %w", err)
+		return nil, nil, nil, fmt.Errorf("download manifest: %w", err)
 	}
-	defer func() { _ = os.Remove(tmpPath) }()
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, nil, fmt.Errorf("decode manifest: open manifest: %w", err)
+	}
+	manifest := &retainedManifest{file: f, path: tmpPath}
 
 	// Decoded only now, after the attested-mode check above (none outside
 	// attested mode), and streamed with the selection applied per entry:
 	// memory follows what the restore selected, not the size of the snapshot
 	// (#11234).
-	snapshot, err := decodeSnapshotManifestFile(tmpPath, restoreSelection(selectedPaths))
+	snapshot, err := decodeSnapshotManifest(f, keep)
 	if err != nil {
-		return nil, nil, fmt.Errorf("decode manifest: %w", err)
+		manifest.release()
+		return nil, nil, nil, fmt.Errorf("decode manifest: %w", err)
 	}
-	return snapshot, warnings, nil
+	return snapshot, warnings, manifest, nil
 }
 
 // integrityResultCode is the result code for err when the command carried an

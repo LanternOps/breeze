@@ -113,7 +113,12 @@ func restoreTree(ctx context.Context, r *run) error {
 	if err := os.MkdirAll(workRoot, 0o700); err != nil {
 		return fmt.Errorf("create restore work root: %w", err)
 	}
-	res, err := restoreSnapshotFiles(ctx, r.opts.Provider, backup.RestoreConfig{SnapshotID: r.opts.SnapshotID, TargetPath: r.staging, WorkRoot: workRoot, Integrity: r.opts.Integrity}, func(phase string, cur, total int64, msg string) {
+	res, err := restoreSnapshotFiles(ctx, r.opts.Provider, backup.RestoreConfig{
+		SnapshotID: r.opts.SnapshotID, TargetPath: r.staging, WorkRoot: workRoot, Integrity: r.opts.Integrity,
+		// A whole-machine rebuild restores every entry onto the volume it
+		// is rebuilding; that is the point, not an overwrite (#12638).
+		AllowOverwriteOriginals: true,
+	}, func(phase string, cur, total int64, msg string) {
 		r.progress(PhaseRestore, msg, cur, total)
 	})
 	if err != nil {

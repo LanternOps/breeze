@@ -38,7 +38,8 @@ import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 import { sumStoredSnapshotBytes } from './backupStoredBytes';
-import { classifyBackupFailureDetail, splitReparseSkipNotice } from '@breeze/shared';
+import { classifyBackupFailureDetail, isVolumeRootRestoreTarget, RESTORE_WOULD_OVERWRITE_ORIGINALS, splitReparseSkipNotice } from '@breeze/shared';
+import { VOLUME_ROOT_TARGET_REFUSAL } from './aiToolSchemasBackup';
 import { redactAiToolOutputText } from './aiToolOutput';
 import {
   getProviderCoverageForDevices,
@@ -746,7 +747,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         properties: {
           snapshotId: { type: 'string', description: 'Snapshot UUID (required)' },
           deviceId: { type: 'string', description: 'Target device UUID (required)' },
-          targetPath: { type: 'string', description: 'Destination path for restore (optional)' },
+          targetPath: { type: 'string', maxLength: 4096, description: 'Destination folder for restore (optional; a volume root such as C:\\ or / is refused)' },
           selectedPaths: {
             type: 'array',
             items: { type: 'string' },
@@ -760,6 +761,16 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const snapshotId = input.snapshotId as string;
       const deviceId = input.deviceId as string;
       if (!snapshotId || !deviceId) return JSON.stringify({ error: 'snapshotId and deviceId are required' });
+      // #12638: a volume-root target writes every file from that volume
+      // back over its original. This tool cannot confirm that; a person
+      // can, from the Restore wizard. (The input schema refuses it first,
+      // before an approval is asked for; this keeps the handler safe alone.)
+      if (typeof input.targetPath === 'string' && isVolumeRootRestoreTarget(input.targetPath)) {
+        return JSON.stringify({
+          error: VOLUME_ROOT_TARGET_REFUSAL,
+          code: RESTORE_WOULD_OVERWRITE_ORIGINALS,
+        });
+      }
 
       // Verify device access
       const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];

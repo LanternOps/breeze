@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EXTERNAL_BACKUP_STATUSES, coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
+import { EXTERNAL_BACKUP_STATUSES, RESTORE_TARGET_PATH_MAX_LENGTH, coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
@@ -286,10 +286,24 @@ export const restoreSchema = z.object({
   ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
-  targetPath: z.string().optional(),
+  targetPath: z.string().max(RESTORE_TARGET_PATH_MAX_LENGTH).optional(),
+  /**
+   * #12638: the operator asked to write the files back over their originals.
+   * A target that is a volume root (`C:\`, `/`, a share root) needs it; see
+   * isVolumeRootRestoreTarget. The backup helper also refuses, without it,
+   * any target whose destinations would land on an original.
+   */
+  allowOverwriteOriginals: z.boolean().optional(),
   selectedPaths: z.array(z.string().max(4096)).max(10_000).optional(),
   restoreType: z.enum(['full', 'selective']).default('full'),
 }).superRefine((value, ctx) => {
+  if (value.allowOverwriteOriginals && !value.targetPath?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'allowOverwriteOriginals needs a targetPath: a restore to the staging folder never overwrites anything',
+      path: ['allowOverwriteOriginals'],
+    });
+  }
   if (value.restoreType === 'selective' && (!value.selectedPaths || value.selectedPaths.length === 0)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

@@ -186,3 +186,33 @@ describe('restore_snapshot selectedPaths (#7210)', () => {
     expect(vi.mocked(aiQueueCommandForExecution)).not.toHaveBeenCalled();
   });
 });
+
+// #12638: a volume-root target writes every file back over its original. The
+// AI tool has no way to confirm that, so it is always refused, before
+// anything is read or created; a folder target is unaffected.
+describe('restore_snapshot volume-root target (#12638)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(['C:\\', 'C:/', '/', '\\\\?\\C:\\', '\\\\fileserver\\share'])('refuses %j', async (targetPath) => {
+    const result = JSON.parse(
+      await handlerFor('restore_snapshot')({ snapshotId: 's1', deviceId: 'd1', targetPath }, partnerAuth())
+    );
+    expect(result.code).toBe('restore_would_overwrite_originals');
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(vi.mocked(aiQueueCommandForExecution)).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a folder target without the flag', async () => {
+    arrangeRestore(['C:\\Users\\alex\\Documents\\invoice.pdf']);
+    const result = JSON.parse(
+      await handlerFor('restore_snapshot')(
+        { snapshotId: 's1', deviceId: 'd1', targetPath: 'D:\\Restored', selectedPaths: ['C:/Users/alex/Documents/invoice.pdf'] },
+        partnerAuth()
+      )
+    );
+    expect(result.success).toBe(true);
+    const payload = vi.mocked(aiQueueCommandForExecution).mock.calls[0]![4] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('allowOverwriteOriginals');
+  });
+});

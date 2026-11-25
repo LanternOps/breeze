@@ -562,17 +562,23 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 		SnapshotID    string   `json:"snapshotId"`
 		TargetPath    string   `json:"targetPath"`
 		SelectedPaths []string `json:"selectedPaths"`
+		// AllowOverwriteOriginals: the operator confirmed writing the files
+		// back over their originals (#12638). Absent (an older server, or
+		// no confirmation) means false: a target that would overwrite the
+		// originals is refused.
+		AllowOverwriteOriginals bool `json:"allowOverwriteOriginals"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid restore payload: " + err.Error())
 	}
 
 	cfg := backup.RestoreConfig{
-		SnapshotID:    p.SnapshotID,
-		TargetPath:    p.TargetPath,
-		SelectedPaths: p.SelectedPaths,
-		WorkRoot:      backupRestoreWorkRoot(),
-		Integrity:     expectation,
+		SnapshotID:              p.SnapshotID,
+		TargetPath:              p.TargetPath,
+		SelectedPaths:           p.SelectedPaths,
+		WorkRoot:                backupRestoreWorkRoot(),
+		Integrity:               expectation,
+		AllowOverwriteOriginals: p.AllowOverwriteOriginals,
 	}
 
 	var progressFn backup.ProgressFunc
