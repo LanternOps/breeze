@@ -260,7 +260,7 @@ describe(`${NAME} filter, groupBy and device page (#12418 W01)`, () => {
   });
 
   it('the description is the plan\'s exact copy and fits the 300-char budget', () => {
-    const d = setup().definition.description;
+    const d = setup().definition.description ?? '';
     expect(d).toBe('Exact live fleet device counts (total, online, offline, byStatus, migration and log-shipping counts), optionally narrowed by a typed filter, grouped by one dimension, with a paged device sample. Use instead of paging query_devices to count. Excludes decommissioned, parked and Quick Support devices.');
     expect(d.length).toBeLessThanOrEqual(300);
   });
