@@ -906,6 +906,41 @@ describe('bearerTokenAuthMiddleware', () => {
     });
   });
 
+  describe('#12429: grant mcp_tool_list_mode', () => {
+    it('comes from the grant row in the same live query, per grant', async () => {
+      const contexts: unknown[] = [];
+      for (const [grantId, mode] of [['grant-a', 'progressive'], ['grant-b', 'full'], ['grant-c', null]] as const) {
+        dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 1, grantActive: true, mcpDomains: null, mcpToolListMode: mode }];
+        const token = await mintToken({
+          sub: userId, partner_id: partnerId, org_id: orgId, scope: 'mcp:read',
+          jti: `jti-${grantId}`, grant_id: grantId, client_id: 'shared-client',
+        });
+        const c = createContext({ Authorization: `Bearer ${token}` });
+        await bearerTokenAuthMiddleware(c, vi.fn());
+        contexts.push(c.get('apiKey'));
+      }
+      expect(contexts[0]).toMatchObject({ oauthGrantId: 'grant-a', mcpToolListMode: 'progressive' });
+      expect(contexts[1]).toMatchObject({ oauthGrantId: 'grant-b', mcpToolListMode: 'full' });
+      expect(contexts[2]).toMatchObject({ oauthGrantId: 'grant-c', mcpToolListMode: null });
+      const liveSelects = vi.mocked(db.select).mock.calls
+        .map((call) => call[0] as Record<string, unknown> | undefined)
+        .filter((selection) => selection && 'authEpoch' in selection);
+      expect(liveSelects).toHaveLength(3);
+      for (const selection of liveSelects) expect(selection).toHaveProperty('mcpToolListMode');
+    });
+
+    it('assertLiveOAuthUser reports it only for a live grant, on both claim paths', async () => {
+      for (const claims of [{ sub: userId, auth_epoch: 3 }, { sub: userId }]) {
+        dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 3, grantActive: true, mcpDomains: null, mcpToolListMode: 'progressive' }];
+        await expect(assertLiveOAuthUser(claims, new Date(), { grantId: 'g' }))
+          .resolves.toEqual(expect.objectContaining({ ok: true, grantMcpToolListMode: 'progressive' }));
+        dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 3, grantActive: false, mcpDomains: null, mcpToolListMode: 'progressive' }];
+        await expect(assertLiveOAuthUser(claims, new Date(), { grantId: 'g' }))
+          .resolves.toEqual(expect.objectContaining({ ok: true, grantActive: false, grantMcpToolListMode: undefined }));
+      }
+    });
+  });
+
   it('rejects a bearer without a durable Grant identifier', async () => {
     const token = await mintToken({
       sub: userId,

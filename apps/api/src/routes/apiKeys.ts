@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { mcpDomainsInputSchema, normalizeMcpDomainsInput } from '@breeze/shared';
+import { mcpDomainsInputSchema, mcpToolListModeInputSchema, normalizeMcpDomainsInput, type McpToolListMode } from '@breeze/shared';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { apiKeys, users } from '../db/schema';
@@ -14,6 +14,7 @@ import {
   requiredPermissionsForApiKeyScopes,
   validateApiKeyScopeDelegation,
 } from '../services/apiKeyScopes';
+import { effectiveMcpToolListMode, mcpToolListDefault } from '../services/mcpToolListMode';
 import { revokeApiKey } from '../services/apiKeyRevocation';
 import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
 import { getActiveOrgTenant } from '../services/tenantStatus';
@@ -257,6 +258,15 @@ function isMcpDomainsWidening(prev: string[] | null, next: string[] | null): boo
   return next.some((d) => !prev.includes(d));
 }
 
+/**
+ * #12429: the stored mode plus what it resolves to today. `full` can be pinned
+ * on the key or inherited, so the source travels with the mode.
+ */
+function withEffectiveToolListMode<T extends { mcpToolListMode?: McpToolListMode | null }>(key: T) {
+  const stored = key.mcpToolListMode ?? null;
+  return { ...key, mcpToolListMode: stored, mcpToolListModeEffective: effectiveMcpToolListMode(stored) };
+}
+
 // ============================================
 // Validation Schemas
 // ============================================
@@ -280,14 +290,16 @@ const createApiKeySchema = z.object({
     .nullable()
     .optional(),
   rateLimit: z.number().int().min(1).max(100000).nullable().optional().transform(v => v ?? 1000),
-  mcpDomains: mcpDomainsInputSchema.optional()
+  mcpDomains: mcpDomainsInputSchema.optional(),
+  mcpToolListMode: mcpToolListModeInputSchema.optional()
 });
 
 const updateApiKeySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   scopes: z.array(z.string()).optional(),
   rateLimit: z.number().int().min(1).max(100000).optional(),
-  mcpDomains: mcpDomainsInputSchema.optional()
+  mcpDomains: mcpDomainsInputSchema.optional(),
+  mcpToolListMode: mcpToolListModeInputSchema.optional()
 });
 
 // ============================================
@@ -331,7 +343,8 @@ apiKeyRoutes.get(
         if (orgIds.length === 0) {
           return c.json({
             data: [],
-            pagination: { page, limit, total: 0 }
+            pagination: { page, limit, total: 0 },
+            mcpToolListDefault: mcpToolListDefault()
           });
         }
         conditions.push(inArray(apiKeys.orgId, orgIds) as ReturnType<typeof eq>);
@@ -373,7 +386,8 @@ apiKeyRoutes.get(
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status,
         source: apiKeys.source,
-        mcpDomains: apiKeys.mcpDomains
+        mcpDomains: apiKeys.mcpDomains,
+        mcpToolListMode: apiKeys.mcpToolListMode
       })
       .from(apiKeys)
       .where(whereCondition)
@@ -382,8 +396,11 @@ apiKeyRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: keyList,
+      data: keyList.map(withEffectiveToolListMode),
       pagination: { page, limit, total },
+      // What a key with no mode of its own is shown (#12429); the create form
+      // needs it before any key exists.
+      mcpToolListDefault: mcpToolListDefault(),
       isAdmin: auth.scope === 'system' || auth.scope === 'partner'
     });
   }
@@ -479,6 +496,7 @@ apiKeyRoutes.post(
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
         rateLimit: data.rateLimit,
         mcpDomains: normalizeMcpDomainsInput(data.mcpDomains ?? null),
+        mcpToolListMode: data.mcpToolListMode ?? null,
         createdBy: auth.user.id,
         status: 'active',
         creatorAuthEpoch,
@@ -500,7 +518,8 @@ apiKeyRoutes.post(
         scopes: apiKey.scopes,
         rateLimit: apiKey.rateLimit,
         expiresAt: apiKey.expiresAt,
-        mcpDomains: apiKey.mcpDomains ?? null
+        mcpDomains: apiKey.mcpDomains ?? null,
+        mcpToolListMode: apiKey.mcpToolListMode ?? null
       }
     });
 
@@ -515,6 +534,8 @@ apiKeyRoutes.post(
       expiresAt: apiKey.expiresAt,
       rateLimit: apiKey.rateLimit,
       mcpDomains: apiKey.mcpDomains ?? null,
+      mcpToolListMode: apiKey.mcpToolListMode ?? null,
+      mcpToolListModeEffective: effectiveMcpToolListMode(apiKey.mcpToolListMode ?? null),
       createdBy: apiKey.createdBy,
       createdAt: apiKey.createdAt,
       status: apiKey.status,
@@ -550,7 +571,8 @@ apiKeyRoutes.get(
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status,
         source: apiKeys.source,
-        mcpDomains: apiKeys.mcpDomains
+        mcpDomains: apiKeys.mcpDomains,
+        mcpToolListMode: apiKeys.mcpToolListMode
       })
       .from(apiKeys)
       .where(eq(apiKeys.id, keyId))
@@ -566,7 +588,7 @@ apiKeyRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    return c.json(apiKey);
+    return c.json({ ...withEffectiveToolListMode(apiKey), mcpToolListDefault: mcpToolListDefault() });
   }
 );
 
@@ -642,6 +664,9 @@ apiKeyRoutes.patch(
       }
       updates.mcpDomains = nextMcpDomains;
     }
+    // #12429: presentation only — it never changes what the key may call, so it
+    // needs nothing beyond this route's own gates.
+    if (data.mcpToolListMode !== undefined) updates.mcpToolListMode = data.mcpToolListMode;
 
     const [updated] = await db
       .update(apiKeys)
@@ -661,7 +686,8 @@ apiKeyRoutes.patch(
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status,
-        mcpDomains: apiKeys.mcpDomains
+        mcpDomains: apiKeys.mcpDomains,
+        mcpToolListMode: apiKeys.mcpToolListMode
       });
 
     if (updated) {
@@ -677,12 +703,15 @@ apiKeyRoutes.patch(
           // Only when the caller touched the field; mirrors changedFields.
           ...(data.mcpDomains !== undefined
             ? { mcpDomains: { previous: previousMcpDomains, next: nextMcpDomains } }
+            : {}),
+          ...(data.mcpToolListMode !== undefined
+            ? { mcpToolListMode: { previous: existingKey.mcpToolListMode ?? null, next: data.mcpToolListMode } }
             : {})
         }
       });
     }
 
-    return c.json(updated);
+    return c.json(updated && withEffectiveToolListMode(updated));
   }
 );
 
@@ -850,7 +879,8 @@ apiKeyRoutes.post(
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status,
-        mcpDomains: apiKeys.mcpDomains
+        mcpDomains: apiKeys.mcpDomains,
+        mcpToolListMode: apiKeys.mcpToolListMode
       });
 
     if (rotated) {
@@ -863,14 +893,15 @@ apiKeyRoutes.post(
           keyPrefix: rotated.keyPrefix,
           previousKeyPrefix: existingKey.keyPrefix,
           resetUsageCount: true,
-          mcpDomains: rotated.mcpDomains ?? null
+          mcpDomains: rotated.mcpDomains ?? null,
+          mcpToolListMode: rotated.mcpToolListMode ?? null
         }
       });
     }
 
     // Return the new full key ONCE
     return c.json({
-      ...rotated,
+      ...(rotated && withEffectiveToolListMode(rotated)),
       key: fullKey, // New full key returned only on rotation
       warning: 'Store this new API key securely. The old key has been invalidated and this new key will not be shown again.'
     });

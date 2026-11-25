@@ -78,6 +78,9 @@ vi.mock('../oauth/revocationService', () => ({
 
 vi.mock('../config/env', () => ({ MCP_OAUTH_ENABLED: true }));
 
+const toolListModes = vi.hoisted(() => ({ getPartnerClientToolListModes: vi.fn() }));
+vi.mock('../services/mcpConnectionToolListMode', () => toolListModes);
+
 import { connectedAppsRoutes } from './connectedApps';
 
 function resetAuth(partnerId: string | null = 'current-partner') {
@@ -142,6 +145,8 @@ describe('connectedAppsRoutes', () => {
     mocks.revokeClientFamilies.mockResolvedValue({ grants: 0, refreshTokens: 0 });
     mocks.permissionDenied = false;
     mocks.mfaDenied = false;
+    toolListModes.getPartnerClientToolListModes.mockReset();
+    toolListModes.getPartnerClientToolListModes.mockResolvedValue((id: string) => (id === 'client-1' ? 'mixed' : null));
     resetAuth();
   });
 
@@ -203,15 +208,20 @@ describe('connectedAppsRoutes', () => {
           client_name: 'Claude Desktop',
           created_at: '2026-04-20T12:00:00.000Z',
           last_used_at: '2026-04-22T12:00:00.000Z',
+          mcp_tool_list_mode: 'mixed',
         },
         {
           client_id: 'client-2',
           client_name: 'client-2',
           created_at: '2026-04-21T12:00:00.000Z',
           last_used_at: null,
+          mcp_tool_list_mode: null,
         },
       ],
     });
+    // #12429: summarised for the caller's own partner, and no other.
+    expect(toolListModes.getPartnerClientToolListModes).toHaveBeenCalledTimes(1);
+    expect(toolListModes.getPartnerClientToolListModes).toHaveBeenCalledWith('current-partner');
   });
 
   it('returns an empty client list', async () => {
@@ -249,6 +259,7 @@ describe('connectedAppsRoutes', () => {
           client_name: 'Active app',
           created_at: '2026-04-21T12:00:00.000Z',
           last_used_at: null,
+          mcp_tool_list_mode: null,
         },
       ],
     });

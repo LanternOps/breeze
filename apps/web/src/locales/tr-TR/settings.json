@@ -5580,7 +5580,12 @@
     "networkError": "Ağ hatası",
     "networkErrorDuringRevoke": "İptal sırasında ağ hatası",
     "revoking": "İptal ediliyor…",
-    "revoke": "İptal Et"
+    "revoke": "İptal Et",
+    "toolListFull": "Araç listesi: Tam",
+    "toolListProgressive": "Araç listesi: Aşamalı",
+    "toolListDefault": "Araç listesi: dağıtım varsayılanı",
+    "toolListMixed": "Araç listesi: bağlantıya göre değişir",
+    "toolListHint": "Bunu her kişi kendi bağlantısı için Hesap → Bağlı uygulamalar altında ayarlar."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Bu kodları güvenli bir yerde saklayın. Her kod bir kez kullanılabilir. Kodlar tekrar gösterilemez.",

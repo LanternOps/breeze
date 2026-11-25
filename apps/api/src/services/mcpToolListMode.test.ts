@@ -3,7 +3,9 @@ import {
   MCP_TOOL_LIST_HEADER,
   MCP_TOOL_LIST_META_KEY,
   __resetMcpToolListDefaultWarningForTests,
+  effectiveMcpToolListMode,
   mcpToolListDefault,
+  parseStoredMcpToolListMode,
   readRequestedToolListMode,
   resolveMcpToolListMode,
 } from './mcpToolListMode';
@@ -89,5 +91,61 @@ describe('mcpToolListDefault', () => {
     expect(mcpToolListDefault({ MCP_TOOL_LIST_DEFAULT: 'yes' })).toBe('full');
     expect(mcpToolListDefault({ MCP_TOOL_LIST_DEFAULT: 'yes' })).toBe('full');
     expect(error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseStoredMcpToolListMode', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('passes the stored values through, silently', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(parseStoredMcpToolListMode('full')).toBe('full');
+    expect(parseStoredMcpToolListMode('progressive')).toBe('progressive');
+    expect(parseStoredMcpToolListMode(null)).toBeNull();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('a context missing the field resolves null and logs once', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(parseStoredMcpToolListMode(undefined)).toBeNull();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith('[MCP] principal context missing mcpToolListMode');
+  });
+
+  it.each(['bulk', 'Full', 'Progressive', '', 1, false])('an unrecognised stored value (%j) is full and logs, whatever the deployment default', (raw) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stored = parseStoredMcpToolListMode(raw);
+    expect(stored).toBe('full');
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith('[MCP] principal context has an unrecognised mcpToolListMode; using "full"');
+    expect(resolveMcpToolListMode({ requestOverride: null, credential: { mcpToolListMode: stored, partnerServicePrincipal: false }, deploymentDefault: 'progressive' }))
+      .toEqual({ mode: 'full', source: 'credential' });
+  });
+
+  it.each([null, undefined])('nothing stored (%s) still follows the deployment default', (raw) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(resolveMcpToolListMode({
+      requestOverride: null,
+      credential: { mcpToolListMode: parseStoredMcpToolListMode(raw), partnerServicePrincipal: false },
+      deploymentDefault: 'progressive',
+    })).toEqual({ mode: 'progressive', source: 'deployment_default' });
+  });
+});
+
+describe('effectiveMcpToolListMode', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    ['full', 'progressive', { mode: 'full', source: 'credential' }],
+    ['progressive', 'full', { mode: 'progressive', source: 'credential' }],
+    [null, 'full', { mode: 'full', source: 'deployment_default' }],
+    [null, 'progressive', { mode: 'progressive', source: 'deployment_default' }],
+  ] as const)('stored %s under default %s', (stored, deploymentDefault, expected) => {
+    expect(effectiveMcpToolListMode(stored, deploymentDefault)).toEqual(expected);
+  });
+
+  it('reads MCP_TOOL_LIST_DEFAULT when no default is passed', () => {
+    vi.stubEnv('MCP_TOOL_LIST_DEFAULT', 'progressive');
+    expect(effectiveMcpToolListMode(null)).toEqual({ mode: 'progressive', source: 'deployment_default' });
   });
 });

@@ -361,7 +361,7 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is `true`, call the same tool again with `cursor` set to the previous `nextCursor` and the same filters to get the next page. A result whose payload was too large to return in full is stored as an artifact and comes back with an `artifact.handle` instead -- `read_artifact` pages through that stored copy by byte offset. `read_artifact` only reads an artifact captured by your own chat session or agent run, and capture itself only happens on hosted deployments with the AI workspace enabled or, since v0.117.0, on a self-hosted deployment that opts in with `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED` (see [Environment → AI](/deploy/environment/#ai)); otherwise an oversized result is truncated; an MCP `tools/call` has no session to anchor a capture to, so `read_artifact` over MCP usually returns `no_capture_anchor` today. It is listed for forward compatibility while MCP-side capture anchoring is designed.
 
-**Tool list modes (lab only).** By default `tools/list` returns every tool this connection can call (`full`). A connection can instead ask for a `progressive` list for one request, with the `Mcp-Tool-List: progressive` header (both transports) or `params._meta["app.breeze/toolList"]` (2026-07-28 clients). A `progressive` list is a small core of tools plus three meta-tools: `search_tools` finds a tool by keywords, `get_tool_details` returns its full definition, and `call_tool` runs it with the same checks, approvals, limits and audit as a direct call. (Its audit row also records `metaTool: call_tool` and the real `toolName`. It cannot target the three meta-tools, and an approval retry must come back the way the call went out: wrapped through `call_tool`, or direct.) The override applies only to the request that carries it, so send it on `initialize` or `server/discover` too to get the matching instructions. `_meta` is ignored for older protocol versions. A header and `_meta` that disagree, or a value other than `full` or `progressive`, are refused with `-32602`. The operator default is `MCP_TOOL_LIST_DEFAULT` (`full`). Partner service principal keys stay on `full` unless the request opts in. Per-key and per-connection settings are not available yet, so treat `progressive` as lab-only for now.
+By default `tools/list` returns every tool the connection can call. A client with no tool search of its own can be given a much shorter list instead: see [Tool list modes](#tool-list-modes).
 
 ### Device tools
 
@@ -643,6 +643,75 @@ These write tools follow the same per-action tiers as in-product chat. Every Tie
 </Aside>
 
 ---
+
+## Tool list modes
+
+`tools/list` has two modes. The mode decides which tools are **listed** and which server instructions are sent. It never changes what a call may do: the same scopes, roles, tool areas, approvals, limits and audit apply in both.
+
+| Mode | What `tools/list` returns |
+|---|---|
+| `full` | Every tool this connection can call. The default. |
+| `progressive` | A small core of tools plus three meta-tools, `search_tools`, `get_tool_details` and `call_tool`. The other tools are found and run through them. |
+
+Use `progressive` for a client that loads every listed tool into its context up front. A client that already defers tool definitions or searches them itself, as Claude Code does, gains little from it and may prefer `full`.
+
+### How the mode is chosen
+
+For each request, the first of these that is set wins:
+
+1. **The request.** The `Mcp-Tool-List` header, on every transport, or `params._meta["app.breeze/toolList"]`, for 2026-07-28 clients only (`_meta` is ignored for older protocol versions). It applies only to the request that carries it, so send it on `initialize` or `server/discover` as well to get matching instructions. If both are present and differ, the request is refused with `-32602` and `reason: "tool_list_mode_conflict"`. Any value other than `full` or `progressive`, exactly, is refused with `reason: "tool_list_mode_invalid"`.
+2. **The credential.** The mode stored on the API key or the OAuth connection (next section).
+3. **The deployment default**, `MCP_TOOL_LIST_DEFAULT` (`full` unless the operator changes it).
+
+Partner service principal keys store no mode. They use `full` unless the request itself asks for `progressive`.
+
+`whoami` reports the mode of the request and where it came from.
+
+### Setting it on a credential
+
+The mode is set per credential. Organizations cannot override it. Leave it on **Inherit** to follow the deployment default; the field always shows the mode in effect and where it comes from.
+
+| Credential | Where |
+|---|---|
+| API key | **Settings > API Keys**: the **MCP tool list** field when you create a key with an `ai:*` scope, and in the key's details afterwards. Over the API it is `mcpToolListMode`, see [API keys](/reference/api-keys/#mcp-tool-list-mcptoollistmode). Rotating a key keeps it. |
+| OAuth connection | On the consent screen when you connect, then under **Account > Connected apps**. Changing it there applies to all of your active connections to that app, across all partners, and takes effect on the next request. |
+
+An OAuth connection's mode belongs to that authorization. When you reconnect an app while a connection is still active, the consent screen starts from the mode of your latest active one for the selected partner; once it has expired or been revoked, the screen starts on **Inherit**. If your connections to one app store different values, the page shows **Multiple values** until you choose one. Partner administrators see each app's mode, read-only, under **Settings > Connected Apps**.
+
+API keys and OAuth connections that existed before this setting did are stored as `full`, so a later change to the deployment default does not change what they list for as long as they last. Ones created since start on **Inherit**, including a reconnection after the old one ended.
+
+### The three meta-tools
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `search_tools` | `query`, optional `domain` and `limit` (default 8, at most 20) | The best matching tools, from the tools this connection can list in `full` |
+| `get_tool_details` | `names` (at most 10) | Each tool's full definition, including its input schema |
+| `call_tool` | `name`, `arguments` | The result of calling that tool |
+
+```json
+{ "method": "tools/call", "params": { "name": "search_tools", "arguments": { "query": "low disk space" } } }
+```
+
+```json
+{ "method": "tools/call", "params": { "name": "get_tool_details", "arguments": { "names": ["analyze_disk_usage"] } } }
+```
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "call_tool",
+    "arguments": { "name": "analyze_disk_usage", "arguments": { "deviceId": "DEVICE_UUID" } }
+  }
+}
+```
+
+- `call_tool` runs the inner tool with the same checks, approvals, limits and audit as a direct call. A tool can also be called directly by name in `progressive`, without `call_tool`.
+- `call_tool` cannot target the three meta-tools, and it refuses unknown keys beside `name` and `arguments`.
+- The audit log carries the real tool name. The request's audit row also records `metaTool: call_tool`.
+- An approval retry works through `call_tool` too, but it must come back the way the call went out: wrapped, or direct.
+- `call_tool` is annotated as destructive and not read-only, because it can run any tool. A client that decides from annotations, or that keeps its own tool allowlist, sees one tool instead of the real ones. Use `full`, or direct calls, for those clients.
+- A name this connection cannot list is answered as an unknown tool.
 
 ## Available resources
 

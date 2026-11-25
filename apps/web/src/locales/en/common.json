@@ -2863,6 +2863,27 @@
         "admin": "Administration",
         "ai": "AI agents"
       }
+    },
+    "mcpToolListMode": {
+      "label": "MCP tool list",
+      "inherit": "Inherit (deployment default: {{mode}})",
+      "full": "Full",
+      "progressive": "Progressive",
+      "mixed": "Multiple values",
+      "effective": "Shown now: {{mode}} — {{source}}",
+      "effectiveUnsaved": "Will show: {{mode}} — {{source}}",
+      "sourceKey": "set on this key",
+      "sourceConnection": "set on this connection",
+      "sourceDeploymentDefault": "deployment default",
+      "hint": "Full lists every tool. Progressive lists a small core plus tool search, for clients that have no tool search of their own. It changes what is listed, never what is allowed.",
+      "perKey": "Set per key. Organizations cannot override it.",
+      "perConnection": "Set per connection. Organizations cannot override it.",
+      "allConnections": "Applies to all of your active connections to this app, across all partners.",
+      "mixedHelp": "Your connections to this app have different values. Choose one to apply to all of them.",
+      "save": "Save tool list",
+      "saving": "Saving…",
+      "saved": "MCP tool list saved",
+      "saveFailed": "Could not save the MCP tool list"
     }
   },
   "whatsNew": {

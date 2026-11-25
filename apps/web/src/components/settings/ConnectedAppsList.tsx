@@ -6,12 +6,15 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import type { McpPartnerClientToolListMode } from '@breeze/shared';
 
 interface ConnectedApp {
   client_id: string;
   client_name: string;
   created_at: string;
   last_used_at: string | null;
+  /** #12429: summary of this partner's active connections; null/absent = none to report. */
+  mcp_tool_list_mode?: McpPartnerClientToolListMode;
 }
 
 type Status =
@@ -93,6 +96,17 @@ export default function ConnectedAppsList() {
     }
   };
 
+  // Read-only: each person sets this for their own connection.
+  const toolListLabel = (mode: ConnectedApp['mcp_tool_list_mode']): string | null => {
+    switch (mode) {
+      case 'full': return t('connectedAppsList.toolListFull');
+      case 'progressive': return t('connectedAppsList.toolListProgressive');
+      case 'default': return t('connectedAppsList.toolListDefault');
+      case 'mixed': return t('connectedAppsList.toolListMixed');
+      default: return null;
+    }
+  };
+
   if (status.kind === 'loading') {
     return <p className="text-sm text-muted-foreground">{t('connectedAppsList.loadingConnectedApps')}</p>;
   }
@@ -145,11 +159,21 @@ export default function ConnectedAppsList() {
         <tbody className="divide-y">
           {status.apps.map((app) => {
             const isBusy = revoking === app.client_id;
+            const toolList = toolListLabel(app.mcp_tool_list_mode);
             return (
               <tr key={app.client_id}>
                 <td className="px-4 py-3">
                   <div className="font-medium">{app.client_name}</div>
                   <div className="text-xs text-muted-foreground">{app.client_id}</div>
+                  {toolList && (
+                    <span
+                      data-testid={`connected-app-tool-list-${app.client_id}`}
+                      title={t('connectedAppsList.toolListHint')}
+                      className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-medium"
+                    >
+                      {toolList}
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">{formatDate(app.created_at)}</td>
                 <td className="px-4 py-3 text-muted-foreground">{formatDate(app.last_used_at)}</td>

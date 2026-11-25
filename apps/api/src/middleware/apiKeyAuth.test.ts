@@ -1043,7 +1043,7 @@ describe('apiKeyAuth middleware', () => {
   });
 
   describe('B-W02 (#6156): mcpDomains on the principal context', () => {
-    const keyRow = (mcpDomains: string[] | null) => ({
+    const keyRow = (mcpDomains: string[] | null, mcpToolListMode: string | null) => ({
       id: 'key-mcp',
       orgId: 'org-2',
       name: 'Key',
@@ -1056,10 +1056,11 @@ describe('apiKeyAuth middleware', () => {
       status: 'active',
       createdBy: 'user-2',
       mcpDomains,
+      mcpToolListMode,
     });
 
-    const run = async (mcpDomains: string[] | null) => {
-      buildSequentialSelectMock([[keyRow(mcpDomains)], [{ status: 'active' }]]);
+    const run = async (mcpDomains: string[] | null, mcpToolListMode: string | null = null) => {
+      buildSequentialSelectMock([[keyRow(mcpDomains, mcpToolListMode)], [{ status: 'active' }]]);
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
       } as any);
@@ -1082,6 +1083,13 @@ describe('apiKeyAuth middleware', () => {
       const ctx = c.get('apiKey');
       expect('mcpDomains' in ctx).toBe(true);
       expect(ctx.mcpDomains).toBeNull();
+    });
+
+    it.each(['full', 'progressive', null])('sets mcpToolListMode from the same key row (#12429): %s', async (mode) => {
+      const c = await run(null, mode);
+      expect(Object.keys(vi.mocked(db.select).mock.calls[0]![0] as object)).toContain('mcpToolListMode');
+      expect('mcpToolListMode' in c.get('apiKey')).toBe(true);
+      expect(c.get('apiKey').mcpToolListMode).toBe(mode);
     });
   });
 });

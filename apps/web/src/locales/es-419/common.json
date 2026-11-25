@@ -2863,6 +2863,27 @@
         "admin": "Administración",
         "ai": "Agentes de IA"
       }
+    },
+    "mcpToolListMode": {
+      "label": "Lista de herramientas MCP",
+      "inherit": "Heredar (predeterminado de la implementación: {{mode}})",
+      "full": "Completa",
+      "progressive": "Progresiva",
+      "mixed": "Varios valores",
+      "effective": "Se muestra ahora: {{mode}} — {{source}}",
+      "effectiveUnsaved": "Se mostrará: {{mode}} — {{source}}",
+      "sourceKey": "definida en esta clave",
+      "sourceConnection": "definida en esta conexión",
+      "sourceDeploymentDefault": "predeterminado de la implementación",
+      "hint": "La lista completa muestra todas las herramientas. La progresiva muestra un núcleo pequeño más la búsqueda de herramientas, para clientes que no tienen búsqueda de herramientas propia. Cambia lo que se muestra, nunca lo que se permite.",
+      "perKey": "Se define por clave. Las organizaciones no pueden anularla.",
+      "perConnection": "Se define por conexión. Las organizaciones no pueden anularla.",
+      "allConnections": "Se aplica a todas tus conexiones activas con esta aplicación, en todos los partners.",
+      "mixedHelp": "Tus conexiones con esta aplicación tienen valores distintos. Elige uno para aplicarlo a todas.",
+      "save": "Guardar lista de herramientas",
+      "saving": "Guardando…",
+      "saved": "Lista de herramientas MCP guardada",
+      "saveFailed": "No se pudo guardar la lista de herramientas MCP"
     }
   },
   "whatsNew": {

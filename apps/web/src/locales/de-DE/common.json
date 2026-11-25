@@ -2863,6 +2863,27 @@
         "admin": "Verwaltung",
         "ai": "KI-Agenten"
       }
+    },
+    "mcpToolListMode": {
+      "label": "MCP-Werkzeugliste",
+      "inherit": "Übernehmen (Standard der Bereitstellung: {{mode}})",
+      "full": "Vollständig",
+      "progressive": "Progressiv",
+      "mixed": "Mehrere Werte",
+      "effective": "Aktuell angezeigt: {{mode}} — {{source}}",
+      "effectiveUnsaved": "Wird angezeigt: {{mode}} — {{source}}",
+      "sourceKey": "für diesen Schlüssel festgelegt",
+      "sourceConnection": "für diese Verbindung festgelegt",
+      "sourceDeploymentDefault": "Standard der Bereitstellung",
+      "hint": "„Vollständig“ listet jedes Werkzeug auf. „Progressiv“ listet einen kleinen Kern plus die Werkzeugsuche auf, für Clients ohne eigene Werkzeugsuche. Das ändert, was aufgelistet wird, nie, was erlaubt ist.",
+      "perKey": "Wird pro Schlüssel festgelegt. Organisationen können es nicht überschreiben.",
+      "perConnection": "Wird pro Verbindung festgelegt. Organisationen können es nicht überschreiben.",
+      "allConnections": "Gilt für alle Ihre aktiven Verbindungen zu dieser App, über alle Partner hinweg.",
+      "mixedHelp": "Ihre Verbindungen zu dieser App haben unterschiedliche Werte. Wählen Sie einen Wert, der für alle gelten soll.",
+      "save": "Werkzeugliste speichern",
+      "saving": "Wird gespeichert …",
+      "saved": "MCP-Werkzeugliste gespeichert",
+      "saveFailed": "Die MCP-Werkzeugliste konnte nicht gespeichert werden"
     }
   },
   "whatsNew": {

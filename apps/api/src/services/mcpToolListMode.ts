@@ -10,9 +10,14 @@
  * once-per-process report of an invalid value.
  */
 
-export type McpToolListMode = 'full' | 'progressive';
-export type McpToolListModeSource = 'request' | 'credential' | 'deployment_default';
-export type ResolvedMcpToolListMode = { mode: McpToolListMode; source: McpToolListModeSource };
+import {
+  MCP_TOOL_LIST_MODES,
+  type McpToolListMode,
+  type McpToolListModeSource,
+  type ResolvedMcpToolListMode,
+} from '@breeze/shared';
+
+export type { McpToolListMode, McpToolListModeSource, ResolvedMcpToolListMode };
 
 export const MCP_TOOL_LIST_HEADER = 'Mcp-Tool-List';
 export const MCP_TOOL_LIST_META_KEY = 'app.breeze/toolList';
@@ -22,7 +27,7 @@ export type RequestedToolListMode =
   | { ok: false; reason: 'tool_list_mode_conflict' | 'tool_list_mode_invalid' };
 
 function isMode(value: unknown): value is McpToolListMode {
-  return value === 'full' || value === 'progressive';
+  return (MCP_TOOL_LIST_MODES as readonly unknown[]).includes(value);
 }
 
 /**
@@ -57,6 +62,35 @@ export function mcpToolListDefault(env: NodeJS.ProcessEnv = process.env): McpToo
 /** Test-only: re-arm the once-per-process invalid-default report. */
 export function __resetMcpToolListDefaultWarningForTests(): void {
   invalidDefaultReported = false;
+}
+
+/**
+ * A principal context's stored mode. Every MCP auth middleware sets it, so a
+ * missing value is a wiring bug: it is reported and read as "nothing stored".
+ * A value that is neither mode (the column's CHECK refuses one) is reported and
+ * read as `full`, never as the deployment default: somebody chose something for
+ * this credential, so a later change of the default must not move it.
+ */
+export function parseStoredMcpToolListMode(raw: unknown): McpToolListMode | null {
+  if (raw === null || isMode(raw)) return raw;
+  if (raw === undefined) {
+    console.error('[MCP] principal context missing mcpToolListMode');
+    return null;
+  }
+  console.error('[MCP] principal context has an unrecognised mcpToolListMode; using "full"');
+  return 'full';
+}
+
+/** What a credential storing `stored` is shown when the request itself asks for nothing. */
+export function effectiveMcpToolListMode(
+  stored: McpToolListMode | null,
+  deploymentDefault: McpToolListMode = mcpToolListDefault(),
+): ResolvedMcpToolListMode {
+  return resolveMcpToolListMode({
+    requestOverride: null,
+    credential: { mcpToolListMode: stored, partnerServicePrincipal: false },
+    deploymentDefault,
+  });
 }
 
 export function resolveMcpToolListMode(input: {

@@ -1,0 +1,80 @@
+-- #12429 (external MCP progressive disclosure, W02): which tool list a
+-- credential's MCP client is shown. NULL = follow the deployment default
+-- (MCP_TOOL_LIST_DEFAULT, `full` as shipped); 'full' / 'progressive' pin it.
+--
+-- Every credential that exists when this first runs is pinned to 'full', so a
+-- later change of the deployment default cannot move an existing integration.
+-- Credentials created afterwards start NULL.
+--
+-- Run-once: each table's own CHECK constraint is the marker. The backfill and
+-- the constraint are written together, so a replay finds the constraint, adds
+-- nothing and touches no row (a NULL row created since then stays NULL).
+--
+-- Every table reference is schema-qualified; the integration suite relies on it
+-- to run this file against copies (mcpToolListModeMigration.integration.test.ts).
+--
+-- Every API-key and OAuth request reads these tables, and each ALTER takes ACCESS
+-- EXCLUSIVE, held to commit: an ALTER queued behind one long reader would queue
+-- all of that authentication behind itself. lock_timeout bounds each wait. The two
+-- ADD COLUMNs take both locks before anything else happens (oauth_grants second,
+-- with api_keys already held, so a failed run can hold up authentication for two
+-- waits at most). On timeout the whole file rolls back, autoMigrate aborts boot,
+-- and the file re-runs cleanly on the next start.
+SET LOCAL lock_timeout = '5s';
+
+SELECT set_config('breeze.scope', 'system', true);
+
+ALTER TABLE public.api_keys ADD COLUMN IF NOT EXISTS mcp_tool_list_mode text;
+ALTER TABLE public.oauth_grants ADD COLUMN IF NOT EXISTS mcp_tool_list_mode text;
+
+DO $$
+DECLARE
+  n bigint;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'api_keys_mcp_tool_list_mode_check'
+       AND conrelid = 'public.api_keys'::regclass
+  ) THEN
+    -- Again inside the statement that writes: applied raw without a transaction
+    -- (psql -f), the election above has already expired, and the CHECK below would
+    -- make the skipped backfill permanent.
+    PERFORM set_config('breeze.scope', 'system', true);
+    UPDATE public.api_keys SET mcp_tool_list_mode = 'full' WHERE mcp_tool_list_mode IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RAISE NOTICE 'mcp_tool_list_mode: % existing api_keys row(s) set to full', n;
+    ALTER TABLE public.api_keys
+      ADD CONSTRAINT api_keys_mcp_tool_list_mode_check
+      CHECK (mcp_tool_list_mode IS NULL OR mcp_tool_list_mode IN ('full', 'progressive'));
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  n bigint;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'oauth_grants_mcp_tool_list_mode_check'
+       AND conrelid = 'public.oauth_grants'::regclass
+  ) THEN
+    PERFORM set_config('breeze.scope', 'system', true);
+    -- oauth_grants' only policy is TO breeze_app, so on a database whose owner is
+    -- neither a superuser nor a member of breeze_app no policy admits the owner
+    -- whatever the scope says: the UPDATE would match zero rows, silently, and
+    -- the CHECK below would still record the backfill as done. Lift FORCE for
+    -- this one statement. ALTER TABLE holds an ACCESS EXCLUSIVE lock until commit
+    -- and this block is one statement, so no other session ever sees the table
+    -- without it and an error rolls it back. A role that does not own the table
+    -- fails here instead of skipping rows. (api_keys' policies are TO PUBLIC, so
+    -- system scope is enough there.)
+    ALTER TABLE public.oauth_grants NO FORCE ROW LEVEL SECURITY;
+    UPDATE public.oauth_grants SET mcp_tool_list_mode = 'full' WHERE mcp_tool_list_mode IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RAISE NOTICE 'mcp_tool_list_mode: % existing oauth_grants row(s) set to full', n;
+    ALTER TABLE public.oauth_grants FORCE ROW LEVEL SECURITY;
+    ALTER TABLE public.oauth_grants
+      ADD CONSTRAINT oauth_grants_mcp_tool_list_mode_check
+      CHECK (mcp_tool_list_mode IS NULL OR mcp_tool_list_mode IN ('full', 'progressive'));
+  END IF;
+END $$;

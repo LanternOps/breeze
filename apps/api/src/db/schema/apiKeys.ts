@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, integer, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import type { McpToolListMode } from '@breeze/shared';
 import { organizations } from './orgs';
 import { users } from './users';
 import { servicePrincipals } from './servicePrincipals';
@@ -38,4 +39,8 @@ export const apiKeys = pgTable('api_keys', {
   // set of grantable domains restricts it; 'core' is implicit, never stored.
   // Shape CHECK lives in the migration. REST is unaffected.
   mcpDomains: text('mcp_domains').array().$type<string[] | null>(),
+  // #12429: the tool list this key's MCP client is shown. NULL = follow the
+  // deployment default. Presentation only, never authority. Rows that existed
+  // when the column was added were pinned to 'full' by the migration.
+  mcpToolListMode: text('mcp_tool_list_mode').$type<McpToolListMode | null>(),
 });

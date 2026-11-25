@@ -2,6 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
 import { eq } from 'drizzle-orm';
+import type { McpToolListMode } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, users } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
@@ -36,6 +37,9 @@ export interface ApiKeyContext {
     // value (undefined) fails CLOSED to core-only in mcpServer.ts
     // (services/mcpDomains.ts parseStoredMcpDomains). REST ignores it.
     mcpDomains?: readonly string[] | null;
+    // #12429: the stored MCP tool list mode of the credential this request
+    // authenticated as. `null` = deployment default. REST ignores it.
+    mcpToolListMode?: McpToolListMode | null;
   };
   orgId: string;
 }
@@ -157,7 +161,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         creatorAuthEpoch: apiKeys.creatorAuthEpoch,
         creatorMfaEpoch: apiKeys.creatorMfaEpoch,
         creatorCredentialEpoch: apiKeys.creatorCredentialEpoch,
-        mcpDomains: apiKeys.mcpDomains
+        mcpDomains: apiKeys.mcpDomains,
+        mcpToolListMode: apiKeys.mcpToolListMode
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -346,6 +351,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     principalId: apiKey.principalId,
     // B-W02 (#6156): passed through untouched (string[] | null from the row).
     mcpDomains: apiKey.mcpDomains,
+    // #12429: this key's own stored mode.
+    mcpToolListMode: apiKey.mcpToolListMode,
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 
