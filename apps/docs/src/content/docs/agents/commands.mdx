@@ -986,10 +986,11 @@ No payload parameters. Stops the currently running backup job.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `snapshotId` | string | Yes | Snapshot to restore |
-| `targetPath` | string | No | Directory to restore into. Defaults to the original file locations if omitted. |
+| `targetPath` | string | No | Folder to restore into; each file keeps its full original path beneath it. If omitted, files go to a staging folder in the backup helper's work directory, never to the original locations. |
 | `selectedPaths` | string[] | No | Restore only these paths from the snapshot instead of the full snapshot. See [selective restore](/backup/restoring/) for matching behavior. |
+| `allowOverwriteOriginals` | boolean | No | Write files back over their originals. Without it, the helper refuses a `targetPath` where any file would land on an original (a volume root such as `C:\` or `/`, or an alias of one) and writes nothing; the result carries `code: "restore_would_overwrite_originals"`. The API requires it for a volume-root `targetPath`. |
 
-Unlike `backup_test_restore`, `backup_restore` writes to `targetPath` (or the original locations) rather than a managed temp directory -- it is the action that actually puts files back in place.
+Unlike `backup_test_restore`, `backup_restore` writes to `targetPath` (or its staging folder) rather than a managed temp directory. With `allowOverwriteOriginals` and the volume root as `targetPath`, it puts files back in place.
 
 ```json
 {

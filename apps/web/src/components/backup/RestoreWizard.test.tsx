@@ -924,6 +924,70 @@ describe('RestoreWizard', () => {
     expect(screen.getAllByText(/Staging folder on the device/i).length).toBeGreaterThan(0);
   });
 
+  describe('#12638 a volume-root destination overwrites the originals', () => {
+    const restoreRequests: Array<Record<string, unknown>> = [];
+    beforeEach(() => {
+      restoreRequests.length = 0;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') {
+          return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', sizeBytes: 1024 }] });
+        }
+        if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+        if (url.startsWith('/backup/restore?')) return makeJsonResponse({ data: [] });
+        if (url === '/backup/restore' && init?.method === 'POST') {
+          restoreRequests.push(JSON.parse(String(init.body)));
+          return makeJsonResponse({ id: 'restore-1', status: 'pending', snapshotId: 'snap-1' }, true, 201);
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+    });
+
+    async function chooseDestination(path: string) {
+      render(<RestoreWizard />);
+      await screen.findByText('Restore Wizard');
+      for (let index = 0; index < 3; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      fireEvent.click(screen.getByRole('button', { name: /Alternate path/i }));
+      fireEvent.change(screen.getByLabelText('Alternate path'), { target: { value: path } });
+    }
+
+    it('warns, and blocks Start until the operator confirms overwriting the originals', async () => {
+      await chooseDestination('C:\\');
+      expect(screen.getByTestId('restore-root-target-warning').textContent).toMatch(/original/i);
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      expect((screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement).disabled).toBe(true);
+
+      fireEvent.click(screen.getByRole('button', { name: /Back/i }));
+      fireEvent.click(screen.getByTestId('restore-overwrite-originals'));
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      expect(screen.getByTestId('restore-review-overwrites-originals')).toBeTruthy();
+      const start = screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement;
+      expect(start.disabled).toBe(false);
+      fireEvent.click(start);
+      await waitFor(() => expect(restoreRequests).toHaveLength(1));
+      expect(restoreRequests[0]).toMatchObject({ targetPath: 'C:\\', allowOverwriteOriginals: true });
+    });
+
+    it('a folder destination needs no confirmation and sends no flag', async () => {
+      await chooseDestination('D:\\Restored');
+      expect(screen.queryByTestId('restore-root-target-warning')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+      await waitFor(() => expect(restoreRequests).toHaveLength(1));
+      expect(restoreRequests[0]).not.toHaveProperty('allowOverwriteOriginals');
+    });
+
+    it('a confirmation given for a root does not carry over to a later folder path', async () => {
+      await chooseDestination('/');
+      fireEvent.click(screen.getByTestId('restore-overwrite-originals'));
+      fireEvent.change(screen.getByLabelText('Alternate path'), { target: { value: '/var/restore' } });
+      fireEvent.change(screen.getByLabelText('Alternate path'), { target: { value: '/' } });
+      expect((screen.getByTestId('restore-overwrite-originals') as HTMLInputElement).checked).toBe(false);
+    });
+  });
+
   it('echoes the typed alternate destination path on the Review step (#6496)', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

@@ -56,7 +56,7 @@ This page lists all backup API endpoints for teams building integrations or auto
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/backup/restore` | Initiate a restore (`snapshotId`, optional `deviceId`, `targetPath`) |
+| POST | `/backup/restore` | Initiate a restore (`snapshotId`, optional `deviceId`, `targetPath`, `allowOverwriteOriginals` — required for a volume-root `targetPath`) |
 | GET | `/backup/restore` | List restore jobs (filter: `deviceId`, `snapshotId`, `status`, `from`, `to`) |
 | GET | `/backup/restore/:id` | Get a single restore job with status and result details |
 

@@ -481,6 +481,73 @@ describe('restore routes', () => {
     );
   });
 
+  describe('#12638 a volume-root target needs allowOverwriteOriginals', () => {
+    function primeRestore(targetPath: string) {
+      selectMock
+        .mockReturnValueOnce(
+          chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+        )
+        .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+        .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+      const row = {
+        id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'full', selectedPaths: [],
+        status: 'pending', targetPath, startedAt: null, completedAt: null, restoredSize: null, restoredFiles: null,
+        targetConfig: null, commandId: null,
+        createdAt: new Date('2026-04-01T00:00:00Z'), updatedAt: new Date('2026-04-01T00:00:00Z'),
+      };
+      insertMock.mockReturnValueOnce(chainMock([row]));
+      queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'sent' } });
+      updateMock.mockReturnValueOnce(chainMock([{ ...row, status: 'running', commandId: 'command-1' }]));
+    }
+    const post = (body: Record<string, unknown>) =>
+      app.request('/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full', ...body }),
+      });
+
+    it.each(['C:\\', 'c:/', '/', '\\\\?\\D:\\', '\\\\nas\\share\\'])(
+      'refuses %j without the flag, before reading anything or creating a job',
+      async (targetPath) => {
+        const res = await post({ targetPath });
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.code).toBe('restore_would_overwrite_originals');
+        expect(body.error).toMatch(/original/i);
+        expect(selectMock).not.toHaveBeenCalled();
+        expect(insertMock).not.toHaveBeenCalled();
+        expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+      }
+    );
+
+    it('sends allowOverwriteOriginals to the helper when the request sets it', async () => {
+      primeRestore('C:\\');
+      const res = await post({ targetPath: 'C:\\', allowOverwriteOriginals: true });
+      expect(res.status).toBe(201);
+      expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+        'device-1',
+        'backup_restore',
+        expect.objectContaining({ targetPath: 'C:\\', allowOverwriteOriginals: true }),
+        { userId: 'user-1' }
+      );
+    });
+
+    it('leaves a folder target unchanged: no flag needed, none sent', async () => {
+      primeRestore('D:\\Restored');
+      const res = await post({ targetPath: 'D:\\Restored' });
+      expect(res.status).toBe(201);
+      const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+      expect(payload.targetPath).toBe('D:\\Restored');
+      expect(payload).not.toHaveProperty('allowOverwriteOriginals');
+    });
+
+    it('refuses the flag without a target: the staging folder never overwrites anything', async () => {
+      const res = await post({ allowOverwriteOriginals: true });
+      expect(res.status).toBe(400);
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+  });
+
   // D12: once backupResultPersistence.ts indexes the agent's stable
   // originalPath (e.g. C:\assure\src\content\prefix\pick.txt) instead of the
   // transient VSS shadow-copy device path, a selective restore's selectedPaths

@@ -14,6 +14,7 @@ import {
   Server,
   XCircle
 } from 'lucide-react';
+import { isVolumeRootRestoreTarget } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
@@ -171,6 +172,12 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // was unreachable, so nobody saw it; now that it is mounted, a pre-filled
   // stranger's path is a restore aimed at the wrong directory one click away.
   const [alternatePath, setAlternatePath] = useState('');
+  // #12638: a volume-root destination (C:\, /) writes every file back over
+  // its original. The operator confirms that explicitly; the confirmation is
+  // dropped whenever the path changes, so it never carries to another path.
+  const [overwriteOriginals, setOverwriteOriginals] = useState(false);
+  const alternateIsRoot = destination === 'alternate' && isVolumeRootRestoreTarget(alternatePath);
+  const rootTargetUnconfirmed = alternateIsRoot && !overwriteOriginals;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [restoreError, setRestoreError] = useState<string>();
@@ -458,6 +465,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
         restoreType,
         selectedPaths: restoreType === 'selective' ? Array.from(selectedFiles) : [],
         targetPath: destination === 'alternate' ? alternatePath : undefined,
+        ...(alternateIsRoot && overwriteOriginals ? { allowOverwriteOriginals: true } : {}),
         ...extras,
       };
 
@@ -501,7 +509,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     } finally {
       setRestoring(false);
     }
-  }, [alternatePath, destination, fetchRestoreHistory, restoreType, selectedFiles, selectedSnapshot, snapshotId, t]);
+  }, [alternateIsRoot, alternatePath, destination, fetchRestoreHistory, overwriteOriginals, restoreType, selectedFiles, selectedSnapshot, snapshotId, t]);
 
   const { run: runWithStepUp } = unattestedStepUp;
   const handleRestore = useCallback(() => {
@@ -817,10 +825,34 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     placeholder={t('restoreWizard.alternatePathPlaceholder')}
                     value={alternatePath}
-                    onChange={(event) => setAlternatePath(event.target.value)}
+                    onChange={(event) => {
+                      setAlternatePath(event.target.value);
+                      setOverwriteOriginals(false);
+                    }}
                   />
                   {!alternatePath.trim() && (
                     <p className="text-xs text-muted-foreground">{t('restoreWizard.alternatePathRequired')}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground">{t('restoreWizard.alternatePathLayoutHint')}</p>
+                  {alternateIsRoot && (
+                    <div
+                      data-testid="restore-root-target-warning"
+                      className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+                    >
+                      <p className="flex items-start gap-2">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        {t('restoreWizard.rootTargetWarning', { path: alternatePath.trim() })}
+                      </p>
+                      <label className="flex items-center gap-2 font-medium">
+                        <input
+                          type="checkbox"
+                          data-testid="restore-overwrite-originals"
+                          checked={overwriteOriginals}
+                          onChange={(event) => setOverwriteOriginals(event.target.checked)}
+                        />
+                        {t('restoreWizard.rootTargetConfirm')}
+                      </label>
+                    </div>
                   )}
                 </div>
               )}
@@ -889,6 +921,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                       ? t('restoreWizard.stagingFolder')
                       : `Alternate path: ${alternatePath.trim() || '(none entered)'}`}
                   </p>
+                  {alternateIsRoot && overwriteOriginals ? (
+                    <p data-testid="restore-review-overwrites-originals" className="mt-2 text-xs font-medium text-amber-800 dark:text-amber-300">
+                      {t('restoreWizard.reviewOverwritesOriginals')}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -929,7 +966,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   restoring ||
                   !selectedSnapshot ||
                   (restoreType === 'selective' && selectedFiles.size === 0) ||
-                  (destination === 'alternate' && !alternatePath.trim())
+                  (destination === 'alternate' && !alternatePath.trim()) ||
+                  rootTargetUnconfirmed
                 }
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >

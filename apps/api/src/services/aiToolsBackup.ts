@@ -38,7 +38,7 @@ import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 import { sumStoredSnapshotBytes } from './backupStoredBytes';
-import { classifyBackupFailureDetail, splitReparseSkipNotice } from '@breeze/shared';
+import { classifyBackupFailureDetail, isVolumeRootRestoreTarget, splitReparseSkipNotice } from '@breeze/shared';
 import { redactAiToolOutputText } from './aiToolOutput';
 import {
   getProviderCoverageForDevices,
@@ -746,7 +746,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         properties: {
           snapshotId: { type: 'string', description: 'Snapshot UUID (required)' },
           deviceId: { type: 'string', description: 'Target device UUID (required)' },
-          targetPath: { type: 'string', description: 'Destination path for restore (optional)' },
+          targetPath: { type: 'string', description: 'Destination folder for restore (optional; a volume root such as C:\\ or / is refused)' },
           selectedPaths: {
             type: 'array',
             items: { type: 'string' },
@@ -760,6 +760,15 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const snapshotId = input.snapshotId as string;
       const deviceId = input.deviceId as string;
       if (!snapshotId || !deviceId) return JSON.stringify({ error: 'snapshotId and deviceId are required' });
+      // #12638: a volume-root target writes every file back over its
+      // original. This tool cannot confirm that; a person can, from the
+      // Restore wizard.
+      if (typeof input.targetPath === 'string' && isVolumeRootRestoreTarget(input.targetPath)) {
+        return JSON.stringify({
+          error: `Restoring to ${input.targetPath.trim()} would write every file back over the original it was backed up from. Choose a folder as the target (for example a new folder on that drive); overwriting the originals must be confirmed by a technician in the Restore wizard.`,
+          code: 'restore_would_overwrite_originals',
+        });
+      }
 
       // Verify device access
       const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
