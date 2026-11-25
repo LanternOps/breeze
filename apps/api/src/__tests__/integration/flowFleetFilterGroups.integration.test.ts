@@ -175,8 +175,10 @@ describe('a group named by a fleetFilter resolves from its definition (#12418 W0
     await getTestDb().update(deviceGroups).set({ filterConditions: all(rule('groupId', 'equals', b)) }).where(eq(deviceGroups.id, a));
     expect(await resolve(a)).toEqual(refused);
     expect(await saveIssues(a)).toEqual(['input_invalid']);
-    for (const bad of [rule('siteId', 'equals', 'not-a-uuid'), rule('osVersion', 'matches', '(')]) {
-      expect(await resolve(await group({ filterConditions: all(bad) })), bad.field).toEqual(refused);
+    for (const bad of [rule('siteId', 'equals', 'not-a-uuid'), rule('osVersion', 'matches', '('),
+      // Never reaches Postgres: the driver cannot bind it.
+      rule('lastSeenAt', 'after', 1700000000000), rule('lastSeenAt', 'after', { amount: 7, unit: 'days' })]) {
+      expect(await resolve(await group({ filterConditions: all(bad) })), JSON.stringify(bad)).toEqual(refused);
     }
   });
 

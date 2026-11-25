@@ -205,8 +205,8 @@ export async function loadGatedGroups(executor: Pick<typeof db, 'select' | 'sele
     .selectDistinct({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)
     .where(and(inStaticGroup, ne(deviceGroupMemberships.addedBy, 'manual')));
-  // Pinning marks a row `manual` and a withdrawn pin leaves it so, hence the
-  // log. A join, so the log (no index on its group) is read once.
+  // A withdrawn pin is not an add by hand; the log tells the two apart. A join,
+  // so the log (no index on its group) is read once.
   const withdrawnPin = await executor
     .selectDistinct({ groupId: deviceGroupMemberships.groupId })
     .from(deviceGroupMemberships)

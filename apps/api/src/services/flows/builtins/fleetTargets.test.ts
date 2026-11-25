@@ -147,7 +147,7 @@ describe('resolveFleetFilterOnce', () => {
 
   it('rules Postgres cannot evaluate are a problem; the same error without a group propagates', async () => {
     m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: [], filterConditions: null }];
-    for (const code of ['22P02', '2201B', '42883']) {
+    for (const code of ['22P02', '2201B', '42883', 'ERR_INVALID_ARG_TYPE', 'UNDEFINED_VALUE', 'MAX_PARAMETERS_EXCEEDED']) {
       let calls = 0;
       m.bound.mockImplementation(() => { calls += 1; if (calls === 2) throw Object.assign(new Error('secret text'), { code }); });
       expect(await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10), code).toEqual({ count: 0, deviceIds: [], problems: [expect.stringContaining('cannot be checked')] });

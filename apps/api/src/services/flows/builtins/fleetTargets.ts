@@ -151,13 +151,13 @@ export const FLEET_FILTER_EMPTY_PROBLEM = 'fleetFilter names no field, so it wou
 const GROUP_REFUSED_PROBLEM =
   'The device group this filter names is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.';
 
-/**
- * Rules the gate could compile but Postgres could not evaluate: a value its
- * column cannot read (class 22) or a comparison the types do not have.
- */
+/** A comparison the types do not have, and a value the driver cannot bind (it never reaches Postgres). */
+const RULE_EVALUATION_CODES: ReadonlySet<string> = new Set(['42804', '42846', '42883', '42P18', 'ERR_INVALID_ARG_TYPE', 'UNDEFINED_VALUE', 'MAX_PARAMETERS_EXCEEDED']);
+
+/** Rules the gate could compile but that cannot be evaluated: the above, or a value its column cannot read (class 22). */
 function isRuleEvaluationError(error: unknown): boolean {
   const code = pgErrorCode(error);
-  return code !== undefined && code !== null && (code.startsWith('22') || ['42804', '42846', '42883', '42P18'].includes(code));
+  return typeof code === 'string' && (code.startsWith('22') || RULE_EVALUATION_CODES.has(code));
 }
 
 /**

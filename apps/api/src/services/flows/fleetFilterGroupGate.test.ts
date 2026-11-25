@@ -83,7 +83,6 @@ describe('judgeFleetFilterGroup', () => {
     // The engine renders these as "every device".
     ['an empty rule list', dyn()], ['an empty nested rule list', dyn(rule('osType'), dyn())],
     ['an empty group list', dyn(rule('groupId', [], 'notIn'))], ['an empty operand', dyn(rule('osType', [], 'notIn'))],
-    ['an operator a group reference does not have', dyn(rule('groupId', G(2), 'contains'))],
     ['no value', dyn({ field: 'osType', operator: 'equals' })], ['a null value', dyn(rule('osType', null))],
     ['a value the engine does not know', dyn(rule('osType', 'Windows'))], ['an operator the field does not have', dyn(rule('osType', 'windows', 'contains'))],
     // The engine reads a node by its operator; a node that fits both shapes, or neither, is not one the gate can read.
@@ -110,7 +109,7 @@ describe('judgeFleetFilterGroup', () => {
     expect(await classify(group(G(1), { filterConditions: dyn(rule('groupId', G(2), 'notEquals')) }), group(G(2), held))).toBe('refused');
   });
 
-  it.each([['notIn', G(2)], ['in', G(2)], ['notEquals', [G(2)]], ['equals', [G(2)]]] as Array<[string, unknown]>)('a reference (%s) whose operand does not fit its operator is refused', async (operator, value) => {
+  it.each([['notIn', G(2)], ['in', G(2)], ['notEquals', [G(2)]], ['equals', [G(2)]], ['contains', G(2)]] as Array<[string, unknown]>)('a reference (%s) whose operator and operand do not fit is refused', async (operator, value) => {
     expect(await classify(group(G(1), { filterConditions: dyn(rule('groupId', value, operator)) }), group(G(2), { type: 'static' }))).toBe('refused');
   });
 
