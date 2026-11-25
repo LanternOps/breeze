@@ -468,6 +468,10 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
         expect.any(Error),
         expect.objectContaining({ eventCode: 'client_ai_identity_drift' }),
       );
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('portal identity drift'),
+        expect.objectContaining({ constraint: 'portal_user_identities_issuer_subject_uq' }),
+      );
       expect(redisMock.setex).not.toHaveBeenCalled();
     } finally {
       errSpy.mockRestore();
