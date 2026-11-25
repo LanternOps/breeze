@@ -970,6 +970,18 @@ describe('RestoreWizard', () => {
       expect(restoreRequests[0]).toMatchObject({ targetPath: 'C:\\', allowOverwriteOriginals: true });
     });
 
+    // #12671: the wizard asks for the same confirmation the server requires,
+    // for every spelling the shared check classifies as needing one.
+    it.each(['/??/C:/', '//./', '\\\\localhost\\', '\\\\?\\UNC\\nas\\share\\restore', '/System/Volumes/Data'])(
+      'asks for confirmation before restoring to %j',
+      async (path) => {
+        await chooseDestination(path);
+        expect(screen.getByTestId('restore-root-target-warning')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+        expect((screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement).disabled).toBe(true);
+      },
+    );
+
     it('caps the alternate path input at the longest real path (#12654)', async () => {
       await chooseDestination('D:\\Restored');
       expect((screen.getByLabelText('Alternate path') as HTMLInputElement).maxLength).toBe(32767);

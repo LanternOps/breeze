@@ -27,7 +27,9 @@ import (
 // destination placement computes with the location each recorded path
 // names on this host, both read by one parser in this host's convention.
 // A target that reaches the original tree through an alias (a substituted
-// drive, a mount, a link to a volume root) is not detected.
+// drive, a mount, a link to a volume root) is not detected, with one
+// exception on macOS: /System/Volumes/Data is read as / there
+// (withoutDarwinDataVolume).
 
 // ResultCodeRestoreWouldOverwriteOriginals is RestoreResult.Code for a restore to
 // a target that was refused because entries would be written over the
@@ -112,12 +114,38 @@ func parsePathKey(p string, style pathStyle) (pathKey, bool) {
 		for i, part := range parts {
 			parts[i] = foldObjectKey(part)
 		}
-		return pathKey{parts: parts}, true
+		// Targets, destinations and recorded paths all pass here, so a
+		// path beneath /System/Volumes/Data meets its firmlinked twin.
+		return pathKey{parts: withoutDarwinDataVolume(parts)}, true
 	case styleWindows:
 		return parseWindowsPathKey(p)
 	default:
 		return pathKey{}, false
 	}
+}
+
+// darwinDataVolume is /System/Volumes/Data, folded as styleDarwin folds
+// components. On macOS it is the data volume's own mount point: the
+// firmlinked folders under / (/Users, /Applications, /private, …) are the
+// same directories as the ones beneath it.
+var darwinDataVolume = []string{foldObjectKey("System"), foldObjectKey("Volumes"), foldObjectKey("Data")}
+
+// withoutDarwinDataVolume keys a folded, cleaned macOS path beneath
+// /System/Volumes/Data as if that prefix were /, so a target or a recorded
+// path spelled either way names the same location (#12671). Not every
+// folder under / is firmlinked to the data volume (/System is not), so this
+// can refuse a restore that would not have touched an original: the safe
+// direction. The prefix is removed once.
+func withoutDarwinDataVolume(parts []string) []string {
+	if len(parts) < len(darwinDataVolume) {
+		return parts
+	}
+	for i, part := range darwinDataVolume {
+		if parts[i] != part {
+			return parts
+		}
+	}
+	return parts[len(darwinDataVolume):]
 }
 
 func parseWindowsPathKey(p string) (pathKey, bool) {
