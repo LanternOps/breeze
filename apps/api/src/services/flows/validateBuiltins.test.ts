@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./ownedReferences', () => ({
   findOwnedScriptIds: vi.fn(),
   findOwnedDeviceGroupIds: vi.fn(),
+  findOwnedDeviceGroups: vi.fn(),
   findOwnedDeviceIds: vi.fn(),
   findOwnedNotificationChannel: vi.fn(),
 }));
@@ -10,8 +11,8 @@ vi.mock('./ownedReferences', () => ({
 import type { FlowIssue } from '@breeze/shared';
 import type { TenantToolDescriptor } from '../toolSources/resolver';
 import type { FlowCatalog, FlowCatalogEntry } from './catalog';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
-import { builtinStepTier, validateBuiltinStep, validateNoticesChannel } from './validateBuiltins';
+import { findOwnedDeviceGroupIds, findOwnedDeviceGroups, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
+import { builtinStepTier, fleetBuiltinReferences, validateBuiltinStep, validateNoticesChannel } from './validateBuiltins';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -163,6 +164,108 @@ describe('validateBuiltinStep', () => {
       // The single-step helper has no earlier steps: any fromStep reference is invalid here.
       expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }))
         .toEqual(['input_invalid']);
+    });
+
+    // ── #12418 W02: the typed fleetFilter selector ──
+    describe('fleetFilter', () => {
+      const issuesFor = (fleetFilter: unknown, owner: typeof ORG_OWNER | typeof PARTNER_OWNER = ORG_OWNER) =>
+        validateBuiltinStep(step('run_script_on_targets', { scriptId: SCRIPT, fleetFilter }), 0, { owner, catalog: catalog() });
+      const group = (filterFieldsUsed: string[] | null) =>
+        vi.mocked(findOwnedDeviceGroups).mockResolvedValue(new Map([[GROUP, { filterFieldsUsed }]]));
+      beforeEach(() => {
+        vi.mocked(findOwnedDeviceGroups).mockReset();
+        group([]);
+      });
+
+      const REFUSED: Array<[field: string, engineKey: string, value: unknown]> = [
+        ['hostnameContains', 'hostname', 'srv'],
+        ['tags', 'tags', ['pci']],
+        ['agentVersion', 'agentVersion', '1.0.0'],
+        ['softwareInstalled', 'software.installed', '7-Zip'],
+        ['softwareMissing', 'software.notInstalled', '7-Zip'],
+        ['softwareVersionBelow', 'software.version', { name: '7-Zip', version: '23' }],
+      ];
+
+      it.each(REFUSED)('save refuses fleetFilter.%s with input_invalid at /fleetFilter naming the engine key', async (field, engineKey, value) => {
+        const issues = await issuesFor({ osType: 'windows', [field]: value });
+        expect(issues).toEqual([expect.objectContaining({ code: 'input_invalid', stepId: 's1', pointer: '/steps/0/input/fleetFilter' })]);
+        expect(issues[0]!.message).toContain(`(${engineKey})`);
+        expect(issues[0]!.message).toContain('a script cannot be targeted by them');
+      });
+
+      it.each(REFUSED)('save refuses fleetFilter.%s when its value is a template', async (field, engineKey) => {
+        const issues = await issuesFor({ [field]: '{{inputs.v}}' });
+        expect(issues.map((i) => [i.code, i.pointer])).toContainEqual(['input_invalid', '/steps/0/input/fleetFilter']);
+        expect(issues.map((i) => i.message).join(' ')).toContain(`(${engineKey})`);
+      });
+
+      it('a malformed refused field is reported, never thrown on', async () => {
+        for (const bad of [{ tags: 5 }, { softwareVersionBelow: null }, { softwareVersionBelow: 'x' }, { hostnameContains: null }]) {
+          const issues = await issuesFor(bad);
+          expect(issues.length, JSON.stringify(bad)).toBeGreaterThan(0);
+          expect(issues.every((i) => i.code === 'input_invalid')).toBe(true);
+        }
+      });
+
+      it('every refused key is named in one issue', async () => {
+        const issues = await issuesFor({ hostnameContains: 'srv', softwareInstalled: '7-Zip' });
+        expect(issues).toHaveLength(1);
+        expect(issues[0]!.message).toContain('(hostname, software.installed)');
+      });
+
+      it('a whole-filter template or a non-object is not read as a filter at save (resolve decides)', async () => {
+        expect((await issuesFor('{{inputs.filter}}')).filter((i) => i.pointer === '/steps/0/input/fleetFilter' && /reports about itself/.test(i.message))).toEqual([]);
+      });
+
+      it('save refuses fleetFilter.groupId naming a group the owner does not hold (reference_not_owned at /fleetFilter/groupId)', async () => {
+        vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set());
+        vi.mocked(findOwnedDeviceGroups).mockResolvedValue(new Map());
+        const issues = await issuesFor({ groupId: GROUP });
+        expect(issues).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
+        expect(vi.mocked(findOwnedDeviceGroupIds)).toHaveBeenCalledWith(ORG, [GROUP]);
+      });
+
+      it('a group that stops being owned between the two reads is reference_not_owned, never accepted', async () => {
+        vi.mocked(findOwnedDeviceGroups).mockResolvedValue(new Map());
+        expect(await issuesFor({ groupId: GROUP })).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
+      });
+
+      it('a partner-wide flow cannot name a group in fleetFilter', async () => {
+        expect((await issuesFor({ groupId: GROUP }, PARTNER_OWNER)).map((i) => [i.code, i.pointer]))
+          .toEqual([['group_in_partner_flow', '/steps/0/input/fleetFilter/groupId']]);
+        expect(vi.mocked(findOwnedDeviceGroups)).not.toHaveBeenCalled();
+      });
+
+      it.each([['hostname'], ['software.installed'], ['custom.anything'], ['tags']])(
+        'save refuses fleetFilter.groupId naming a dynamic group whose rules use %s (input_invalid at /fleetFilter/groupId)',
+        async (field) => {
+          group(['osType', field]);
+          const issues = await issuesFor({ groupId: GROUP });
+          expect(issues).toEqual([expect.objectContaining({ code: 'input_invalid', pointer: '/steps/0/input/fleetFilter/groupId' })]);
+          expect(issues[0]!.message).toBe('This device group is defined by field(s) a device reports about itself; a script cannot be targeted by it.');
+          expect(vi.mocked(findOwnedDeviceGroups)).toHaveBeenCalledWith(ORG, [GROUP]);
+        },
+      );
+
+      it.each([[[]], [null], [['osType', 'patches.pending']]] as Array<[string[] | null]>)('save accepts a group whose stored rule fields are %j', async (fields) => {
+        group(fields);
+        expect(await issuesFor({ groupId: GROUP })).toEqual([]);
+      });
+
+      it('save accepts fleetFilter { osType, pendingPatches, siteId, lastSeenDaysOver } and a static group with no issue', async () => {
+        expect(await issuesFor({ osType: 'windows', pendingPatches: true, siteId: DEVICE, lastSeenDaysOver: 30, groupId: GROUP })).toEqual([]);
+      });
+
+      it('the group provenance read is not made for a target selector', async () => {
+        await codesFor('run_script_on_targets', { scriptId: SCRIPT, target: { type: 'groups', groupIds: [GROUP] } });
+        expect(vi.mocked(findOwnedDeviceGroups)).not.toHaveBeenCalled();
+      });
+
+      it('fleetBuiltinReferences lists fleetFilter.groupId (run-time revalidation reads the same list)', () => {
+        expect(fleetBuiltinReferences('run_script_on_targets', { scriptId: SCRIPT, fleetFilter: { groupId: GROUP } }))
+          .toContainEqual({ kind: 'group', value: GROUP, path: '/fleetFilter/groupId' });
+        expect(fleetBuiltinReferences('run_script_on_targets', { scriptId: SCRIPT, fleetFilter: { osType: 'windows' } }).filter((r) => r.kind === 'group')).toEqual([]);
+      });
     });
   });
 

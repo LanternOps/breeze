@@ -69,6 +69,23 @@ export async function findOwnedDeviceGroupIds(orgId: string, ids: Iterable<strin
   return new Set(rows.map((r) => r.id));
 }
 
+/**
+ * `findOwnedDeviceGroupIds` with each group's stored rule fields, for the
+ * execution-provenance gate of a `fleetFilter.groupId` (#12418 W02).
+ */
+export async function findOwnedDeviceGroups(orgId: string, ids: Iterable<string>): Promise<Map<string, { filterFieldsUsed: string[] | null }>> {
+  const wanted = uuidsOnly(ids);
+  if (wanted.length === 0) return new Map();
+  const rows = await system(
+    async () => db
+      .select({ id: deviceGroups.id, filterFieldsUsed: deviceGroups.filterFieldsUsed })
+      .from(deviceGroups)
+      .where(and(inArray(deviceGroups.id, wanted), eq(deviceGroups.orgId, orgId))),
+    'flowValidator.deviceGroupFields',
+  );
+  return new Map(rows.map((r) => [r.id, { filterFieldsUsed: r.filterFieldsUsed }]));
+}
+
 export async function findOwnedDeviceIds(orgId: string, ids: Iterable<string>): Promise<Set<string>> {
   const wanted = uuidsOnly(ids);
   if (wanted.length === 0) return new Set();

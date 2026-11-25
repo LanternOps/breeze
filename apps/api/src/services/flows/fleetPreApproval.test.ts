@@ -94,6 +94,15 @@ describe('fleetPreApprovalEligibility', () => {
       .toEqual({ eligible: false, reason: 'selector_not_literal' });
   });
 
+  // #12418 W02, Decision 5: no pre-approval lane for the typed filter.
+  it('a fleetFilter step is ineligible for the fleet pre-approval lane (selector_not_literal): it always parks', () => {
+    expect(fleetPreApprovalEligibility(step({ fleetFilter: { osType: 'windows' } }), PIN, earlier))
+      .toEqual({ eligible: false, reason: 'selector_not_literal' });
+    // A later step chained on it is not eligible either: the fleetFilter step never joins `eligibleEarlier`.
+    expect(fleetPreApprovalEligibility(step({ fromStep: { stepId: 'a_filter', set: 'succeeded' } }), PIN, earlier))
+      .toEqual({ eligible: false, reason: 'selector_not_literal' });
+  });
+
   it('four_eyes script is ineligible', () => {
     expect(fleetPreApprovalEligibility(step(GROUP_TARGET), { ...PIN, approvalScope: 'four_eyes' }, earlier))
       .toEqual({ eligible: false, reason: 'four_eyes' });
