@@ -140,6 +140,12 @@ type BootstrapResponse struct {
 	// Integrity is accepted at the top level of the bootstrap as well as on
 	// Snapshot; see BootstrapIntegrity.
 	Integrity json.RawMessage `json:"integrity,omitempty"`
+	// SessionRenewal (#12566) is the server's session renewal credential.
+	// Sent back on later authenticate calls, it lets the server count this
+	// helper's renewals in their own allowance, so other sign-ins with the
+	// same token (a browser Preview) cannot use up what a running restore
+	// needs to renew its download session. Absent from older servers.
+	SessionRenewal string `json:"sessionRenewal,omitempty"`
 }
 
 // RecoveryBinding is the bare-metal recovery a recovery token is bound to
