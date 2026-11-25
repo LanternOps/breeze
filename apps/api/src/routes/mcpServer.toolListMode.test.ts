@@ -134,11 +134,3 @@ describe('envelope classification stays on the outer request', () => {
     expect(inner.body.error.code).toBe(-32020);
   });
 });
-
-describe('T2-temporary', () => {
-  it('T2-temporary: progressive still lists full', async () => {
-    const full = await mcp.legacy('tools/list');
-    const progressive = await mcp.legacy('tools/list', undefined, PROGRESSIVE);
-    expect(progressive.body.result).toEqual(full.body.result);
-  });
-});

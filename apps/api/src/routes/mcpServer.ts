@@ -27,7 +27,7 @@ import { isPartnerServicePrincipalKeyFormat } from '../services/partnerServicePr
 import { conversionSummarySql } from '../services/flows/conversion/ledger';
 import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
-import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
+import { getToolDefinitions, executeTool, getToolTier, getToolDomain, getToolSearchHint, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { unattendedNoteWriteContext } from '../services/deviceNoteBounds';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
@@ -76,8 +76,9 @@ import {
   parseStoredMcpDomains,
   type McpDomainGrant,
 } from '../services/mcpDomains';
-import type { AiToolDomain } from '@breeze/shared';
-import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { AI_TOOL_DOMAINS, isAiToolDomain, type AiToolDomain } from '@breeze/shared';
+import { isAlwaysLoadedToolName, MCP_META_TOOL_NAMES, MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { MCP_META_TOOL_LIST_ENTRIES, type McpToolListEntry } from '../services/mcpMetaTools';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { isFlowToolName } from '../services/flows/toolNames';
 import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
@@ -1426,6 +1427,13 @@ async function handleJsonRpc(
       credential: apiKey?.partnerServicePrincipalId ? { mcpToolListMode: null, partnerServicePrincipal: true } : null,
       deploymentDefault: mcpToolListDefault(),
     });
+    // The progressive instructions' inputs, from the caller's own catalog
+    // (registry + intrinsics; tenant and flow tools are never named there).
+    const progressiveGuidance = async (): Promise<McpProgressiveGuidance | undefined> => (toolListMode.mode === 'progressive'
+      ? progressiveGuidanceFor((await buildToolsListEntries({
+        scopes, auth, apiKey, clientExtensions: NO_MCP_CLIENT_EXTENSIONS, dynamicTools: false,
+      })).entries)
+      : undefined);
 
     // B-W03 (#6157, D-B17): lifecycle methods are per era. In the stateless
     // era `initialize` / `notifications/initialized` do not exist and
@@ -1434,7 +1442,7 @@ async function handleJsonRpc(
     if (ctx.era === 'legacy' && req.method === 'initialize') {
       return jsonRpcResult(req.id, buildInitializeResult(
         (req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion,
-        { advertiseApps: ctx.transport === 'streamable', toolListMode },
+        { advertiseApps: ctx.transport === 'streamable', toolListMode, progressive: await progressiveGuidance() },
       ));
     }
     if (ctx.era === 'legacy' && req.method === 'notifications/initialized') {
@@ -1442,12 +1450,12 @@ async function handleJsonRpc(
       return jsonRpcResult(req.id, {});
     }
     if (ctx.era === 'modern' && req.method === 'server/discover') {
-      return jsonRpcResult(req.id, buildDiscoverResult({ toolListMode }));
+      return jsonRpcResult(req.id, buildDiscoverResult({ toolListMode, progressive: await progressiveGuidance() }));
     }
 
     switch (req.method) {
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions());
+        return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions(), toolListMode);
 
       case 'tools/call': {
         noteMcpAppToolCall(req.params, ctx.auditExtras);
@@ -1963,14 +1971,28 @@ function noteMcpAppToolCall(params: Record<string, unknown> | undefined, auditEx
   if (app) auditExtras.mcpApp = app.key;
 }
 
-async function handleToolsList(
-  id: string | number,
-  scopes: string[],
-  auth: AuthContext,
-  params?: Record<string, unknown>,
-  apiKey?: McpApiKeyContext,
-  clientExtensions: McpClientExtensions = NO_MCP_CLIENT_EXTENSIONS,
-): Promise<JsonRpcResponse> {
+/**
+ * #12427: the caller's `full` catalog — exactly what tools/list has always
+ * listed, in the same order: registry tools and intrinsics, then tenant, then
+ * flow tools, each block sorted by name. The one catalog every surface reads:
+ * the `full` and `progressive` lists, search_tools, get_tool_details and the
+ * progressive instructions, so discovery can never name a tool this caller
+ * could not list.
+ *
+ * `approvalNotes` maps a registry tool to the parenthetical sentences the list
+ * appended to its description (approval, MFA), for search_tools rows.
+ * `dynamicTools: false` skips tenant and flow resolution (both read the
+ * database): the instructions and the measurement script name neither.
+ */
+export async function buildToolsListEntries(input: {
+  scopes: string[];
+  auth: AuthContext;
+  apiKey?: McpApiKeyContext;
+  clientExtensions: McpClientExtensions;
+  dynamicTools?: boolean;
+}): Promise<{ entries: McpToolListEntry[]; listing: McpListingContext; approvalNotes: ReadonlyMap<string, string> }> {
+  const { scopes, auth, apiKey, clientExtensions } = input;
+  const dynamicTools = input.dynamicTools ?? true;
   const listing = buildMcpListingContext(scopes, auth, apiKey);
   const { domainGrant, hasWrite, callerFailsMfaGate, ownsIntents, canRunTier3Unattended, canFileTier3Intent } = listing;
   const allTools = getToolDefinitions();
@@ -1990,6 +2012,7 @@ async function handleToolsList(
     }
   }
 
+  const approvalNotes = new Map<string, string>();
   const result = scopedTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
     // listed — its ungated actions (typically reads/drafts) still work —
@@ -2023,6 +2046,8 @@ async function handleToolsList(
     if (mfaGatedActions.length > 0) {
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
     }
+    const note = description.slice((tool.description ?? '').length).trim();
+    if (note) approvalNotes.set(tool.name, note);
     const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
     // B-W05: merged, so `app.breeze/domain` survives and `_meta` keeps its position.
     const appMeta = appToolMeta.get(tool.name);
@@ -2062,7 +2087,7 @@ async function handleToolsList(
   // resolution failure (DB hiccup, etc.) degrades to no tenant tools rather
   // than failing tools/list for the entire core registry.
   let tenantResult: Array<Omit<(typeof result)[number], 'inputSchema'> & { inputSchema: Record<string, unknown> }> = [];
-  try {
+  if (dynamicTools) try {
     // #6046: the same access-checked default org tools/call falls back to when
     // the caller supplies no `orgId` (no tool input exists at list time), so
     // every org-owned tool listed here resolves on a bare tools/call.
@@ -2095,7 +2120,7 @@ async function handleToolsList(
   // the flow tools live in. Same degrade-to-none rule as tenant tools.
   // listMcpFlowTools answers [] with FLOWS_ENABLED off before any read.
   let flowResult: typeof tenantResult = [];
-  try {
+  if (dynamicTools) try {
     const flowDomain = mcpToolDomain('list_flows');
     if (isDomainGranted(domainGrant, flowDomain)) {
       const flowTools = await listMcpFlowTools(auth, resolveMcpExecutionOrgId(apiKey, auth, {}), { hasWrite });
@@ -2111,8 +2136,67 @@ async function handleToolsList(
     flowResult = [];
   }
 
-  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
-  const all = [...result.sort(byName), ...tenantResult.sort(byName), ...flowResult.sort(byName)];
+  const entries: McpToolListEntry[] = [...result.sort(byToolName), ...tenantResult.sort(byToolName), ...flowResult.sort(byToolName)];
+  return { entries, listing, approvalNotes };
+}
+
+const byToolName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
+
+/** #12427: the intrinsics tools/list already lists (each under its own condition). */
+const MCP_LISTED_INTRINSICS: ReadonlySet<string> = new Set([
+  MCP_WHOAMI_TOOL_NAME, MCP_GET_ACTION_STATUS_TOOL_NAME, MCP_CANCEL_ACTION_TOOL_NAME,
+]);
+
+/**
+ * #12427: the `progressive` list — the caller's `full` entries for the
+ * registry's alwaysLoad tools and the intrinsics (each exactly as `full`
+ * emits it), plus the three meta-tools, in name order. Registry entries gain
+ * the Agent SDK hint keys (OD-7); `full` never carries them.
+ */
+export function presentProgressiveList(entries: readonly McpToolListEntry[]): McpToolListEntry[] {
+  const core = entries.flatMap((entry): McpToolListEntry[] => {
+    if (MCP_LISTED_INTRINSICS.has(entry.name)) return [entry];
+    if (isTenantToolName(entry.name) || !isAlwaysLoadedToolName(entry.name)) return [];
+    const hint = getToolSearchHint(entry.name);
+    return [{
+      ...entry,
+      _meta: { ...entry._meta, ...(hint ? { 'anthropic/searchHint': hint } : {}), 'anthropic/alwaysLoad': true },
+    }];
+  });
+  const meta = MCP_META_TOOL_LIST_ENTRIES.map((entry) => ({ ...entry, _meta: { ...entry._meta } }));
+  return [...core, ...meta].sort(byToolName);
+}
+
+/**
+ * #12427: what the progressive instructions may name — the domains of the
+ * caller's listable registry tools (intrinsics, tenant and flow tools have no
+ * index line) and every name in the caller's `full` catalog plus the
+ * meta-tools.
+ */
+export function progressiveGuidanceFor(entries: readonly McpToolListEntry[]): McpProgressiveGuidance {
+  const present = new Set<AiToolDomain>();
+  for (const entry of entries) {
+    if (MCP_LISTED_INTRINSICS.has(entry.name) || isTenantToolName(entry.name)) continue;
+    const domain = entry._meta['app.breeze/domain'];
+    if (isAiToolDomain(domain)) present.add(domain);
+  }
+  return {
+    domains: AI_TOOL_DOMAINS.filter((domain) => present.has(domain)),
+    listableNames: new Set([...entries.map((entry) => entry.name), ...MCP_META_TOOL_NAMES]),
+  };
+}
+
+async function handleToolsList(
+  id: string | number,
+  scopes: string[],
+  auth: AuthContext,
+  params: Record<string, unknown> | undefined,
+  apiKey: McpApiKeyContext | undefined,
+  clientExtensions: McpClientExtensions,
+  toolListMode: ResolvedMcpToolListMode,
+): Promise<JsonRpcResponse> {
+  const { entries } = await buildToolsListEntries({ scopes, auth, apiKey, clientExtensions });
+  const all = toolListMode.mode === 'progressive' ? presentProgressiveList(entries) : entries;
   const pageSize = mcpToolsListPageSize();
   if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
 

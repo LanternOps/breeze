@@ -82,3 +82,15 @@ extensionContributionRegistry.configureReservedAiToolNames(hasCoreAiToolName);
  */
 export const MCP_WHOAMI_TOOL_NAME = 'whoami';
 registerReservedAiToolNamePredicate((name) => name === MCP_WHOAMI_TOOL_NAME);
+
+/**
+ * #12427: the external MCP server's three meta-tools (services/mcpMetaTools.ts).
+ * Server-intrinsic like `whoami`: never in the `aiTools` map, reserved here so
+ * no extension can register a tool that shadows one.
+ */
+export const MCP_SEARCH_TOOLS_TOOL_NAME = 'search_tools';
+export const MCP_GET_TOOL_DETAILS_TOOL_NAME = 'get_tool_details';
+export const MCP_CALL_TOOL_TOOL_NAME = 'call_tool';
+export const MCP_META_TOOL_NAMES: ReadonlySet<string> = new Set([
+  MCP_SEARCH_TOOLS_TOOL_NAME, MCP_GET_TOOL_DETAILS_TOOL_NAME, MCP_CALL_TOOL_TOOL_NAME,
+]);

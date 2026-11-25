@@ -27,6 +27,24 @@ export type HarnessCallOptions = {
 
 type AuditSpy = { mock: { calls: unknown[][] }; mockClear: () => unknown };
 
+/** Every flag that adds tools or changes instructions, on (the measurement and budget tests). */
+export const ALL_FLAGS_ON: Readonly<Record<string, string>> = {
+  // The chat index's flag set (aiToolIndex.test.ts) ...
+  M365_ENABLED: 'true',
+  GOOGLE_WORKSPACE_ENABLED: 'true',
+  BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true',
+  FLOWS_ENABLED: 'true',
+  DELEGANT_BASE_URL: 'https://delegant.example.com',
+  IS_HOSTED: 'true',
+  BREEZE_AI_AGENTS_ENABLED: 'true',
+  BREEZE_WISP_ENABLED: 'true',
+  BREEZE_WORKSPACE_ENABLED: 'true',
+  // ... plus the MCP ones.
+  MCP_APPS_ENABLED: 'true',
+  MCP_TIER3_INTENTS_ENABLED: 'true',
+  MCP_TASKS_ENABLED: 'true',
+};
+
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'X-API-Key': 'k' };
 
 export function createMcpHarness(routes: typeof McpServerRoutes, writeAuditEvent: AuditSpy) {
@@ -137,6 +155,8 @@ export const harnessState = {
   tenantTools: [] as Array<{ tier: number; definition: { name: string; description: string; input_schema: Record<string, unknown> } }>,
   flowTools: [] as Array<{ name: string; description: string; tier: number; inputSchema: Record<string, unknown> }>,
   sessions: new Map<string, string>(),
+  resolveTenantTools: vi.fn(async (..._args: unknown[]) => harnessState.tenantTools),
+  listMcpFlowTools: vi.fn(async (..._args: unknown[]) => harnessState.flowTools),
 };
 
 export function resetHarnessState(): void {
@@ -150,6 +170,8 @@ export function resetHarnessState(): void {
   harnessState.tenantTools = [];
   harnessState.flowTools = [];
   harnessState.sessions.clear();
+  harnessState.resolveTenantTools.mockReset().mockImplementation(async () => harnessState.tenantTools);
+  harnessState.listMcpFlowTools.mockReset().mockImplementation(async () => harnessState.flowTools);
 }
 
 export function fixtureDefinitions() {
@@ -236,14 +258,14 @@ export function auditMock() {
 
 export function resolverMock() {
   return {
-    resolveTenantTools: async () => harnessState.tenantTools,
+    resolveTenantTools: (...args: unknown[]) => harnessState.resolveTenantTools(...args),
     resolveTenantToolByName: async () => null,
     resolveTenantToolHealthByName: async () => ({ found: false }),
   };
 }
 
 export function flowToolsMock() {
-  return { listMcpFlowTools: async () => harnessState.flowTools, callMcpFlowTool: vi.fn() };
+  return { listMcpFlowTools: (...args: unknown[]) => harnessState.listMcpFlowTools(...args), callMcpFlowTool: vi.fn() };
 }
 
 export function executionOrgMock() {
