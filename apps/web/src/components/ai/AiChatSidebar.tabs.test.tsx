@@ -80,6 +80,7 @@ import AiChatSidebar from './AiChatSidebar';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { useOrgStore } from '@/stores/orgStore';
 import { fetchWithAuth } from '@/stores/auth';
+import { showToast } from '../shared/Toast';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -228,6 +229,64 @@ describe('AiChatSidebar tabs: a direct session or Wisp', () => {
     expect(closeSession).toHaveBeenCalledTimes(1);
     expect(enterWispMode).not.toHaveBeenCalled();
     expect(selectPanelTab).not.toHaveBeenCalled();
+  });
+
+  it('the tabs do not switch while a session is being created or loaded', async () => {
+    // The first message of a direct session is creating it: a switch now would
+    // send that message into whatever the other tab binds.
+    h.threads[PARTNER_THREAD] = threadBody('grant-1', 'active');
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument());
+    act(() => { useAiStore.setState({ isLoading: true }); });
+    expect(tab('wisp')).toHaveAttribute('aria-disabled', 'true');
+    const before = wispThreadCalls().length;
+    fireEvent.click(tab('wisp'));
+    await settle();
+    expect(selectPanelTab).not.toHaveBeenCalled();
+    expect(wispThreadCalls()).toHaveLength(before);
+
+    act(() => { useAiStore.setState({ isLoading: false }); });
+    expect(tab('wisp')).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(tab('wisp'));
+    await waitFor(() => expect(selectPanelTab).toHaveBeenCalledTimes(1));
+  });
+
+  it('the tabs do not switch while New conversation is closing the old one', async () => {
+    h.threads[PARTNER_THREAD] = threadBody('grant-1', 'active');
+    let finishClose!: () => void;
+    closeSession.mockImplementationOnce(() => new Promise<void>((resolve) => { finishClose = resolve; }));
+    useAiStore.setState({ sessionId: 'sess-p', hydratedSessionId: 'sess-p' });
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    await waitFor(() => expect(closeSession).toHaveBeenCalledTimes(1));
+    expect(tab('wisp')).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(tab('wisp'));
+    await settle();
+    // Otherwise the create that follows the close would land on the Wisp grant.
+    expect(selectPanelTab).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+
+    await act(async () => { finishClose(); await settle(); });
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(tab('wisp')).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('a grant read that fails on the Wisp tab click keeps the tabs and says so', async () => {
+    h.threads[PARTNER_THREAD] = threadBody('grant-1', 'active');
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument());
+    h.threadFailures[PARTNER_THREAD] = { status: 500, body: { error: 'boom' } };
+    fireEvent.click(tab('wisp'));
+    await waitFor(() => expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(selectPanelTab).not.toHaveBeenCalled();
+    // Not "no grant": the tabs stay, and the next click reads again.
+    expect(screen.getByTestId('ai-panel-tabs')).toBeInTheDocument();
+    expect(tab('session')).toHaveAttribute('aria-selected', 'true');
+
+    h.threadFailures = {};
+    fireEvent.click(tab('wisp'));
+    await waitFor(() => expect(selectPanelTab).toHaveBeenCalledWith('wisp', expect.objectContaining({ grantId: 'grant-1' })));
   });
 
   it('the tabs replace the "+" menu and the "not Wisp" label', async () => {

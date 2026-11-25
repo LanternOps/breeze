@@ -1160,10 +1160,14 @@ export const useAiStore = create<AiState>()(
     unbindWisp();
     useAiModelPickerStore.getState().clearSelection();
     set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, transcriptPurgedAt: null, isOpen: true });
-    await get().createSession({ deviceId });
+    const creating = get().createSession({ deviceId });
+    const ownsCreate = ownershipAsOfNow(); // createSession claimed synchronously.
+    await creating;
     // Only send if the session was actually created — createSession leaves
     // sessionId null and sets `error` on failure; sending then would be session-less.
-    if (initialMessage && initialMessage.trim() && get().sessionId) {
+    // And only into that session: a pane that moved on meanwhile (a tab click)
+    // holds another conversation, and a device task never runs under Wisp.
+    if (initialMessage && initialMessage.trim() && ownsCreate() && get().sessionId) {
       await get().sendMessage(initialMessage);
     }
   },
@@ -1284,7 +1288,14 @@ export const useAiStore = create<AiState>()(
     const createdNow = !sessionId;
 
     if (!sessionId) {
-      await get().createSession(model ? { model } : undefined);
+      const creating = get().createSession(model ? { model } : undefined);
+      const ownsCreate = ownershipAsOfNow(); // createSession claimed synchronously.
+      await creating;
+      // The pane moved on while the create was in flight (a tab click, a
+      // History pick, "Talk to Wisp"). This message was written for the
+      // session it asked for: it must not run in whatever is bound now — a
+      // direct-session message would otherwise run under the Wisp grant.
+      if (!ownsCreate()) return;
     }
 
     const currentSessionId = get().sessionId;
@@ -2271,8 +2282,14 @@ async function leaveWispForSessionTab(): Promise<void> {
   const owns = ownershipAsOfNow(); // loadSession claimed synchronously.
   await loading;
   if (!owns() || useAiStore.getState().sessionId === plainId) return;
-  // Closed, gone, another organization's, or unreadable: an empty tab, not a load error.
-  useAiStore.setState({ plainTabSessionId: null, error: null, errorCode: null, errorStatus: null });
+  // Either way an empty tab, not a load error. Closed, gone or another
+  // organization's: forget it. A read that failed (loadSession reports only
+  // that as an error) says nothing about the session: keep it for the next visit.
+  const unreadable = useAiStore.getState().error !== null;
+  useAiStore.setState({
+    ...(unreadable ? {} : { plainTabSessionId: null }),
+    error: null, errorCode: null, errorStatus: null,
+  });
 }
 
 /**

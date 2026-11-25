@@ -293,9 +293,13 @@ export default function AiChatSidebar() {
   }, [wisp, grantLookup]);
   const activeTab: AiPanelTab = wisp ? "wisp" : "session";
   const [tabSwitching, setTabSwitching] = useState(false);
+  // No switch while the pane is mid-bind: a session being created (the first
+  // message of a chat, a device task, "+") or loaded would land on the other
+  // tab, and its message with it.
+  const tabsBusy = tabSwitching || isLoading;
 
   const handleSelectTab = useCallback(async (tab: AiPanelTab) => {
-    if (tabSwitching) return;
+    if (tabSwitching || useAiStore.getState().isLoading) return;
     if (tab === activeTab) {
       // Already on screen (a device task showing the direct session over a
       // panel left on Wisp, say): the click still makes it the picked tab.
@@ -312,6 +316,11 @@ export default function AiChatSidebar() {
       // revoked, paused or expired since then must not start a session the
       // server refuses. Its thread also names the conversation to continue.
       const result = await lookUpActiveGrant(selectedOrgId);
+      if (result.kind === "failed") {
+        // Not "no grant": the tabs stay, and the next click reads again.
+        showToast({ type: "error", message: t("wisp.toast.threadFailed") });
+        return;
+      }
       if (result.kind !== "active") {
         setGrantLookup(result);
         return;
@@ -320,7 +329,7 @@ export default function AiChatSidebar() {
     } finally {
       setTabSwitching(false);
     }
-  }, [activeTab, selectPanelTab, selectedOrgId, tabSwitching, wisp]);
+  }, [activeTab, selectPanelTab, selectedOrgId, t, tabSwitching, wisp]);
 
   // Wisp is on here but there is no active grant (none, paused, ended, or the
   // plan lacks Wisp): point at the home, which explains and starts or resumes one.
@@ -340,10 +349,18 @@ export default function AiChatSidebar() {
 
   // A new conversation stays on its tab: direct on the direct session, on the
   // grant under Wisp (createSession sends the grant only while Wisp is on).
+  // The tabs hold still meanwhile: a switch between the close and the create
+  // would put the new conversation on the other tab's grant.
   const handleNewConversation = useCallback(async () => {
-    await closeSession();
-    await createSession();
-  }, [closeSession, createSession]);
+    if (tabSwitching) return;
+    setTabSwitching(true);
+    try {
+      await closeSession();
+      await createSession();
+    } finally {
+      setTabSwitching(false);
+    }
+  }, [closeSession, createSession, tabSwitching]);
 
   if (!canUseAi) return null;
 
@@ -524,7 +541,7 @@ export default function AiChatSidebar() {
                   role="tab"
                   aria-selected={selected}
                   // aria-disabled, not disabled: focus stays on the tab while the switch runs.
-                  aria-disabled={tabSwitching || undefined}
+                  aria-disabled={tabsBusy || undefined}
                   tabIndex={selected ? 0 : -1}
                   title={tab.hint}
                   onClick={() => void handleSelectTab(tab.id)}

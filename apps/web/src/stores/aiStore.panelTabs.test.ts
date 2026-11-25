@@ -232,6 +232,64 @@ describe('aiStore — side panel tabs', () => {
     expect(createBody()).not.toHaveProperty('wispGrantId');
   });
 
+  it('a tab click while the first message is still creating its session sends that message nowhere', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let finishCreate!: (r: Response) => void;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions' && init?.method === 'POST') return new Promise<Response>((resolve) => { finishCreate = resolve; });
+      return base(url, init);
+    });
+    // Direct session tab, nothing open: the first message creates the session.
+    const sending = useAiStore.getState().sendMessage('restart the print spooler');
+    await vi.waitFor(() => expect(creates()).toHaveLength(1));
+    expect(createBody().wispGrantId).toBeUndefined();
+
+    // The Wisp tab is clicked before that create answers, and binds its thread.
+    await useAiStore.getState().selectPanelTab('wisp', wisp({ lastSessionId: 'sess-w' }));
+    expect(useAiStore.getState().sessionId).toBe('sess-w');
+
+    finishCreate(response({ id: 'sess-new', orgId: 'org-a' }));
+    await sending;
+
+    // The message was written for a direct session: it must not run under the grant.
+    expect(calls('POST', (url) => url.endsWith('/messages'))).toHaveLength(0);
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-w', isStreaming: false });
+    expect(useAiStore.getState().messages.map((m) => m.content)).not.toContain('restart the print spooler');
+  });
+
+  it('a device task whose create is superseded by a tab click does not send its message under the grant', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let finishCreate!: (r: Response) => void;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions' && init?.method === 'POST') return new Promise<Response>((resolve) => { finishCreate = resolve; });
+      return base(url, init);
+    });
+    const task = useAiStore.getState().startDeviceTask('dev-1', { type: 'device', id: 'dev-1', hostname: 'HL-WS-01' }, 'why is it slow');
+    await vi.waitFor(() => expect(creates()).toHaveLength(1));
+    await useAiStore.getState().selectPanelTab('wisp', wisp({ lastSessionId: 'sess-w' }));
+    finishCreate(response({ id: 'sess-new', orgId: 'org-a' }));
+    await task;
+    expect(calls('POST', (url) => url.endsWith('/messages'))).toHaveLength(0);
+    expect(useAiStore.getState().sessionId).toBe('sess-w');
+  });
+
+  it('a direct session that could not be read this time is still remembered: an empty tab now, the conversation next time', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let failing = true;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (failing && url === '/ai/sessions/sess-p' && (init?.method ?? 'GET') === 'GET') return response({ error: 'unavailable' }, 503);
+      return base(url, init);
+    });
+    useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w', panelTab: 'wisp', plainTabSessionId: 'sess-p' });
+    await useAiStore.getState().selectPanelTab('session');
+    expect(useAiStore.getState()).toMatchObject({ sessionId: null, wisp: null, error: null, plainTabSessionId: 'sess-p' });
+
+    failing = false;
+    await useAiStore.getState().selectPanelTab('wisp', wisp({ lastSessionId: 'sess-w' }));
+    await useAiStore.getState().selectPanelTab('session');
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-p', wisp: null });
+  });
+
   describe('what a reload restores', () => {
     const persisted = () => useAiStore.persist.getOptions().partialize!(useAiStore.getState()) as Record<string, unknown>;
 
