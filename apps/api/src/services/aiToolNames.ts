@@ -94,3 +94,4 @@ export const MCP_CALL_TOOL_TOOL_NAME = 'call_tool';
 export const MCP_META_TOOL_NAMES: ReadonlySet<string> = new Set([
   MCP_SEARCH_TOOLS_TOOL_NAME, MCP_GET_TOOL_DETAILS_TOOL_NAME, MCP_CALL_TOOL_TOOL_NAME,
 ]);
+registerReservedAiToolNamePredicate((name) => MCP_META_TOOL_NAMES.has(name));

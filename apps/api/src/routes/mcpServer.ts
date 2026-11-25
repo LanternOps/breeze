@@ -77,8 +77,8 @@ import {
   type McpDomainGrant,
 } from '../services/mcpDomains';
 import { AI_TOOL_DOMAINS, isAiToolDomain, type AiToolDomain } from '@breeze/shared';
-import { isAlwaysLoadedToolName, MCP_META_TOOL_NAMES, MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
-import { MCP_META_TOOL_LIST_ENTRIES, type McpToolListEntry } from '../services/mcpMetaTools';
+import { isAlwaysLoadedToolName, MCP_GET_TOOL_DETAILS_TOOL_NAME, MCP_META_TOOL_NAMES, MCP_SEARCH_TOOLS_TOOL_NAME, MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { handleGetToolDetails, handleSearchTools, MCP_META_TOOL_LIST_ENTRIES, type McpToolListEntry } from '../services/mcpMetaTools';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { isFlowToolName } from '../services/flows/toolNames';
 import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
@@ -2397,6 +2397,18 @@ async function handleToolsCall(
   }
   if (toolName === MCP_CANCEL_ACTION_TOOL_NAME) {
     return handleCancelActionCall(id, auth, scopes, apiKey, toolInput);
+  }
+  // #12427: core, server-intrinsic, read-only, callable in either mode. The
+  // catalog is this caller's own `full` list (whatever the mode), so neither
+  // can rank, describe or name a tool the caller could not list.
+  if (toolName === MCP_SEARCH_TOOLS_TOOL_NAME || toolName === MCP_GET_TOOL_DETAILS_TOOL_NAME) {
+    const { entries, approvalNotes } = await buildToolsListEntries({ scopes, auth, apiKey, clientExtensions: options.clientExtensions });
+    const outcome = toolName === MCP_SEARCH_TOOLS_TOOL_NAME
+      ? handleSearchTools(entries, toolInput, approvalNotes)
+      : handleGetToolDetails(entries, toolInput);
+    return 'error' in outcome
+      ? jsonRpcError(id, outcome.error.code, outcome.error.message, outcome.error.data)
+      : jsonRpcResult(id, outcome.result);
   }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live

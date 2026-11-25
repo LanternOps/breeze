@@ -21,7 +21,7 @@
  */
 import { MCP_GRANTABLE_DOMAINS, type AiToolDomain, type McpGrantableDomain } from '@breeze/shared';
 import { getToolDomain } from './aiTools';
-import { MCP_WHOAMI_TOOL_NAME } from './aiToolNames';
+import { MCP_META_TOOL_NAMES, MCP_WHOAMI_TOOL_NAME } from './aiToolNames';
 
 export type McpDomainGrant =
   | { restricted: false }
@@ -64,6 +64,8 @@ export function mcpToolDomain(toolName: string): AiToolDomain | undefined {
   if (toolName === MCP_WHOAMI_TOOL_NAME) return 'core';
   // Server-intrinsic action-intent tools (B-W04): never in the registry.
   if (toolName === 'get_action_status' || toolName === 'cancel_action') return 'core';
+  // #12427: the MCP meta-tools are server-intrinsic and core.
+  if (MCP_META_TOOL_NAMES.has(toolName)) return 'core';
   return getToolDomain(toolName);
 }
 
