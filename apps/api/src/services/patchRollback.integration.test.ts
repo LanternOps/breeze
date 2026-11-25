@@ -12,41 +12,44 @@ import '../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { deviceCommands, devicePatches, patches, patchRollbacks } from '../db/schema';
-import { buildOrgAccessClosures, dbAccessContextFromAuth, type AuthContext } from '../middleware/auth';
+import { deviceCommands, devicePatches, organizationUsers, patches, patchRollbacks } from '../db/schema';
+import { buildOrgAccessClosures, dbAccessContextFromAuth, siteAccessCheck, type AuthContext } from '../middleware/auth';
 import { patchRoutes } from '../routes/patches/index';
-import { createDevice, setupTestEnvironment } from '../__tests__/integration/db-utils';
+import { createDevice, createOrganization, createSite, setupTestEnvironment } from '../__tests__/integration/db-utils';
 import { executeTool } from './aiTools';
+import { queueCommandForExecution } from './commandQueue';
 import { createAccessToken } from './jwt';
+import { queuePatchRollbacks } from './patchRollback';
 
 const REASON = 'Update broke the line-of-business app';
 
-async function seed() {
+const installPatch = (patchId: string, orgId: string, deviceIds: string[]) => withSystemDbAccessContext(() =>
+  db.insert(devicePatches).values(deviceIds.map((deviceId) => ({ deviceId, orgId, patchId, status: 'installed' as const }))));
+
+async function seed(deviceCount = 2) {
   const env = await setupTestEnvironment();
   const orgId = env.organization.id;
-  const deviceIds = [
-    (await createDevice({ orgId, siteId: env.site.id })).id,
-    (await createDevice({ orgId, siteId: env.site.id })).id,
-  ];
+  const deviceIds: string[] = [];
+  for (let i = 0; i < deviceCount; i++) deviceIds.push((await createDevice({ orgId, siteId: env.site.id })).id);
   const patchId = await withSystemDbAccessContext(async () => {
     const [patch] = await db
       .insert(patches)
       .values({ source: 'microsoft', externalId: `KB-${randomUUID()}`, title: 'Rollback parity update' })
       .returning({ id: patches.id });
-    await db.insert(devicePatches).values(deviceIds.map((deviceId) => ({ deviceId, orgId, patchId: patch!.id, status: 'installed' as const })));
     return patch!.id;
   });
+  await installPatch(patchId, orgId, deviceIds);
   return { env, orgId, deviceIds, patchId };
 }
 
 type Fixture = Awaited<ReturnType<typeof seed>>;
 
-async function aiRollback({ env, orgId, deviceIds, patchId }: Fixture) {
+function aiAuth({ env, orgId }: Fixture, allowedSiteIds?: string[]): AuthContext {
   const { orgCondition, canAccessOrg } = buildOrgAccessClosures([orgId]);
-  const auth: AuthContext = {
+  return {
     principal: { kind: 'user_session' },
     aiOrigin: { kind: 'ai_assistant', sessionId: randomUUID() },
     user: { id: env.user.id, email: env.user.email, name: 'Rollback Tester', isPlatformAdmin: false },
@@ -57,10 +60,15 @@ async function aiRollback({ env, orgId, deviceIds, patchId }: Fixture) {
     accessibleOrgIds: [orgId],
     orgCondition,
     canAccessOrg,
+    ...(allowedSiteIds && { allowedSiteIds, canAccessSite: siteAccessCheck(allowedSiteIds) }),
   };
+}
+
+async function aiRollback(fx: Fixture, allowedSiteIds?: string[]) {
+  const auth = aiAuth(fx, allowedSiteIds);
   const output = await runOutsideDbContext(() =>
     withDbAccessContext(dbAccessContextFromAuth(auth), () =>
-      executeTool('manage_patches', { action: 'rollback', patchId, deviceIds, notes: REASON }, auth)));
+      executeTool('manage_patches', { action: 'rollback', patchId: fx.patchId, deviceIds: fx.deviceIds, notes: REASON }, auth)));
   return JSON.parse(output) as { success?: boolean; queued?: unknown[]; error?: string };
 }
 
@@ -121,5 +129,50 @@ describe('patch rollback on real Postgres (#12492)', () => {
     expect(restRollbacks).toHaveLength(2);
     expect(shape(restRollbacks)).toEqual(shape(ai.rollbacks));
     expect(shape(restCommands)).toEqual(shape(ai.commands));
+  });
+
+  it('a real statement error on the third of five devices rolls back only that device; the other four keep their command and row', async () => {
+    const fx = await seed(5);
+    const failing = fx.deviceIds[2]!;
+
+    const result = await runOutsideDbContext(() =>
+      withDbAccessContext(dbAccessContextFromAuth(aiAuth(fx)), () => queuePatchRollbacks({
+        patchId: fx.patchId,
+        deviceIds: fx.deviceIds,
+        reason: REASON,
+        initiatedBy: fx.env.user.id,
+        canAccess: () => true,
+        queue: async (d, type, payload) => {
+          if (d.id === failing) await db.execute(sql`SELECT 1/0`);
+          return queueCommandForExecution(d.id, type, payload, { userId: fx.env.user.id });
+        },
+      })));
+
+    const others = fx.deviceIds.filter((id) => id !== failing).sort();
+    const { rollbacks, commands } = await rowsFor(fx.deviceIds);
+    expect(commands.map((c) => c.deviceId).sort()).toEqual(others);
+    expect(rollbacks.map((r) => r.deviceId).sort()).toEqual(others);
+    expect(result!.failed).toEqual([{ deviceId: failing, error: 'Rollback command was not queued' }]);
+  });
+
+  it.each(['another org', 'another site'] as const)('a listed device in %s gets no command and no row from AI or REST', async (where) => {
+    const base = await seed();
+    const strangerOrgId = where === 'another org' ? (await createOrganization({ partnerId: base.env.partner.id })).id : base.orgId;
+    const stranger = (await createDevice({ orgId: strangerOrgId, siteId: (await createSite({ orgId: strangerOrgId })).id })).id;
+    await installPatch(base.patchId, strangerOrgId, [stranger]);
+    const fx = { ...base, deviceIds: [...base.deviceIds, stranger] };
+    const sites = where === 'another site' ? [fx.env.site.id] : undefined;
+    if (sites) {
+      await withSystemDbAccessContext(() =>
+        db.update(organizationUsers).set({ siteIds: sites }).where(eq(organizationUsers.userId, fx.env.user.id)));
+    }
+    const nothing = { rollbacks: [], commands: [] };
+
+    const ai = await aiRollback(fx, sites);
+    expect(await rowsFor([stranger]), JSON.stringify(ai)).toEqual(nothing);
+
+    const rest = await restRollback(fx);
+    expect(await rowsFor([stranger])).toEqual(nothing);
+    expect(rest.body.queuedCommandIds, JSON.stringify(rest.body)).toHaveLength(2);
   });
 });
