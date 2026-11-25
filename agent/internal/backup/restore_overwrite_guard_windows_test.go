@@ -4,6 +4,7 @@ package backup
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -38,5 +39,26 @@ func TestOverwritesOriginals_WindowsVolumeAliases(t *testing.T) {
 	}
 	if _, count, err := overwritesOriginals(t.TempDir(), []string{original}); err != nil || count != 0 {
 		t.Errorf("plain new folder: count %d, %v; want 0", count, err)
+	}
+}
+
+// A junction to the volume root is the root under another name: file
+// identity catches it, as a symlink to / is caught on POSIX.
+func TestOverwritesOriginals_WindowsJunctionAlias(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(dir, "docs", "x.txt")
+	if err := os.MkdirAll(filepath.Dir(original), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "rootjunction")
+	root := filepath.VolumeName(original) + `\`
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, root).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J %s %s: %v: %s", link, root, err, out)
+	}
+	if _, count, err := overwritesOriginals(link, []string{original}); err != nil || count != 1 {
+		t.Fatalf("junction to %s: count %d, %v; want 1", root, count, err)
 	}
 }

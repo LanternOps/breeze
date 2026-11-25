@@ -979,6 +979,17 @@ describe('RestoreWizard', () => {
       expect(restoreRequests[0]).not.toHaveProperty('allowOverwriteOriginals');
     });
 
+    it('switching back to the staging folder after confirming sends no flag', async () => {
+      await chooseDestination('C:\\');
+      fireEvent.click(screen.getByTestId('restore-overwrite-originals'));
+      fireEvent.click(screen.getByRole('button', { name: /Staging folder/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+      await waitFor(() => expect(restoreRequests).toHaveLength(1));
+      expect(restoreRequests[0]).not.toHaveProperty('allowOverwriteOriginals');
+      expect(restoreRequests[0]!.targetPath).toBeUndefined();
+    });
+
     it('a confirmation given for a root does not carry over to a later folder path', async () => {
       await chooseDestination('/');
       fireEvent.click(screen.getByTestId('restore-overwrite-originals'));

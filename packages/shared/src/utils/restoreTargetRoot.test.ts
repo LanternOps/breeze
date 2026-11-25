@@ -9,17 +9,19 @@ describe('isVolumeRootRestoreTarget (#12638)', () => {
     '\\\\server\\share', '\\\\server\\share\\', '//server/share/',
     '\\\\?\\UNC\\server\\share\\',
     '\\\\?\\Volume{0b6f8f8e-1111-2222-3333-444455556666}\\',
-    // The whole target is trimmed first: conservative for the one form
-    // (\\?\) where a trailing space could name a real folder.
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\',
+    // The whole target is trimmed first: conservative for the forms (\\?\,
+    // \??\) where a trailing space could name a real folder.
     '\\\\?\\C:\\ ',
   ])('%j is a volume root', (target) => {
     expect(isVolumeRootRestoreTarget(target)).toBe(true);
   });
 
   it.each([
-    '', '   ', 'C:\\restore', 'D:\\Restored\\', 'C:/restore', '/var/restore', '/restore/.',
+    '', '   ', '/...', '/a ', 'C:\\restore', 'D:\\Restored\\', 'C:/restore', '/var/restore', '/restore/.',
     '\\\\?\\C:\\restore', '\\\\server\\share\\restore',
     '\\\\?\\Volume{0b6f8f8e-1111-2222-3333-444455556666}\\restore',
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\restore',
     'restore', 'C:restore', '//server',
   ])('%j is not a volume root', (target) => {
     expect(isVolumeRootRestoreTarget(target)).toBe(false);

@@ -217,7 +217,7 @@ func TestOverwritesOriginals_DestinationIsAnotherOriginal(t *testing.T) {
 // is a link to the original one.
 func TestOverwritesOriginals_AliasedTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("POSIX path style; Windows aliases are covered by restore_inplace_windows_test.go")
+		t.Skip("POSIX path style; Windows aliases are covered by restore_overwrite_guard_windows_test.go")
 	}
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -242,6 +242,11 @@ func TestOverwritesOriginals_AliasedTarget(t *testing.T) {
 	}
 	if _, count, err := overwritesOriginals(nested, []string{original}); err != nil || count != 1 {
 		t.Fatalf("target whose %q is a link to /%s: count %d, %v; want 1", first, first, count, err)
+	}
+	// A directory entry sitting exactly at the alias: its own destination
+	// is the original directory.
+	if _, count, err := overwritesOriginals(nested, []string{"/" + first}); err != nil || count != 1 {
+		t.Fatalf("directory entry /%s under a target whose %q is a link to it: count %d, %v; want 1", first, first, count, err)
 	}
 
 	if _, count, err := overwritesOriginals(t.TempDir(), []string{original}); err != nil || count != 0 {
@@ -300,7 +305,7 @@ func TestRestoreFromSnapshot_RefusalWritesNothing(t *testing.T) {
 	if result.Status != "failed" || result.Code != ResultCodeRestoreWouldOverwriteOriginals || result.FilesRestored != 0 {
 		t.Fatalf("result = %+v; want failed with %s and nothing restored", result, ResultCodeRestoreWouldOverwriteOriginals)
 	}
-	if !strings.Contains(result.Error, "in-place restore was not requested") || !strings.Contains(result.Error, first) {
+	if !strings.Contains(result.Error, "nothing was written") || !strings.Contains(result.Error, first+" would overwrite "+nested) {
 		t.Errorf("error %q should say why and name an affected entry", result.Error)
 	}
 	if result.StagingDir != "" {
@@ -389,10 +394,13 @@ func TestDirIdentityCheck_CacheIsPerVolume(t *testing.T) {
 	}
 }
 
-// A destination or original that cannot be examined fails the check closed;
-// only "does not exist" lets it pass.
+// A destination that exists but cannot be examined, or an original that is
+// there but denied, fails the check closed. "Does not exist" or "not a
+// directory" lets it pass, and so does an original that cannot be reached
+// at all (a drive with no media, an unreachable share): the destination this
+// host just opened cannot be it.
 func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
-	denied := errors.New("access denied")
+	denied := fmt.Errorf("access denied: %w", fs.ErrPermission)
 	for name, stat := range map[string]func(string) (os.FileInfo, error){
 		"destination": func(p string) (os.FileInfo, error) {
 			if strings.HasPrefix(p, "/target") {
@@ -416,6 +424,16 @@ func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
 	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
 		t.Errorf("nothing exists: alias %v, %v; want not an overwrite", same, err)
 	}
+	notReady := errors.New("the device is not ready")
+	c = newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
+		if strings.HasPrefix(p, "/target") {
+			return fakeDirInfo(p), nil
+		}
+		return nil, notReady
+	})
+	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
+		t.Errorf("original unreachable: alias %v, %v; want not an overwrite", same, err)
+	}
 }
 
 // fakeDir is a directory whose identity is id.
@@ -433,4 +451,101 @@ func fakeDirInfo(path string) os.FileInfo { return fakeDir{id: path} }
 func newFakeIdentityCheck(target string, host pathStyle, stat func(string) (os.FileInfo, error)) *dirIdentityCheck {
 	return &dirIdentityCheck{targetBase: target, hostStyle: host, stat: stat, verdicts: map[string]dirVerdict{},
 		sameFile: func(a, b os.FileInfo) bool { return a.(fakeDir).id == b.(fakeDir).id }}
+}
+
+// overwritesOriginals runs the guard over a snapshot whose entries are
+// exactly the selected ones (test helper: the restore also notes the
+// unselected entries while it decodes the manifest).
+func overwritesOriginals(targetBase string, recorded []string) (example string, count int, err error) {
+	g := newOriginalsGuard(targetBase)
+	for _, p := range recorded {
+		g.noteOriginal(p)
+	}
+	f := g.check(recorded)
+	return f.entry, f.count, f.uncheckedErr
+}
+
+// A Windows VSS backup records the shadow-copy device path as SourcePath and
+// the real path as OriginalPath: the guard must judge the real one, for
+// files and junctions alike (#12638's own repro is such a snapshot).
+func TestRefuseRestoreOverOriginals_VSSOriginalPath(t *testing.T) {
+	file := SnapshotFile{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\Users\a\x.dat`, OriginalPath: `C:\Users\a\x.dat`}
+	junction := SnapshotJunction{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\Users\a\My Music`, OriginalPath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`}
+	for name, tc := range map[string]struct {
+		files     []SnapshotFile
+		junctions []SnapshotJunction
+	}{
+		"file":     {files: []SnapshotFile{file}},
+		"junction": {junctions: []SnapshotJunction{junction}},
+	} {
+		g := newOriginalsGuard(`C:\`)
+		for _, f := range tc.files {
+			g.noteOriginal(restoreSourcePath(f))
+		}
+		for _, j := range tc.junctions {
+			g.noteOriginal(j.restorePath())
+		}
+		result := &RestoreResult{}
+		if !refuseRestoreOverOriginals(g, tc.files, nil, nil, tc.junctions, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
+			t.Errorf("VSS %s restored to C:\\: result %+v, want refused", name, result)
+		}
+	}
+}
+
+// When the check cannot finish, the restore is refused with its own code and
+// a next step; a definite hit found alongside still wins the report.
+func TestRefuseRestoreOverOriginals_CheckFailure(t *testing.T) {
+	denied := fmt.Errorf("access denied: %w", fs.ErrPermission)
+	g := newOriginalsGuard("/target")
+	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, denied })
+	g.identity.hostStyle = stylePOSIX
+	result := &RestoreResult{}
+	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: "/home/a/x"}}, nil, nil, nil, result) {
+		t.Fatal("restore went ahead although the check could not finish")
+	}
+	if result.Status != "failed" || result.Code != ResultCodeRestoreOverwriteCheckFailed ||
+		!strings.Contains(result.Error, "could not confirm") || !strings.Contains(result.Error, "new, empty folder") {
+		t.Fatalf("result %+v; want failed with %s and a next step", result, ResultCodeRestoreOverwriteCheckFailed)
+	}
+
+	// The same unreadable identity, plus an entry that lexically lands on
+	// another original: the definite hit is what is reported.
+	g = newOriginalsGuard("/target")
+	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, denied })
+	for _, p := range []string{"/target/x", "/target/target/x"} {
+		g.noteOriginal(p)
+	}
+	result = &RestoreResult{}
+	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: "/home/a/y"}, {SourcePath: "/target/x"}}, nil, nil, nil, result) ||
+		result.Code != ResultCodeRestoreWouldOverwriteOriginals || !strings.Contains(result.Error, "/target/x would overwrite /target/target/x") {
+		t.Fatalf("result %+v; want the definite overwrite reported", result)
+	}
+}
+
+// The restore notes every junction in the manifest as an original, so a
+// file whose destination is a backed-up junction is refused too.
+func TestRestoreFromSnapshot_JunctionOriginalIsProtected(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(target, "a.txt")
+	provider, snapshotID := setupRestoreTestSnapshotAt(t, map[string]string{first: "one"}, nil)
+	// Re-upload the manifest with a junction recorded where first restores.
+	prefix := filepath.Join("snapshots", snapshotID)
+	snapshot, err := downloadManifest(provider, snapshotID, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Junctions = []SnapshotJunction{{SourcePath: resolveTargetPath(target, first), Target: `C:\x`}}
+	uploadTestManifest(t, provider, prefix, *snapshot)
+
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: t.TempDir(), SelectedPaths: []string{first}}, nil)
+	if err != nil || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
+		t.Fatalf("restore = %+v, %v; want refused", result, err)
+	}
 }

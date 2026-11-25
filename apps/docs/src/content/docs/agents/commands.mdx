@@ -988,7 +988,7 @@ No payload parameters. Stops the currently running backup job.
 | `snapshotId` | string | Yes | Snapshot to restore |
 | `targetPath` | string | No | Folder to restore into; each file keeps its full original path beneath it. If omitted, files go to a staging folder in the backup helper's work directory, never to the original locations. |
 | `selectedPaths` | string[] | No | Restore only these paths from the snapshot instead of the full snapshot. See [selective restore](/backup/restoring/) for matching behavior. |
-| `allowOverwriteOriginals` | boolean | No | Write files back over their originals. Without it, the helper refuses a `targetPath` where any file would land on an original (a volume root such as `C:\` or `/`, or an alias of one) and writes nothing; the result carries `code: "restore_would_overwrite_originals"`. The API requires it for a volume-root `targetPath`. |
+| `allowOverwriteOriginals` | boolean | No | Write files back over their originals. Without it, the helper refuses a `targetPath` where any file would land on one of the snapshot's originals (the root of the files' own volume, such as `C:\` for files from C:, an alias of it, or a folder holding a backed-up nested copy) and writes nothing; the result carries `code: "restore_would_overwrite_originals"`, or `restore_overwrite_check_failed` when the target or an original folder could not be examined. The API requires the flag for any volume-root `targetPath`. |
 
 Unlike `backup_test_restore`, `backup_restore` writes to `targetPath` (or its staging folder) rather than a managed temp directory. With `allowOverwriteOriginals` and the volume root as `targetPath`, it puts files back in place.
 

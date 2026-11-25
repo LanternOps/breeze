@@ -7,10 +7,20 @@
  */
 
 import { z } from 'zod';
+import { isVolumeRootRestoreTarget } from '@breeze/shared';
 // Pool-free leaf (imports only zod) shared with the route schema.
 import { hypervOptionsSchema, isAbsoluteRebuildPath } from './bareMetalRebuildSchemas';
 // Pool-free leaf as well: where local vaults may live.
 import { isSupportedLocalStorePath, LOCAL_STORE_PATH_UNSUPPORTED_MESSAGE, SMB_VAULT_UNSUPPORTED_MESSAGE } from './localStoreTargets';
+
+/**
+ * #12638: why restore_snapshot refuses a volume-root targetPath. A restore
+ * there writes every file from that volume back over its original; only a
+ * technician in the Restore wizard can confirm that.
+ */
+export const VOLUME_ROOT_TARGET_REFUSAL =
+  'The target is the root of a drive or share; if the files came from it, restoring there writes each one back over its original. '
+  + 'Choose a new, empty folder as the target (for example a new folder on that drive). Overwriting the originals must be confirmed by a technician in the Restore wizard.';
 
 // Reusable validators (duplicated locally to avoid circular imports)
 const uuid = z.string().guid();
@@ -100,7 +110,8 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
   restore_snapshot: z.object({
     snapshotId: uuid,
     deviceId: uuid,
-    targetPath: backupPath.optional(),
+    // #12638: refused here, before an approval is asked for.
+    targetPath: backupPath.refine((path) => !isVolumeRootRestoreTarget(path), { message: VOLUME_ROOT_TARGET_REFUSAL }).optional(),
     selectedPaths: z.array(backupPath).max(1000).optional(),
   }),
 

@@ -26,12 +26,9 @@ import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelp
 import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
 import { randomUUID } from 'node:crypto';
 import { checkRestoreIntegrityRequest, recordRequestAuthorization, restoreIntegrityResponse } from './restoreIntegrityGate';
-import { isVolumeRootRestoreTarget } from '@breeze/shared';
+import { isVolumeRootRestoreTarget, RESTORE_WOULD_OVERWRITE_ORIGINALS } from '@breeze/shared';
 
 export const restoreRoutes = new Hono();
-
-/** #12638: shared with the backup helper's RestoreResult.Code for the same refusal. */
-export const RESTORE_WOULD_OVERWRITE_ORIGINALS = 'restore_would_overwrite_originals';
 
 function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() =>
@@ -223,14 +220,16 @@ restoreRoutes.post(
 
     const payload = c.req.valid('json');
 
-    // #12638: a volume-root target writes every file back over its original
-    // (the helper keeps each file's full path beneath the target). Refused
-    // here, before anything is created, unless the request says so: backup
-    // helpers that predate allowOverwriteOriginals cannot tell either way.
+    // #12638: a volume-root target writes every file from that volume back
+    // over its original (the helper keeps each file's full path beneath the
+    // target). This server cannot tell which volume the files came from, so
+    // any root is refused here, before anything is created, unless the
+    // request confirms it: helpers that predate allowOverwriteOriginals
+    // would overwrite without asking.
     if (payload.targetPath && isVolumeRootRestoreTarget(payload.targetPath) && !payload.allowOverwriteOriginals) {
       return c.json({
-        error: `Restoring to ${payload.targetPath.trim()} would write every file back over the original it was backed up from. `
-          + 'Choose a folder instead (for example a new folder on that drive), or confirm that the originals should be overwritten.',
+        error: `${payload.targetPath.trim()} is the root of a drive or share. If the files came from it, restoring there writes each one back over its original. `
+          + 'Choose a new, empty folder instead, or set allowOverwriteOriginals to confirm overwriting the originals.',
         code: RESTORE_WOULD_OVERWRITE_ORIGINALS,
       }, 400);
     }

@@ -562,9 +562,10 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 		SnapshotID    string   `json:"snapshotId"`
 		TargetPath    string   `json:"targetPath"`
 		SelectedPaths []string `json:"selectedPaths"`
-		// AllowOverwriteOriginals: the operator asked to write the files back
-		// over their originals (#12638). Absent (an older server) means false: a
-		// target that would overwrite the originals is refused.
+		// AllowOverwriteOriginals: the operator confirmed writing the files
+		// back over their originals (#12638). Absent (an older server, or
+		// no confirmation) means false: a target that would overwrite the
+		// originals is refused.
 		AllowOverwriteOriginals bool `json:"allowOverwriteOriginals"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {

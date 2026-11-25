@@ -1,15 +1,19 @@
 // #12638: a file restore to a target keeps each file's full path beneath it
 // (the backup helper strips the volume and joins the rest under the target),
-// so a target that is a volume root — `C:\`, `/`, a share root — writes every
-// file back over the original it was backed up from. The request says so
-// explicitly with `allowOverwriteOriginals`; a root target without it is
-// refused before anything is dispatched. Helpers that predate the flag would
-// otherwise overwrite silently, so this check is what protects them.
+// so a target that is the root of the volume the files came from — `C:\` for
+// files from C:, `/`, a share root — writes every file back over its
+// original. The request confirms that explicitly with
+// `allowOverwriteOriginals`; a root target without it is refused before
+// anything is dispatched. Helpers that predate the flag would otherwise
+// overwrite silently, so this check is what protects them.
 //
-// Lexical only, and deliberately broad: the server cannot see the device's
-// disks, so any spelling of a volume root counts, whichever volume the
-// snapshot came from (an empty E:\ needs the flag too, or a folder such as
-// E:\Restored). The helper makes the exact, per-file decision.
+// Lexical only, and deliberately broad: the server cannot tell which volume
+// the files came from, so every volume or share root needs the confirmation
+// (an empty E:\ too, or a folder such as E:\Restored). The helper makes the
+// exact, per-file decision.
+
+/** RestoreResult.Code / API error code for a restore refused because it would overwrite the originals. */
+export const RESTORE_WOULD_OVERWRITE_ORIGINALS = 'restore_would_overwrite_originals';
 
 const DRIVE = /^[A-Za-z]:/;
 const SEPARATOR = /[\\/]/;
@@ -18,9 +22,10 @@ const SEPARATOR = /[\\/]/;
  * Whether `targetPath` names the root of a volume or share: a drive root
  * (`C:\`, `c:/`, `C:`), a POSIX root (`/`, `//`, `/.`), a share root
  * (`\\server\share\`), or any of those through a device path (`\\?\C:\`,
- * `\\.\C:\`, `\\?\UNC\server\share`, `\\?\Volume{…}\`), with `.` and `..`
- * resolved and, outside the `\\?\` form, trailing dots and spaces dropped
- * as Windows does.
+ * `\\.\C:\`, `\\?\UNC\server\share`, `\\?\Volume{…}\`,
+ * `\\?\GLOBALROOT\Device\HarddiskVolume3\`), with `.` and `..`
+ * resolved and, for Windows paths outside the `\\?\` and `\??\` forms,
+ * trailing dots and spaces dropped as Win32 does.
  */
 export function isVolumeRootRestoreTarget(targetPath: string): boolean {
   const path = targetPath.trim();
@@ -39,10 +44,12 @@ export function isVolumeRootRestoreTarget(targetPath: string): boolean {
       if (unc === null) return false;
       rest = unc;
     } else {
-      // A volume GUID or other device path: its first component is the volume.
+      // A volume GUID or other device path: its first component is the
+      // volume, or, for `GLOBALROOT\Device\<name>`, its first three.
       const [volume, ...tail] = after.split(SEPARATOR);
       if (!volume) return false;
-      rest = tail.join('/');
+      const deviceTail = /^GLOBALROOT$/i.test(volume) && /^Device$/i.test(tail[0] ?? '') && tail[1] ? tail.slice(2) : tail;
+      rest = deviceTail.join('/');
     }
   } else if (DRIVE.test(path)) {
     rest = path.slice(2);
@@ -52,6 +59,7 @@ export function isVolumeRootRestoreTarget(targetPath: string): boolean {
     rest = unc ?? path;
   } else if (SEPARATOR.test(path.charAt(0))) {
     rest = path;
+    win32 = path.charAt(0) === '\\'; // POSIX names keep trailing dots and spaces
   } else {
     return false; // relative: the helper refuses it anyway
   }
