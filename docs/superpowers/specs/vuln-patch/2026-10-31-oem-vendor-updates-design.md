@@ -128,6 +128,8 @@ DCU can schedule itself (`-scheduleMonthly=third,Wed,01:00`, vendor doc), which 
 
 The cost is that a device must be online with a running agent during the window.
 
+> **Amended 2026-11-25 (#12267): the takeover is dropped.** The W10 lab (#12262) showed DCU refuses `-exportSettings` under every agent-owned folder (exit 107), and that importing a default-valued export does not reset `ScheduleMode`, so a release could not restore the original schedule exactly. The agent now never reads or writes the tool's schedule or settings, a scheduled run behaves like Run Now, every result reports `takeover: not_attempted`, and a release always answers `nothing_to_restore`. The owner's decision is to require the tool to be in manual-updates mode and report a lane state when it is not. That check is **not built yet**: no capture shows a way to read the schedule mode without writing anything. The paragraphs below describe the original design.
+
 **Taking over and handing back the vendor schedule.** Only a *scheduled* run takes over. Before the first one on a device, the agent saves the tool's settings (`-exportSettings` on Dell) in its own protected directory, then runs `dcu-cli /configure -scheduleManual -updatesNotification=disable` and re-asserts it on later runs. This stops double runs on machines already configured by hand. Policy-controlled settings can make this a no-op (vendor doc), so the agent checks the result.
 
 When a device stops resolving to an enabled lane, the server queues a release and the agent restores only what it changed. This follows `winupdate.go`, which records Breeze's ownership and reverts only its own state. Without this, removing a policy would silently stop updates on a machine that used to update itself.

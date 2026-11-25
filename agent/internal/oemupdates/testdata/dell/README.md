@@ -18,7 +18,7 @@ Captured on 2026-11-19 from Dell Command | Update **5.7.2** (`dcu-cli.exe` 5.7.2
 
 - **Reserved folders.** `-outputLog`, `-report`, `-exportSettings` and `-importSettings` refuse any path under `C:\ProgramData`, `C:\Program Files` or `C:\Windows`, including the SYSTEM profile. DCU exits **107** with "The path provided for option '…' is a reserved folder that may not be used."
   - Every agent-owned directory is under one of those, so the lane passes no path and parses stdout instead. Without `-silent`, because that hides stdout.
-  - Schedule takeover still exports under ProgramData, so it cannot work as built (see the W10 PR).
+  - The schedule takeover exported under ProgramData, so it could not work as built. It was dropped in #12267: the lane never runs `/configure` in any form.
 - **`-localblockedswb` is a `/configure` option**, not an `/applyUpdates` one (per `dcu-cli /help`).
   - Set through `/configure`, it does hide that release ID from `/scan`. But DCU then offered a different release ID for the same component: NP58K was blocked, and 4VJ35 (Intel ME Components) appeared.
   - The lane refuses a run with blocked IDs (`blocked_ids_unsupported`).
@@ -28,6 +28,12 @@ Captured on 2026-11-19 from Dell Command | Update **5.7.2** (`dcu-cli.exe` 5.7.2
   - .NET Desktop Runtime 10.0.15 installer: `.NET` (O=Microsoft Corporation)
 - **Exit codes seen:** 0 (installed), 500 (no updates), 107 (reserved path / missing import file), 106 (option not valid for the command). The rest of the table is still Dell's documentation.
 
-## `doc-derived/`: still from documentation
+### The three settings exports
 
-`settings-export.xml` is the original guess at the export schema. The takeover fake still uses it. The real schema is close: nested `Group`/`Property` with `<Value>` children. The real export also marks defaults as `Default="ValueIsDefault"` with no value, which the guess does not model. Replace it when takeover is redesigned around the reserved-folder finding.
+No test reads them now. They are kept as the record of the export format, for the planned manual-updates check (#12267). They show how `ScheduleMode` reads when it is default and when it is `ManualUpdates`. They do **not** show:
+
+- a way to read the schedule mode without writing anything (the export writes a file, and the folder used for these captures is not recorded);
+- what DCU does when `ScheduleMode` is default;
+- an explicit `Auto` value (that is noted above but was not captured).
+
+The doc-derived `settings-export.xml` that the takeover fake used was removed with the takeover.

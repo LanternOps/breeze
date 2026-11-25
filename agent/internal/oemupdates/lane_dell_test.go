@@ -160,7 +160,7 @@ func TestDellRangeIsTheSecurityFloor(t *testing.T) {
 	}
 }
 
-// Run Now never changes the tool's own settings (W06 owns takeover).
+// Run Now never changes the tool's own settings. A scheduled run does not either (schedule_untouched_test.go).
 func TestRunNowChangesNoToolSettings(t *testing.T) {
 	f := newRunFixture(t)
 	l := testDellLane(t, map[string]string{dcu64: "5.7.2"})

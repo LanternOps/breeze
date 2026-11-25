@@ -701,6 +701,8 @@ Why a new mode: `computeRebootDeadline` will not pull a deadline in front of the
 
 ### W06 T3: Dell schedule takeover and restore
 
+> **Removed 2026-11-25 (#12267).** `takeover.go` and `LaneTakeover` are gone, and `Release` answers `nothing_to_restore` without running the tool. The precondition check (the tool must be in manual-updates mode) waits on a lab capture of a write-free way to read the schedule mode. See spec §4.2.
+
 **Files:** Create `agent/internal/oemupdates/{takeover.go, takeover_test.go}`. Modify `lane_dell.go`, `runner.go`, tests. Add `Takeover(ctx, Exec, Store) (string, error)` and `Restore(ctx, Exec, Store) error` to an optional `LaneTakeover` interface.
 
 - [ ] **Tests, red first:** `TestScheduledFirstRunExportsThenConfigures`: `-exportSettings` to the agent directory, then `/configure -scheduleManual -updatesNotification=disable`; `TestReassertedOnLaterRuns`; `TestExportFailureSkipsConfigureAndRuns`; `TestPolicyLockedNoOpReported`: read-back shows no change and result says `policy_locked`; `TestOnDemandNeverTakesOver`; `TestRestoreImportsOnlyWhatWeChanged` following `winupdate.go`'s ownership record; `TestRestoreIdempotent`; `TestRestoreWithNoRecordDoesNothing`.
@@ -1004,7 +1006,7 @@ func ResumeOnStart(ctx, deps) (Result, error)            // durable: re-enables 
 - **Pass:** nothing interrupts a flash; alert fires and resolves.
 
 **D5. Scheduled overnight.** Requires W07.
-- [ ] Policy assigned, window set to tonight. Takeover: `-exportSettings` saved, DCU's own schedule shows manual.
+- [ ] Policy assigned, window set to tonight. DCU's own schedule settings are unchanged by the run (#12267: no takeover, no `/configure` of any kind).
 - [ ] Run happens in window, reboots in window, grace notice shown, deferral cannot pass the close.
 - [ ] Miss one night (power off): catch-up runs next night.
 - [ ] Hit a deferral through the window close: reboot moves to next night, never into the day.

@@ -5,7 +5,7 @@
 // (HP HEAD, Lenovo GET). It writes, installs, flashes and reboots nothing.
 //
 // That is a structural guarantee, not a branch: this package does not import
-// the oemupdates root package (fetch, install, runner, marker, takeover), the
+// the oemupdates root package (fetch, install, runner, marker), the
 // flash guard, rollback, safe mode, the updater, self-uninstall or any reboot
 // code, and spawns no process of its own. observe_structure_test.go pins both.
 //
