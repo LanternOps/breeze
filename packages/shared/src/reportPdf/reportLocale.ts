@@ -42,12 +42,14 @@ export type ReportDateLocale = Pick<ReportLocale, 'dateFormat' | 'timeZone'>;
 export type ReportDateTimeLocale = Pick<ReportLocale, 'dateFormat' | 'timeFormat' | 'timeZone'>;
 
 /** The date half of the design system every designed renderer receives on
- *  `chrome`, bound to the report's locale by `buildReportPdf`. */
+ *  `chrome`, bound to the report's locale by `buildReportPdf`. `timeZone`
+ *  overrides the report zone for a report that prints its own period zone
+ *  (ticket SLA); the date order and hour cycle stay the partner's. */
 export type ReportFormatChrome = {
   /** The report's one date format; null when there is no date. */
-  formatDate: (value: string | Date | null | undefined) => string | null;
+  formatDate: (value: string | Date | null | undefined, timeZone?: string) => string | null;
   /** A date and time with its timezone, in the same format. */
-  formatDateTime: (value: string | Date | null | undefined) => string | null;
+  formatDateTime: (value: string | Date | null | undefined, timeZone?: string) => string | null;
   /** "Oct 10, 2026 – Nov 9, 2026"; null unless both ends are known. */
   formatPeriod: (start: string | Date | null | undefined, end: string | Date | null | undefined) => string | null;
   /** The one separator between facts on a meta line. */

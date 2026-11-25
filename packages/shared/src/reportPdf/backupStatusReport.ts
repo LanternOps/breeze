@@ -7,7 +7,9 @@
  */
 import type { jsPDF } from 'jspdf';
 import { autoTable, type CellHookData } from 'jspdf-autotable';
-import type { PdfChrome } from './hardwareLifecyclePdf';
+import type { PdfChrome as BasePdfChrome } from './hardwareLifecyclePdf';
+import type { ReportFormatChrome } from './reportLocale';
+
 import type { BackupStatusReportData } from '../types/backupStatusReport';
 import type {
   BackupHealthRow,
@@ -21,6 +23,8 @@ import {
   type BackupStatusBucketId,
   type VerifiedBootableState,
 } from '../utils/backupHealth';
+
+type PdfChrome = BasePdfChrome & Pick<ReportFormatChrome, 'formatDate' | 'formatDateTime'>;
 
 type RGB = [number, number, number];
 
@@ -238,22 +242,22 @@ function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
 
 /** An overdue `completed` row says so, with the date of its last success,
  *  rather than a bare "Completed" (#12025). */
-function statusText(row: BackupHealthRow, timezone: string | undefined): string {
+function statusText(chrome: PdfChrome, row: BackupHealthRow): string {
   if (!isOverdueBackup(row)) return STATUS_LABEL[row.status];
   return row.lastSuccessAt
-    ? `No recent backup\nLast: ${formatSnapshotDate(row.lastSuccessAt, timezone)}`
+    ? `No recent backup\nLast: ${snapshotDate(chrome, row.lastSuccessAt)}`
     : 'No recent backup';
 }
 
 /** A result carries its date: an old "Passed" must not read as a current one. */
-function verifiedBootableText(row: BackupHealthRow, timezone: string | undefined): string {
+function verifiedBootableText(chrome: PdfChrome, row: BackupHealthRow): string {
   const state = verifiedBootableState(row);
   const label = VERIFIED_BOOTABLE_LABEL[state];
   if ((state !== 'passed' && state !== 'failed') || !row.verifiedBootableAt) return label;
-  return `${label}\n${formatSnapshotDate(row.verifiedBootableAt, timezone)}`;
+  return `${label}\n${snapshotDate(chrome, row.verifiedBootableAt)}`;
 }
 
-function cellText(row: BackupHealthRow, key: string, timezone: string | undefined): string {
+function cellText(chrome: PdfChrome, row: BackupHealthRow, key: string): string {
   switch (key) {
     case 'device': return row.name;
     case 'computerName': return row.computerName ?? '-';
@@ -266,8 +270,8 @@ function cellText(row: BackupHealthRow, key: string, timezone: string | undefine
     case 'selected': return formatBytes(row.selectedBytes);
     case 'used': return formatBytes(row.usedBytes);
     case 'errors': return String(row.errorsCount);
-    case 'status': return statusText(row, timezone);
-    case 'verifiedBootable': return verifiedBootableText(row, timezone);
+    case 'status': return statusText(chrome, row);
+    case 'verifiedBootable': return verifiedBootableText(chrome, row);
     // Drawn by hand in didDrawCell (a 28-cell colour strip); text stays empty
     // so autoTable never prints a stray label under the drawing.
     case 'history':
@@ -285,33 +289,11 @@ function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, needed: number): 
 
 export type BackupStatusPdfOpts = {
   generatedAt: string;
-  /** IANA zone for the snapshot timestamp in the footer note. Defaults to UTC. */
-  timezone?: string;
 };
 
-/** Format an ISO timestamp like the other reports' `generatedAt` (medium date, short time). */
-function formatSnapshotTime(iso: string, timezone: string | undefined): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  try {
-    return new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short',
-    }).format(d);
-  } catch {
-    // Unknown zone string: fall back to UTC rather than failing the render.
-    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' }).format(d);
-  }
-}
-
-/** The date alone, same zone handling as {@link formatSnapshotTime}. */
-function formatSnapshotDate(iso: string, timezone: string | undefined): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  try {
-    return new Intl.DateTimeFormat('en-US', { timeZone: timezone || 'UTC', dateStyle: 'medium' }).format(d);
-  } catch {
-    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium' }).format(d);
-  }
+/** The date alone, in the report's date format (the partner's, not en-US). */
+function snapshotDate(chrome: PdfChrome, iso: string): string {
+  return chrome.formatDate(iso) ?? iso;
 }
 
 export function renderBackupStatusReport(
@@ -371,7 +353,7 @@ export function renderBackupStatusReport(
     startY: y + 1,
     margin: { top: continuationTop, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
     head: [COLUMNS.map((c) => ({ content: saasCount > 0 && c.key === 'device' ? 'Resource' : c.label, styles: { halign: c.halign } }))],
-    body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key, opts.timezone))),
+    body: rows.map((r) => COLUMNS.map((c) => cellText(chrome, r, c.key))),
     theme: 'grid',
     rowPageBreak: 'avoid',
     styles: { fontSize: BODY_FONT, cellPadding: { top: 1.2, bottom: 1.2, left: 1.6, right: 1.6 }, minCellHeight: ROW_MIN_H, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
@@ -409,7 +391,7 @@ export function renderBackupStatusReport(
       ? ' Row limit reached: the backup list is cut short and does not cover every resource.'
       : ' Row limit reached: the device list is cut short and does not cover every device.'
     : '';
-  const note = `Figures as of ${formatSnapshotTime(data.asOf, opts.timezone)}. "28 days" reads oldest (left) to most recent (right); grey is a day with no observation.${truncatedNote}`;
+  const note = `Figures as of ${(chrome.formatDateTime(data.asOf) ?? data.asOf)}. "28 days" reads oldest (left) to most recent (right); grey is a day with no observation.${truncatedNote}`;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   ink(doc, C.faint);

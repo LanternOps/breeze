@@ -7,6 +7,7 @@ import { organizations, reports, reportRuns, reportSeries } from '../../db/schem
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
+import { loadReportBrandingForOrg } from '../../services/reportBranding';
 import { PERMISSIONS } from '../../services/permissions';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import {
@@ -548,7 +549,19 @@ runsRoutes.get(
       if (!result || !hasMeaningfulReportContent(result)) {
         return c.json({ error: 'Report run has no result data to download' }, 409);
       }
-      const payload = { type: row?.reportType, format, data: result };
+      // #12048: a browser export by org-scoped staff cannot read
+      // GET /orgs/partners/me (partner scope), so its PDF came out A4 with no
+      // logo. For an org-owned report, ship the branding the server-rendered
+      // PDFs already use. `row.orgId` comes from the access-checked join above,
+      // never from the request, and the loader hops through the caller's own
+      // RLS before its partner read. PDF only: JSON is a raw snapshot export.
+      const branding = format === 'pdf' && row.orgId
+        ? await loadReportBrandingForOrg(row.orgId).catch((err) => {
+          console.warn('[reports] branding for browser PDF export failed; exporting unbranded', { runId, err });
+          return null;
+        })
+        : null;
+      const payload = { type: row?.reportType, format, data: result, ...(branding?.name ? { branding } : {}) };
       const body = JSON.stringify(payload);
       c.header('Content-Type', 'application/json; charset=UTF-8');
       auditSensitiveRead(c, {

@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   calls: [] as Array<Record<string, unknown>>,
   partner: {} as Record<string, unknown>,
+  status: 200,
 }));
 
 vi.mock('@breeze/shared/reportPdf', async (importOriginal) => ({
@@ -20,13 +21,15 @@ vi.mock('@breeze/shared/reportPdf', async (importOriginal) => ({
 }));
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn(async () => new Response(JSON.stringify(state.partner), { status: 200 })),
+  fetchWithAuth: vi.fn(async () => new Response(JSON.stringify(state.partner), { status: state.status })),
 }));
 
 import { exportReport, loadPartnerBranding } from './reportExport';
+import { serverBrandingFrom } from './serverBranding';
 
 beforeEach(() => {
   state.calls.length = 0;
+  state.status = 200;
   Object.defineProperty(URL, 'createObjectURL', { value: () => 'blob:x', writable: true, configurable: true });
   Object.defineProperty(URL, 'revokeObjectURL', { value: () => undefined, writable: true, configurable: true });
 });
@@ -63,5 +66,34 @@ describe('report export locale (#12048)', () => {
     expect(state.calls[0]!.generatedAt).toBeInstanceOf(Date);
     expect((state.calls[0]!.generatedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
     expect(state.calls[0]!.timezone).toBe('America/New_York');
+  });
+});
+
+describe('org-scoped browser export (#12048)', () => {
+  const serverBranding = { name: 'Example MSP', logoDataUrl: 'data:image/png;base64,AAAA', logoAspect: 4, pageSize: 'letter' as const };
+  const pdf = (extra: Record<string, unknown>) =>
+    exportReport([{ hostname: 'WS-01' }], { format: 'pdf', reportType: 'device_inventory', timezone: 'UTC', ...extra });
+
+  it('falls back to the API-resolved branding when /orgs/partners/me is forbidden', async () => {
+    state.status = 403;
+    await pdf({ serverBranding });
+    expect(state.calls[0]?.branding).toMatchObject({ name: 'Example MSP', pageSize: 'letter', logoAspect: 4 });
+  });
+
+  it('prefers the partner branding when the caller can read it', async () => {
+    state.partner = { name: 'Browser Partner', documentPageSize: 'a4', settings: {} };
+    await pdf({ serverBranding });
+    expect(state.calls[0]?.branding).toMatchObject({ name: 'Browser Partner', pageSize: 'a4' });
+  });
+
+  it('stays unbranded when neither source has branding', async () => {
+    state.status = 403;
+    await pdf({});
+    expect(state.calls[0]?.branding).toMatchObject({ name: null, logoDataUrl: null });
+  });
+
+  it('accepts only a named branding object from the payload', () => {
+    expect(serverBrandingFrom(serverBranding)).toBe(serverBranding);
+    for (const bad of [undefined, null, 'x', 7, {}, { name: '' }, { name: 3 }]) expect(serverBrandingFrom(bad)).toBeUndefined();
   });
 });

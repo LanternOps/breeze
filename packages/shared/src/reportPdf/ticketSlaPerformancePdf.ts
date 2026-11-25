@@ -108,19 +108,12 @@ function priorityCells(r: TicketSlaPerformanceRow): string[] {
   ];
 }
 
-function instant(iso: string, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(new Date(iso));
+/** A due/completed instant in the report's date format and hour cycle, in the period's zone, with the zone name. */
+function instant(chrome: PdfChrome, iso: string, timeZone: string): string {
+  return chrome.formatDateTime(iso, timeZone) ?? iso;
 }
 
-function breachCells(r: TicketSlaBreachRow, summary: TicketSlaPerformanceSummary): string[] {
+function breachCells(chrome: PdfChrome, r: TicketSlaBreachRow, summary: TicketSlaPerformanceSummary): string[] {
   const { timeZone } = summary.period;
   return [
     r.ticketNumber,
@@ -128,8 +121,8 @@ function breachCells(r: TicketSlaBreachRow, summary: TicketSlaPerformanceSummary
     PRIORITY_LABEL[r.priority],
     TARGET_LABEL[r.target],
     formatSlaMinutes(r.targetMinutes),
-    instant(r.dueAt, timeZone),
-    r.completedAt ? instant(r.completedAt, timeZone) : 'Still open',
+    instant(chrome, r.dueAt, timeZone),
+    r.completedAt ? instant(chrome, r.completedAt, timeZone) : 'Still open',
     formatSlaMinutes(r.elapsedSlaMinutes),
     formatSlaMinutes(r.overByMinutes),
   ];
@@ -147,7 +140,7 @@ export function renderTicketSlaPerformanceReport(
   // A run during its own period counted nothing after it ran; say so on the face.
   const clipped = measured && summary.period.measuredThrough < summary.period.end;
   const through = clipped
-    ? ` · Measured through ${new Intl.DateTimeFormat('en-US', { timeZone: summary.period.timeZone, dateStyle: 'medium' }).format(new Date(summary.period.measuredThrough))}`
+    ? ` · Measured through ${(chrome.formatDate(summary.period.measuredThrough, summary.period.timeZone) ?? summary.period.measuredThrough)}`
     : '';
   const meta = measured
     ? `${summary.period.label} · ${summary.period.timeZone}${through} · Prepared ${opts.generatedAt}`
@@ -223,7 +216,7 @@ export function renderTicketSlaPerformanceReport(
         ...(summary.includeSubjects ? ['Subject'] : []),
         'Priority', 'Target', 'SLA', 'Due', 'Completed', 'Time on SLA clock', 'Over by',
       ]],
-      body: summary.breaches.rows.slice(0, BREACH_TABLE_MAX).map((r) => breachCells(r, summary)),
+      body: summary.breaches.rows.slice(0, BREACH_TABLE_MAX).map((r) => breachCells(chrome, r, summary)),
     });
     y = finalY(y);
   }
