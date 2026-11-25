@@ -824,7 +824,11 @@ export const groupMembershipLog = pgTable('group_membership_log', {
   action: groupMembershipLogActionEnum('action').notNull(),
   reason: groupMembershipLogReasonEnum('reason').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // The fleet-step group gate's (group_id, device_id) lookup (#12666). Built
+  // CONCURRENTLY in 2027-01-30-170000; declared here for db:check-drift.
+  groupDeviceIdx: index('group_membership_log_group_device_idx').on(table.groupId, table.deviceId),
+}));
 
 export const deviceCommands = pgTable('device_commands', {
   id: uuid('id').primaryKey().defaultRandom(),
