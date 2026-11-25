@@ -25,7 +25,9 @@
  *
  * The join below is a hand-written copy of the gate's query shape
  * (fleetFilterGroupGate.ts `loadGatedGroups`, withdrawn-pin check), not an
- * import of it, so this suite does not depend on that code.
+ * import of it, so this suite does not depend on that code. The gate's
+ * `inArray` renders `IN ($1, …)`; the copy uses `= ANY($1::uuid[])`, which
+ * Postgres plans identically.
  */
 import './setup';
 import { getTestDb } from './setup';
@@ -36,6 +38,15 @@ import { createDevice, createOrganization, createPartner, createSite } from './d
 import { explainAsBreezeApp } from './explainAsBreezeApp';
 
 const INDEX = 'group_membership_log_group_device_idx';
+
+/**
+ * A scan of the index whose Index Cond holds both the group_id and the
+ * device_id equality: the lookup is keyed, not a full walk of the index.
+ */
+const keyedScan = new RegExp(
+  `(?:Index Scan using ${INDEX}|Index Only Scan using ${INDEX}|Bitmap Index Scan on ${INDEX})[^\\n]*\\n` +
+    `\\s*Index Cond: (?=[^\\n]*group_id = )(?=[^\\n]*device_id = )`,
+);
 
 /** One bound `uuid[]` parameter (a bare JS array in `sql` expands to a list). */
 const uuidArray = (ids: string[]) => sql`${`{${ids.join(',')}}`}::uuid[]`;
@@ -83,8 +94,10 @@ describe('group_membership_log (group_id, device_id) index (#12666)', () => {
                unnest(${uuidArray(groupIdsByOrg.get(o)!)}) g`);
     }
 
-    // ~16k log rows over both orgs: 20 per (group, device), mostly dynamic
-    // churn, a few pin/unpin events, spread over the last 60 days.
+    // 8,000 log rows over both orgs: 20 per (group, device), mostly dynamic
+    // churn, a few pin/unpin events, over the last 20 days, all after the
+    // member was added. With seq scans off the row count does not decide the
+    // plan; it only keeps the fixture realistic.
     await admin.execute(sql`
       INSERT INTO group_membership_log (group_id, device_id, org_id, action, reason, created_at)
       SELECT m.group_id, m.device_id, m.org_id,
@@ -117,7 +130,7 @@ describe('group_membership_log (group_id, device_id) index (#12666)', () => {
                  FROM group_membership_log
                 WHERE group_id = ${groupId} AND device_id = ${deviceId}`,
     });
-    expect(result.usesIndex(INDEX), result.plan).toBe(true);
+    expect(result.usesIndex(keyedScan), result.plan).toBe(true);
     expect(result.plan).not.toContain('Seq Scan on group_membership_log');
   });
 
@@ -141,7 +154,7 @@ describe('group_membership_log (group_id, device_id) index (#12666)', () => {
          AND l.reason = 'pinned'`;
     for (const forceGenericPlan of [false, true]) {
       const result = await explainAsBreezeApp({ orgId, sql: query, forceGenericPlan });
-      expect(result.usesIndex(INDEX), result.plan).toBe(true);
+      expect(result.usesIndex(keyedScan), result.plan).toBe(true);
       expect(result.plan, result.plan).not.toContain('Seq Scan on group_membership_log');
     }
   });

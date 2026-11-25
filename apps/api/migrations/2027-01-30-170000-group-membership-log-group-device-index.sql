@@ -9,14 +9,14 @@
 --
 -- Two key columns only. group_id and device_id are uuid equalities, which are
 -- leakproof, so they stay index conditions under the RLS security qual as
--- breeze_app. reason is an enum (not leakproof) and org_id is the policy
--- column, so neither could become an index condition. On a seeded 5M-row log,
+-- breeze_app. reason is an enum (not leakproof), so it stays a filter; org_id
+-- adds nothing, because a group_id already belongs to one org. On a seeded 5M-row log,
 -- adding created_at or INCLUDE (org_id, reason) measured no faster and made
 -- the index about 8 and 11 times larger, because the extra columns defeat
 -- btree deduplication of repeated (group_id, device_id) keys.
 --
--- CREATE INDEX CONCURRENTLY: every membership change (manual, dynamic
--- re-evaluation, pin, unpin) inserts into this log, and a plain CREATE INDEX
+-- CREATE INDEX CONCURRENTLY: dynamic re-evaluation, pin/unpin and the
+-- enrollment default-group add insert into this log, and a plain CREATE INDEX
 -- would block those inserts for the whole build. IF NOT EXISTS keeps re-application a no-op, so
 -- an index built by hand before deploy is accepted as is. No lock_timeout: a
 -- concurrent build waits for older transactions without blocking writers, and
