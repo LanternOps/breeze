@@ -147,6 +147,8 @@ export const UNRESTRICTED_KEY = {
 type AnyFn = (...args: any[]) => any;
 export type HarnessState = {
   realRegistry: boolean;
+  /** true → the real executeTool (input validation, device gate, handler). */
+  realExecute: boolean;
   catalog: Record<string, FixtureTool>;
   context: Record<string, unknown>;
   writeAuditEvent: Mock<AnyFn>;
@@ -169,6 +171,7 @@ export type HarnessState = {
 export const harnessState: HarnessState = {
   /** true → the real registry's definitions, tiers and domains. */
   realRegistry: false,
+  realExecute: false,
   catalog: { ...DEFAULT_FIXTURE_CATALOG } as Record<string, FixtureTool>,
   context: { ...UNRESTRICTED_KEY } as Record<string, unknown>,
   writeAuditEvent: vi.fn(),
@@ -192,6 +195,7 @@ export const harnessState: HarnessState = {
 
 export function resetHarnessState(): void {
   harnessState.realRegistry = false;
+  harnessState.realExecute = false;
   harnessState.catalog = { ...DEFAULT_FIXTURE_CATALOG };
   harnessState.context = { ...UNRESTRICTED_KEY };
   harnessState.writeAuditEvent.mockReset();
@@ -269,7 +273,9 @@ export async function aiToolsMock(orig: Orig) {
     getToolDefinitions: () => (harnessState.realRegistry ? actual.getToolDefinitions() : fixtureDefinitions()),
     getToolTier: (name: string) => (harnessState.realRegistry ? actual.getToolTier(name) : harnessState.catalog[name]?.tier),
     getToolDomain: (name: string) => (harnessState.realRegistry ? actual.getToolDomain(name) : harnessState.catalog[name]?.domain),
-    executeTool: (name: string, input: unknown) => harnessState.executeTool(name, input),
+    executeTool: (name: string, input: Record<string, unknown>, ...rest: unknown[]) => (harnessState.realExecute
+      ? (actual.executeTool as (...args: unknown[]) => Promise<string>)(name, input, ...rest)
+      : harnessState.executeTool(name, input)),
   };
 }
 

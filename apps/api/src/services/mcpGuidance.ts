@@ -2,11 +2,11 @@ import type { AiToolDomain } from '@breeze/shared';
 import { buildMcpGuardrailsCore, UNTRUSTED_TOOL_OUTPUT_RULE } from './aiAgentSystemPrompt';
 import { renderMcpDomainIndex } from './aiToolIndex';
 
-// Approximate tool count stated in the instructions below. Kept as a rounded
-// literal (not derived from the aiTools registry at runtime) so this string
-// module stays decoupled from the heavy tool registry — mcpGuidancePromptTools
-// .test.ts asserts it stays within tolerance of the live count and fails loudly
-// if the two drift apart.
+// Approximate tool count stated in the full instructions below. Kept as a
+// rounded literal (not derived from the aiTools registry at runtime) so the
+// text does not change with every tool a wave adds; mcpGuidancePromptTools
+// .test.ts asserts it stays within tolerance of the live count. (The
+// progressive body, #12427, reads the domain index through aiToolIndex.)
 export const MCP_TOOL_COUNT_APPROX = 372;
 
 /**

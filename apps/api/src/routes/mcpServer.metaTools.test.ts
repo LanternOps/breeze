@@ -30,6 +30,12 @@ const mcp = createMcpHarness(mcpServerRoutes, harnessState.writeAuditEvent);
 const PROGRESSIVE = { headers: { 'Mcp-Tool-List': 'progressive' } };
 const APPS = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
 const RESTRICTED = { ...UNRESTRICTED_KEY, mcpDomains: ['devices'] };
+/** The same core+devices grant held by an OAuth grant (oauth_grants.mcp_domains). */
+const RESTRICTED_OAUTH = {
+  id: 'oauth:jti-devices', orgId: null, partnerId: 'partner-1', scopes: ['ai:read', 'ai:write', 'ai:execute'],
+  mcpDomains: ['devices'], oauthGrantId: 'grant-devices', keyPrefix: 'oauth',
+};
+const RESTRICTED_PRINCIPALS: Array<[string, Record<string, unknown>]> = [['API key', RESTRICTED], ['OAuth grant', RESTRICTED_OAUTH]];
 type Entry = { name: string; _meta: Record<string, unknown> };
 
 async function fullNames(): Promise<Set<string>> {
@@ -53,8 +59,8 @@ afterEach(() => {
 });
 
 describe('non-disclosure', () => {
-  it('restricted core+devices grant: search over every registry name returns only names its full list contains', async () => {
-    harnessState.context = RESTRICTED;
+  it.each(RESTRICTED_PRINCIPALS)('%s with a core+devices grant: search over every registry name returns only names its full list contains', async (_label, context) => {
+    harnessState.context = context;
     const listable = await fullNames();
     const surfaced = new Set<string>();
     for (const name of aiTools.keys()) {
@@ -68,16 +74,17 @@ describe('non-disclosure', () => {
     expect([...aiTools.keys()].filter((n) => !listable.has(n)).length).toBeGreaterThan(50);
   }, 120_000);
 
-  it('get_tool_details for an ungranted, a wholly gated and a made-up tool: one answer, differing only in the name', async () => {
-    harnessState.context = { ...RESTRICTED, scopes: ['ai:read'] };
+  it.each(RESTRICTED_PRINCIPALS)('%s: get_tool_details for an ungranted, a wholly gated and a made-up tool: one answer, differing only in the name', async (_label, context) => {
+    harnessState.context = { ...context, scopes: ['ai:read'] };
     const answers = await Promise.all(['manage_tickets', 'execute_command', 'made_up_tool'].map(async (name) => (await details([name])).body));
     const normalized = answers.map((body, i) => JSON.stringify(body).replace(['manage_tickets', 'execute_command', 'made_up_tool'][i]!, '<name>'));
     expect(new Set(normalized).size).toBe(1);
     expect(answers[0].result).toEqual({ isError: true, content: [{ type: 'text', text: 'Unknown tool: manage_tickets' }] });
   });
 
-  it('a direct tools/call keeps its split: -32003 for a known ungranted tool, -32602 for an unknown one', async () => {
-    harnessState.context = RESTRICTED;
+  it.each(RESTRICTED_PRINCIPALS)('%s: a direct tools/call keeps its split, and call_tool gives the same -32003', async (_label, context) => {
+    harnessState.context = context;
+    expect((await mcp.legacy('tools/call', { name: 'call_tool', arguments: { name: 'manage_tickets', arguments: {} } })).body.error.code).toBe(-32003);
     expect((await mcp.legacy('tools/call', { name: 'manage_tickets', arguments: {} })).body.error.code).toBe(-32003);
     expect((await mcp.legacy('tools/call', { name: 'made_up_tool', arguments: {} })).body.error.code).toBe(-32602);
   });

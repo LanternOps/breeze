@@ -789,7 +789,9 @@ type McpDispatchContext = {
 };
 
 /**
- * B-W05 (#6159, D-B44): bounded, server-chosen audit additions (never caller text).
+ * B-W05 (#6159, D-B44): bounded, server-chosen audit additions. #12427's
+ * `toolName` / `requestedToolName` are the one exception: caller-supplied tool
+ * names, bounded by boundDeniedName before they are stored.
  * B-W06 (#6160, D-B53): `taskId` only when it is a UUID; `taskResult` on a
  * tools/call that returned a CreateTaskResult.
  */

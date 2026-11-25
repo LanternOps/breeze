@@ -43,13 +43,16 @@ vi.mock('../services/mcpIntentCreation', () => ({
 
 import { mcpServerRoutes } from './mcpServer';
 import { createMcpHarness, harnessState, resetHarnessState, UNRESTRICTED_KEY, type HarnessResponse } from './__tests__/mcpServerToolList.testHarness';
-import { getToolDefinitions } from '../services/aiTools';
+import { aiTools, getToolDefinitions } from '../services/aiTools';
 import { mcpRequestStateKey, openMcpRequestState } from '../services/mcpRequestState';
 
 const mcp = createMcpHarness(mcpServerRoutes, harnessState.writeAuditEvent);
 type Era = 'legacy' | 'modern';
 const wrap = (name: string, args: Record<string, unknown>) => ({ name: 'call_tool', arguments: { name, arguments: args } });
 const CALL_TOOL_KEYS = ['metaTool', 'toolName', 'requestedToolName'];
+
+/** [direct, wrapped] values of the sealed surface byte (spec §3.4, T7). */
+const SURFACE_BYTES = [0, 1];
 
 function omitVolatile(details: Record<string, unknown> | undefined, extra: string[] = []) {
   if (!details) return details;
@@ -144,6 +147,15 @@ describe('the real registry', () => {
       expect([...codes].some((c) => c === -32603 || c === -32003)).toBe(true);
     }
   }, 600_000);
+
+  it('input validation (toolInputSchemas, inside the real executeTool) refuses the same input on both surfaces before the handler', async () => {
+    harnessState.realExecute = true;
+    const handler = vi.spyOn(aiTools.get('query_devices')!, 'handler');
+    const res = await expectParity('modern', 'query_devices', { limit: 100_000 });
+    expect(res.body.result.isError).toBe(true);
+    expect(res.body.result.content[0].text).toMatch(/limit/i);
+    expect(handler).not.toHaveBeenCalled();
+  });
 
   it('the partner-wide refusal and an escalated multiplexer action are among the pairs (named, not only swept)', async () => {
     const partnerWide = await expectParity('modern', 'get_partner_settings_inheritance', {});
@@ -260,6 +272,3 @@ describe('fixtures', () => {
     });
   });
 });
-
-/** [direct, wrapped] values of the sealed surface byte (spec §3.4, T7). */
-const SURFACE_BYTES = [0, 1];
