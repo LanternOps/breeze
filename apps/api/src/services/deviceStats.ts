@@ -3,7 +3,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { FleetFilter, FleetFilterGroupBy } from '@breeze/shared';
 import { db } from '../db';
 import { devices, sites } from '../db/schema';
-import { buildGroupSQL } from './filterEngine';
+import { buildGroupSQL, type FilterQueryTx } from './filterEngine';
 import { compileFleetFilter, FLEET_GROUP_ROW_LIMIT } from './fleetFilter';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { logShippingFailingPredicate } from './logShippingFailingPredicate';
@@ -74,8 +74,15 @@ export function fleetConditions(scope: SQL | undefined, filter: FleetFilter | un
   return conditions;
 }
 
-async function countByStatus(conditions: SQL[]): Promise<DeviceStats> {
-  const rows = await db
+/**
+ * What runs a count: the ambient `db` for the fixed-shape unfiltered count, or
+ * the bounded transaction `withFilterStatementTimeout` hands out for anything
+ * that evaluates model-supplied filter or group-by SQL.
+ */
+type StatsExecutor = Pick<FilterQueryTx, 'select'>;
+
+async function countByStatus(exec: StatsExecutor, conditions: SQL[]): Promise<DeviceStats> {
+  const rows = await exec
     .select({
       status: devices.status,
       count: sql<number>`count(*)`,
@@ -113,7 +120,9 @@ async function countByStatus(conditions: SQL[]): Promise<DeviceStats> {
  * via `techFacingDeviceConditions`.
  */
 export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceStats> {
-  return countByStatus(fleetConditions(scope, undefined));
+  // No caller-supplied predicate: a fixed-shape count over the caller's scope,
+  // shared with GET /devices/stats, so it stays on the ambient `db` unbounded.
+  return countByStatus(db, fleetConditions(scope, undefined));
 }
 
 const UNKNOWN_GROUP_KEY = 'unknown';
@@ -144,20 +153,20 @@ export interface FleetDeviceStats extends DeviceStats {
   groups?: { by: FleetFilterGroupBy; rows: FleetGroupRow[]; otherCount: number };
 }
 
-async function groupCounts(conditions: SQL[], by: FleetFilterGroupBy): Promise<NonNullable<FleetDeviceStats['groups']>> {
+async function groupCounts(tx: FilterQueryTx, conditions: SQL[], by: FleetFilterGroupBy): Promise<NonNullable<FleetDeviceStats['groups']>> {
   const column = GROUP_BY_COLUMN[by];
   let raw: Array<{ key: unknown; label?: unknown; count: unknown }>;
   if (by === 'siteId') {
     // LEFT JOIN: a device whose site row is not visible still counts, with
     // no label, so rows plus otherCount always equal the filtered total.
-    raw = await db
+    raw = await tx
       .select({ key: devices.siteId, label: sites.name, count: sql<number>`count(*)` })
       .from(devices)
       .leftJoin(sites, eq(sites.id, devices.siteId))
       .where(and(...conditions))
       .groupBy(devices.siteId, sites.name);
   } else {
-    raw = await db
+    raw = await tx
       .select({ key: column, count: sql<number>`count(*)` })
       .from(devices)
       .where(and(...conditions))
@@ -189,15 +198,21 @@ async function groupCounts(conditions: SQL[], by: FleetFilterGroupBy): Promise<N
  * `queryDeviceStats` over the typed filter, plus an optional one-dimension
  * breakdown. Without `filter` and `groupBy` it returns exactly what
  * `queryDeviceStats(scope)` returns.
+ *
+ * `tx` is the transaction `withFilterStatementTimeout` (filterEngine.ts) hands
+ * to its callback: the filter is model-supplied SQL, so its statements run
+ * under the engine's statement bound (#12655). Run this and
+ * {@link pageFleetDevices} in sequence inside ONE such call, never in a
+ * `Promise.all`, and catch `FilterQueryTimeoutError` outside it.
  */
-export async function queryFleetDeviceStats(p: {
+export async function queryFleetDeviceStats(tx: FilterQueryTx, p: {
   scope: SQL | undefined;
   filter?: FleetFilter;
   groupBy?: FleetFilterGroupBy;
 }): Promise<FleetDeviceStats> {
   const conditions = fleetConditions(p.scope, p.filter);
-  const stats: FleetDeviceStats = await countByStatus(conditions);
-  if (p.groupBy) stats.groups = await groupCounts(conditions, p.groupBy);
+  const stats: FleetDeviceStats = await countByStatus(tx, conditions);
+  if (p.groupBy) stats.groups = await groupCounts(tx, conditions, p.groupBy);
   return stats;
 }
 
@@ -211,14 +226,17 @@ export interface FleetDevicePageRow {
   lastSeenAt: Date | null;
 }
 
-/** One page of the filtered set, in a stable `hostname, id` order. */
-export async function pageFleetDevices(p: {
+/**
+ * One page of the filtered set, in a stable `hostname, id` order. Same `tx`
+ * contract as {@link queryFleetDeviceStats}.
+ */
+export async function pageFleetDevices(tx: FilterQueryTx, p: {
   scope: SQL | undefined;
   filter?: FleetFilter;
   limit: number;
   offset: number;
 }): Promise<FleetDevicePageRow[]> {
-  return db
+  return tx
     .select({
       id: devices.id,
       hostname: devices.hostname,

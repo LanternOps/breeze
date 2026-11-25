@@ -17,6 +17,10 @@ const m = vi.hoisted(() => ({
   // Each grouped query shifts one fixture; an empty queue answers statusRows.
   groupRows: [] as unknown[][],
   pageRows: [] as unknown[],
+  // The bounded transaction withFilterStatementTimeout hands out; its own spy
+  // proves which executor a statement ran on.
+  txSelect: vi.fn(),
+  tx: undefined as any,
 }));
 vi.mock('../db', () => {
   const chain: any = {};
@@ -46,6 +50,12 @@ vi.mock('../db', () => {
   chain.offset = async (n: unknown) => {
     m.offset(n);
     return m.pageRows;
+  };
+  m.tx = {
+    select: (fields: unknown) => {
+      m.txSelect(fields);
+      return chain;
+    },
   };
   return {
     db: {
@@ -157,15 +167,27 @@ describe('queryFleetDeviceStats', () => {
   it('with no filter sends the same WHERE as queryDeviceStats and returns the same counts', async () => {
     const scope = eq(devices.orgId, ORG);
     const plain = await queryDeviceStats(scope);
-    const fleet = await queryFleetDeviceStats({ scope });
+    const fleet = await queryFleetDeviceStats(m.tx, { scope });
     expect(m.where).toHaveBeenCalledTimes(2);
     expect(render(m.where.mock.calls[1]![0])).toEqual(render(m.where.mock.calls[0]![0]));
     expect(fleet).toEqual(plain);
     expect(fleet).not.toHaveProperty('groups');
   });
 
+  it('runs the count and the breakdown on the bounded tx, never on the ambient db (#12655)', async () => {
+    await queryFleetDeviceStats(m.tx, { scope: undefined, filter: { softwareInstalled: '7-Zip' }, groupBy: 'osType' });
+    expect(m.txSelect).toHaveBeenCalledTimes(2);
+    expect(m.select).not.toHaveBeenCalled();
+  });
+
+  it('the unfiltered queryDeviceStats stays on the ambient db', async () => {
+    await queryDeviceStats(undefined);
+    expect(m.select).toHaveBeenCalledTimes(1);
+    expect(m.txSelect).not.toHaveBeenCalled();
+  });
+
   it('a filter adds the compiled condition after the tech-facing exclusions and the scope', async () => {
-    await queryFleetDeviceStats({ scope: eq(devices.orgId, ORG), filter: { osType: 'linux' } });
+    await queryFleetDeviceStats(m.tx, { scope: eq(devices.orgId, ORG), filter: { osType: 'linux' } });
     const q = render(m.where.mock.calls[0]![0]);
     expect(q.sql).toContain('"is_ephemeral"');
     expect(q.sql).toContain("!= 'decommissioned'");
@@ -181,7 +203,7 @@ describe('queryFleetDeviceStats', () => {
       ...Array.from({ length: 51 }, (_, i) => ({ key: `v${String(i).padStart(2, '0')}`, count: String(100 - i) })),
     ].reverse();
     m.groupRows = [m.statusRows, grouped];
-    const out = await queryFleetDeviceStats({ scope: undefined, filter: { status: 'online' }, groupBy: 'osType' });
+    const out = await queryFleetDeviceStats(m.tx, { scope: undefined, filter: { status: 'online' }, groupBy: 'osType' });
     expect(m.groupBy).toHaveBeenCalledTimes(2);
     expect(m.groupBy.mock.calls[1]).toHaveLength(1);
     expect(m.groupBy.mock.calls[1]![0]).toBe(devices.osType);
@@ -199,19 +221,19 @@ describe('queryFleetDeviceStats', () => {
 
   it('a NULL key that sorts into the top rows renders as unknown and merges with a literal unknown', async () => {
     m.groupRows = [m.statusRows, [{ key: 'workstation', count: '3' }, { key: null, count: '2' }, { key: 'unknown', count: '2' }]];
-    const out = await queryFleetDeviceStats({ scope: undefined, groupBy: 'deviceRole' });
+    const out = await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: 'deviceRole' });
     expect(out.groups).toEqual({ by: 'deviceRole', rows: [{ key: 'unknown', count: 4 }, { key: 'workstation', count: 3 }], otherCount: 0 });
   });
 
   it('ties are ordered by key ascending', async () => {
     m.groupRows = [m.statusRows, [{ key: 'b', count: '2' }, { key: 'a', count: '2' }]];
-    const out = await queryFleetDeviceStats({ scope: undefined, groupBy: 'agentVersion' });
+    const out = await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: 'agentVersion' });
     expect(out.groups!.rows.map((r) => r.key)).toEqual(['a', 'b']);
   });
 
   it.each(FLEET_FILTER_GROUP_BY)('groupBy %s groups on its own device column', async (by) => {
     m.groupRows = [m.statusRows, []];
-    await queryFleetDeviceStats({ scope: undefined, groupBy: by });
+    await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: by });
     const expected = {
       status: devices.status, osType: devices.osType, osVersion: devices.osVersion, siteId: devices.siteId,
       agentVersion: devices.agentVersion, deviceRole: devices.deviceRole, architecture: devices.architecture,
@@ -221,7 +243,7 @@ describe('queryFleetDeviceStats', () => {
 
   it('groupBy siteId left-joins sites and fills label with the site name', async () => {
     m.groupRows = [m.statusRows, [{ key: 'site-1', label: 'Site 1', count: '2' }, { key: 'site-2', label: null, count: '1' }]];
-    const out = await queryFleetDeviceStats({ scope: undefined, groupBy: 'siteId' });
+    const out = await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: 'siteId' });
     expect(m.leftJoin).toHaveBeenCalledTimes(1);
     expect(m.groupBy.mock.calls[1]![0]).toBe(devices.siteId);
     expect(m.groupBy.mock.calls[1]![1]).toBe(sites.name);
@@ -240,7 +262,7 @@ describe('pageFleetDevices', () => {
   });
 
   it('orders by hostname then id and applies limit/offset over the shared conditions', async () => {
-    const rows = await pageFleetDevices({ scope: eq(devices.orgId, ORG), filter: { osType: 'linux' }, limit: 10, offset: 20 });
+    const rows = await pageFleetDevices(m.tx, { scope: eq(devices.orgId, ORG), filter: { osType: 'linux' }, limit: 10, offset: 20 });
     expect(rows).toEqual([{ id: 'd1', hostname: 'a' }]);
     expect(m.orderBy.mock.calls[0]!.map((c) => render(c).sql)).toEqual(['"devices"."hostname" asc', '"devices"."id" asc']);
     expect(m.limit).toHaveBeenCalledWith(10);
@@ -248,6 +270,6 @@ describe('pageFleetDevices', () => {
     const q = render(m.where.mock.calls[0]![0]);
     expect(q.sql).toContain('"is_ephemeral"');
     expect(q.params).toEqual(expect.arrayContaining([ORG, 'linux']));
-    expect(Object.keys(m.select.mock.calls[0]![0] as object)).toEqual(['id', 'hostname', 'displayName', 'status', 'osType', 'siteId', 'lastSeenAt']);
+    expect(Object.keys(m.txSelect.mock.calls[0]![0] as object)).toEqual(['id', 'hostname', 'displayName', 'status', 'osType', 'siteId', 'lastSeenAt']);
   });
 });

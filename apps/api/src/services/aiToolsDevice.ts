@@ -20,6 +20,8 @@ import {
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
 import { MAX_OFFSET, pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { FilterQueryTimeoutError, withFilterStatementTimeout } from './filterEngine';
+import { reportFilterPreviewTimeout } from './filterPreviewTimeout';
 import {
   fleetFilterExecutionRefusedFields,
   fleetFilterFieldsUsed,
@@ -170,6 +172,16 @@ function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpm
     observedAt: hardware?.memoryObservedAt ?? null,
   };
 }
+
+/**
+ * `get_fleet_device_stats` result when the filter engine's statement bound
+ * cancelled the filtered or grouped query (#12655). Fixed copy: no SQL, no
+ * tenant values. Same `code` as the filter preview endpoints' 422 body.
+ */
+const FLEET_STATS_TIMEOUT_RESULT = {
+  error: 'This filter took too long to evaluate. Narrow the filter (for example add orgId, siteId or osType, or drop a software term) and try again; the same call will time out again.',
+  code: 'filter_query_timeout',
+} as const;
 
 export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -443,15 +455,44 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       }
       const { filter, groupBy } = parsed.data;
 
+      // The filter and group-by SQL is model-supplied, so every statement on
+      // these paths runs serially inside ONE filter-engine statement bound
+      // (#12655); a cancellation becomes a bounded "narrow it" result, caught
+      // here, outside the bounded transaction. Not retried: the same query
+      // over the same fleet hits the same bound.
+      const timedOut = (error: unknown): string => {
+        if (!(error instanceof FilterQueryTimeoutError)) throw error;
+        reportFilterPreviewTimeout(orgId ?? auth.orgId ?? null);
+        return JSON.stringify(FLEET_STATS_TIMEOUT_RESULT);
+      };
+
       if (!filter) {
-        return JSON.stringify(await queryFleetDeviceStats({ scope, groupBy }));
+        // Paging belongs to the filtered device sample; refuse it here rather
+        // than ignore it (#12656).
+        if ([input.limit, input.offset, input.cursor].some((v) => v !== undefined && v !== null && v !== '')) {
+          return JSON.stringify({ error: 'limit, offset and cursor page the filtered device sample. Add a filter to use them, or drop them for groupBy counts.' });
+        }
+        try {
+          return JSON.stringify(await withFilterStatementTimeout((tx) => queryFleetDeviceStats(tx, { scope, groupBy })));
+        } catch (error) {
+          return timedOut(error);
+        }
       }
       const page = readPageArgs('get_fleet_device_stats', input, { defaultLimit: 10, maxLimit: 100 });
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 
-      const stats = await queryFleetDeviceStats({ scope, filter, groupBy });
-      const rows = await pageFleetDevices({ scope, filter, limit, offset });
+      let stats: Awaited<ReturnType<typeof queryFleetDeviceStats>>;
+      let rows: Awaited<ReturnType<typeof pageFleetDevices>>;
+      try {
+        ({ stats, rows } = await withFilterStatementTimeout(async (tx) => {
+          const counted = await queryFleetDeviceStats(tx, { scope, filter, groupBy });
+          const paged = await pageFleetDevices(tx, { scope, filter, limit, offset });
+          return { stats: counted, rows: paged };
+        }));
+      } catch (error) {
+        return timedOut(error);
+      }
       return JSON.stringify({
         ...stats,
         filter: {

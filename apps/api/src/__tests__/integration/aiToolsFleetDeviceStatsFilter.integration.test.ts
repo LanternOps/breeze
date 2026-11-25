@@ -21,6 +21,7 @@ import type { DbAccessContext } from '../../db';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { deviceGroupMemberships, deviceGroups, devicePatches, devices, patches, softwareInventory } from '../../db/schema';
 import { executeTool } from '../../services/aiTools';
+import { FilterQueryTimeoutError, withFilterStatementTimeout } from '../../services/filterEngine';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -323,5 +324,107 @@ describe('get_fleet_device_stats typed filter against real Postgres (#12418 W01)
   runDb('groupBy architecture reports the stored value', async () => {
     const body = await run(f.auth.org, { groupBy: 'architecture' });
     expect(body.groups.rows).toEqual([{ key: 'amd64', count: 3 }]);
+  });
+});
+
+// Strix finding on #12655: the filtered and grouped statements run under the
+// filter engine's bounded statement_timeout, a cancellation becomes a bounded
+// tool error, and the request transaction around the call stays usable.
+describe('get_fleet_device_stats statement bound against real Postgres (#12655 Strix, #12656)', () => {
+  let f: Fixture;
+  beforeEach(async () => {
+    if (!process.env.DATABASE_URL) return;
+    f = await seedFixture();
+  });
+
+  /**
+   * Hold ACCESS EXCLUSIVE on `table` from a second connection while `fn` runs,
+   * so any statement that reads `table` waits on the lock (a lock wait counts
+   * toward statement_timeout). The lock is released after 4 s regardless, so
+   * an unbounded statement makes the test fail instead of hanging.
+   */
+  async function withTableLocked<T>(table: 'software_inventory' | 'sites', fn: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => { locked = r; });
+    const holder = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql.raw(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`));
+      locked();
+      await Promise.race([released, new Promise((r) => setTimeout(r, 4_000))]);
+    });
+    await Promise.race([isLocked, holder]);
+    try {
+      return await fn();
+    } finally {
+      release();
+      await holder;
+    }
+  }
+
+  const currentTimeout = async () => {
+    const res = await db.execute(sql`select current_setting('statement_timeout') as v`);
+    return ((res as unknown as Array<{ v: string }>)[0] ?? (res as any).rows?.[0]).v;
+  };
+
+  async function callWhileLocked(auth: AuthContext, table: 'software_inventory' | 'sites', input: Record<string, unknown>) {
+    return withTableLocked(table, () => withDbAccessContext(ctxFor(auth), async () => {
+      const before = await currentTimeout();
+      const started = Date.now();
+      const raw = await executeTool(TOOL, input, auth);
+      const elapsedMs = Date.now() - started;
+      const after = await currentTimeout();
+      // Another statement on the same request transaction, after the cancellation.
+      const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.id, f.w1));
+      return { body: JSON.parse(raw) as Record<string, any>, raw, elapsedMs, before, after, followUp: row!.n };
+    }));
+  }
+
+  function expectBoundedError(r: Awaited<ReturnType<typeof callWhileLocked>>) {
+    expect(r.body).toEqual({ error: expect.stringMatching(/narrow the filter/i), code: 'filter_query_timeout' });
+    // No SQL text, no tenant strings.
+    expect(r.raw).not.toMatch(/select|software_inventory|statement_timeout|57014/i);
+    for (const s of [TAG, f.orgA, f.partnerId, f.s1]) expect(r.raw).not.toContain(s);
+    // Cancelled by the 500 ms bound, well before the 4 s lock release.
+    expect(r.elapsedMs).toBeLessThan(3_000);
+    // The request transaction survived: the follow-up read ran and the bound did not leak.
+    expect(r.followUp).toBe(1);
+    expect(r.after).toBe(r.before);
+  }
+
+  runDb('a software filter that outruns the bound returns the bounded tool error and the request context survives', async () => {
+    const r = await callWhileLocked(f.auth.org, 'software_inventory', { filter: { softwareInstalled: '7-Zip' } });
+    expectBoundedError(r);
+    // Lock released: the same call answers normally, so nothing about the
+    // cancellation persisted.
+    const body = await run(f.auth.org, { filter: { softwareInstalled: '7-Zip' } });
+    expect(body.total).toBe(1);
+    expect(ids(body)).toEqual([f.w1]);
+  });
+
+  runDb('a groupBy-only breakdown is bounded too', async () => {
+    const r = await callWhileLocked(f.auth.org, 'sites', { groupBy: 'siteId' });
+    expectBoundedError(r);
+  });
+
+  runDb('the unfiltered, ungrouped count never reads the locked tables and is unchanged', async () => {
+    const r = await callWhileLocked(f.auth.org, 'sites', {});
+    expect(r.body).toMatchObject({ total: 3, online: 2, offline: 1 });
+    expect(r.after).toBe(r.before);
+  });
+
+  runDb('withFilterStatementTimeout cancels a slow statement under a test-only bound, restores statement_timeout, keeps the request transaction usable', async () => {
+    await withDbAccessContext(ctxFor(f.auth.org), async () => {
+      const before = await currentTimeout();
+      await expect(
+        withFilterStatementTimeout((tx) => tx.execute(sql`select pg_sleep(2)`), { timeoutMs: 50 }),
+      ).rejects.toBeInstanceOf(FilterQueryTimeoutError);
+      expect(await currentTimeout()).toBe(before);
+      const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.id, f.w1));
+      expect(row!.n).toBe(1);
+      // A statement inside the bound that finishes in time is unaffected.
+      const ok = await withFilterStatementTimeout((tx) => tx.execute(sql`select 1 as one`), { timeoutMs: 1_000 });
+      expect(ok).toBeTruthy();
+    });
   });
 });
