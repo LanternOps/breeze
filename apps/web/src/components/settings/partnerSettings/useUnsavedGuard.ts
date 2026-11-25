@@ -5,7 +5,6 @@ import { useRegisterDirtyForm } from '@/lib/keyboard/useRegisterDirtyForm';
  * Warns before unsaved edits are discarded (spec §3.6): a click guard for links
  * (sidebar links, the Ticketing rail link), `beforeunload` for a full
  * navigation, `astro:before-preparation` for any other Astro soft navigation.
- * Follows ScriptForm's precedent.
  */
 export function useUnsavedGuard(isDirty: boolean, confirmMessage: string): void {
   const dirtyRef = useRef(isDirty);
