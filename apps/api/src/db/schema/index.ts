@@ -231,6 +231,7 @@ export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
 export * from './backupRestoreAuthorizations';
 export * from './devicePoolAssignmentEvents';
+export * from './partnerDeployKeys';
 export * from './deviceReattachIntents';
 export * from './deviceReattachments';
 export * from './aiModelRegistry';
