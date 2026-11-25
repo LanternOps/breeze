@@ -5147,7 +5147,8 @@
       "systemUuid": "system UUID",
       "serial": "serial number and manufacturer",
       "hostname": "hostname only",
-      "other": "reported identifiers"
+      "other": "reported identifiers",
+      "tpmEk": "TPM endorsement key"
     },
     "evidenceNoticeHint": "Hardware identifiers reported by the device. Not verified.",
     "evidenceNoticeTpm": "Same TPM endorsement key the old install proved possession of. This proves key continuity, not the same physical TPM; cloned virtual TPMs share keys.",
@@ -5198,9 +5199,17 @@
       "confirm_target_name_required": "Type the existing device’s name to confirm.",
       "confirm_target_name_mismatch": "The name typed does not match {{hostname}}.",
       "same_device": "A device cannot be reattached onto itself.",
-      "invalid_target_version": "The existing record’s version is missing. Open the reattach again."
+      "invalid_target_version": "The existing record’s version is missing. Open the reattach again.",
+      "evidence_changed": "The TPM key evidence for {{hostname}} changed since it was shown. The list was reloaded: confirm the name to continue."
     },
-    "stepUpHeld": "Your verification is still valid for this reattach."
+    "stepUpHeld": "Your verification is still valid for this reattach.",
+    "evidenceGap": {
+      "sourceKeyChanged": "The TPM key does not count: the new install holds a key change waiting for review.",
+      "sourceKeyNotProvenByInstall": "The TPM key does not count: it was proven before this install started.",
+      "targetKeyChanged": "The TPM key does not count: the old record holds a key change waiting for review.",
+      "keysDiffer": "The two records have different TPM keys.",
+      "keyShared": "The TPM key does not count: another device of your partner has the same key (a cloned virtual machine, for example)."
+    }
   },
   "deviceHeaderFacts": {
     "ariaLabel": "Device facts",
@@ -5223,5 +5232,37 @@
   "deviceAssetRecord": {
     "title": "Asset record",
     "description": "Who to contact, where it sits, and who pays for it."
+  },
+  "tpmKeyPanel": {
+    "title": "TPM key",
+    "loading": "Loading the TPM key state…",
+    "loadError": "The TPM key state could not be loaded.",
+    "attested": "Key baseline recorded. Last proven {{time}}.",
+    "noTpm": "The device reports no TPM.",
+    "notAttested": "No TPM key baseline recorded yet.",
+    "explainer": "The first TPM endorsement key the device proves becomes its baseline. A reinstall that proves the same key can be reattached without typing its name. This shows key continuity, not a genuine TPM.",
+    "mismatch": "The device proved a different TPM key on {{time}}. It is held for review.",
+    "mismatchHelp": "Until you decide, this device's TPM key does not count as reattach evidence. Accept it if the TPM was replaced or reset on purpose; otherwise keep the current key.",
+    "accept": "Accept the new key",
+    "acceptStepUp": "Confirm and accept",
+    "dismiss": "Keep the current key",
+    "working": "Working…",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpPasskeyNote": "Confirm with your passkey to accept the new key.",
+    "noStepUpFactor": "Accepting needs a passkey or an authenticator app on your account.",
+    "stepUpRetry": "That verification expired or no longer matches. Try again.",
+    "genericError": "The TPM key change could not be reviewed. Try again.",
+    "acceptedToast": "New TPM key accepted",
+    "dismissedToast": "Held TPM key change dismissed",
+    "refusals": {
+      "mismatch_changed": "The TPM key state changed since it was shown. It has been reloaded.",
+      "reattach_in_progress": "This device is in an open reattach. Finish or cancel it first.",
+      "org_draining": "The device's organization is not active.",
+      "permission_denied": "Reviewing a TPM key change needs permission to edit and delete devices.",
+      "org_access_denied": "You do not have access to this device's organization.",
+      "MFA_REQUIRED": "Turn on two-factor authentication for your account to review a TPM key change.",
+      "device_not_found": "The device was not found, or you cannot review its TPM key."
+    },
+    "reviewNeedsAccess": "A partner user who can edit and delete devices can review it."
   }
 }

@@ -17,6 +17,7 @@ import {
   Loader2,
   Sparkles,
   ShieldCheck,
+  KeyRound,
   RefreshCcw,
   type LucideIcon,
 } from "lucide-react";
@@ -80,6 +81,10 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   // (both written as the requesting user) plus system rows
   // (reinstall_suspected, the expiry sweep).
   { prefix: "device.reinstall", icon: RefreshCcw },
+  // A held TPM key change accepted or dismissed by an operator (#8318 wave
+  // T2). The agent's own rows (`recorded`, `mismatch`) are agent-actor and
+  // never reach this feed.
+  { prefix: "device.tpm_baseline", icon: KeyRound },
   // Automated agent-dispatched commands (scheduled patches, automations). Listed
   // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
   // from ACTION_PREFIXES below. The server surfaces these solely via the

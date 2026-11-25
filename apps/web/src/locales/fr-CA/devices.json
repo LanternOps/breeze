@@ -5147,7 +5147,8 @@
       "systemUuid": "UUID système",
       "serial": "numéro de série et fabricant",
       "hostname": "nom d’hôte uniquement",
-      "other": "identifiants signalés"
+      "other": "identifiants signalés",
+      "tpmEk": "clé d’approbation TPM"
     },
     "evidenceNoticeHint": "Identifiants matériels signalés par l’appareil. Non vérifiés.",
     "evidenceNoticeTpm": "Même clé d’approbation TPM dont l’ancienne installation a prouvé la possession. Cela prouve la continuité de la clé, pas le même TPM physique ; les TPM virtuels clonés partagent leurs clés.",
@@ -5198,9 +5199,17 @@
       "confirm_target_name_required": "Saisissez le nom de l’appareil existant pour confirmer.",
       "confirm_target_name_mismatch": "Le nom saisi ne correspond pas à {{hostname}}.",
       "same_device": "Un appareil ne peut pas être rattaché à lui-même.",
-      "invalid_target_version": "La version de la fiche existante est manquante. Rouvrez le rattachement."
+      "invalid_target_version": "La version de la fiche existante est manquante. Rouvrez le rattachement.",
+      "evidence_changed": "La preuve de clé TPM de {{hostname}} a changé depuis son affichage. La liste a été rechargée : confirmez le nom pour continuer."
     },
-    "stepUpHeld": "Votre vérification est toujours valable pour ce rattachement."
+    "stepUpHeld": "Votre vérification est toujours valable pour ce rattachement.",
+    "evidenceGap": {
+      "sourceKeyChanged": "La clé TPM ne compte pas : la nouvelle installation a un changement de clé en attente d’examen.",
+      "sourceKeyNotProvenByInstall": "La clé TPM ne compte pas : elle a été prouvée avant le début de cette installation.",
+      "targetKeyChanged": "La clé TPM ne compte pas : l’ancien enregistrement a un changement de clé en attente d’examen.",
+      "keysDiffer": "Les deux enregistrements ont des clés TPM différentes.",
+      "keyShared": "La clé TPM ne compte pas : un autre appareil de votre partenaire a la même clé (une machine virtuelle clonée, par exemple)."
+    }
   },
   "deviceHeaderFacts": {
     "ariaLabel": "Données de l’appareil",
@@ -5223,5 +5232,37 @@
   "deviceAssetRecord": {
     "title": "Fiche de l’actif",
     "description": "Qui contacter, où il se trouve et qui le paie."
+  },
+  "tpmKeyPanel": {
+    "title": "Clé TPM",
+    "loading": "Chargement de l’état de la clé TPM…",
+    "loadError": "Impossible de charger l’état de la clé TPM.",
+    "attested": "Clé de référence enregistrée. Dernière preuve : {{time}}.",
+    "noTpm": "L’appareil signale qu’il n’a pas de TPM.",
+    "notAttested": "Aucune clé TPM de référence enregistrée pour l’instant.",
+    "explainer": "La première clé d’approbation TPM que l’appareil prouve devient sa référence. Une réinstallation qui prouve la même clé peut être rattachée sans saisir son nom. Cela montre la continuité de la clé, pas un TPM authentique.",
+    "mismatch": "L’appareil a prouvé une clé TPM différente le {{time}}. Elle est en attente d’examen.",
+    "mismatchHelp": "Tant que vous n’avez pas décidé, la clé TPM de cet appareil ne compte pas comme preuve de rattachement. Acceptez-la si le TPM a été remplacé ou réinitialisé volontairement ; sinon, conservez la clé actuelle.",
+    "accept": "Accepter la nouvelle clé",
+    "acceptStepUp": "Confirmer et accepter",
+    "dismiss": "Conserver la clé actuelle",
+    "working": "Traitement…",
+    "stepUpCodeLabel": "Code de l’authentificateur",
+    "stepUpPasskeyNote": "Confirmez avec votre clé d’accès pour accepter la nouvelle clé.",
+    "noStepUpFactor": "Pour accepter, votre compte doit avoir une clé d’accès ou une application d’authentification.",
+    "stepUpRetry": "Cette vérification a expiré ou ne correspond plus. Réessayez.",
+    "genericError": "Impossible d’examiner le changement de clé TPM. Réessayez.",
+    "acceptedToast": "Nouvelle clé TPM acceptée",
+    "dismissedToast": "Changement de clé TPM écarté",
+    "refusals": {
+      "mismatch_changed": "L’état de la clé TPM a changé depuis son affichage. Il a été rechargé.",
+      "reattach_in_progress": "Cet appareil fait l’objet d’un rattachement en cours. Terminez-le ou annulez-le d’abord.",
+      "org_draining": "L’organisation de l’appareil n’est pas active.",
+      "permission_denied": "Examiner un changement de clé TPM nécessite l’autorisation de modifier et de supprimer des appareils.",
+      "org_access_denied": "Vous n’avez pas accès à l’organisation de cet appareil.",
+      "MFA_REQUIRED": "Activez l’authentification à deux facteurs sur votre compte pour examiner un changement de clé TPM.",
+      "device_not_found": "L’appareil est introuvable, ou vous ne pouvez pas examiner sa clé TPM."
+    },
+    "reviewNeedsAccess": "Un utilisateur du partenaire autorisé à modifier et supprimer des appareils peut l’examiner."
   }
 }

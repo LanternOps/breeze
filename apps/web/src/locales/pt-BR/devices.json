@@ -5147,7 +5147,8 @@
       "systemUuid": "UUID do sistema",
       "serial": "número de série e fabricante",
       "hostname": "somente o nome do host",
-      "other": "identificadores informados"
+      "other": "identificadores informados",
+      "tpmEk": "chave de endosso do TPM"
     },
     "evidenceNoticeHint": "Identificadores de hardware informados pelo dispositivo. Não verificados.",
     "evidenceNoticeTpm": "Mesma chave de endosso do TPM cuja posse a instalação antiga comprovou. Isso comprova a continuidade da chave, não o mesmo TPM físico; TPMs virtuais clonados compartilham chaves.",
@@ -5198,9 +5199,17 @@
       "confirm_target_name_required": "Digite o nome do dispositivo existente para confirmar.",
       "confirm_target_name_mismatch": "O nome digitado não corresponde a {{hostname}}.",
       "same_device": "Um dispositivo não pode ser revinculado a si mesmo.",
-      "invalid_target_version": "A versão do registro existente está ausente. Abra a revinculação de novo."
+      "invalid_target_version": "A versão do registro existente está ausente. Abra a revinculação de novo.",
+      "evidence_changed": "A evidência da chave do TPM de {{hostname}} mudou desde que foi exibida. A lista foi recarregada: confirme o nome para continuar."
     },
-    "stepUpHeld": "Sua verificação ainda é válida para esta revinculação."
+    "stepUpHeld": "Sua verificação ainda é válida para esta revinculação.",
+    "evidenceGap": {
+      "sourceKeyChanged": "A chave do TPM não conta: a nova instalação tem uma troca de chave aguardando revisão.",
+      "sourceKeyNotProvenByInstall": "A chave do TPM não conta: ela foi comprovada antes do início desta instalação.",
+      "targetKeyChanged": "A chave do TPM não conta: o registro antigo tem uma troca de chave aguardando revisão.",
+      "keysDiffer": "Os dois registros têm chaves de TPM diferentes.",
+      "keyShared": "A chave do TPM não conta: outro dispositivo do seu parceiro tem a mesma chave (uma máquina virtual clonada, por exemplo)."
+    }
   },
   "deviceHeaderFacts": {
     "ariaLabel": "Dados do dispositivo",
@@ -5223,5 +5232,37 @@
   "deviceAssetRecord": {
     "title": "Registro do ativo",
     "description": "Quem contatar, onde fica e quem paga por ele."
+  },
+  "tpmKeyPanel": {
+    "title": "Chave do TPM",
+    "loading": "Carregando o estado da chave do TPM…",
+    "loadError": "Não foi possível carregar o estado da chave do TPM.",
+    "attested": "Chave de referência registrada. Última comprovação em {{time}}.",
+    "noTpm": "O dispositivo informa que não tem TPM.",
+    "notAttested": "Nenhuma chave de referência do TPM registrada ainda.",
+    "explainer": "A primeira chave de endosso do TPM que o dispositivo comprova passa a ser a referência. Uma reinstalação que comprove a mesma chave pode ser revinculada sem digitar o nome. Isso mostra a continuidade da chave, não um TPM genuíno.",
+    "mismatch": "O dispositivo comprovou uma chave de TPM diferente em {{time}}. Ela aguarda revisão.",
+    "mismatchHelp": "Até você decidir, a chave do TPM deste dispositivo não conta como evidência de revinculação. Aceite-a se o TPM foi trocado ou redefinido de propósito; caso contrário, mantenha a chave atual.",
+    "accept": "Aceitar a nova chave",
+    "acceptStepUp": "Confirmar e aceitar",
+    "dismiss": "Manter a chave atual",
+    "working": "Processando…",
+    "stepUpCodeLabel": "Código do autenticador",
+    "stepUpPasskeyNote": "Confirme com sua chave de acesso para aceitar a nova chave.",
+    "noStepUpFactor": "Para aceitar, sua conta precisa de uma chave de acesso ou de um app autenticador.",
+    "stepUpRetry": "Essa verificação expirou ou não corresponde mais. Tente de novo.",
+    "genericError": "Não foi possível revisar a troca de chave do TPM. Tente de novo.",
+    "acceptedToast": "Nova chave do TPM aceita",
+    "dismissedToast": "Troca de chave do TPM descartada",
+    "refusals": {
+      "mismatch_changed": "O estado da chave do TPM mudou desde que foi exibido. Ele foi recarregado.",
+      "reattach_in_progress": "Este dispositivo está em uma revinculação aberta. Conclua ou cancele-a primeiro.",
+      "org_draining": "A organização do dispositivo não está ativa.",
+      "permission_denied": "Revisar uma troca de chave do TPM exige permissão para editar e excluir dispositivos.",
+      "org_access_denied": "Você não tem acesso à organização deste dispositivo.",
+      "MFA_REQUIRED": "Ative a autenticação de dois fatores na sua conta para revisar uma troca de chave do TPM.",
+      "device_not_found": "O dispositivo não foi encontrado ou você não pode revisar a chave do TPM dele."
+    },
+    "reviewNeedsAccess": "Um usuário do parceiro com permissão para editar e excluir dispositivos pode revisá-la."
   }
 }

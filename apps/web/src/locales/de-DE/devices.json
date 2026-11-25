@@ -5147,7 +5147,8 @@
       "systemUuid": "System-UUID",
       "serial": "Seriennummer und Hersteller",
       "hostname": "nur Rechnername",
-      "other": "gemeldete Kennungen"
+      "other": "gemeldete Kennungen",
+      "tpmEk": "TPM-Endorsement-Key"
     },
     "evidenceNoticeHint": "Vom Gerät gemeldete Hardwarekennungen. Nicht überprüft.",
     "evidenceNoticeTpm": "Derselbe TPM-Endorsement-Key, dessen Besitz die alte Installation nachgewiesen hat. Das belegt die Kontinuität des Schlüssels, nicht dasselbe physische TPM; geklonte virtuelle TPMs teilen Schlüssel.",
@@ -5198,9 +5199,17 @@
       "confirm_target_name_required": "Geben Sie zur Bestätigung den Namen des vorhandenen Geräts ein.",
       "confirm_target_name_mismatch": "Der eingegebene Name stimmt nicht mit {{hostname}} überein.",
       "same_device": "Ein Gerät kann nicht mit sich selbst neu verknüpft werden.",
-      "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut."
+      "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut.",
+      "evidence_changed": "Der TPM-Schlüsselnachweis für {{hostname}} hat sich seit der Anzeige geändert. Die Liste wurde neu geladen: Bestätigen Sie den Namen, um fortzufahren."
     },
-    "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung."
+    "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung.",
+    "evidenceGap": {
+      "sourceKeyChanged": "Der TPM-Schlüssel zählt nicht: Für die neue Installation wartet ein Schlüsselwechsel auf Prüfung.",
+      "sourceKeyNotProvenByInstall": "Der TPM-Schlüssel zählt nicht: Er wurde vor Beginn dieser Installation nachgewiesen.",
+      "targetKeyChanged": "Der TPM-Schlüssel zählt nicht: Für den alten Eintrag wartet ein Schlüsselwechsel auf Prüfung.",
+      "keysDiffer": "Die beiden Einträge haben unterschiedliche TPM-Schlüssel.",
+      "keyShared": "Der TPM-Schlüssel zählt nicht: Ein anderes Gerät Ihres Partners hat denselben Schlüssel (zum Beispiel eine geklonte virtuelle Maschine)."
+    }
   },
   "deviceHeaderFacts": {
     "ariaLabel": "Gerätedaten",
@@ -5223,5 +5232,37 @@
   "deviceAssetRecord": {
     "title": "Asset-Datensatz",
     "description": "Ansprechpartner, Standort und wer dafür bezahlt."
+  },
+  "tpmKeyPanel": {
+    "title": "TPM-Schlüssel",
+    "loading": "Status des TPM-Schlüssels wird geladen…",
+    "loadError": "Der Status des TPM-Schlüssels konnte nicht geladen werden.",
+    "attested": "Referenzschlüssel gespeichert. Zuletzt nachgewiesen: {{time}}.",
+    "noTpm": "Das Gerät meldet kein TPM.",
+    "notAttested": "Noch kein TPM-Referenzschlüssel gespeichert.",
+    "explainer": "Der erste TPM-Endorsement-Key, den das Gerät nachweist, wird seine Referenz. Eine Neuinstallation, die denselben Schlüssel nachweist, kann ohne Eingabe des Namens neu zugeordnet werden. Das zeigt die Kontinuität des Schlüssels, kein echtes TPM.",
+    "mismatch": "Das Gerät hat am {{time}} einen anderen TPM-Schlüssel nachgewiesen. Er wartet auf Prüfung.",
+    "mismatchHelp": "Bis Sie entscheiden, zählt der TPM-Schlüssel dieses Geräts nicht als Nachweis für eine Neuzuordnung. Akzeptieren Sie ihn, wenn das TPM absichtlich ersetzt oder zurückgesetzt wurde; andernfalls behalten Sie den aktuellen Schlüssel.",
+    "accept": "Neuen Schlüssel akzeptieren",
+    "acceptStepUp": "Bestätigen und akzeptieren",
+    "dismiss": "Aktuellen Schlüssel behalten",
+    "working": "Wird verarbeitet…",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpPasskeyNote": "Bestätigen Sie mit Ihrem Passkey, um den neuen Schlüssel zu akzeptieren.",
+    "noStepUpFactor": "Zum Akzeptieren braucht Ihr Konto einen Passkey oder eine Authenticator-App.",
+    "stepUpRetry": "Diese Bestätigung ist abgelaufen oder passt nicht mehr. Versuchen Sie es erneut.",
+    "genericError": "Der TPM-Schlüsselwechsel konnte nicht geprüft werden. Versuchen Sie es erneut.",
+    "acceptedToast": "Neuer TPM-Schlüssel akzeptiert",
+    "dismissedToast": "TPM-Schlüsselwechsel verworfen",
+    "refusals": {
+      "mismatch_changed": "Der Status des TPM-Schlüssels hat sich seit der Anzeige geändert. Er wurde neu geladen.",
+      "reattach_in_progress": "Für dieses Gerät läuft eine Neuzuordnung. Schließen Sie sie zuerst ab oder brechen Sie sie ab.",
+      "org_draining": "Die Organisation des Geräts ist nicht aktiv.",
+      "permission_denied": "Zum Prüfen eines TPM-Schlüsselwechsels brauchen Sie die Berechtigung, Geräte zu bearbeiten und zu löschen.",
+      "org_access_denied": "Sie haben keinen Zugriff auf die Organisation dieses Geräts.",
+      "MFA_REQUIRED": "Aktivieren Sie die Zwei-Faktor-Authentifizierung für Ihr Konto, um einen TPM-Schlüsselwechsel zu prüfen.",
+      "device_not_found": "Das Gerät wurde nicht gefunden, oder Sie können seinen TPM-Schlüssel nicht prüfen."
+    },
+    "reviewNeedsAccess": "Ein Partnerbenutzer, der Geräte bearbeiten und löschen darf, kann ihn prüfen."
   }
 }

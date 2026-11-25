@@ -38,9 +38,11 @@ export interface ReattachCandidate extends ReattachComparisonFields {
   siteId: string;
   siteName: string | null;
   /** What matched, strongest first. */
-  evidence: 'system_uuid' | 'serial' | 'hostname' | string;
+  evidence: 'tpm_ek' | 'system_uuid' | 'serial' | 'hostname' | string;
   reason: string;
   evidenceLevel: ReattachEvidenceLevel;
+  /** Why the TPM key did not give `tpm_continuity` (only on `hint`; services/deviceReattach/evidence.ts). */
+  evidenceGap?: string;
   /** The candidate the source's possible-replacement link names. */
   flagged: boolean;
   osChanged: boolean;
@@ -146,6 +148,7 @@ export function deviceReattachRequestBody(
   confirmTargetName: string;
   restoreDecommissioned: boolean;
   acknowledgeOsChange: boolean;
+  expectedEvidenceLevel: ReattachEvidenceLevel;
   stepUpGrant?: string;
 } {
   return {
@@ -153,6 +156,9 @@ export function deviceReattachRequestBody(
     targetVersion: resource.targetVersion,
     possessionConfirmed: true,
     confirmTargetName: opts.confirmTargetName.trim(),
+    // The level the candidates read showed; the server refuses a weaker one
+    // with 409 evidence_changed, and the step-up is bound to this one.
+    expectedEvidenceLevel: resource.evidenceLevel,
     restoreDecommissioned: resource.restoreDecommissioned === true,
     acknowledgeOsChange: opts.acknowledgeOsChange,
     ...(opts.stepUpGrant ? { stepUpGrant: opts.stepUpGrant } : {}),
@@ -197,6 +203,7 @@ export const REATTACH_REFUSAL_CODES = [
   'confirm_target_name_mismatch',
   'same_device',
   'invalid_target_version',
+  'evidence_changed',
 ] as const;
 
 export type ReattachRefusalCode = (typeof REATTACH_REFUSAL_CODES)[number];

@@ -33,7 +33,11 @@ describe('deviceReattach (#8318)', () => {
       confirmTargetName: 'PC-1',
       restoreDecommissioned: false,
       acknowledgeOsChange: false,
+      expectedEvidenceLevel: 'hint',
     });
+    // The expected level is the bound one: never a separate input.
+    expect(deviceReattachRequestBody({ ...resource, evidenceLevel: 'tpm_continuity' }, { confirmTargetName: '', acknowledgeOsChange: false }))
+      .toMatchObject({ expectedEvidenceLevel: 'tpm_continuity' });
     expect(deviceReattachRequestBody(resource, { confirmTargetName: 'PC-1', acknowledgeOsChange: true, stepUpGrant: 'g' }))
       .toMatchObject({ acknowledgeOsChange: true, stepUpGrant: 'g' });
   });
