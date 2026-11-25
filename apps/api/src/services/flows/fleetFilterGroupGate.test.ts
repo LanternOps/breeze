@@ -50,7 +50,14 @@ describe('classifyFleetFilterGroup', () => {
   });
 
   it.each([['a string', 'x'], ['an array', []], ['no conditions', {}], ['a null condition', dyn(null)], ['a condition with no field', dyn({ operator: 'equals' })],
-    ['a non-string group reference', dyn(rule('groupId', 5))], ['a malformed group id', dyn(rule('groupId', 'nope'))]])(
+    ['a non-string group reference', dyn(rule('groupId', 5))], ['a malformed group id', dyn(rule('groupId', 'nope'))],
+    // The engine reads a node by its operator; a node that fits both shapes, or neither, is not one the gate can read.
+    ['a condition that also carries conditions', dyn({ ...rule('hostname', 'x', 'contains'), conditions: [] })],
+    ['a group that also carries a field', dyn({ operator: 'AND', field: 'osType', conditions: [rule('osType')] })],
+    ['a nested group with an unknown operator', dyn({ operator: 'XOR', conditions: [rule('osType')] })],
+    ['a root that is a bare condition', rule('osType')],
+    ['an unknown field', dyn(rule('agentId'))],
+    ['a malformed custom field', dyn(rule('custom.a b'))]])(
     'rules that cannot be read are refused: %s', async (_l, filterConditions) => {
       expect(await classify(group(G(1), { filterConditions }))).toBe('refused');
     });

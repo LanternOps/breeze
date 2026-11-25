@@ -10,6 +10,7 @@
  * bound are refused. Shared by save and resolve; pure apart from `load`.
  */
 import { partitionGroupsByExecutionFieldProvenance } from '../executionTargetGating';
+import { getFieldDefinition } from '../filterEngine';
 
 export interface GatedGroup {
   id: string;
@@ -27,20 +28,26 @@ interface LiveRules { fields: string[]; groupIds: string[] }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** Fields and group references of stored rules; null when any part cannot be read. */
-function readRules(node: unknown): LiveRules | null {
-  if (!isRecord(node)) return null;
-  if (Array.isArray(node.conditions)) {
-    const out: LiveRules = { fields: [], groupIds: [] };
-    for (const child of node.conditions) {
-      const inner = readRules(child);
-      if (!inner) return null;
-      out.fields.push(...inner.fields);
-      out.groupIds.push(...inner.groupIds);
-    }
-    return out;
+/**
+ * Fields and group references of stored rules; null when any part cannot be
+ * read. A node is told apart as `buildGroupSQL` does, by its operator, and
+ * must fit exactly that shape; a field the engine does not define is unread.
+ */
+function readGroup(node: unknown): LiveRules | null {
+  if (!isRecord(node) || (node.operator !== 'AND' && node.operator !== 'OR') || !Array.isArray(node.conditions) || Object.hasOwn(node, 'field')) return null;
+  const out: LiveRules = { fields: [], groupIds: [] };
+  for (const child of node.conditions as unknown[]) {
+    const nested = isRecord(child) && (child.operator === 'AND' || child.operator === 'OR');
+    const inner = nested ? readGroup(child) : readCondition(child);
+    if (!inner) return null;
+    out.fields.push(...inner.fields);
+    out.groupIds.push(...inner.groupIds);
   }
-  if (typeof node.field !== 'string') return null;
+  return out;
+}
+
+function readCondition(node: unknown): LiveRules | null {
+  if (!isRecord(node) || typeof node.field !== 'string' || Object.hasOwn(node, 'conditions') || !getFieldDefinition(node.field)) return null;
   if (node.field !== 'groupId') return { fields: [node.field], groupIds: [] };
   const ids = Array.isArray(node.value) ? node.value : [node.value];
   if (!ids.every((id): id is string => typeof id === 'string' && UUID_RE.test(id))) return null;
@@ -63,7 +70,7 @@ export async function classifyFleetFilterGroup(
     const next: string[] = [];
     for (const g of rows) {
       let live: LiveRules | null = { fields: [], groupIds: [] };
-      if (g.type === 'dynamic' && g.filterConditions !== null && g.filterConditions !== undefined) live = readRules(g.filterConditions);
+      if (g.type === 'dynamic' && g.filterConditions !== null && g.filterConditions !== undefined) live = readGroup(g.filterConditions);
       if (!live) return 'refused';
       const { refusedGroups } = partitionGroupsByExecutionFieldProvenance([{ id: g.id, filterFieldsUsed: [...(g.filterFieldsUsed ?? []), ...live.fields] }]);
       if (refusedGroups.length > 0) return 'refused';
