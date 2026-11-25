@@ -6,8 +6,8 @@
  * the direct session until they pick Wisp: a grant no longer turns the panel
  * into Wisp by itself.
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   serverOn: false,
@@ -29,6 +29,12 @@ vi.mock('@/stores/auth', () => ({
       if (hit === undefined) return { ok: true, status: 200, json: async () => ({ data: null }) };
       return { ok: true, status: 200, json: async () => hit };
     }
+    // The model menu's read. Answered empty, not 404: the app logs a refused
+    // read, and the menu's reload after a cleared session sits behind a dynamic
+    // import, so that log can arrive after the file's last test — which vitest
+    // reports as an unhandled error at teardown ("Closing rpc while
+    // onUserConsoleLog was pending"). The state is the same either way: no menu.
+    if (url.startsWith('/ai/models/choices/chat')) return { ok: true, status: 200, json: async () => ({ data: null }) };
     return { ok: false, status: 404, json: async () => ({}) };
   }),
   registerOrgIdProvider: vi.fn(),
@@ -103,6 +109,15 @@ const wispThreadCalls = () => fetchMock.mock.calls.map(([url]) => String(url)).f
 
 /** Let the mount effect's lookups settle. */
 const settle = () => new Promise((r) => setTimeout(r, 0)).then(() => new Promise((r) => setTimeout(r, 0)));
+
+// Unmount, then let the work the panel and the store started finish inside the
+// test, not after the file is done. The store reaches these modules through a
+// dynamic import, which outlasts a timer tick.
+afterEach(async () => {
+  cleanup();
+  await Promise.all([import('@/stores/orgStore'), import('@/stores/helpStore'), import('@/lib/wispGrant')]);
+  await settle();
+});
 
 const BASE = {
   isOpen: true, showHistory: false, sessionId: null, hydratedSessionId: null, messages: [],
