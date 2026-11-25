@@ -10,6 +10,8 @@ describe('isVolumeRootRestoreTarget (#12638)', () => {
     '\\\\?\\UNC\\server\\share\\',
     '\\\\?\\Volume{0b6f8f8e-1111-2222-3333-444455556666}\\',
     '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\',
+    '\\\\?\\GLOBALROOT\\??\\C:\\', '\\\\?\\GLOBALROOT\\DosDevices\\C:\\', '\\\\.\\Global\\C:\\',
+    '\\\\?\\GLOBALROOT\\Device\\Mup\\srv\\share\\',
     // The whole target is trimmed first: conservative for the forms (\\?\,
     // \??\) where a trailing space could name a real folder.
     '\\\\?\\C:\\ ',

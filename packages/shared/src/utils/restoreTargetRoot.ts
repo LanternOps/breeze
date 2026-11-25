@@ -45,11 +45,20 @@ export function isVolumeRootRestoreTarget(targetPath: string): boolean {
       rest = unc;
     } else {
       // A volume GUID or other device path: its first component is the
-      // volume, or, for `GLOBALROOT\Device\<name>`, its first three.
+      // volume, or, for `GLOBALROOT\Device\<name>`, its first three. Any
+      // other path through the object namespace (`GLOBALROOT\??\C:\`,
+      // `Global\C:\`, `GLOBALROOT\Device\Mup\…`) can name a drive or share
+      // root in ways this check does not model, so it always needs the
+      // confirmation.
       const [volume, ...tail] = after.split(SEPARATOR);
       if (!volume) return false;
-      const deviceTail = /^GLOBALROOT$/i.test(volume) && /^Device$/i.test(tail[0] ?? '') && tail[1] ? tail.slice(2) : tail;
-      rest = deviceTail.join('/');
+      if (/^Global$/i.test(volume)) return true;
+      if (/^GLOBALROOT$/i.test(volume)) {
+        if (!/^Device$/i.test(tail[0] ?? '') || !tail[1] || /^Mup$/i.test(tail[1])) return true;
+        rest = tail.slice(2).join('/');
+      } else {
+        rest = tail.join('/');
+      }
     }
   } else if (DRIVE.test(path)) {
     rest = path.slice(2);

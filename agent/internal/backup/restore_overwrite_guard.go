@@ -240,8 +240,9 @@ type originalsGuard struct {
 	targetBase string
 	targetKeys map[pathStyle]pathKey
 	// under holds a digest of each original beneath the target, so a
-	// restore into a large backed-up tree costs 16 bytes per original
-	// there rather than its whole path (#11234).
+	// restore into a large backed-up tree costs a 16-byte key per original
+	// there (about 40 bytes with the map's overhead) rather than its whole
+	// path (#11234).
 	under    map[[16]byte]struct{}
 	identity *dirIdentityCheck
 }
@@ -331,6 +332,7 @@ type dirIdentityCheck struct {
 	targetBase string
 	hostStyle  pathStyle
 	stat       func(string) (os.FileInfo, error)
+	lstat      func(string) (os.FileInfo, error)
 	sameFile   func(a, b os.FileInfo) bool
 	verdicts   map[string]dirVerdict
 }
@@ -348,7 +350,7 @@ func newDirIdentityCheck(targetBase string) *dirIdentityCheck {
 	if runtime.GOOS == "windows" {
 		host = styleWindows
 	}
-	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
+	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, lstat: os.Lstat, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
 }
 
 // aliasesOriginal reports whether the entry recorded at sourcePath restores
@@ -372,6 +374,16 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 	for depth := 0; depth <= len(dirs); depth++ {
 		if depth > 0 {
 			rel = filepath.Join(rel, dirs[depth-1])
+		}
+		if depth == len(dirs) && depth > 0 {
+			// The entry itself is compared only when a real directory is
+			// already there. A file, a link or a junction at the
+			// destination (an earlier run of this restore) is replaced by
+			// name, never written through, so following it would wrongly
+			// equate a restored absolute symlink with its original.
+			if info, lerr := c.lstat(filepath.Join(c.targetBase, rel)); lerr != nil || !info.IsDir() {
+				return false, nil
+			}
 		}
 		// Keyed by the original's volume too: `C:\x` and `D:\x` restore to
 		// the same destination directory but are different originals.
