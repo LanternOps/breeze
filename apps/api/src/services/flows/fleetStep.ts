@@ -75,29 +75,27 @@ const SAMPLE_NAME_MAX_CHARS = 63;
 const NOTE_MAX_CHARS = 600;
 
 /**
- * A device-reported hostname as an approval card may show it: quoted, capped,
- * and cut to hostname characters. An allowlist, as in approvalPatchNames.ts:
- * no quote look-alike, control or format character, markup or space survives,
- * so a name can neither close its quotes nor read as a sentence. Null when
- * nothing is left.
+ * A device-reported hostname as an approval card may show it: cut to ASCII
+ * hostname characters, capped and quoted. An allowlist, so no quote or quote
+ * look-alike, space, blank-rendering letter, control character or markup
+ * survives: a name cannot leave its quotes. Compatibility and accented forms
+ * fold to their plain letter first. Null when nothing is left.
  */
 function sampleName(hostname: string): string | null {
   const clean = hostname
-    .normalize('NFKC')
-    // Combining marks, and letters that render as nothing (Hangul fillers).
-    .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, '')
-    .replace(/(?:[^\p{L}\p{N}._-]|\p{Lm})+/gu, '_')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
     .replace(/^_+|_+$/g, '');
   if (!clean) return null;
-  const chars = Array.from(clean);
-  return `"${chars.length > SAMPLE_NAME_MAX_CHARS ? `${chars.slice(0, SAMPLE_NAME_MAX_CHARS - 1).join('')}…` : clean}"`;
+  return `"${clean.length > SAMPLE_NAME_MAX_CHARS ? `${clean.slice(0, SAMPLE_NAME_MAX_CHARS - 1)}…` : clean}"`;
 }
 
 /** The one sentence stored as the intent's `reason` and shown on the approval card. */
 export function fleetTargetNote(s: FleetTargetSummary): string {
   const names = s.sampleHostnames.map(sampleName).filter((n): n is string => n !== null);
   const note = `Fleet step resolved ${s.count} device${s.count === 1 ? '' : 's'} via ${s.selector} (ids sha256 ${s.idsHash}); later membership changes do not change this run.${names.length ? ` Sample: ${names.join(', ')}.` : ''}`;
-  return note.slice(0, NOTE_MAX_CHARS).replace(/[\uD800-\uDBFF]$/, '');
+  return note.slice(0, NOTE_MAX_CHARS);
 }
 
 async function summarize(i: StepExecutionInput, input: RunScriptOnTargetsInput, ctx: BuiltinContext, deviceIds: string[]): Promise<FleetTargetSummary> {
