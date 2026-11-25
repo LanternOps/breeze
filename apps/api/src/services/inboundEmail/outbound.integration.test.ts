@@ -135,7 +135,7 @@ beforeEach(async () => {
 
   // Known portal user for the default partner's org.
   const janeEmail = `jane-${suffix}@known.test`;
-  await db.insert(portalUsers).values({ orgId: org.id, email: janeEmail, name: 'Jane Known' });
+  await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: janeEmail, name: 'Jane Known' });
   const puRows = await db.select({ id: portalUsers.id }).from(portalUsers)
     .where(eq(portalUsers.email, janeEmail)).limit(1);
   const portalUserId = puRows[0].id;

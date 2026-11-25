@@ -136,7 +136,7 @@ describe('business calendar caller contexts (#8973 W4, Gate B1)', () => {
     snapshots.email = (await snapshotOf(emailTicket.id)).rev;
 
     // Portal, through the real self-managed route.
-    const [pu] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({
+    const [pu] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({ browserAccess: 'granted',
       orgId: org.id, email: `portal-${Date.now()}@example.com`, name: 'Portal person', status: 'active',
     }).returning({ id: portalUsers.id, email: portalUsers.email }));
     const res = await portalApp({ id: pu!.id, orgId: org.id, email: pu!.email }, partner.id).request('/api/v1/portal/tickets', {

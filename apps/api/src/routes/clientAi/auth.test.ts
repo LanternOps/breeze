@@ -353,8 +353,6 @@ describe('POST /client-ai/auth/exchange', () => {
       expect.objectContaining({
         orgId: ORG_ID,
         email: 'finance.user@contoso.com',
-        entraOid: OID,
-        entraTenantId: TID,
         authMethod: 'entra',
         passwordHash: null,
       })

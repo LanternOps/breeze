@@ -824,7 +824,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // customer content. Exporting it would disclose credential/status transition
   // history and invite consumers to treat an internal generation as restorable
   // identity state. Keep it with the password verifier outside tenant exports.
-  "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","entra_oid","entra_tenant_id","auth_method","linked_user_id","contact_id","receive_notifications","last_login_at","status","browser_access","disabled_by","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash","auth_epoch"],"excludedOpen":[]}),
+  // entra_oid / entra_tenant_id (portal registration W10 #11387): retiring —
+  // excluded, may be absent. Nothing reads or writes them since release N; the
+  // drop follows one release later (an N+1 → N rollback keeps export working).
+  // The same values are exported from portal_user_identities.subject /
+  // entra_tenant_id.
+  "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","auth_method","linked_user_id","contact_id","receive_notifications","last_login_at","status","browser_access","disabled_by","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash","auth_epoch"],"excludedOpen":[],"retiring":["entra_oid","entra_tenant_id"]}),
   "provision_credential_handles": tablePolicy("org_id", {"included":["id","org_id","device_id","created_by","created_at","expires_at","consumed_at","consumed_from_ip"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":["credentials"]}),
   // partner_id (epic #2135, 2026-08-17): dual ownership — org_id XOR partner_id.
   // A tenant identifier like org_id, so `included`. Note the org export only

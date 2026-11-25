@@ -126,9 +126,11 @@ apps/api/src/__tests__/integration/portalAccountFoundationsMigration.integration
 apps/api/src/__tests__/integration/portalDirectoryDeprovisioningMigration.integration.test.ts
 apps/api/src/__tests__/integration/portalDomainVerificationMigration.integration.test.ts
 apps/api/src/__tests__/integration/portalEdrVisibility.integration.test.ts
+apps/api/src/__tests__/integration/portalEntraColumnsPreflight.integration.test.ts
 apps/api/src/__tests__/integration/portalEntraPasswordHashCleanup.integration.test.ts
 apps/api/src/__tests__/integration/portalEntraTenantProofMigration.integration.test.ts
 apps/api/src/__tests__/integration/portalGoogleRequestMigration.integration.test.ts
+apps/api/src/__tests__/integration/portalIdentityFinalBackfill.integration.test.ts
 apps/api/src/__tests__/integration/portalPatchDetail.integration.test.ts
 apps/api/src/__tests__/integration/portalSoftwareInventory.integration.test.ts
 apps/api/src/__tests__/integration/portalUserContactCompositeFk.integration.test.ts
@@ -181,6 +183,7 @@ apps/api/src/__tests__/parkedFanout.contract.test.ts
 apps/api/src/__tests__/partner-wide-write-coverage.test.ts
 apps/api/src/__tests__/portalAccountWriters.contract.test.ts
 apps/api/src/__tests__/portalIdentityFacts.contract.test.ts
+apps/api/src/__tests__/portalUsersInsertBrowserAccess.contract.test.ts
 apps/api/src/__tests__/processLocalCaches.contract.test.ts
 apps/api/src/__tests__/rolePermissionsReaders.contract.test.ts
 apps/api/src/__tests__/singleTableCorrelatedSubquery.contract.test.ts

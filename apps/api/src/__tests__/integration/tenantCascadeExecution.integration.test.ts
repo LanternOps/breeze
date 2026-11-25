@@ -474,8 +474,8 @@ describe('cascadeDeleteOrg — end-to-end', () => {
       RETURNING id
     `)) as unknown as Array<{ id: string }>;
     const [login] = (await testDb.execute(sql`
-      INSERT INTO portal_users (org_id, email, name, contact_id, created_at, updated_at)
-      VALUES (${handles.orgIdToErase}, ${`erase-login-${Date.now()}@example.test`}, 'Erased Login', ${contact!.id}, now(), now())
+      INSERT INTO portal_users (org_id, email, name, contact_id, browser_access, created_at, updated_at)
+      VALUES (${handles.orgIdToErase}, ${`erase-login-${Date.now()}@example.test`}, 'Erased Login', ${contact!.id}, 'granted', now(), now())
       RETURNING id
     `)) as unknown as Array<{ id: string }>;
 

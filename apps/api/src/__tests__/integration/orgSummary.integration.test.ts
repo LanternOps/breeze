@@ -156,9 +156,9 @@ describe('GET /orgs/organizations/:id/summary', () => {
       // Portal users: one enabled, one disabled — `portalUsers.count` filters
       // OUT 'disabled', so only the enabled row should be counted.
       await db.insert(portalUsers).values([
-        { orgId: organization.id, email: `enabled-${suffix}@example.com`, status: 'active' },
+        { browserAccess: 'granted', orgId: organization.id, email: `enabled-${suffix}@example.com`, status: 'active' },
         // W8: disabled_by is set exactly when status = 'disabled' (CHECK).
-        { orgId: organization.id, email: `disabled-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp' },
+        { browserAccess: 'granted', orgId: organization.id, email: `disabled-${suffix}@example.com`, status: 'disabled', disabledBy: 'msp' },
       ]);
 
       // Audit rows: two distinct timestamps so lastActivityAt is a real MAX,

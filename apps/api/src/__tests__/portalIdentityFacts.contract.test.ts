@@ -63,15 +63,16 @@ const CALL_SITES: Record<string, { fact: Fact; reason: string }> = {
 };
 
 /**
- * Production files that reference the legacy `portal_users.entra_*` columns,
- * each only to WRITE them (the W3 D4 fence), REFUSE on them, or REPORT drift —
- * never to find the account a sign-in becomes.
+ * Identities release C, code half (W10 #11387, PR-A): NO production file may
+ * read or write the legacy `portal_users.entra_oid` / `entra_tenant_id`
+ * columns any more — the W3 D4 writer fence, the legacy refusals and the drift
+ * report are gone, and PR-B drops the columns. Drizzle access is impossible
+ * (the fields left the schema, so tsc refuses it); this scan pins raw SQL.
  */
-const LEGACY_ENTRA_COLUMN_USERS: Record<string, string> = {
-  'apps/api/src/services/portalUserIdentities.ts': 'writer fence on link; legacy pre-check refuses (conflict); drift report only',
-  'apps/api/src/services/portalOidc/signInProviders.ts': 'legacyKeyHeld: refuses an invite before consumption (identity_conflict)',
-  'apps/api/src/services/portalDirectory/identityDisable.ts': 'OD3 remove: the W3 D4 fence clears the removed identity\'s legacy columns (WHERE matches them); never finds an account',
-};
+const LEGACY_ENTRA_COLUMN_USERS: Record<string, string> = {};
+
+/** Drizzle field access, aliased or qualified raw SQL, an INSERT/UPDATE column list, or the legacy index. */
+const LEGACY_COLUMN = /\bportalUsers\.(entraOid|entraTenantId)\b|\bpu\.entra_(oid|tenant_id)\b|"portal_users"\."entra_(oid|tenant_id)"|\bportal_users\.entra_(oid|tenant_id)\b|\b(?:update|into|from)\s+(?:public\.)?"?portal_users"?(?:\s+(?:as\s+)?(?!join\b|where\b|set\b)\w+)?\s*(?:\(|set\b|where\b)[^;`]{0,300}?(?<![.\w"])entra_(?:oid|tenant_id)\b|portal_users_entra_identity_uniq/i;
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');
 const SCAN_ROOTS = [join(REPO_ROOT, 'apps', 'api', 'src'), join(REPO_ROOT, 'ee')];
@@ -172,14 +173,27 @@ describe('portal identity facts: every call site is classified any | usable (W8 
     expect(anchorAt(code, code.indexOf('c2()'))).toBe('POST /things/:id');
   });
 
-  it('no production auth path reads portal_users.entra_oid (D1: a disabled identity keeps those columns)', () => {
-    const legacyRead = /\bportalUsers\.(entraOid|entraTenantId)\b|\bpu\.entra_(oid|tenant_id)\b|"portal_users"\."entra_(oid|tenant_id)"|\bportal_users\.entra_(oid|tenant_id)\b/;
-    const readers = [...files.entries()]
-      .filter(([, code]) => legacyRead.test(code))
+  it('no production file reads or writes portal_users.entra_oid / entra_tenant_id (W10: release C)', () => {
+    const users = [...files.entries()]
+      .filter(([, code]) => LEGACY_COLUMN.test(code))
       .map(([file]) => file)
-      // The schema declares the columns; it reads nothing.
-      .filter((file) => !file.startsWith('apps/api/src/db/schema/'))
       .sort();
-    expect(readers).toEqual(Object.keys(LEGACY_ENTRA_COLUMN_USERS).sort());
+    expect(users).toEqual(Object.keys(LEGACY_ENTRA_COLUMN_USERS).sort());
+  });
+
+  it('the legacy-column scan matches raw SQL and Drizzle shapes (not vacuous)', () => {
+    for (const hit of [
+      'eq(portalUsers.entraOid, oid)',
+      'WHERE pu.entra_oid IS NOT NULL',
+      'UPDATE portal_users SET entra_tenant_id = NULL, entra_oid = NULL WHERE id = $1',
+      'INSERT INTO portal_users (org_id, email, browser_access, entra_oid) VALUES ($1, $2, $3, $4)',
+      'constraint portal_users_entra_identity_uniq',
+    ]) expect(LEGACY_COLUMN.test(hit), hit).toBe(true);
+    for (const miss of [
+      'caller_verification_subject_bindings b WHERE lower(b.entra_oid) = $1',
+      'portal_user_identities i WHERE i.entra_tenant_id = $1',
+      'update(portalUsers) where exists (select 1 from "portal_user_identities" "pui" where "pui"."entra_tenant_id" = $1)',
+      'UPDATE portal_users SET auth_epoch = auth_epoch + 1 WHERE EXISTS (SELECT 1 FROM portal_user_identities i WHERE i.entra_tenant_id = $1)',
+    ]) expect(LEGACY_COLUMN.test(miss), miss).toBe(false);
   });
 });

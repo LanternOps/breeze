@@ -74,7 +74,7 @@ async function seedPortalUser(orgId: string): Promise<{ id: string; email: strin
   const passwordHash = await hashPassword(PORTAL_PASSWORD);
   const [portalUser] = await admin
     .insert(portalUsers)
-    .values({ orgId, email, name: 'Portal Customer', passwordHash, status: 'active' })
+    .values({ browserAccess: 'granted', orgId, email, name: 'Portal Customer', passwordHash, status: 'active' })
     .returning();
   return { id: portalUser.id, email: portalUser.email };
 }
@@ -331,14 +331,12 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     const admin = getTestDb() as any;
     const contaminatedHash = await hashPassword(PORTAL_PASSWORD);
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const [entraUser] = await admin.insert(portalUsers).values({
+    const [entraUser] = await admin.insert(portalUsers).values({ browserAccess: 'none',
       orgId,
       email: `portal-entra-${unique}@example.test`,
       name: 'Entra Customer',
       passwordHash: contaminatedHash,
       authMethod: 'entra',
-      entraOid: `oid-${unique}`,
-      entraTenantId: `tenant-${unique}`,
       status: 'active',
     }).returning();
     const app = buildPortalApp();

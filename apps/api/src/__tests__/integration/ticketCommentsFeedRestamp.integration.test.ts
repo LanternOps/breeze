@@ -36,7 +36,7 @@ async function seed() {
   const user = await createUser({ partnerId: partner.id });
   const org = await createOrganization({ partnerId: partner.id, name: 'FeedRestamp-Org' });
   const otherOrg = await createOrganization({ partnerId: partner.id, name: 'FeedRestamp-Other' });
-  const [portalUser] = await admin.insert(portalUsers).values({
+  const [portalUser] = await admin.insert(portalUsers).values({ browserAccess: 'granted',
     orgId: org.id,
     email: `feed-restamp-${crypto.randomUUID()}@example.test`,
     name: 'Portal Requester',

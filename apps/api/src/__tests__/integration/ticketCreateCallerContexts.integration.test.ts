@@ -125,7 +125,7 @@ describe('ticket create caller contexts (#8883 W5 T5.8, Gate B1)', () => {
     created.email = (await withSystemDbAccessContext(() =>
       createTicket({ orgId: f.org.id, subject: 'email', source: 'email', submitterEmail: 'sender@example.com', submitterName: 'Sender' }, { kind: 'system' } as never))).id;
 
-    const [pu] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({
+    const [pu] = await withSystemDbAccessContext(() => db.insert(portalUsers).values({ browserAccess: 'granted',
       orgId: f.org.id, email: `portal-${Date.now()}@example.com`, name: 'Portal person', status: 'active',
     }).returning({ id: portalUsers.id, email: portalUsers.email }));
     const res = await portalApp({ id: pu!.id, orgId: f.org.id, email: pu!.email }, f.partner.id).request('/api/v1/portal/tickets', {

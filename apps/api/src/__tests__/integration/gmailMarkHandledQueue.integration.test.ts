@@ -77,7 +77,7 @@ async function seed(opts: { label?: string | null } = {}) {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
-    await db.insert(portalUsers).values({ orgId: org.id, email: customer, name: 'Customer' });
+    await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customer, name: 'Customer' });
     const saKey = JSON.stringify({ client_email: 'sa@x.iam.gserviceaccount.com', private_key: 'k' });
     await db.insert(googleWorkspaceConnections).values({
       orgId: org.id, customerDomain: 'example.test', adminEmail: 'admin@example.test',

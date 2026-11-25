@@ -8,9 +8,10 @@
  *    (services/portalOidc/accountResolution.ts, writer `sso_instant`).
  *
  * The account is identity-only (W3 D2): `auth_method` names the provider,
- * never `password`, and it has no password hash. Entra rows also carry
- * `entra_tenant_id` / `entra_oid` until identities release C (W3 D4 writer
- * fence). Status and browser access come from services/portalAccountState.ts.
+ * never `password`, and it has no password hash. The identity row is the only
+ * record of the external identity (W10: the legacy `portal_users.entra_*`
+ * columns are no longer written). Status and browser access come from
+ * services/portalAccountState.ts.
  *
  * Runs on the caller's transaction (`tx`), every statement in sequence.
  */
@@ -64,10 +65,10 @@ export type CreateIdentityOnlyAccountOutcome =
  * 2. Bind the login to the org's contact for `contactAddress`, when given.
  * 3. Insert the login and then the identity, both `ON CONFLICT DO NOTHING`
  *    (no target: every unique key), so a taken identity never raises 23505.
- *    The login can only conflict on the legacy `(entra_tenant_id, entra_oid)`
- *    key, the identity on `(issuer, subject)`. Either way the identity is
- *    linked elsewhere — possibly in an org this context cannot see — and the
- *    outcome is `identity_linked`.
+ *    The identity can conflict on `(issuer, subject)` (the login on no key
+ *    of its own any more: W10 dropped the legacy entra_* write). Either way the
+ *    identity is linked elsewhere — possibly in an org this context cannot
+ *    see — and the outcome is `identity_linked`.
  *
  * On `identity_linked` the contact link and possibly the login row HAVE been
  * written on `tx`: the caller must roll its transaction back (both callers
@@ -111,7 +112,6 @@ export async function createIdentityOnlyAccount(
       name: input.name,
       passwordHash: null,
       authMethod: input.provider,
-      ...(input.provider === 'entra' ? { entraTenantId: input.tid, entraOid: input.oid } : {}),
       status: initial.status,
       browserAccess: initial.browserAccess,
       // W9: non-null only for scim_provision_inactive ('scim').

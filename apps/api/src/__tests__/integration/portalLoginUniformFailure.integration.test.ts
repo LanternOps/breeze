@@ -95,7 +95,7 @@ describe('portal login with an email in several organizations (W2)', () => {
     await seedAccount(orgA, 'mixed@acme.example', SAME);
     await getTestDb().insert(portalUsers).values({
       orgId: orgB, email: 'mixed@acme.example', passwordHash: await hashPassword(SAME), authMethod: 'entra',
-      entraOid: `oid-${Date.now()}`, entraTenantId: `tid-${Date.now()}`, status: 'active', browserAccess: 'none',
+      status: 'active', browserAccess: 'none',
     });
     const res = await login({ email: 'mixed@acme.example', password: SAME });
     expect(res.status).toBe(200);

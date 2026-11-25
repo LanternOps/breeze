@@ -232,13 +232,11 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
     const envA = await setupTestEnvironment({ scope: 'partner' });
     const mfaToken = await mfaTokenFor(envA);
     const admin = getTestDb();
-    const [entraUser] = await admin.insert(portalUsers).values({
+    const [entraUser] = await admin.insert(portalUsers).values({ browserAccess: 'none',
       orgId: envA.organization.id,
       email: 'entra-invite@acme.example',
       passwordHash: null,
       authMethod: 'entra',
-      entraOid: `oid-${Date.now()}`,
-      entraTenantId: `tenant-${Date.now()}`,
       status: 'active',
     }).returning();
 
@@ -275,7 +273,7 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
     // Disabled, password-less row — must NOT be flipped back to 'invited'.
     const [disabledUser] = await admin
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: envA.organization.id,
         email: 'disabled@acme.example',
         passwordHash: null,
@@ -289,7 +287,7 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
     // should get re-invited (invitedBy/invitedAt refreshed).
     const [pendingUser] = await admin
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: envA.organization.id,
         email: 'pending@acme.example',
         passwordHash: null,
@@ -299,13 +297,11 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
 
     const [entraUser] = await admin
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'none',
         orgId: envA.organization.id,
         email: 'entra-bulk@acme.example',
         passwordHash: null,
         authMethod: 'entra',
-        entraOid: `bulk-oid-${Date.now()}`,
-        entraTenantId: `bulk-tenant-${Date.now()}`,
         status: 'active',
       })
       .returning();
@@ -459,10 +455,10 @@ describe('portal account foundations (W2) — real Postgres, breeze_app', () => 
     const admin = getTestDb();
     const [entra] = await admin.insert(portalUsers).values({
       orgId: envA.organization.id, email: 'addin@acme.example', authMethod: 'entra',
-      entraOid: `oid-${Date.now()}`, entraTenantId: `tid-${Date.now()}`, status: 'active', browserAccess: 'none',
+      status: 'active', browserAccess: 'none',
     }).returning();
     // A legacy credential-less ACTIVE password row (pre-#3258 inbound email shape): bulk invite's target.
-    const [legacy] = await admin.insert(portalUsers).values({
+    const [legacy] = await admin.insert(portalUsers).values({ browserAccess: 'granted',
       orgId: envA.organization.id, email: 'legacy@acme.example', authMethod: 'password', status: 'active',
     }).returning();
     const res = await buildMspApp().request(`/organizations/${envA.organization.id}/portal-users/bulk-invite`, {
@@ -480,15 +476,16 @@ describe('portal account foundations (W2) — real Postgres, breeze_app', () => 
     expect((await accept(tokenFromLastInvite('legacy@acme.example'))).status).toBe(200);
   });
 
-  it('every migrated password login keeps its browser session: fixture-inserted password row (trigger → granted) logs in and GET /portal/profile is 200', async () => {
+  it('every migrated password login keeps its browser session: a raw-SQL password row (browser_access granted, as the W2 backfill set it) logs in and GET /portal/profile is 200', async () => {
     const envA = await setupTestEnvironment({ scope: 'partner' });
     const { hashPassword } = await import('../../services/password');
     const hash = await hashPassword(NEW_PORTAL_PASSWORD);
-    // Raw SQL with no browser_access column: what every pre-W2 row and an old
-    // binary's insert look like. The fill trigger supplies 'granted'.
+    // Raw SQL, the shape of a migrated pre-W2 password row: the W2 backfill
+    // set browser_access 'granted' (the fill trigger that once derived it for
+    // old binaries is dropped by W10 PR-B).
     const [row] = await getTestDb().execute<{ id: string; browser_access: string }>(sql`
-      INSERT INTO portal_users (org_id, email, password_hash, auth_method, status)
-      VALUES (${envA.organization.id}, 'veteran@acme.example', ${hash}, 'password', 'active')
+      INSERT INTO portal_users (org_id, email, password_hash, auth_method, status, browser_access)
+      VALUES (${envA.organization.id}, 'veteran@acme.example', ${hash}, 'password', 'active', 'granted')
       RETURNING id, browser_access`);
     expect(row!.browser_access).toBe('granted');
 

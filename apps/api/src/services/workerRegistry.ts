@@ -1634,12 +1634,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // Portal registration W3 (identities release B): daily identity drift report.
-    name: 'portalIdentityReconcile',
+    // Boot-time cleanup of BullMQ queues whose job code was deleted (repeat
+    // keys + delayed occurrences left in Redis). First entry: the W3 portal
+    // identity drift report, retired by portal registration W10 (#11387).
+    name: 'retiredQueueCleanup',
     placement: 'global',
     load: async () => {
-      const m = await import('../jobs/portalIdentityReconcile');
-      return { init: m.initializePortalIdentityReconcileJob, shutdown: m.shutdownPortalIdentityReconcileJob };
+      const m = await import('../jobs/retiredQueues');
+      return { init: m.initializeRetiredQueueCleanup };
     },
   },
   {

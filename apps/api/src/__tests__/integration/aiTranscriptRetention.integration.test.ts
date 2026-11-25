@@ -106,7 +106,7 @@ const count = async (table: 'ai_messages' | 'ai_action_plans' | 'ai_tool_executi
 
 async function portalUser(orgId: string) {
   const [u] = await getTestDb().insert(portalUsers)
-    .values({ orgId, email: `p-${randomUUID()}@example.test`, authMethod: 'password' })
+    .values({ browserAccess: 'granted', orgId, email: `p-${randomUUID()}@example.test`, authMethod: 'password' })
     .returning({ id: portalUsers.id });
   return u!.id;
 }
