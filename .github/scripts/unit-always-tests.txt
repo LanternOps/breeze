@@ -770,6 +770,7 @@ apps/web/src/lib/auditFormat.papercuts.test.ts
 apps/web/src/lib/auditFormat.test.ts
 apps/web/src/lib/auditResourceType.test.ts
 apps/web/src/lib/csp.test.ts
+apps/web/src/lib/decimalJsLightAlias.test.ts
 apps/web/src/lib/executionRefusedFields.test.ts
 apps/web/src/lib/i18n/aiUsageByClientKeys.test.ts
 apps/web/src/lib/i18n/callerVerification.test.ts
