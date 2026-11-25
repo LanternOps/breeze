@@ -75,9 +75,9 @@ overrides:
   '@azure/msal-node@<7.1.0': '>=7.1.0 <8.0.0'
 
 patchedDependencies:
-  '@hono/node-ws@1.3.1':
-    hash: b4b72f402e69a3a8dabfa42c13383019cadf0fea6c580e8f08e662a327e8a454
-    path: patches/@hono__node-ws@1.3.1.patch
+  '@hono/node-ws@1.3.2':
+    hash: 54672188ff6c7a8f608d59115d8c601544e9f43550214c932656575bf2f15c86
+    path: patches/@hono__node-ws@1.3.2.patch
   postgres@3.4.9:
     hash: f53983bd4008338e8b803076bea1b7b74dda245d1d4249728bf8d05d18e27758
     path: patches/postgres@3.4.9.patch
@@ -151,7 +151,7 @@ importers:
         version: 2.1.11(hono@4.13.19)
       '@hono/node-ws':
         specifier: ^1.3.2
-        version: 1.3.2(@hono/node-server@2.1.11(hono@4.13.19))(hono@4.13.19)
+        version: 1.3.2(patch_hash=54672188ff6c7a8f608d59115d8c601544e9f43550214c932656575bf2f15c86)(@hono/node-server@2.1.11(hono@4.13.19))(hono@4.13.19)
       '@hono/zod-validator':
         specifier: ^0.9.1
         version: 0.9.1(hono@4.13.19)(zod@4.6.7)
@@ -14831,7 +14831,7 @@ snapshots:
     dependencies:
       hono: 4.13.19
 
-  '@hono/node-ws@1.3.2(@hono/node-server@2.1.11(hono@4.13.19))(hono@4.13.19)':
+  '@hono/node-ws@1.3.2(patch_hash=54672188ff6c7a8f608d59115d8c601544e9f43550214c932656575bf2f15c86)(@hono/node-server@2.1.11(hono@4.13.19))(hono@4.13.19)':
     dependencies:
       '@hono/node-server': 2.1.11(hono@4.13.19)
       hono: 4.13.19

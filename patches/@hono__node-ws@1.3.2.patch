@@ -1,0 +1,66 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index e91cd907b0e6ddf57d9e1ad34c6c425d8317d67c..720ae796de40df335ed0039887ed4f17b024d9d4 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -27,12 +27,9 @@ const CloseEvent = globalThis.CloseEvent ?? class extends Event {
+ const generateConnectionSymbol = () => Symbol("connection");
+ /** @example `c.env[CONNECTION_SYMBOL_KEY]` */
+ const CONNECTION_SYMBOL_KEY = Symbol("CONNECTION_SYMBOL_KEY");
+-const rejectUpgradeRequest = (socket, status) => {
++const rejectUpgradeRequest = (socket, status, extraHeaderLines = "") => {
+ 	if (socket.destroyed) return;
+-	socket.end(`HTTP/1.1 ${status.toString()} ${node_http.STATUS_CODES[status] ?? ""}\r\nConnection: close\r
+-Content-Length: 0\r
+-\r
+-`);
++	socket.end(`HTTP/1.1 ${status.toString()} ${node_http.STATUS_CODES[status] ?? ""}\r\nConnection: close\r\n${extraHeaderLines}Content-Length: 0\r\n\r\n`);
+ };
+ const validateRequestTarget = (target) => {
+ 	const backslash = target.indexOf("\\");
+@@ -127,7 +124,12 @@ const createNodeWebSocket = (init) => {
+ 				const waiter = waiterMap.get(request);
+ 				if (!waiter || waiter.connectionSymbol !== env[CONNECTION_SYMBOL_KEY]) {
+ 					rejectWaiter(request);
+-					rejectUpgradeRequest(socket, response.status);
++					// Breeze patch (W08, #8147): forward a validated Retry-After on a
++					// refused upgrade so agents get the delay hint. Digits only - never
++					// copy arbitrary response headers onto the raw socket.
++					const retryAfter = response.headers.get("retry-after");
++					const retryAfterLine = retryAfter && /^\d{1,4}$/.test(retryAfter) ? `Retry-After: ${retryAfter}\r\n` : "";
++					rejectUpgradeRequest(socket, response.status, retryAfterLine);
+ 					return;
+ 				}
+ 				wss.handleUpgrade(request, socket, head, (ws$2) => {
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 4c53fc8b9c30557f0f579da69f8bef828feb0079..86d6a3cef3e7e00e1e899d3685a5365e089dd359 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -26,12 +26,9 @@ const CloseEvent = globalThis.CloseEvent ?? class extends Event {
+ const generateConnectionSymbol = () => Symbol("connection");
+ /** @example `c.env[CONNECTION_SYMBOL_KEY]` */
+ const CONNECTION_SYMBOL_KEY = Symbol("CONNECTION_SYMBOL_KEY");
+-const rejectUpgradeRequest = (socket, status) => {
++const rejectUpgradeRequest = (socket, status, extraHeaderLines = "") => {
+ 	if (socket.destroyed) return;
+-	socket.end(`HTTP/1.1 ${status.toString()} ${STATUS_CODES[status] ?? ""}\r\nConnection: close\r
+-Content-Length: 0\r
+-\r
+-`);
++	socket.end(`HTTP/1.1 ${status.toString()} ${STATUS_CODES[status] ?? ""}\r\nConnection: close\r\n${extraHeaderLines}Content-Length: 0\r\n\r\n`);
+ };
+ const validateRequestTarget = (target) => {
+ 	const backslash = target.indexOf("\\");
+@@ -126,7 +123,12 @@ const createNodeWebSocket = (init) => {
+ 				const waiter = waiterMap.get(request);
+ 				if (!waiter || waiter.connectionSymbol !== env[CONNECTION_SYMBOL_KEY]) {
+ 					rejectWaiter(request);
+-					rejectUpgradeRequest(socket, response.status);
++					// Breeze patch (W08, #8147): forward a validated Retry-After on a
++					// refused upgrade so agents get the delay hint. Digits only - never
++					// copy arbitrary response headers onto the raw socket.
++					const retryAfter = response.headers.get("retry-after");
++					const retryAfterLine = retryAfter && /^\d{1,4}$/.test(retryAfter) ? `Retry-After: ${retryAfter}\r\n` : "";
++					rejectUpgradeRequest(socket, response.status, retryAfterLine);
+ 					return;
+ 				}
+ 				wss.handleUpgrade(request, socket, head, (ws) => {
