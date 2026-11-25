@@ -9,8 +9,9 @@ import (
 	"io"
 )
 
-// oem_update_release (#11065 W06): hand a vendor tool's own update schedule
-// back. The API queues it when a device stops resolving to an enabled lane.
+// oem_update_release (#11065 W06) asks the agent to hand a vendor tool's own
+// update schedule back. The API queues it when a device stops resolving to an
+// enabled lane.
 //
 // No lane takes a vendor schedule over any more (#12267): the Dell takeover was
 // dropped because its settings export is refused under every agent-owned folder
@@ -108,13 +109,25 @@ func ParseReleaseRequest(raw []byte) (ReleaseRequest, error) {
 
 // Release answers a schedule release. No lane writes a vendor schedule, so
 // there is never anything to hand back: it runs no tool and writes nothing,
-// and acks so the API clears its takeover state. A file an older agent's
-// takeover left in the store is ignored; it describes a change this agent will
-// never undo.
-func Release(_ context.Context, req ReleaseRequest, lane Lane, _ Deps) ReleaseResult {
+// and acks so the API clears its takeover state.
+//
+// An ownership record an older agent's takeover left in the store is neither
+// acted on nor removed, but it is logged: the tool's schedule may still be the
+// one that takeover set, and once the API clears its state nothing else says so.
+func Release(_ context.Context, req ReleaseRequest, lane Lane, deps Deps) ReleaseResult {
 	if !IsLane(req.Lane) || lane == nil || lane.ID() != req.Lane {
 		log.Warn("vendor schedule release refused: lane does not match the request", "lane", req.Lane)
 		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseFailed, ErrorCode: strPtr("invalid_request")}
 	}
+	if deps.Store != nil {
+		if _, err := deps.Store.ReadFile(legacyTakeoverRecordName(req.Lane)); err == nil {
+			log.Warn("an older agent's vendor schedule takeover record is present; Breeze no longer restores it, so check the tool's own schedule by hand",
+				"lane", req.Lane, "record", legacyTakeoverRecordName(req.Lane))
+		}
+	}
 	return ReleaseResult{Lane: req.Lane, Outcome: ReleaseNothingToRestore}
 }
+
+// legacyTakeoverRecordName is where agents before #12267 kept a lane's
+// takeover ownership record.
+func legacyTakeoverRecordName(lane string) string { return lane + "-takeover.json" }

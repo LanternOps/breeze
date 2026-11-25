@@ -117,7 +117,11 @@ export const oemUpdateVerificationSchema = z
   .strict();
 export type OemUpdateVerification = z.infer<typeof oemUpdateVerificationSchema>;
 
-/** Hand a vendor tool's own update schedule back (restore what Breeze changed when it took over). */
+/**
+ * Hand a vendor tool's own update schedule back (restore what Breeze changed when it took over).
+ * Agents since #12267 never take a schedule over: they answer `nothing_to_restore`, or
+ * `failed` when they refuse the request. `restored` remains for older agents.
+ */
 export const oemUpdateReleasePayloadSchema = z.object({ lane: z.enum(OEM_LANES) }).strict();
 export type OemUpdateReleasePayload = z.infer<typeof oemUpdateReleasePayloadSchema>;
 

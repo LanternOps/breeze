@@ -65,8 +65,10 @@ const (
 	// (Dell Command Update first). The API is its only sender, through one gated
 	// dispatch seam; the agent decides alone which tools and hosts it trusts.
 	CmdOemUpdateRun = "oem_update_run"
-	// CmdOemUpdateRelease (#11065 W06) hands a vendor tool's own update
-	// schedule back: the agent restores only what its takeover changed.
+	// CmdOemUpdateRelease (#11065 W06) asks the agent to hand a vendor tool's
+	// own update schedule back. No lane takes one over any more (#12267), so the
+	// agent answers nothing_to_restore and the API clears any takeover state an
+	// older agent reported.
 	CmdOemUpdateRelease = "oem_update_release"
 	// CmdOemObserve (#11065 observe-first amendment) reports what a Surface, HP
 	// or Lenovo machine has, read-only: its own command and package, so it

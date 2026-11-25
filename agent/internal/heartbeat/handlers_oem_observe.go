@@ -12,8 +12,8 @@ import (
 
 // oem_observe (#11065, observe-first amendment §1.2): the read-only canary
 // instrument. It is its own command and its own package, so nothing here can
-// reach oem_update_run's deps, store, runner, marker, lock, takeover, flash
-// guard or reboot code. It is journalled like any command (journalable is
+// reach oem_update_run's deps, store, runner, marker, lock, flash guard or
+// reboot code. It is journalled like any command (journalable is
 // generic) and has no interrupted body: it keeps no durable record.
 
 func init() {

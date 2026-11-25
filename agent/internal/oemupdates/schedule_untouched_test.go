@@ -129,6 +129,80 @@ func TestReleaseRunsNoToolAndAcks(t *testing.T) {
 	}
 }
 
+// The scan succeeds and the install fails: still no settings command after it.
+func TestScheduledDellRunWhoseInstallFailsLeavesTheToolScheduleAlone(t *testing.T) {
+	f, l := scheduledDellFixture(t)
+	f.exec.run = func(_ context.Context, spec ExecSpec) (ExecResult, error) {
+		if len(spec.Args) > 0 && spec.Args[0] == "/applyUpdates" {
+			return ExecResult{ExitCode: 1}, nil
+		}
+		return ExecResult{}, nil
+	}
+	r := Run(context.Background(), f.req, l, f.deps)
+	calls := f.exec.Calls()
+	assertNoSettingsCommand(t, calls)
+	if len(calls) != 2 || calls[1].Args[0] != "/applyUpdates" {
+		t.Fatalf("calls = %+v, want the scan then the failed install and nothing after", calls)
+	}
+	if r.Outcome == OutcomeSuccess || r.Outcome == OutcomeNoUpdates {
+		t.Fatalf("outcome = %q, want a failure", r.Outcome)
+	}
+	if r.Takeover != TakeoverNotAttempted {
+		t.Fatalf("takeover = %q, want not_attempted", r.Takeover)
+	}
+	assertNoTakeoverState(t, f.store)
+}
+
+// A lane result that claims a takeover is corrected, and said so.
+func TestALaneClaimingATakeoverIsReportedNotAttempted(t *testing.T) {
+	logs := captureLogs(t)
+	f := newRunFixture(t)
+	f.lane.apply = func(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
+		return RunResult{Lane: LaneDell, Outcome: OutcomeNoUpdates, Takeover: TakeoverOK}, nil
+	}
+	r := f.run()
+	if r.Takeover != TakeoverNotAttempted {
+		t.Fatalf("takeover = %q, want not_attempted", r.Takeover)
+	}
+	if !strings.Contains(logs.String(), "lane result claimed a vendor schedule takeover") {
+		t.Fatalf("no warning for the corrected takeover value; logs:\n%s", logs.String())
+	}
+}
+
+// A record an older agent's takeover left is not deleted or acted on, but it
+// is logged: the tool's schedule may still be manual, and nothing else would
+// say so once the API clears its state.
+func TestReleaseLogsALegacyTakeoverRecord(t *testing.T) {
+	logs := captureLogs(t)
+	store := newMemStore()
+	legacy := []byte(`{"version":1,"lane":"dell","changed":{}}`)
+	if err := store.WriteFile("dell-takeover.json", legacy); err != nil {
+		t.Fatal(err)
+	}
+	r := Release(context.Background(), ReleaseRequest{Lane: LaneDell}, testDellLane(t, nil), Deps{Store: store})
+	if r.Outcome != ReleaseNothingToRestore || !r.Acked() {
+		t.Fatalf("release = %+v, want nothing_to_restore, acked", r)
+	}
+	if !strings.Contains(logs.String(), "older agent's vendor schedule takeover record") {
+		t.Fatalf("no warning for the legacy record; logs:\n%s", logs.String())
+	}
+	if got, err := store.ReadFile("dell-takeover.json"); err != nil || string(got) != string(legacy) {
+		t.Fatalf("the legacy record was changed or removed: %q, %v", got, err)
+	}
+}
+
+// With no legacy record there is nothing to warn about.
+func TestReleaseWithoutALegacyRecordIsQuiet(t *testing.T) {
+	logs := captureLogs(t)
+	r := Release(context.Background(), ReleaseRequest{Lane: LaneDell}, testDellLane(t, nil), Deps{Store: newMemStore()})
+	if r.Outcome != ReleaseNothingToRestore {
+		t.Fatalf("release = %+v", r)
+	}
+	if strings.Contains(logs.String(), "takeover record") {
+		t.Fatalf("warned with no legacy record; logs:\n%s", logs.String())
+	}
+}
+
 // No lane carries a takeover or restore step any more.
 func TestNoLaneTakesOverAVendorSchedule(t *testing.T) {
 	for _, id := range allLanes {

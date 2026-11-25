@@ -261,6 +261,9 @@ func TestInvalidResultFallbackCarriesNothingUnchecked(t *testing.T) {
 	if r.Outcome != OutcomeFailed || errCode(r) != "result_invalid" || r.RawExitCode != nil || len(r.SkippedCategories) != 0 {
 		t.Fatalf("result = %+v", r)
 	}
+	if r.Takeover != TakeoverNotAttempted {
+		t.Fatalf("fallback takeover = %q, want not_attempted", r.Takeover)
+	}
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
 	}

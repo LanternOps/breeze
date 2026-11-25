@@ -428,6 +428,9 @@ func (r *run) allSkipped(skips []SkippedCategory) RunResult {
 func (r *run) finish(res RunResult, tool ToolState, skips []SkippedCategory) RunResult {
 	res.Lane = r.req.Lane
 	// No lane takes a vendor schedule over (#12267), so no result may claim one.
+	if res.Takeover != "" && res.Takeover != TakeoverNotAttempted {
+		log.Warn("lane result claimed a vendor schedule takeover; reporting not_attempted", "lane", r.req.Lane, "takeover", res.Takeover)
+	}
 	res.Takeover = TakeoverNotAttempted
 	if tool.Version != "" {
 		v := sanitizeToolText(tool.Version, maxVersionLen)

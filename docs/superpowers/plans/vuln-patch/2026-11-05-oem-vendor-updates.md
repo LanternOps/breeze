@@ -710,6 +710,8 @@ Why a new mode: `computeRebootDeadline` will not pull a deadline in front of the
 
 ### W06 T4: `oem_update_release`
 
+> **Amended 2026-11-25 (#12267).** The command stays. The agent now answers `nothing_to_restore` without running the tool, and `TestReleaseRestoresAndAcks` was removed with the takeover.
+
 **Files:** Agent: `remote/tools/types.go`, `handlers_oem.go`, `privilege/check.go`. API: `commandTypes.ts`, `commandTimeouts.ts`, `commandOfflinePolicy.ts` (`standard`, so it queues), `partnerTrust.ts`, `commandQueue.ts` audit set, the exposure contract test.
 
 - [ ] **Tests, red first:** agent: `TestReleaseRestoresAndAcks`; `TestReleaseWithNoTakeoverAcks`. API: queues while offline; agent below the release minimum is not sent one; exposure contract allows only `services/oemUpdates/dispatch.ts`.

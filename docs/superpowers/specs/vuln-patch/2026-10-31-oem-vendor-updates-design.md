@@ -51,7 +51,7 @@ This feature makes that the managed default for a fleet and removes the login fr
 | No daytime installs or wake timers; laptops that miss every night show as Overdue | Todd |
 | Buy used test units for Surface, HP and Lenovo BIOS and firmware testing | Todd |
 | **HP, Lenovo and Surface BIOS and firmware stay off until a lab leg passes on that vendor** | My call; Todd has no experience with these vendors, and the docs below are weak or conflicting |
-| Breeze triggers each run; the vendor tool's own scheduler is turned off | My call (§4.2) |
+| Breeze triggers each run; the vendor tool's own scheduler is turned off (amended by #12267: Breeze no longer touches it; see §4.2) | My call (§4.2) |
 | The agent makes sure the tool is present as part of the run; no generated software policy | My call (§4.4) |
 | The tool never reboots itself; Breeze's reboot path does. If Dell can't flash BIOS that way, Dell BIOS stays off until the lifecycle is revised | My call (§4.5), after advisor review |
 | One owner per update class, for Breeze patch jobs only and only where the vendor lane is really delivering. Native Windows Update isn't touched | My call (§4.6), after advisor review |

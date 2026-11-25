@@ -34,10 +34,11 @@ var (
 	oemRelease  = oemupdates.Release
 )
 
-// handleOemUpdateRelease hands a vendor tool's schedule back (#11065 W06). The
-// result is stdout JSON; a release that restored, or found nothing of
-// Breeze's to restore, completes (the API clears its takeover state), and
-// anything else fails so the API releases again.
+// handleOemUpdateRelease answers a vendor schedule release (#11065 W06). No
+// lane takes a schedule over any more (#12267), so on a built lane
+// oemupdates.Release answers nothing_to_restore. The result is stdout JSON; an
+// acked answer completes (the API clears any takeover state an older agent
+// reported), and anything else fails so the API releases again.
 func handleOemUpdateRelease(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	raw, err := json.Marshal(cmd.Payload)
@@ -51,7 +52,7 @@ func handleOemUpdateRelease(h *Heartbeat, cmd Command) tools.CommandResult {
 	nothing := func(code string) tools.CommandResult {
 		return oemReleaseCommandResult(oemupdates.ReleaseResult{Lane: req.Lane, Outcome: oemupdates.ReleaseNothingToRestore, ErrorCode: &code}, time.Since(start).Milliseconds())
 	}
-	// Off Windows, or a lane this agent does not build: no takeover ever ran.
+	// Off Windows, or a lane this agent does not build: nothing to look at.
 	if oemGOOS != "windows" {
 		return nothing("os_not_supported")
 	}
