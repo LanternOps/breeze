@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -70,6 +71,12 @@ type pathKey struct {
 
 func (k pathKey) String() string {
 	return k.volume + "/" + strings.Join(k.parts, "/")
+}
+
+// digest identifies the key for a set membership test.
+func (k pathKey) digest() [16]byte {
+	sum := sha256.Sum256([]byte(k.String()))
+	return [16]byte(sum[:16])
 }
 
 // contains reports whether other is k or lies beneath it.
@@ -232,12 +239,15 @@ func restoreDestinationKey(targetBase, sourcePath string) (dest, original pathKe
 type originalsGuard struct {
 	targetBase string
 	targetKeys map[pathStyle]pathKey
-	under      map[string]string // pathKey string → the recorded path it came from
-	identity   *dirIdentityCheck
+	// under holds a digest of each original beneath the target, so a
+	// restore into a large backed-up tree costs 16 bytes per original
+	// there rather than its whole path (#11234).
+	under    map[[16]byte]struct{}
+	identity *dirIdentityCheck
 }
 
 func newOriginalsGuard(targetBase string) *originalsGuard {
-	g := &originalsGuard{targetBase: targetBase, targetKeys: map[pathStyle]pathKey{}, under: map[string]string{}, identity: newDirIdentityCheck(targetBase)}
+	g := &originalsGuard{targetBase: targetBase, targetKeys: map[pathStyle]pathKey{}, under: map[[16]byte]struct{}{}, identity: newDirIdentityCheck(targetBase)}
 	for _, style := range []pathStyle{stylePOSIX, styleWindows} {
 		if k, ok := parsePathKey(targetBase, style); ok {
 			g.targetKeys[style] = k
@@ -255,7 +265,7 @@ func (g *originalsGuard) noteOriginal(recorded string) {
 		return
 	}
 	if original, ok := parsePathKey(recorded, style); ok && target.contains(original) {
-		g.under[original.String()] = recorded
+		g.under[original.digest()] = struct{}{}
 	}
 }
 
@@ -287,7 +297,10 @@ func (g *originalsGuard) check(recorded []string) overwriteFinding {
 		overwritten := ""
 		if len(g.under) > 0 {
 			if dest, _, ok := restoreDestinationKey(g.targetBase, p); ok {
-				overwritten = g.under[dest.String()]
+				if _, hit := g.under[dest.digest()]; hit {
+					// The destination's own path is the original's.
+					overwritten = filepath.Join(g.targetBase, stripVolumeAndLeadingSeparators(p))
+				}
 			}
 		}
 		if overwritten == "" {
@@ -383,7 +396,9 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 
 func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 	destInfo, err := c.stat(dest)
-	if notADirectory(err) {
+	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) {
+		// Nothing there to alias. A path too long to stat is equally past
+		// every directory already compared as distinct.
 		return dirAbsent, nil
 	}
 	if err != nil {
@@ -392,18 +407,17 @@ func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 		return 0, fmt.Errorf("examine restore destination %s: %w", dest, err)
 	}
 	originalInfo, err := c.stat(original)
-	if errors.Is(err, fs.ErrPermission) {
-		// It may well exist, so it may be what the destination is: fail
-		// closed.
-		return 0, fmt.Errorf("examine original location %s: %w", original, err)
+	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || unreachableVolume(err) {
+		// No original there to overwrite: gone since the backup, or on a
+		// volume or share this host cannot reach at all. The destination,
+		// which it just opened, cannot be it. The lexical check still
+		// applies.
+		return dirAbsent, nil
 	}
 	if err != nil {
-		// No reachable original directory (gone since the backup, a share
-		// that cannot be reached, a drive with no media): the destination,
-		// which this host could open, cannot be it, and nothing at or
-		// beneath it can be overwritten through this directory. The
-		// lexical check still applies.
-		return dirAbsent, nil
+		// Denied, or unreadable for a reason that does not establish the
+		// original is gone: fail closed.
+		return 0, fmt.Errorf("examine original location %s: %w", original, err)
 	}
 	if c.sameFile(destInfo, originalInfo) {
 		return dirAlias, nil

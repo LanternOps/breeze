@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -394,11 +395,11 @@ func TestDirIdentityCheck_CacheIsPerVolume(t *testing.T) {
 	}
 }
 
-// A destination that exists but cannot be examined, or an original that is
-// there but denied, fails the check closed. "Does not exist" or "not a
-// directory" lets it pass, and so does an original that cannot be reached
-// at all (a drive with no media, an unreachable share): the destination this
-// host just opened cannot be it.
+// A destination or original that cannot be examined fails the check closed,
+// except where the error itself shows there is nothing there: does not
+// exist, not a directory, a path too long to stat (past everything already
+// compared), or, on Windows, a volume or share that cannot be reached (see
+// restore_overwrite_unreachable_windows.go).
 func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
 	denied := fmt.Errorf("access denied: %w", fs.ErrPermission)
 	for name, stat := range map[string]func(string) (os.FileInfo, error){
@@ -424,15 +425,27 @@ func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
 	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
 		t.Errorf("nothing exists: alias %v, %v; want not an overwrite", same, err)
 	}
-	notReady := errors.New("the device is not ready")
+	for _, err := range []error{fs.ErrNotExist, syscall.ENOTDIR, syscall.ENAMETOOLONG} {
+		c := newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
+			if strings.HasPrefix(p, "/target") {
+				return fakeDirInfo(p), nil
+			}
+			return nil, err
+		})
+		if same, gotErr := c.aliasesOriginal("/home/a/x"); gotErr != nil || same {
+			t.Errorf("original %v: alias %v, %v; want not an overwrite", err, same, gotErr)
+		}
+	}
+	// Any other error leaves the question open: refuse.
+	unknown := errors.New("input/output error")
 	c = newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
 		if strings.HasPrefix(p, "/target") {
 			return fakeDirInfo(p), nil
 		}
-		return nil, notReady
+		return nil, unknown
 	})
-	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
-		t.Errorf("original unreachable: alias %v, %v; want not an overwrite", same, err)
+	if _, err := c.aliasesOriginal("/home/a/x"); !errors.Is(err, unknown) {
+		t.Errorf("original %v: err %v, want it reported", unknown, err)
 	}
 }
 
