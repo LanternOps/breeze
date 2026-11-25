@@ -17,8 +17,9 @@ export type RankableTool = { name: string; description: string; domain: string; 
 
 /**
  * Tuned on the golden gate (mcpToolSearch.golden.test.ts) by a grid over
- * k1 ∈ {0.9…2}, b ∈ {0.3…0.75} and the field weights; this point sits in a
- * flat region of that grid, not on a spike. The domain vocabulary is shared
+ * k1 ∈ {0.9…2}, b ∈ {0.3…0.75} and the field weights: the best point that
+ * keeps the vocabulary field (several neighbours score the same, so it is not
+ * a one-case spike). The domain vocabulary is shared
  * by every tool in a domain, so it is weighted low: it helps a query find
  * the right area without drowning the words that tell its tools apart.
  */

@@ -78,7 +78,7 @@ import {
 } from '../services/mcpDomains';
 import { AI_TOOL_DOMAINS, isAiToolDomain, type AiToolDomain } from '@breeze/shared';
 import { isAlwaysLoadedToolName, MCP_GET_TOOL_DETAILS_TOOL_NAME, MCP_META_TOOL_NAMES, MCP_SEARCH_TOOLS_TOOL_NAME, MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
-import { handleGetToolDetails, handleSearchTools, MCP_META_TOOL_LIST_ENTRIES, unwrapCallToolRequest, type McpToolListEntry } from '../services/mcpMetaTools';
+import { handleGetToolDetails, handleSearchTools, MCP_META_TOOL_LIST_ENTRIES, unwrapCallToolRequest, type McpCatalogSource, type McpToolListEntry } from '../services/mcpMetaTools';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { isFlowToolName } from '../services/flows/toolNames';
 import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
@@ -1455,7 +1455,7 @@ async function handleJsonRpc(
     if (!requestedMode.ok) return jsonRpcError(req.id, -32602, 'Invalid params', { reason: requestedMode.reason });
     const toolListMode = resolveMcpToolListMode({
       requestOverride: requestedMode.mode,
-      // W02 stores a mode on api_keys / oauth_grants; until then only a
+      // No credential stores a mode yet (#12427 W02 adds it); until then only a
       // partner service principal key has a credential-level answer.
       credential: apiKey?.partnerServicePrincipalId ? { mcpToolListMode: null, partnerServicePrincipal: true } : null,
       deploymentDefault: mcpToolListDefault(),
@@ -2038,7 +2038,13 @@ export async function buildToolsListEntries(input: {
   apiKey?: McpApiKeyContext;
   clientExtensions: McpClientExtensions;
   dynamicTools?: boolean;
-}): Promise<{ entries: McpToolListEntry[]; listing: McpListingContext; approvalNotes: ReadonlyMap<string, string> }> {
+}): Promise<{
+  entries: McpToolListEntry[];
+  listing: McpListingContext;
+  approvalNotes: ReadonlyMap<string, string>;
+  /** Dynamic sources that failed to resolve (the catalog degrades to without them). */
+  incomplete: McpCatalogSource[];
+}> {
   const { scopes, auth, apiKey, clientExtensions } = input;
   const dynamicTools = input.dynamicTools ?? true;
   const listing = buildMcpListingContext(scopes, auth, apiKey);
@@ -2061,6 +2067,7 @@ export async function buildToolsListEntries(input: {
   }
 
   const approvalNotes = new Map<string, string>();
+  const incomplete: McpCatalogSource[] = [];
   const result = scopedTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
     // listed — its ungated actions (typically reads/drafts) still work —
@@ -2160,7 +2167,9 @@ export async function buildToolsListEntries(input: {
         inputSchema: d.definition.input_schema,
       }));
   } catch (err) {
-    console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
+    console.error('[MCP] Failed to resolve tenant tools for the tool catalog:', err);
+    captureException(err);
+    incomplete.push('tenant');
   }
 
   // W5 PR C (#5220): flow tools (`flow__<slug>`), listed only when callable
@@ -2180,12 +2189,14 @@ export async function buildToolsListEntries(input: {
       }));
     }
   } catch (err) {
-    console.error('[MCP] Failed to resolve flow tools for tools/list:', err);
+    console.error('[MCP] Failed to resolve flow tools for the tool catalog:', err);
+    captureException(err);
+    incomplete.push('flow');
     flowResult = [];
   }
 
   const entries: McpToolListEntry[] = [...result.sort(byToolName), ...tenantResult.sort(byToolName), ...flowResult.sort(byToolName)];
-  return { entries, listing, approvalNotes };
+  return { entries, listing, approvalNotes, incomplete };
 }
 
 const byToolName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
@@ -2459,10 +2470,10 @@ async function handleToolsCall(
   // catalog is this caller's own `full` list (whatever the mode), so neither
   // can rank, describe or name a tool the caller could not list.
   if (toolName === MCP_SEARCH_TOOLS_TOOL_NAME || toolName === MCP_GET_TOOL_DETAILS_TOOL_NAME) {
-    const { entries, approvalNotes } = await buildToolsListEntries({ scopes, auth, apiKey, clientExtensions: options.clientExtensions });
+    const { entries, approvalNotes, incomplete } = await buildToolsListEntries({ scopes, auth, apiKey, clientExtensions: options.clientExtensions });
     const outcome = toolName === MCP_SEARCH_TOOLS_TOOL_NAME
-      ? handleSearchTools(entries, toolInput, approvalNotes)
-      : handleGetToolDetails(entries, toolInput);
+      ? handleSearchTools(entries, toolInput, approvalNotes, incomplete)
+      : handleGetToolDetails(entries, toolInput, incomplete);
     return 'error' in outcome
       ? jsonRpcError(id, outcome.error.code, outcome.error.message, outcome.error.data)
       : jsonRpcResult(id, outcome.result);

@@ -77,6 +77,13 @@ describe('handleSearchTools', () => {
     if (!('result' in out)) throw new Error('expected a result');
     expect(JSON.parse((out.result.content as Array<{ text: string }>)[0]!.text)).toEqual(out.result.structuredContent);
   });
+  it('flags an incomplete catalog; a complete one carries no flag', () => {
+    const flagged = handleSearchTools(CATALOG, { query: 'widget' }, NOTES, ['tenant', 'flow']);
+    expect('result' in flagged && flagged.result.structuredContent).toMatchObject({ catalogIncomplete: ['tenant', 'flow'] });
+    const clean = handleSearchTools(CATALOG, { query: 'widget' }, NOTES);
+    expect('result' in clean && clean.result.structuredContent).not.toHaveProperty('catalogIncomplete');
+  });
+
   it('never names a tool outside the catalog', () => {
     const named = rows(handleSearchTools(CATALOG, { query: 'tickets invoices backups devices alerts', limit: 20 }, NOTES))!.map((r) => r.name);
     expect(named.every((n) => CATALOG.some((e) => e.name === n))).toBe(true);
@@ -100,6 +107,11 @@ describe('handleGetToolDetails', () => {
       expect(shape(name)).toEqual({ result: { isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] } });
     }
   });
+  it('when the catalog is incomplete, an unknown name says so (the same for every unknown name)', () => {
+    const out = handleGetToolDetails(CATALOG, { names: ['acme__gone'] }, ['tenant']);
+    expect(out).toEqual({ result: { isError: true, content: [{ type: 'text', text: 'Unknown tool: acme__gone. Some integration tools could not be loaded right now; retry.' }] } });
+  });
+
   it('a long unknown name is bounded in the error', () => {
     const out = handleGetToolDetails(CATALOG, { names: ['x'.repeat(128)] });
     expect(JSON.stringify(out)).not.toContain('x'.repeat(129));
@@ -124,6 +136,9 @@ describe('unwrapCallToolRequest', () => {
     [{ name: 'call_tool', arguments: { name: '' } }], [{ name: 'call_tool', arguments: { name: 7 } }],
     [{ name: 'call_tool', arguments: { name: 'x', arguments: [] } }], [{ name: 'call_tool', arguments: { name: 'x', arguments: 'a=1' } }],
     [{ name: 'call_tool', arguments: { name: 'x', arguments: null } }], [{ name: 'call_tool', arguments: { name: 'x'.repeat(129) } }],
+    // Review #12658: flattened inner arguments or a nested continuation are refused, never dropped.
+    [{ name: 'call_tool', arguments: { name: 'query_devices', status: 'offline' } }],
+    [{ name: 'call_tool', arguments: { name: 'x', arguments: {}, requestState: 's' } }],
   ])('%j → invalid', (params) => {
     expect(unwrapCallToolRequest(params as never)).toEqual({ wrapped: true, invalid: 'invalid_call_tool_arguments' });
   });

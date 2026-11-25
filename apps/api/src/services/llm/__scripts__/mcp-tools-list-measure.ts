@@ -127,9 +127,11 @@ export async function measureMetaToolResults(): Promise<{ searchRows: number; se
 }
 
 async function anthropicCounter(): Promise<((text: string) => Promise<number>) | undefined> {
-  if (!process.env.ANTHROPIC_API_KEY) return undefined;
-  const [{ default: Anthropic }, { resolveDefaultModel }] = await Promise.all([import('@anthropic-ai/sdk'), import('../../aiModel')]);
-  const client = new Anthropic();
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return undefined;
+  const [{ createAnthropicClient }, { resolveDefaultModel }] = await Promise.all([import('../../aiModels/connectionFactory'), import('../../aiModel')]);
+  // The connection factory, public Anthropic API, operator key: synthetic tool-list JSON only.
+  const client = createAnthropicClient({ apiKey, target: { kind: 'anthropic' } });
   const model = resolveDefaultModel();
   return async (text) => (await client.messages.countTokens({ model, messages: [{ role: 'user', content: text }] })).input_tokens;
 }
@@ -156,8 +158,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       await closeDb();
       process.exit(0);
     })
-    .catch((error: unknown) => {
-      console.error(error instanceof Error ? error.message : 'MCP tools/list measurement failed');
-      process.exit(1);
+    .catch(async (error: unknown) => {
+      console.error('MCP tools/list measurement failed:', error);
+      try {
+        const { closeDb } = await import('../../../db');
+        await closeDb();
+      } finally {
+        process.exit(1);
+      }
     });
 }

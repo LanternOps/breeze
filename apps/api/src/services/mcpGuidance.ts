@@ -46,7 +46,7 @@ export const MCP_PROGRESSIVE_RECIPE = 'Start with search_tools({ query }) to fin
 
 /**
  * #12427: the progressive-mode instructions. A separate, compact body (the
- * full one is ~3.5 KB before any index): the caller's domain index, the
+ * full one is ~3.8 KB before any index): the caller's domain index, the
  * recipe, the tenant and approval rules condensed, and the untrusted-output
  * rule verbatim. Every tool it names is checked against `listableNames`, so a
  * restricted caller learns of no tool it could not list in full mode.

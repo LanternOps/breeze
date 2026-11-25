@@ -1,12 +1,13 @@
 /**
  * Which tools an external MCP client is shown by `tools/list` (#12427).
  *
- * `full` is every tool this caller may call. `progressive` is a small core plus
+ * `full` lists every tool this caller may call. `progressive` is a small core plus
  * search_tools / get_tool_details / call_tool. The mode governs listing and
  * server instructions only: it never changes what a call may do.
  *
  * Resolved once per request, from the request that carries the override. Never
- * stored on a session. Pure, apart from the one env read in mcpToolListDefault.
+ * stored on a session. Pure, apart from mcpToolListDefault's env read and its
+ * once-per-process report of an invalid value.
  */
 
 export type McpToolListMode = 'full' | 'progressive';

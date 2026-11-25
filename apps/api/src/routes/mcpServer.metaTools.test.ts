@@ -96,6 +96,30 @@ describe('non-disclosure', () => {
   });
 });
 
+describe('gated tools are invisible to discovery (Review Focus 3)', () => {
+  it.each([
+    ['partner-wide refused for an org caller', 'get_partner_settings_inheritance'],
+    ['wholly MFA-gated for a caller without an MFA session', 'apply_configuration_policy'],
+  ])('%s: %s is absent from full, unknown to get_tool_details, never surfaced by search', async (_label, name) => {
+    expect((await fullNames()).has(name)).toBe(false);
+    const res = await details([name]);
+    expect(res.body.result).toEqual({ isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] });
+    for (const query of [name, name.replace(/_/g, ' ')]) expect(rowNames(await search(query))).not.toContain(name);
+  });
+});
+
+describe('an incomplete catalog', () => {
+  it('a tenant-tool resolution failure is flagged on search_tools and named on get_tool_details', async () => {
+    harnessState.resolveTenantTools.mockRejectedValue(new Error('tool source down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await search('widget lookup')).body.result.structuredContent.catalogIncomplete).toEqual(['tenant']);
+    expect((await details(['acme__lookup_widget'])).body.result.content[0].text)
+      .toBe('Unknown tool: acme__lookup_widget. Some integration tools could not be loaded right now; retry.');
+    // tools/list keeps today's shape: no new key.
+    expect(Object.keys((await mcp.legacy('tools/list')).body.result)).toEqual(['tools']);
+  });
+});
+
 describe('get_tool_details', () => {
   it('returns the identical entry object the full list emits (modern Apps client: _meta.ui included)', async () => {
     vi.stubEnv('MCP_APPS_ENABLED', 'true');

@@ -66,7 +66,7 @@ const GET_TOOL_DETAILS_DEFINITION = {
 
 const CALL_TOOL_DEFINITION = {
   name: MCP_CALL_TOOL_TOOL_NAME,
-  description: 'Call any tool this connection can call, by exact name. It runs with exactly the checks, approvals and limits of calling that tool directly, so it can read or change anything the named tool can.',
+  description: 'Call any tool this connection can call, by exact name. It runs with the same checks, approvals and limits as calling that tool directly, so it can read or change anything the named tool can.',
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -79,10 +79,12 @@ const CALL_TOOL_DEFINITION = {
 };
 
 /**
- * Static rather than built at import: buildMcpToolPresentation reads the tool
- * registry, which a module-level call would load (or hit a test mock of)
- * before anything else. mcpMetaTools.test.ts pins each entry to
- * buildMcpToolPresentation(def, 1, 'core'), the `whoami` precedent.
+ * The list entries are static rather than built at import: buildMcpToolPresentation
+ * reads the tool registry, which a module-level call would load (or hit a test
+ * mock of) before anything else. mcpMetaTools.test.ts pins search_tools and
+ * get_tool_details to buildMcpToolPresentation(def, 1, 'core') (the `whoami`
+ * precedent) and call_tool's title and domain to it; call_tool's annotations
+ * deliberately differ.
  */
 const READ_ONLY_CORE: McpToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -117,6 +119,9 @@ export const MCP_META_TOOL_LIST_ENTRIES: readonly McpToolListEntry[] = [
 // ---------------------------------------------------------------------------
 // search_tools / get_tool_details
 // ---------------------------------------------------------------------------
+
+/** A dynamic tool source buildToolsListEntries resolves; a failed one leaves the catalog partial. */
+export type McpCatalogSource = 'tenant' | 'flow';
 
 export type SearchToolsRow = {
   name: string;
@@ -155,6 +160,8 @@ export function handleSearchTools(
   catalog: readonly McpToolListEntry[],
   input: unknown,
   approvalNotes: ReadonlyMap<string, string>,
+  /** Dynamic tool sources that failed to load for this catalog; flagged, never hidden. */
+  incomplete: readonly McpCatalogSource[] = [],
 ): MetaToolOutcome {
   if (!isPlainObject(input) || !onlyKeys(input, ['query', 'domain', 'limit'])) return INVALID_ARGUMENTS;
   const { query, domain, limit } = input;
@@ -182,7 +189,7 @@ export function handleSearchTools(
       ...(note ? { approvalNote: note } : {}),
     };
   });
-  return structuredResult({ tools });
+  return structuredResult({ tools, ...(incomplete.length > 0 ? { catalogIncomplete: [...incomplete] } : {}) });
 }
 
 /**
@@ -191,7 +198,11 @@ export function handleSearchTools(
  * way whether it does not exist, is wholly gated or is outside the grant, and
  * no partial details are returned.
  */
-export function handleGetToolDetails(catalog: readonly McpToolListEntry[], input: unknown): MetaToolOutcome {
+export function handleGetToolDetails(
+  catalog: readonly McpToolListEntry[],
+  input: unknown,
+  incomplete: readonly McpCatalogSource[] = [],
+): MetaToolOutcome {
   if (!isPlainObject(input) || !onlyKeys(input, ['names'])) return INVALID_ARGUMENTS;
   const { names } = input;
   if (!Array.isArray(names) || names.length === 0 || names.length > MCP_GET_TOOL_DETAILS_MAX_NAMES) return INVALID_ARGUMENTS;
@@ -202,7 +213,10 @@ export function handleGetToolDetails(catalog: readonly McpToolListEntry[], input
   for (const name of new Set(names)) {
     const found = byName.get(name);
     if (!found) {
-      return { result: { isError: true, content: [{ type: 'text', text: `Unknown tool: ${boundDeniedName(name)}` }] } };
+      // Uniform for every unknown name (no existence signal), but honest that
+      // the catalog is partial when a tool source failed to load.
+      const retry = incomplete.length > 0 ? '. Some integration tools could not be loaded right now; retry.' : '';
+      return { result: { isError: true, content: [{ type: 'text', text: `Unknown tool: ${boundDeniedName(name)}${retry}` }] } };
     }
     tools.push(found);
   }
@@ -228,7 +242,10 @@ export function unwrapCallToolRequest(params: Record<string, unknown> | undefine
   if (params?.name !== MCP_CALL_TOOL_TOOL_NAME) return { wrapped: false, params };
   const args = params.arguments;
   const invalid = { wrapped: true, invalid: 'invalid_call_tool_arguments' } as const;
-  if (!isPlainObject(args)) return invalid;
+  // Unknown keys are refused, never dropped: flattened inner arguments would
+  // otherwise run the tool unfiltered, and a nested requestState would start
+  // a fresh call instead of continuing one.
+  if (!isPlainObject(args) || !onlyKeys(args, ['name', 'arguments'])) return invalid;
   const { name, arguments: innerArguments } = args;
   if (typeof name !== 'string' || name.length === 0 || name.length > MCP_META_TOOL_NAME_MAX_CHARS) return invalid;
   if (innerArguments !== undefined && !isPlainObject(innerArguments)) return invalid;

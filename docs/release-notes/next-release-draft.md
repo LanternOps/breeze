@@ -24,7 +24,7 @@ Lab checks owed before the next tag:
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- **New env var `MCP_TOOL_LIST_DEFAULT`** (`full` | `progressive`, default `full`; #12427 W01). It sets the external MCP server's default tool list mode. Leave it unset: `full` is today's behaviour, byte for byte, and `progressive` (a small core plus `search_tools`, `get_tool_details` and `call_tool`) is lab-only until per-credential settings ship. A client can ask for `progressive` on a single request with the `Mcp-Tool-List` header, which is now in the CORS allow list. An unrecognised value falls back to `full` and logs one error. Mapped in both compose files.
+- **New env var `MCP_TOOL_LIST_DEFAULT`** (`full` | `progressive`, default `full`; #12427 W01). It sets the external MCP server's default tool list mode. Leave it unset: with `full`, `tools/list`, `initialize` and `server/discover` are unchanged (the `whoami` result gains a `toolListMode` field, and the request audit row of a tool call whose result is an error gains `toolIsError`), and `progressive` (a small core plus `search_tools`, `get_tool_details` and `call_tool`) is lab-only until per-credential settings ship. A client can ask for `progressive` on a single request with the `Mcp-Tool-List` header, which is now in the CORS allow list. An unrecognised value falls back to `full` and logs one error. Partner service principal keys stay on `full` unless the request opts in. Mapped in both compose files.
 
 - **v0.131.0: macOS agent assets without a signed minimum-OS value are refused at sync** (#12258, announced in the v0.130.0 body). Self-hosters who sign their own packages: the self-host signing template already includes it.
 

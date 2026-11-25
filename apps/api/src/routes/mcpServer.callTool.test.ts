@@ -79,11 +79,13 @@ describe('dispatch', () => {
 
   it.each([
     [{ name: 'call_tool' }], [{ name: 'call_tool', arguments: { arguments: {} } }], [{ name: 'call_tool', arguments: { name: 'x', arguments: [] } }],
+    [{ name: 'call_tool', arguments: { name: 'get_alert_summary', severity: 'high' } }],
   ])('bad wrapper arguments %j → -32602 invalid_call_tool_arguments, audited as a call_tool failure', async (params) => {
     const res = await mcp.legacy('tools/call', params);
     expect(res.body.error).toEqual({ code: -32602, message: 'Invalid params', data: { reason: 'invalid_call_tool_arguments' } });
     expect(audit(res)).toMatchObject({ metaTool: 'call_tool' });
     expect(res.requestAudits[0]!.result).toBe('failure');
+    expect(harnessState.executeTool).not.toHaveBeenCalled();
   });
 
   it('inner tool outside the grant → -32003, and the row\'s canonicalTool is the inner name', async () => {
