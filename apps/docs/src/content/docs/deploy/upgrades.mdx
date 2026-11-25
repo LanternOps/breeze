@@ -675,10 +675,10 @@ This release stops using the old `entra_oid` and `entra_tenant_id` columns on po
 **The API can refuse to start at this migration.** This happens only when a portal login holds an old Microsoft link that no identity reserves, and the login is already linked to a different Microsoft account. The migration does not guess which one is right. The start log shows `portal identity final backfill refused`, and nothing is changed. The migration retries at every start, so the API keeps failing until you repair the rows. To fix it:
 
 <Steps>
-1. Copy the read-only preflight out of the API image. It lives at `./migrations/preflight/` inside the image (working directory `/app`), not in your install directory. `docker compose cp` works on a container that keeps crashing:
+1. Copy the read-only preflight out of the API image. It lives at `./migrations/preflight/` relative to the API image's working directory, not in your install directory. A one-off container reads it even while the API keeps crashing:
 
    ```bash
-   dc cp api:/app/migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql ./portal-entra-preflight.sql
+   dc run --rm --no-deps --entrypoint cat api ./migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql > portal-entra-preflight.sql
    dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < portal-entra-preflight.sql
    ```
 
@@ -728,9 +728,9 @@ This release stops using the old `entra_oid` and `entra_tenant_id` columns on po
 4. Restart the API: `dc up -d api`. The migration runs again, and the log shows `final backfill inserted N identit(ies)` or `inserted 0 identities`.
 </Steps>
 
-**`AUTO_MIGRATE=false`.** The migration does not run by itself, so apply it before the new release serves any portal or add-in traffic. The file is in the image at `/app/migrations/2027-01-30-140000-portal-identity-final-backfill.sql`; run it with `psql -1` (one transaction) as the database owner, after you have run the preflight above. Until it has run, the new release no longer reads the old columns. A person whose Microsoft link was never copied to the identities table can then get a **new active login** from the Office add-in, even when an MSP has disabled their original account.
+**`AUTO_MIGRATE=false`.** The migration does not run by itself, so apply it before the new release serves any portal or add-in traffic. The file is at `./migrations/2027-01-30-140000-portal-identity-final-backfill.sql` in the same image directory (read it out the same way as the preflight); run it with `psql -1` (one transaction) as the database owner, after you have run the preflight above. Running it by hand does not record it as applied, so a later start with `AUTO_MIGRATE=true` runs it again and logs `inserted 0 identities`, which is harmless. Until it has run, the new release no longer reads the old columns. A person whose Microsoft link was never copied to the identities table can then get a **new active login** from the Office add-in, even when an MSP has disabled their original account.
 
-**Rolling back.** Rolling back to v0.130.0 after this release has run is safe for the database, because the migration only adds rows, but it is stricter than a normal rollback. This release no longer clears the old columns when an MSP removes a Microsoft sign-in link, so those logins keep a link v0.130.0 still checks. v0.130.0 then refuses that person's Microsoft sign-in as `identity_conflict` or `provisioning_failed` instead of creating a login, and its daily drift job reports the rows. Nothing is deleted. To let that person sign in again, clear the old link on their login with Repair A above.
+**Rolling back.** Rolling back to v0.130.0 after this release has run is safe for the database, because the migration only adds rows, but it is stricter than a normal rollback. This release no longer clears the old columns when an MSP removes a Microsoft sign-in link, so those logins keep a link v0.130.0 still checks. v0.130.0 then refuses that person's Microsoft sign-in (the add-in exchange answers `provisioning_failed`, portal Microsoft sign-in answers `identity_conflict`) instead of creating a login, and its daily drift job reports the rows. Nothing is deleted. To let that person sign in again, clear the old link on their login with Repair A above.
 
 **More than one API instance?** Do not skip this release. Upgrade every API and `worker` instance to it before you take the release that drops the columns. An older instance still running after the drop would fail when it writes those columns.
 
