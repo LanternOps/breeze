@@ -57,7 +57,8 @@ vi.mock('../db', () => {
   };
 });
 
-import { fleetConditions, fleetFilterWhere, pageFleetDevices, queryDeviceStats, queryFleetDeviceStats } from './deviceStats';
+import { fleetConditions, fleetFilterWhere, pageFleetDevices, queryDeviceStats, queryFleetDeviceStats, techFacingDeviceConditions } from './deviceStats';
+import { FLEET_FILTER_GROUP_BY } from '@breeze/shared';
 import { devices, sites } from '../db/schema';
 
 const render = (w: unknown) => new PgDialect().sqlToQuery(w as any);
@@ -111,10 +112,24 @@ const ORG = '11111111-1111-4111-8111-111111111111';
 
 describe('fleetConditions / fleetFilterWhere', () => {
   it('fleetConditions drops an undefined scope and an undefined filter', () => {
-    expect(fleetConditions(undefined, undefined)).toHaveLength(3);
-    expect(fleetConditions(eq(devices.orgId, ORG), undefined)).toHaveLength(4);
-    expect(fleetConditions(undefined, { osType: 'linux' })).toHaveLength(4);
-    expect(fleetConditions(eq(devices.orgId, ORG), { osType: 'linux' })).toHaveLength(5);
+    const base = techFacingDeviceConditions().length;
+    expect(fleetConditions(undefined, undefined)).toHaveLength(base);
+    expect(fleetConditions(eq(devices.orgId, ORG), undefined)).toHaveLength(base + 1);
+    expect(fleetConditions(undefined, { osType: 'linux' })).toHaveLength(base + 1);
+    expect(fleetConditions(eq(devices.orgId, ORG), { osType: 'linux' })).toHaveLength(base + 2);
+  });
+
+  it('the compiled filter is one parenthesised term, so no engine condition can escape the scope', () => {
+    const where = render(fleetFilterWhere({ osType: 'linux', pendingPatches: true, softwareInstalled: '7-Zip' }));
+    expect(where.sql.startsWith('(')).toBe(true);
+    expect(where.sql.endsWith(')')).toBe(true);
+    // Balanced: the leading paren closes only at the very end.
+    let depth = 0;
+    for (let i = 0; i < where.sql.length; i++) {
+      if (where.sql[i] === '(') depth++;
+      if (where.sql[i] === ')') depth--;
+      if (depth === 0) expect(i).toBe(where.sql.length - 1);
+    }
   });
 
   it('fleetFilterWhere is undefined for no filter and for an empty filter', () => {
@@ -125,9 +140,10 @@ describe('fleetConditions / fleetFilterWhere', () => {
 
   it('the scope precedes the filter, after the tech-facing exclusions', () => {
     const conds = fleetConditions(eq(devices.orgId, ORG), { osType: 'linux' });
-    expect(render(conds[2]).sql).toMatch(/unassigned_pool/);
-    expect(render(conds[3]).params).toEqual([ORG]);
-    expect(render(conds[4]).params).toEqual(['linux']);
+    const base = techFacingDeviceConditions().length;
+    expect(conds.slice(0, base).map((c) => render(c))).toEqual(techFacingDeviceConditions().map((c) => render(c)));
+    expect(render(conds[base]).params).toEqual([ORG]);
+    expect(render(conds[base + 1]).params).toEqual(['linux']);
   });
 });
 
@@ -191,6 +207,16 @@ describe('queryFleetDeviceStats', () => {
     m.groupRows = [m.statusRows, [{ key: 'b', count: '2' }, { key: 'a', count: '2' }]];
     const out = await queryFleetDeviceStats({ scope: undefined, groupBy: 'agentVersion' });
     expect(out.groups!.rows.map((r) => r.key)).toEqual(['a', 'b']);
+  });
+
+  it.each(FLEET_FILTER_GROUP_BY)('groupBy %s groups on its own device column', async (by) => {
+    m.groupRows = [m.statusRows, []];
+    await queryFleetDeviceStats({ scope: undefined, groupBy: by });
+    const expected = {
+      status: devices.status, osType: devices.osType, osVersion: devices.osVersion, siteId: devices.siteId,
+      agentVersion: devices.agentVersion, deviceRole: devices.deviceRole, architecture: devices.architecture,
+    }[by];
+    expect(m.groupBy.mock.calls[1]![0]).toBe(expected);
   });
 
   it('groupBy siteId left-joins sites and fills label with the site name', async () => {

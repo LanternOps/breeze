@@ -213,9 +213,10 @@ describe(`${NAME} filter, groupBy and device page (#12418 W01)`, () => {
     expect(m.page.mock.calls[0]![0].offset).toBe(MAX_OFFSET);
   });
 
-  it('a groupId or siteId from another org counts zero under the caller\'s scope', async () => {
-    // The ids are only a filter: the caller's org/site scope is still ANDed in,
-    // so another org's group or site can only narrow the caller's own set.
+  it('a groupId or siteId filter is passed alongside the caller scope, never instead of it', async () => {
+    // The ids are only a filter: the caller's org scope still reaches the
+    // query. The zero count itself is proven against Postgres in
+    // aiToolsFleetDeviceStatsFilter.integration.test.ts.
     m.fleet.mockResolvedValue({ ...counts, total: 0, online: 0, offline: 0, byStatus: {} });
     m.page.mockResolvedValue([]);
     const OTHER = '33333333-3333-4333-8333-333333333333';

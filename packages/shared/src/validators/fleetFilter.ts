@@ -10,8 +10,10 @@ import { z } from 'zod';
  * present fields are ANDed. `decommissioned` is not a status here: every
  * tech-facing count already excludes it.
  *
- * Descriptions are model-facing copy and stay ≤ 160 chars each (the AI tool
- * description budget walks nested parameters too).
+ * Descriptions are model-facing copy, held to the AI tool parameter budget
+ * (`aiTools.descriptionBudget.contract.test.ts` walks nested parameters).
+ * "count only" marks exactly the fields the API's filter engine refuses as
+ * execution targets; `services/fleetFilter.test.ts` holds the two together.
  */
 
 /** Device-scalar columns a fleet count may be grouped by (one-to-many dimensions filter but never group). */
@@ -26,20 +28,20 @@ export const FLEET_FILTER_DESCRIPTIONS = {
   status: 'Device status (decommissioned devices are never counted)',
   osType: 'Operating system family',
   osVersionContains: 'OS version contains this text, case-insensitive',
-  hostnameContains: 'Hostname contains this text, case-insensitive. Device-reported',
+  hostnameContains: 'Hostname contains this text, case-insensitive. Device-reported, count only',
   siteId: 'Only devices at this site',
   groupId: 'Only members of this device group',
-  tags: 'Device has every one of these tags. Device-reported',
-  agentVersion: 'Exact Breeze agent version. Device-reported',
-  softwareInstalled: 'Has installed software whose name contains this text. Device-reported',
-  softwareMissing: 'Has no installed software whose name contains this text. Device-reported',
-  softwareVersionBelow: 'Has this exact software name installed below this numeric version. Device-reported',
+  tags: 'Device has every one of these tags. Device-reported, count only',
+  agentVersion: 'Exact Breeze agent version. Device-reported, count only',
+  softwareInstalled: 'Has installed software whose name contains this text. Device-reported, count only',
+  softwareMissing: 'Has no installed software whose name contains this text. Device-reported, count only',
+  softwareVersionBelow: 'Has this exact software name installed below this numeric version. Device-reported, count only',
   softwareVersionBelowName: 'Exact software name, case-insensitive',
   softwareVersionBelowVersion: 'Version starting with a digit, e.g. 23.01',
   pendingPatches: 'true: has at least one pending patch; false: has none',
   criticalAlerts: 'true: has an active critical alert; false: has none',
   rebootRequired: 'true: the OS reports a pending reboot; false: it does not',
-  lastSeenDaysOver: 'Last seen more than this many days ago',
+  lastSeenDaysOver: 'Last seen more than this many days ago. A device never seen does not match',
 } as const;
 
 export const FLEET_FILTER_SOFTWARE_VERSION_PATTERN = /^\d/;

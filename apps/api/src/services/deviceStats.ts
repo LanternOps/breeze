@@ -4,7 +4,7 @@ import type { FleetFilter, FleetFilterGroupBy } from '@breeze/shared';
 import { db } from '../db';
 import { devices, sites } from '../db/schema';
 import { buildGroupSQL } from './filterEngine';
-import { compileFleetFilter } from './fleetFilter';
+import { compileFleetFilter, FLEET_GROUP_ROW_LIMIT } from './fleetFilter';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { logShippingFailingPredicate } from './logShippingFailingPredicate';
 
@@ -49,14 +49,15 @@ export function techFacingDeviceConditions(): SQL[] {
 
 /**
  * The compiled typed fleet filter (#12418), rendered by the filter engine's
- * own SQL builder. `undefined` when there is nothing to narrow by, so an
- * unfiltered caller sends exactly today's WHERE.
+ * own SQL builder and wrapped in one pair of parentheses, so no engine
+ * condition can ever bind outside the caller's scope. `undefined` when there
+ * is nothing to narrow by: an unfiltered caller adds no filter predicate.
  */
 export function fleetFilterWhere(filter: FleetFilter | undefined): SQL | undefined {
   if (!filter) return undefined;
   const group = compileFleetFilter(filter);
   if (group.conditions.length === 0) return undefined;
-  return buildGroupSQL(group);
+  return sql`(${buildGroupSQL(group)})`;
 }
 
 /**
@@ -115,8 +116,6 @@ export async function queryDeviceStats(scope: SQL | undefined): Promise<DeviceSt
   return countByStatus(fleetConditions(scope, undefined));
 }
 
-/** Rows kept in a grouped breakdown; the remainder is summed into `otherCount`. */
-export const FLEET_GROUP_ROW_LIMIT = 50;
 const UNKNOWN_GROUP_KEY = 'unknown';
 
 /**
@@ -149,8 +148,8 @@ async function groupCounts(conditions: SQL[], by: FleetFilterGroupBy): Promise<N
   const column = GROUP_BY_COLUMN[by];
   let raw: Array<{ key: unknown; label?: unknown; count: unknown }>;
   if (by === 'siteId') {
-    // LEFT JOIN so a device whose site row is not readable still counts:
-    // the grouped rows always sum to the filtered total.
+    // LEFT JOIN: a device whose site row is not visible still counts, with
+    // no label, so rows plus otherCount always equal the filtered total.
     raw = await db
       .select({ key: devices.siteId, label: sites.name, count: sql<number>`count(*)` })
       .from(devices)

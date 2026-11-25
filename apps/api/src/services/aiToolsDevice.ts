@@ -431,7 +431,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         orgId ? eq(devices.orgId, orgId) : undefined,
       );
       if (input.filter === undefined && input.groupBy === undefined) {
-        // Unchanged contract: exactly today's counts.
+        // No filter or groupBy: the original path and response shape.
         return JSON.stringify(await queryDeviceStats(scope));
       }
 

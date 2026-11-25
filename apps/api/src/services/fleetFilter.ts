@@ -9,7 +9,7 @@
  * targeting value (`isExecutionRefusedFilterField`): the read side labels
  * them, the action side refuses them.
  *
- * Pure: no query, no device read.
+ * No I/O: every export is a pure function of its arguments.
  */
 import { z } from 'zod';
 import {
@@ -22,9 +22,13 @@ import {
 } from '@breeze/shared';
 import { isExecutionRefusedFilterField, type FilterCondition, type FilterConditionGroup } from './filterEngine';
 
+/** Rows kept in a grouped breakdown; the remainder is summed into `otherCount`. */
+export const FLEET_GROUP_ROW_LIMIT = 50;
+
 export const FLEET_FILTER_PARAM_DESCRIPTION =
-  'Typed device filter; present fields are ANDed. Fields marked Device-reported can be counted but never select action targets';
-export const FLEET_GROUP_BY_PARAM_DESCRIPTION = 'Break the count down by one device field: top 50 rows by count plus otherCount';
+  'Typed device filter, fields ANDed. Adds a paged device sample (limit/offset/cursor). Fields marked count only never select action targets';
+export const FLEET_GROUP_BY_PARAM_DESCRIPTION =
+  `Break the count down by one device field: the ${FLEET_GROUP_ROW_LIMIT} largest groups (ties by key, missing values as unknown); otherCount sums the rest`;
 
 /** One engine condition per present field, in the facade's declared order. */
 export function compileFleetFilter(filter: FleetFilter): FilterConditionGroup {

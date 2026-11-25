@@ -109,6 +109,15 @@ describe('fleet filter provenance', () => {
     }
   });
 
+  it('a field description says "count only" exactly when the engine refuses its key as an execution target', () => {
+    for (const [key, value] of Object.entries(ALL_FIELDS)) {
+      const engineKeys = fleetFilterFieldsUsed({ [key]: value } as FleetFilter);
+      expect(engineKeys, key).toHaveLength(1);
+      const description = (fleetFilterSchema.shape as Record<string, { description?: string }>)[key]!.description!;
+      expect(description.includes('count only'), key).toBe(isExecutionRefusedFilterField(engineKeys[0]!));
+    }
+  });
+
   it('a server-side-only filter has no execution-refused fields', () => {
     expect(fleetFilterExecutionRefusedFields({ osType: 'windows', pendingPatches: true, siteId: SITE })).toEqual([]);
   });
