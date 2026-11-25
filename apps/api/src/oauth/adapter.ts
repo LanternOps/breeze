@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isCimdClientId } from './cimdHosts';
 import { errors } from 'oidc-provider';
-import type { McpGrantableDomain } from '@breeze/shared';
+import type { McpGrantableDomain, McpToolListMode } from '@breeze/shared';
 import { and, eq, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
@@ -69,6 +69,8 @@ type GrantBreezeMeta = {
   partner_id: string;
   org_id: string | null;
   mcp_domains: McpGrantableDomain[] | null;
+  /** #12429: null = follow the deployment default. Required: no caller may forget it. */
+  mcp_tool_list_mode: McpToolListMode | null;
 };
 
 export async function setGrantBreezeMeta(
@@ -85,7 +87,12 @@ export async function setGrantBreezeMeta(
   try {
     await asSystem(async () => {
       await db.update(oauthGrants)
-        .set({ partnerId: meta.partner_id, orgId: meta.org_id, mcpDomains: meta.mcp_domains })
+        .set({
+          partnerId: meta.partner_id,
+          orgId: meta.org_id,
+          mcpDomains: meta.mcp_domains,
+          mcpToolListMode: meta.mcp_tool_list_mode,
+        })
         .where(eq(oauthGrants.id, grantId));
     });
   } catch (err) {
@@ -124,6 +131,7 @@ export async function getGrantBreezeMetaAsync(
         partnerId: oauthGrants.partnerId,
         orgId: oauthGrants.orgId,
         mcpDomains: oauthGrants.mcpDomains,
+        mcpToolListMode: oauthGrants.mcpToolListMode,
       })
         .from(oauthGrants)
         .where(eq(oauthGrants.id, grantId));
@@ -145,6 +153,7 @@ export async function getGrantBreezeMetaAsync(
     partner_id: row.partnerId,
     org_id: row.orgId,
     mcp_domains: (row.mcpDomains as McpGrantableDomain[] | null) ?? null,
+    mcp_tool_list_mode: row.mcpToolListMode ?? null,
   };
 }
 

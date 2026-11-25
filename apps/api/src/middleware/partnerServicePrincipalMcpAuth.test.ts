@@ -70,6 +70,9 @@ describe('partnerServicePrincipalMcpAuthMiddleware', () => {
     // Present and explicitly null — never undefined, which would fail closed to core-only.
     expect('mcpDomains' in ctx).toBe(true);
     expect(ctx.mcpDomains).toBeNull();
+    // #12429: same — explicitly null, the resolver answers `full` for these keys.
+    expect('mcpToolListMode' in ctx).toBe(true);
+    expect(ctx.mcpToolListMode).toBeNull();
   });
 
   it('authenticates for the MCP surface and opens the partner context with the owner\'s org reach', async () => {

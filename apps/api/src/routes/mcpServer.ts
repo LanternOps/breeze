@@ -59,6 +59,7 @@ import {
   MCP_TOOL_LIST_HEADER,
   MCP_TOOL_LIST_META_KEY,
   mcpToolListDefault,
+  parseStoredMcpToolListMode,
   readRequestedToolListMode,
   resolveMcpToolListMode,
   type ResolvedMcpToolListMode,
@@ -1455,9 +1456,13 @@ async function handleJsonRpc(
     if (!requestedMode.ok) return jsonRpcError(req.id, -32602, 'Invalid params', { reason: requestedMode.reason });
     const toolListMode = resolveMcpToolListMode({
       requestOverride: requestedMode.mode,
-      // No credential stores a mode yet (#12427 W02 adds it); until then only a
-      // partner service principal key has a credential-level answer.
-      credential: apiKey?.partnerServicePrincipalId ? { mcpToolListMode: null, partnerServicePrincipal: true } : null,
+      // The authenticated principal's own row, read by its auth middleware
+      // (#12429). A partner service principal key stores no mode.
+      credential: apiKey
+        ? apiKey.partnerServicePrincipalId
+          ? { mcpToolListMode: null, partnerServicePrincipal: true }
+          : { mcpToolListMode: parseStoredMcpToolListMode(apiKey.mcpToolListMode), partnerServicePrincipal: false }
+        : null,
       deploymentDefault: mcpToolListDefault(),
     });
     // The progressive instructions' inputs, from the caller's own catalog

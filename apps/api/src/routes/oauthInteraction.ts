@@ -4,7 +4,13 @@ import { isLoopbackRedirectHost } from '../oauth/redirectUriPolicy';
 import { HTTPException } from 'hono/http-exception';
 import type { HttpBindings } from '@hono/node-server';
 import { and, eq } from 'drizzle-orm';
-import { mcpDomainsInputSchema, normalizeMcpDomainsInput, type McpGrantableDomain } from '@breeze/shared';
+import {
+  mcpDomainsInputSchema,
+  mcpToolListModeInputSchema,
+  normalizeMcpDomainsInput,
+  type McpGrantableDomain,
+  type McpToolListMode,
+} from '@breeze/shared';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
 import { isAcceptedResourceIndicator } from '../oauth/resourceIndicators';
@@ -15,6 +21,8 @@ import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users }
 import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
+import { getPriorConnectionToolListModes } from '../services/mcpConnectionToolListMode';
+import { effectiveMcpToolListMode, mcpToolListDefault } from '../services/mcpToolListMode';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -85,7 +93,12 @@ function ensureInteractionBoundToUser(details: any, userId: string): void {
 
 async function parseConsentBody(
   c: any,
-): Promise<{ partner_id: string; approve: boolean; mcp_domains: McpGrantableDomain[] | null }> {
+): Promise<{
+  partner_id: string;
+  approve: boolean;
+  mcp_domains: McpGrantableDomain[] | null;
+  mcp_tool_list_mode: McpToolListMode | null;
+}> {
   let body: unknown;
   try {
     body = await c.req.json();
@@ -96,7 +109,7 @@ async function parseConsentBody(
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new HTTPException(400, { message: 'invalid consent request body' });
   }
-  const candidate = body as { partner_id?: unknown; approve?: unknown; mcp_domains?: unknown };
+  const candidate = body as { partner_id?: unknown; approve?: unknown; mcp_domains?: unknown; mcp_tool_list_mode?: unknown };
   if (typeof candidate.approve !== 'boolean') {
     throw new HTTPException(400, { message: 'approve must be a boolean' });
   }
@@ -111,10 +124,17 @@ async function parseConsentBody(
     throw new HTTPException(400, { message: 'mcp_domains must be a non-empty list of valid tool domains' });
   }
 
+  // #12429: absent/null = follow the deployment default.
+  const parsedMode = mcpToolListModeInputSchema.safeParse(candidate.mcp_tool_list_mode ?? null);
+  if (!parsedMode.success) {
+    throw new HTTPException(400, { message: 'mcp_tool_list_mode must be "full" or "progressive"' });
+  }
+
   return {
     partner_id: candidate.partner_id,
     approve: candidate.approve,
     mcp_domains: normalizeMcpDomainsInput(parsedDomains.data),
+    mcp_tool_list_mode: parsedMode.data,
   };
 }
 
@@ -219,9 +239,18 @@ if (MCP_OAUTH_ENABLED) {
     // a given partner will actually grant — never the raw client-requested/
     // displayed set, which may exceed a read-only or execute-disabled
     // partner's policy. No Grant exists yet at this point in the flow.
+    // #12429: what re-consenting for a given partner starts from — that
+    // partner's newest active connection, never another partner's.
+    const priorToolListModes = await getPriorConnectionToolListModes({
+      userId,
+      clientId,
+      partnerIds: memberships.map((m) => m.partnerId),
+    });
     const partnersWithScopes = await Promise.all(
       memberships.map(async (membership) => ({
         ...membership,
+        prior_mcp_tool_list_mode: priorToolListModes.get(membership.partnerId) ?? null,
+        effective_mcp_tool_list_mode: effectiveMcpToolListMode(priorToolListModes.get(membership.partnerId) ?? null),
         effectiveScopes: await computeEffectiveMcpScopes({
           requested: requestScopes,
           displayed: displayScopes,
@@ -247,6 +276,7 @@ if (MCP_OAUTH_ENABLED) {
       scopes: displayScopes,
       resource: resource ?? null,
       partners: partnersWithScopes,
+      mcp_tool_list_default: mcpToolListDefault(),
     });
   });
 
@@ -469,6 +499,7 @@ if (MCP_OAUTH_ENABLED) {
         partner_id: body.partner_id,
         org_id: orgId,
         mcp_domains: body.mcp_domains,
+        mcp_tool_list_mode: body.mcp_tool_list_mode,
       });
     } catch {
       // setGrantBreezeMeta already logs with errorId. Surface a generic 500
@@ -529,6 +560,7 @@ if (MCP_OAUTH_ENABLED) {
           user_id: userId,
           grantId,
           mcpDomains: body.mcp_domains,
+          mcpToolListMode: body.mcp_tool_list_mode,
         },
       });
     } catch (err) {

@@ -11,6 +11,7 @@
  */
 import { eq, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { McpToolListMode } from '@breeze/shared';
 import type { AuthContext, PrincipalKind } from '../middleware/auth';
 import { buildOrgAccessClosures, siteAccessCheck } from '../middleware/auth';
 import { resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
@@ -77,6 +78,12 @@ export type McpApiKeyContext = {
   // MCP auth middleware sets it explicitly, and a value that is somehow
   // missing at runtime fails CLOSED to core-only (parseStoredMcpDomains).
   mcpDomains: readonly string[] | null;
+  // #12429: the credential's stored tool list mode. `null` = follow the
+  // deployment default. REQUIRED: every MCP auth middleware sets it, and a
+  // value missing at runtime is reported (parseStoredMcpToolListMode).
+  // The release path (loadLiveMcpOriginCredential) never lists tools, so it
+  // neither reads nor carries it.
+  mcpToolListMode: McpToolListMode | null;
 };
 
 /**

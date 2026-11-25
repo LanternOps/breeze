@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ============================================================
 // Mocks
@@ -159,11 +159,22 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // Same rule as the real one; the integration suite runs the real one.
+  requireInteractiveSession: vi.fn(() => async (c: any, next: any) => (
+    c.get('auth')?.principal?.kind === 'user_session' ? next() : c.json({ error: 'Interactive user session required' }, 403)
+  )),
   withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
+const toolListModes = vi.hoisted(() => ({
+  getUserConnectionToolListModes: vi.fn(),
+  setUserConnectionToolListMode: vi.fn(),
+}));
+vi.mock('../services/mcpConnectionToolListMode', () => toolListModes);
+
 import { lifecycleRoutes, lifecycleAdminRoutes, MOBILE_DEVICE_ID_HEADER } from './lifecycle';
-import { publishFamilyRevocationSentinel } from '../services';
+import { publishFamilyRevocationSentinel, rateLimiter } from '../services';
+import { writeRouteAudit } from '../services/auditEvents';
 
 import { db } from '../db';
 
@@ -173,7 +184,10 @@ beforeEach(() => {
   selectWheres.length = 0;
   nextUpdateReturning = [];
   nextInsertReturning = [];
+  toolListModes.getUserConnectionToolListModes.mockResolvedValue(() => ({ kind: 'none', grantCount: 0 }));
+  toolListModes.setUserConnectionToolListMode.mockResolvedValue(1);
   mockAuth = {
+    principal: { kind: 'user_session' },
     scope: 'organization',
     partnerId: 'p-1',
     partnerOrgAccess: null,
@@ -635,6 +649,88 @@ describe('POST /admin/orgs/:orgId/oauth-clients/:clientId/unblock-globally', () 
 // ============================================================
 // Regression: middleware does not leak onto sibling routes (#683)
 // ============================================================
+
+describe('MCP tool list mode of own connections (#12429)', () => {
+  const USER_ID = '11111111-1111-1111-1111-111111111111';
+  const MODE_PATH = '/me/oauth-clients/client-a/mcp-tool-list-mode';
+  const patchMode = (body: unknown, path = MODE_PATH) => lifecycleRoutes.request(path, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('GET rows carry the typed mode of their own client, and the response the deployment default', async () => {
+    vi.stubEnv('MCP_TOOL_LIST_DEFAULT', 'progressive');
+    const uniform = { kind: 'uniform', stored: 'full', effective: { mode: 'full', source: 'credential' }, grantCount: 2 };
+    toolListModes.getUserConnectionToolListModes.mockResolvedValue(
+      (clientId: string) => (clientId === 'client-a' ? uniform : { kind: 'mixed', grantCount: 3 }),
+    );
+    const row = { displayName: { client_name: 'App' }, createdAt: new Date(), revokedAt: null, clientLastUsedAt: null };
+    nextSelectRows = [{ ...row, clientId: 'client-a' }, { ...row, clientId: 'client-b' }];
+    const body = await (await lifecycleRoutes.request('/me/oauth-clients')).json() as any;
+    expect(toolListModes.getUserConnectionToolListModes).toHaveBeenCalledWith(USER_ID);
+    expect(body.mcpToolListDefault).toBe('progressive');
+    expect(body.clients.map((c: any) => [c.clientId, c.toolListMode])).toEqual([
+      ['client-a', uniform], ['client-b', { kind: 'mixed', grantCount: 3 }],
+    ]);
+  });
+
+  it.each(['full', 'progressive', null])('PATCH %s writes the caller\'s own connections and audits value and count', async (mode) => {
+    toolListModes.setUserConnectionToolListMode.mockResolvedValue(2);
+    const res = await patchMode({ mcp_tool_list_mode: mode });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ updated: 2 });
+    expect(toolListModes.setUserConnectionToolListMode).toHaveBeenCalledWith({ userId: USER_ID, clientId: 'client-a', mode });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
+      orgId: 'org-1',
+      action: 'oauth.client.mcp_tool_list_mode_update',
+      resourceType: 'oauth_client',
+      resourceId: 'client-a',
+      details: { mcpToolListMode: mode, grantCount: 2 },
+    });
+  });
+
+  it('decodes a URL client id', async () => {
+    const id = 'https://app.example/oauth/client.json';
+    await patchMode({ mcp_tool_list_mode: null }, `/me/oauth-clients/${encodeURIComponent(id)}/mcp-tool-list-mode`);
+    expect(toolListModes.setUserConnectionToolListMode).toHaveBeenCalledWith({ userId: USER_ID, clientId: id, mode: null });
+  });
+
+  it.each([{}, { mcp_tool_list_mode: 'Full' }, { mcp_tool_list_mode: '' }, { mcpToolListMode: 'full' }])('%j is a 400 and writes nothing', async (body) => {
+    expect((await patchMode(body)).status).toBe(400);
+    expect(toolListModes.setUserConnectionToolListMode).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('404 when no active connection matched, and nothing is audited', async () => {
+    toolListModes.setUserConnectionToolListMode.mockResolvedValue(0);
+    expect((await patchMode({ mcp_tool_list_mode: 'full' })).status).toBe(404);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  // A session is enough (no MFA claim in this context's token), and only a
+  // session: a credential never edits credentials.
+  it('needs no MFA', async () => {
+    mockAuth.token = { mfa: false };
+    expect((await patchMode({ mcp_tool_list_mode: 'full' })).status).toBe(200);
+  });
+
+  it.each([
+    { kind: 'api_key', apiKeyId: 'k-1' },
+    { kind: 'api_key', apiKeyId: 'k-1', partnerServicePrincipalId: 'psp-1' },
+    { kind: 'oauth_grant', grantId: 'g-1' },
+  ])('refuses a non-session principal with 403 and no write: %j', async (principal) => {
+    mockAuth.principal = principal;
+    expect((await patchMode({ mcp_tool_list_mode: 'full' })).status).toBe(403);
+    expect(toolListModes.setUserConnectionToolListMode).not.toHaveBeenCalled();
+  });
+
+  it('is rate limited before it writes', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 1000) } as never);
+    expect((await patchMode({ mcp_tool_list_mode: 'full' })).status).toBe(429);
+    expect(toolListModes.setUserConnectionToolListMode).not.toHaveBeenCalled();
+  });
+});
 
 describe('lifecycle middleware scoping (#683)', () => {
   it('does not run authMiddleware for sibling routes when mounted at /', async () => {

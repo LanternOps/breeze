@@ -110,6 +110,60 @@ describe('resolution', () => {
   });
 });
 
+describe("the credential's stored mode (#12429)", () => {
+  const storing = (mcpToolListMode: unknown) => { harnessState.context = { ...harnessState.context, mcpToolListMode }; };
+
+  it.each(['legacy', 'modern'] as const)('%s: stored progressive with no override → progressive/credential', async (era) => {
+    storing('progressive');
+    expect(whoamiMode(await mcp[era]('tools/call', WHOAMI))).toEqual({ mode: 'progressive', source: 'credential' });
+    const names = (await mcp[era]('tools/list')).body.result.tools.map((t: { name: string }) => t.name);
+    expect(names).toEqual(expect.arrayContaining(['search_tools', 'get_tool_details', 'call_tool']));
+    expect(names).not.toContain('get_invite_funnel');
+  });
+
+  it('stored progressive: header full overrides it for that request', async () => {
+    storing('progressive');
+    expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI, { headers: { 'Mcp-Tool-List': 'full' } })))
+      .toEqual({ mode: 'full', source: 'request' });
+  });
+
+  it('stored full ignores MCP_TOOL_LIST_DEFAULT=progressive (grandfathered), and may still opt in per request', async () => {
+    process.env.MCP_TOOL_LIST_DEFAULT = 'progressive';
+    storing('full');
+    expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI))).toEqual({ mode: 'full', source: 'credential' });
+    expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI, PROGRESSIVE))).toEqual({ mode: 'progressive', source: 'request' });
+  });
+
+  it('stored null follows the deployment default', async () => {
+    storing(null);
+    expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI))).toEqual({ mode: 'full', source: 'deployment_default' });
+    process.env.MCP_TOOL_LIST_DEFAULT = 'progressive';
+    expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI))).toEqual({ mode: 'progressive', source: 'deployment_default' });
+  });
+
+  it('a stored mode does not soften a refusal: a misspelt header is still refused', async () => {
+    storing('progressive');
+    const res = await mcp.legacy('tools/list', undefined, { headers: { 'Mcp-Tool-List': 'Full' } });
+    expect(res.body.error.data).toEqual({ reason: 'tool_list_mode_invalid' });
+    expect(res.requestAudits[0]).toMatchObject({ result: 'failure' });
+  });
+
+  it('a partner service principal key is full even if a mode reached its context', async () => {
+    process.env.MCP_TOOL_LIST_DEFAULT = 'progressive';
+    harnessState.context = { ...harnessState.context, orgId: null, partnerServicePrincipalId: 'psp-1', mcpToolListMode: 'progressive' };
+    expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI))).toEqual({ mode: 'full', source: 'credential' });
+  });
+
+  it('initialize under a stored progressive reports it; under a stored full it is the same bytes as nothing stored', async () => {
+    storing(null);
+    const unset = (await mcp.initialize()).response.text;
+    storing('full');
+    expect((await mcp.initialize()).response.text).toBe(unset);
+    storing('progressive');
+    expect((await mcp.initialize()).response.body.result.toolListMode).toEqual({ mode: 'progressive', source: 'credential' });
+  });
+});
+
 describe('reporting in initialize and server/discover', () => {
   it('initialize carries toolListMode only when progressive', async () => {
     expect((await mcp.initialize()).response.body.result).not.toHaveProperty('toolListMode');

@@ -42,7 +42,7 @@ vi.mock('../services/tenantStatus', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  apiKeys: { mcpDomains: { col: 'api_keys.mcp_domains' } },
+  apiKeys: { mcpDomains: { col: 'api_keys.mcp_domains' }, mcpToolListMode: { col: 'api_keys.mcp_tool_list_mode' } },
   organizations: {},
   // Sentinel columns so the mint guard's WHERE predicate can be inspected.
   users: {
@@ -687,6 +687,7 @@ describe('api keys routes', () => {
             returning: vi.fn(() => Promise.resolve([{
               id: KEY_ID, orgId: ORG_ID, name: 'K', keyPrefix: 'brz_abc12345',
               scopes: values.scopes, mcpDomains: values.mcpDomains ?? null,
+              mcpToolListMode: values.mcpToolListMode ?? null,
               expiresAt: null, rateLimit: 1000, createdBy: 'user-123',
               createdAt: new Date(), status: 'active'
             }]))
@@ -903,6 +904,141 @@ describe('api keys routes', () => {
       await createWith({ mcpDomains: ['tickets'] });
       const call = vi.mocked(createAuditLogAsync).mock.calls.find((c) => c[0].action === 'api_key.create');
       expect(call?.[0].details).toMatchObject({ mcpDomains: ['tickets'] });
+    });
+
+    describe('mcpToolListMode (#12429)', () => {
+      const INHERITED = { mode: 'full', source: 'deployment_default' };
+      afterEach(() => vi.unstubAllEnvs());
+
+      it("create stores the mode, and null when it is absent or null", async () => {
+        for (const [extra, stored, effective] of [
+          [{ mcpToolListMode: 'progressive' }, 'progressive', { mode: 'progressive', source: 'credential' }],
+          [{ mcpToolListMode: 'full' }, 'full', { mode: 'full', source: 'credential' }],
+          [{ mcpToolListMode: null }, null, INHERITED],
+          [{}, null, INHERITED],
+        ] as const) {
+          const captured = mockCreate();
+          const res = await createWith(extra);
+          expect(res.status).toBe(201);
+          expect(captured.values).toHaveProperty('mcpToolListMode', stored);
+          expect(await res.json()).toMatchObject({ mcpToolListMode: stored, mcpToolListModeEffective: effective });
+        }
+      });
+
+      it('create and patch refuse anything but the two exact values', async () => {
+        mockPatch({ scopes: ['ai:read'] });
+        for (const bad of ['Full', 'bulk', '', true, ['full']]) {
+          asFullAccess();
+          expect((await createWith({ mcpToolListMode: bad })).status).toBe(400);
+          expect((await patch({ mcpToolListMode: bad })).status).toBe(400);
+        }
+        expect(db.insert).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('list and get carry the stored mode, what it resolves to, and the deployment default', async () => {
+        vi.stubEnv('MCP_TOOL_LIST_DEFAULT', 'progressive');
+        const row = { id: KEY_ID, orgId: ORG_ID, name: 'K', keyPrefix: 'brz_abc12345', scopes: ['ai:read'], status: 'active' };
+        const rows = [{ ...row, mcpToolListMode: 'full' }, { ...row, mcpToolListMode: null }];
+        const listSelect = vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }) })
+            })
+          })
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 2 }]) }) } as any)
+          .mockImplementationOnce(listSelect as any);
+        const list = await (await app.request('/api-keys', { method: 'GET' })).json();
+        expect(listSelect.mock.calls[0]?.[0]).toHaveProperty('mcpToolListMode');
+        expect(list.mcpToolListDefault).toBe('progressive');
+        expect(list.data.map((k: any) => [k.mcpToolListMode, k.mcpToolListModeEffective])).toEqual([
+          ['full', { mode: 'full', source: 'credential' }],
+          [null, { mode: 'progressive', source: 'deployment_default' }],
+        ]);
+
+        const getSelect = vi.fn().mockReturnValue(selectReturning([rows[1]]));
+        vi.mocked(db.select).mockImplementationOnce(getSelect as any);
+        const got = await (await app.request(`/api-keys/${KEY_ID}`, { method: 'GET' })).json();
+        expect(getSelect.mock.calls[0]?.[0]).toHaveProperty('mcpToolListMode');
+        expect(got).toMatchObject({
+          mcpToolListMode: null, mcpToolListModeEffective: { mode: 'progressive', source: 'deployment_default' }, mcpToolListDefault: 'progressive',
+        });
+      });
+
+      it('an empty list still carries the deployment default (the create form needs it)', async () => {
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', { scope: 'partner', partnerId: 'p-1', orgId: null, accessibleOrgIds: [], user: { id: 'user-123' }, canAccessOrg: () => false });
+          return next();
+        });
+        const res = await app.request('/api-keys', { method: 'GET' });
+        expect(await res.json()).toMatchObject({ data: [], mcpToolListDefault: 'full' });
+      });
+
+      it('patch sets, clears and leaves the mode; the response carries the effective one', async () => {
+        const set = mockPatch({ scopes: ['ai:read'], mcpToolListMode: 'full' }, { mcpToolListMode: 'progressive' });
+        const res = await patch({ mcpToolListMode: 'progressive' });
+        expect(res.status).toBe(200);
+        expect(set.set).toHaveProperty('mcpToolListMode', 'progressive');
+        expect(set.returningArg).toHaveProperty('mcpToolListMode');
+        expect(await res.json()).toMatchObject({ mcpToolListMode: 'progressive', mcpToolListModeEffective: { mode: 'progressive', source: 'credential' } });
+
+        const cleared = mockPatch({ scopes: ['ai:read'], mcpToolListMode: 'full' }, { mcpToolListMode: null });
+        const clearedRes = await patch({ mcpToolListMode: null });
+        expect(cleared.set).toHaveProperty('mcpToolListMode', null);
+        expect(await clearedRes.json()).toMatchObject({ mcpToolListMode: null, mcpToolListModeEffective: INHERITED });
+
+        const untouched = mockPatch({ scopes: ['ai:read'], mcpToolListMode: 'progressive' });
+        await patch({ name: 'Renamed' });
+        expect(untouched.set).not.toHaveProperty('mcpToolListMode');
+      });
+
+      it('the update audit carries previous and next only when the caller touched it', async () => {
+        mockPatch({ scopes: ['ai:read'], mcpToolListMode: 'full' }, { mcpToolListMode: null });
+        await patch({ mcpToolListMode: null });
+        mockPatch({ scopes: ['ai:read'], mcpToolListMode: 'full' });
+        await patch({ name: 'Renamed' });
+        const details = vi.mocked(createAuditLogAsync).mock.calls.filter((c) => c[0].action === 'api_key.update').map((c) => c[0].details);
+        expect(details[0]).toMatchObject({ changedFields: ['mcpToolListMode'], mcpToolListMode: { previous: 'full', next: null } });
+        expect(details[1]).not.toHaveProperty('mcpToolListMode');
+      });
+
+      it('the create audit carries the mode', async () => {
+        mockCreate();
+        await createWith({ mcpToolListMode: 'progressive' });
+        const call = vi.mocked(createAuditLogAsync).mock.calls.find((c) => c[0].action === 'api_key.create');
+        expect(call?.[0].details).toMatchObject({ mcpToolListMode: 'progressive' });
+      });
+
+      it('rotate keeps the mode: the in-place rotation never writes it', async () => {
+        asFullAccess();
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectReturning([{
+            id: KEY_ID, orgId: ORG_ID, status: 'active', createdBy: 'user-123', scopes: ['ai:read'], mcpToolListMode: 'progressive'
+          }]))
+          .mockReturnValueOnce(selectReturning([{ credentialEpoch: 1 }]));
+        let setArg: Record<string, unknown> | undefined;
+        let returningArg: Record<string, unknown> | undefined;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn((s: Record<string, unknown>) => {
+            setArg = s;
+            return { where: vi.fn().mockReturnValue({
+              returning: vi.fn((arg: Record<string, unknown>) => {
+                returningArg = arg;
+                return Promise.resolve([{ id: KEY_ID, orgId: ORG_ID, name: 'K', keyPrefix: 'brz_r', scopes: ['ai:read'], mcpToolListMode: 'progressive', status: 'active' }]);
+              })
+            }) };
+          })
+        } as any);
+        const res = await app.request(`/api-keys/${KEY_ID}/rotate`, { method: 'POST' });
+        expect(res.status).toBe(200);
+        expect(setArg).not.toHaveProperty('mcpToolListMode');
+        expect(returningArg).toHaveProperty('mcpToolListMode');
+        expect(await res.json()).toMatchObject({ mcpToolListMode: 'progressive', mcpToolListModeEffective: { mode: 'progressive', source: 'credential' } });
+        const call = vi.mocked(createAuditLogAsync).mock.calls.find((c) => c[0].action === 'api_key.rotate');
+        expect(call?.[0].details).toMatchObject({ mcpToolListMode: 'progressive' });
+      });
     });
 
     // Reuses the create helpers above; not mcpDomains-specific.

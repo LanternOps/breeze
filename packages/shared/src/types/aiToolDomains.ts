@@ -58,3 +58,16 @@ export type McpToolListMode = (typeof MCP_TOOL_LIST_MODES)[number];
 /** Where a resolved mode came from, most specific first. */
 export type McpToolListModeSource = 'request' | 'credential' | 'deployment_default';
 export type ResolvedMcpToolListMode = { mode: McpToolListMode; source: McpToolListModeSource };
+
+/**
+ * The mode of one user's active connections to one OAuth client. `mixed` when
+ * the STORED values differ (an explicit `full` and an inherited `full` are
+ * different settings); it is never collapsed into one of them.
+ */
+export type McpConnectionToolListMode =
+  | { kind: 'uniform'; stored: McpToolListMode | null; effective: ResolvedMcpToolListMode; grantCount: number }
+  | { kind: 'mixed'; grantCount: number }
+  | { kind: 'none'; grantCount: 0 };
+
+/** A partner's read-only summary of one OAuth client; `null` = no active connection. */
+export type McpPartnerClientToolListMode = McpToolListMode | 'default' | 'mixed' | null;
