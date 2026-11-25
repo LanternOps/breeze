@@ -130,13 +130,14 @@ export type ClaimCandidate = {
 };
 
 /**
- * One row `partitionClaimable` terminalised. `detail` is present only when a
- * revalidation cancelled with the object form ({@link CommandRevalidationCancel}).
+ * One row `partitionClaimable` terminalised. `detail` and `recordReasonOnOwner`
+ * come only from a revalidation's object-form cancel ({@link CommandRevalidationCancel}).
  */
 export type ClaimCancellation = {
   id: string;
   reason: ClaimCancelReason;
   detail?: Readonly<Record<string, unknown>>;
+  recordReasonOnOwner?: true;
 };
 
 export type ClaimPartition = {
@@ -278,16 +279,18 @@ export type RevalidationHoldReason = Extract<ClaimHoldReason, 'revalidation_unpr
 /** A revalidation's answer that leaves the row `pending` for the next claim instead of cancelling it. */
 export type CommandRevalidationHold = { readonly hold: RevalidationHoldReason };
 /**
- * A cancel that says more than its reason (#12493). `detail` is merged into the
- * cancelled row's `result` as `result.detail` — ids only, never tenant text,
- * since the result is shown to operators and logged. The reason is also
- * recorded on the owning record where the type has one (an install's
- * `patch_job_results` rows), instead of the generic `cancelled` a bare-string
- * cancel leaves there.
+ * A cancel that says more than its reason (#12493).
+ *  - `detail` is merged into the cancelled row's `result` as `result.detail`.
+ *    Ids and reason codes only, bounded, never tenant text: the result is
+ *    shown to operators and kept in command history.
+ *  - `recordReasonOnOwner` also writes the reason on the owning record where
+ *    the type has one (an install's `patch_job_results` rows), instead of the
+ *    generic `cancelled` every other claim cancel leaves there.
  */
 export type CommandRevalidationCancel = {
   readonly cancel: ClaimCancelReason;
   readonly detail: Readonly<Record<string, unknown>>;
+  readonly recordReasonOnOwner?: true;
 };
 export type CommandRevalidationResult =
   | ClaimCancelReason
@@ -834,7 +837,12 @@ export async function partitionClaimable(
     }
     if (typeof revalidation === 'object' && revalidation !== null) {
       if ('cancel' in revalidation) {
-        cancelled.push({ id: row.id, reason: revalidation.cancel, detail: revalidation.detail });
+        cancelled.push({
+          id: row.id,
+          reason: revalidation.cancel,
+          detail: revalidation.detail,
+          ...(revalidation.recordReasonOnOwner ? { recordReasonOnOwner: true as const } : {}),
+        });
       } else {
         held.push({ id: row.id, reason: revalidation.hold });
       }
@@ -914,9 +922,9 @@ export async function partitionClaimable(
         id: c.id,
         type: source.type,
         payload,
-        // A detailed revalidation cancel names its reason on the owning patch
-        // result rows too; every other claim cancel keeps the generic one.
-        ...(c.detail ? { patchCancelReason: c.reason } : {}),
+        // Only a revalidation that asked for it names its reason on the owning
+        // patch result rows; every other claim cancel keeps the generic one.
+        ...(c.recordReasonOnOwner ? { patchCancelReason: c.reason } : {}),
       });
     }
     // Terminalise the OWNING records too, in this same transaction. Without

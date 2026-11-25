@@ -71,6 +71,7 @@ const AUTO_APPROVE_CRITICAL = { enabled: true, severities: ['critical'] };
 type RingOpts = {
   autoApprove?: Record<string, unknown>;
   excludeCategories?: string[];
+  appRules?: Array<{ source: string; packageId: string; action: 'block' }>;
   partnerId?: string;
 };
 
@@ -108,7 +109,7 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
         autoApprove: opts.autoApprove ?? {},
         categoryRules: [],
         excludeCategories: opts.excludeCategories ?? [],
-        appRules: [],
+        appRules: opts.appRules ?? [],
       })
       .returning();
     if (!ring) throw new Error('ring fixture insert failed');
@@ -121,7 +122,13 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
    * only through the own-partner SELECT branch, so an invisible read would
    * resolve "no policy" and flip the control to a false cancel.
    */
-  async function linkPolicy(ringId: string, level: 'organization' | 'device', targetId: string, partnerWide = true) {
+  async function linkPolicy(
+    ringId: string,
+    level: 'organization' | 'device',
+    targetId: string,
+    partnerWide = true,
+    sources: string[] = ['os'],
+  ) {
     return withSystemDbAccessContext(async () => {
       const [policy] = await db
         .insert(configurationPolicies)
@@ -136,7 +143,7 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
         .insert(configPolicyFeatureLinks)
         .values({ configPolicyId: policy!.id, featureType: 'patch', featurePolicyId: ringId, inlineSettings: {} })
         .returning({ id: configPolicyFeatureLinks.id });
-      await db.insert(configPolicyPatchSettings).values({ featureLinkId: link!.id, sources: ['os'] });
+      await db.insert(configPolicyPatchSettings).values({ featureLinkId: link!.id, sources });
       await db.insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level, targetId, priority: 0 });
       return policy!;
     });
@@ -161,11 +168,15 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     return device;
   }
 
-  async function makeOutstandingPatch(deviceId: string, over: { severity?: string; category?: string } = {}) {
+  async function makeOutstandingPatch(
+    deviceId: string,
+    over: { severity?: string; category?: string; source?: 'microsoft' | 'third_party'; packageId?: string } = {},
+  ) {
     const [patch] = await getTestDb()
       .insert(patches)
       .values({
-        source: 'microsoft',
+        source: over.source ?? 'microsoft',
+        packageId: over.packageId ?? null,
         externalId: `KB${randomUUID().slice(0, 8)}`,
         title: 'reval patch',
         severity: (over.severity ?? 'critical') as 'critical',
@@ -279,7 +290,12 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     return { ring, device, p1, p2, job, cmd };
   }
 
-  async function expectCancelledWith(jobId: string, commandId: string, droppedIds: string[]) {
+  async function expectCancelledWith(
+    jobId: string,
+    commandId: string,
+    droppedIds: string[],
+    reasons?: Record<string, string>,
+  ) {
     const row = await commandRow(commandId);
     expect(row.status).toBe('cancelled');
     expect(row.result).toMatchObject({
@@ -288,6 +304,9 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
       cancelledBy: 'claim_eligibility',
       detail: { ineligiblePatchIds: [...droppedIds].sort() },
     });
+    const detail = (row.result as { detail: { reasons: Record<string, string> } }).detail;
+    expect(Object.keys(detail.reasons).sort()).toEqual([...droppedIds].sort());
+    if (reasons) expect(detail.reasons).toEqual(reasons);
     // The finalizer closed every queued per-patch row with the reason and
     // moved the device out of the queue exactly once.
     const rows = await resultRows(jobId);
@@ -364,7 +383,28 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     const claimed = await claimAsAgent(cmd.deviceId);
 
     expect(claimed).toEqual([]);
-    await expectCancelledWith(job.id, cmd.id, [p2.id]);
+    await expectCancelledWith(job.id, cmd.id, [p2.id], { [p2.id]: 'blocked_by_category' });
+  });
+
+  it('(b2) the device ring gains an app block on a delivered patch — the whole install is cancelled', async () => {
+    const ring = await makeRing({ autoApprove: AUTO_APPROVE_CRITICAL });
+    await linkPolicy(ring.id, 'organization', env.organization.id, true, ['os', 'third_party']);
+    const device = await makeDevice();
+    const os = await makeOutstandingPatch(device.id, { severity: 'critical', category: 'security' });
+    const app = await makeOutstandingPatch(device.id, {
+      severity: 'low', category: 'application', source: 'third_party', packageId: 'Mozilla.Firefox',
+    });
+    await decide(app.id, 'approved');
+    const job = await makeJob({ patchIds: [os.id, app.id] }, [device.id]);
+    expect((await dispatchDevice(job.id, device.id)).kind).toBe('queued');
+    const cmd = await installCommand(device.id);
+    await getTestDb()
+      .update(patchPolicies)
+      .set({ appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }] })
+      .where(eq(patchPolicies.id, ring.id));
+
+    expect(await claimAsAgent(device.id)).toEqual([]);
+    await expectCancelledWith(job.id, cmd.id, [app.id], { [app.id]: 'blocked_by_app_rule' });
   });
 
   it('(c) the device moves to a stricter ring — the whole install is cancelled', async () => {
@@ -377,7 +417,7 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     const claimed = await claimAsAgent(cmd.deviceId);
 
     expect(claimed).toEqual([]);
-    await expectCancelledWith(job.id, cmd.id, [p1.id]);
+    await expectCancelledWith(job.id, cmd.id, [p1.id], { [p1.id]: 'blocked_by_category' });
   });
 
   it('a claim context without the partner axis HOLDS the install instead of judging it on rows it cannot see', async () => {
@@ -398,6 +438,69 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     expect(row.status).toBe('pending');
     expect(row.result).toBeNull();
     expect((await jobRow(job.id)).devicesQueued).toBe(1);
+
+    // A context whose partner is not the device's is held the same way.
+    const otherPartner = await createPartner();
+    const wrong = await withDbAccessContext({ ...agentContext(), currentPartnerId: otherPartner.id }, async () =>
+      claimPendingCommandsForDevice(
+        { deviceId: cmd.deviceId, agentId: await deviceAgentId(cmd.deviceId), installIncarnation: 1 },
+        10,
+        'agent',
+        undefined,
+        { ...AGENT_CAPS },
+      ),
+    );
+    expect(wrong).toEqual([]);
+    expect((await commandRow(cmd.id)).status).toBe('pending');
+
+    // The hold is recoverable: the next beat in the real agent context delivers it.
+    const delivered = await claimAsAgent(cmd.deviceId);
+    expect(delivered.map((c) => c.id)).toEqual([cmd.id]);
+    expect((await commandRow(cmd.id)).status).toBe('sent');
+  });
+
+  it('a two-device job: cancelling one device\'s install leaves the other device\'s queued install and the job untouched', async () => {
+    const ring = await makeRing({ autoApprove: AUTO_APPROVE_CRITICAL });
+    await linkPolicy(ring.id, 'organization', env.organization.id);
+    const a = await makeDevice();
+    const b = await makeDevice();
+    const [p] = await getTestDb()
+      .insert(patches)
+      .values({
+        source: 'microsoft', externalId: `KB${randomUUID().slice(0, 8)}`, title: 'shared patch',
+        severity: 'critical', category: 'security', releaseDate: '2020-01-01', requiresReboot: false,
+      })
+      .returning();
+    for (const d of [a, b]) {
+      await getTestDb().insert(devicePatches).values({ deviceId: d.id, patchId: p!.id, orgId: env.organization.id, status: 'pending' });
+    }
+    const job = await makeJob({ patchIds: [p!.id] }, [a.id, b.id]);
+    expect((await dispatchDevice(job.id, a.id)).kind).toBe('queued');
+    expect((await dispatchDevice(job.id, b.id)).kind).toBe('queued');
+    const cmdA = await installCommand(a.id);
+    const cmdB = await installCommand(b.id);
+    // Only device A's copy stops being eligible: its device_patches row is gone from its outstanding list.
+    await getTestDb()
+      .update(devicePatches)
+      .set({ status: 'installed' })
+      .where(and(eq(devicePatches.deviceId, a.id), eq(devicePatches.patchId, p!.id)));
+
+    expect(await claimAsAgent(a.id)).toEqual([]);
+
+    expect((await commandRow(cmdA.id)).status).toBe('cancelled');
+    expect((await commandRow(cmdB.id)).status).toBe('pending');
+    const rows = await resultRows(job.id);
+    expect(rows.filter((r) => r.deviceId === a.id).map((r) => [r.status, r.errorMessage])).toEqual([
+      ['skipped', REQUESTED_PATCHES_NO_LONGER_ELIGIBLE],
+    ]);
+    expect(rows.filter((r) => r.deviceId === b.id).map((r) => r.status)).toEqual(['queued']);
+    const after = await jobRow(job.id);
+    expect(after.devicesQueued).toBe(1);
+    expect(after.devicesCompleted).toBe(1);
+    expect(after.status).toBe('running');
+
+    // Device B, still eligible, is delivered.
+    expect((await claimAsAgent(b.id)).map((c) => c.id)).toEqual([cmdB.id]);
   });
 
   it('a row queued before this change (no evaluationRingId) is found by its patchJobId and revalidated', async () => {

@@ -20,7 +20,8 @@
  *    `requested_patches_no_longer_eligible`. A subset is a different action
  *    from the one approved; the operator re-runs the install for what is still
  *    eligible. The ids that dropped out ride on the cancelled row's
- *    `result.detail.ineligiblePatchIds` (ids only, no tenant text);
+ *    `result.detail` (`ineligiblePatchIds` and a reason code per id; ids and
+ *    codes only, no tenant text);
  *  - a fault in the reads → throw. `partitionClaimable` runs this in a
  *    savepoint and holds the row (`eligibility_check_failed`): never delivered
  *    on an unchecked verdict, never cancelled over a fault.
@@ -45,13 +46,19 @@
  * The push leg runs in system context. Proven against real RLS in
  * __tests__/integration/installPatchesDeliveryRevalidation.integration.test.ts.
  * Every caller that can carry a job-backed install runs in one of those two
- * contexts. A context with neither (a future caller) would read partner-wide
- * policies and approvals as absent and cancel a valid install, so it is held
- * instead.
+ * contexts. Any other (no partner axis, or another partner's) would read the
+ * device partner's policies, rings and approvals as absent and could cancel a
+ * valid install or deliver a blocked one, so it is held instead.
+ *
+ * COST. The re-check runs before the maintenance-window hold (a terminal
+ * verdict must not be deferrable), so a listed install held by a window pays
+ * one `patch_jobs` read plus the resolver's reads on each heartbeat until it
+ * is delivered or cancelled. Unlisted installs pay the one `patch_jobs` read.
  */
 import { eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { getCurrentDbAccessContext } from '../db';
-import { patchJobs } from '../db/schema';
+import { organizations, patchJobs } from '../db/schema';
 import { requestedPatchIdsSchema } from './patchJobRequestedPatchIds';
 import {
   registerCommandRevalidation,
@@ -63,15 +70,24 @@ import {
 
 export const REQUESTED_PATCHES_NO_LONGER_ELIGIBLE = 'requested_patches_no_longer_eligible' satisfies ClaimCancelReason;
 
+/** Why a delivered id was refused, when the eligibility resolver did not say. */
+const NOT_REQUESTED_BY_JOB = 'not_requested_by_job';
+const INVALID_JOB_PATCH_LIST = 'invalid_job_patch_list';
+
+/** The cancel detail lands on an operator-visible row: bounded, ids and reason codes only. */
+const MAX_DETAIL_IDS = 100;
+const GUID = z.string().guid();
+
 /** Only the fields this check reads; the rest of the payload is the agent's. */
-function payloadRecord(payload: unknown): Record<string, unknown> {
-  return payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
+function payloadRecord(payload: unknown): Record<string, unknown> | null {
+  return payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
 }
 
 /**
  * Every patch id the agent would act on. The agent installs from
  * `patchIds` and `patches[].id`; both are judged, so neither can carry a
- * patch past the check.
+ * patch past the check. A non-string id is kept (stringified) so it fails the
+ * named-id check below instead of being dropped.
  */
 function deliveredPatchIds(payload: Record<string, unknown>): string[] {
   const ids = new Set<string>();
@@ -87,22 +103,42 @@ function deliveredPatchIds(payload: Record<string, unknown>): string[] {
   return [...ids].sort();
 }
 
-function cancel(ineligiblePatchIds: string[]): CommandRevalidationResult {
+/**
+ * Cancel the whole command. `reasons` maps each refused id to a reason code
+ * (the resolver's `PatchIneligibleReason`, or one of the two above). Only
+ * uuid-shaped ids are written, capped, so a malformed payload cannot put
+ * arbitrary text on the row.
+ */
+function cancel(reasons: ReadonlyMap<string, string>): CommandRevalidationResult {
+  const entries = [...reasons].filter(([id]) => GUID.safeParse(id).success).sort(([a], [b]) => a.localeCompare(b));
+  const kept = entries.slice(0, MAX_DETAIL_IDS);
   return {
     cancel: REQUESTED_PATCHES_NO_LONGER_ELIGIBLE,
-    detail: { ineligiblePatchIds: [...new Set(ineligiblePatchIds)].sort() },
+    recordReasonOnOwner: true,
+    detail: {
+      ineligiblePatchIds: kept.map(([id]) => id),
+      reasons: Object.fromEntries(kept),
+      ...(entries.length > kept.length || reasons.size > entries.length ? { truncated: true } : {}),
+    },
   };
+}
+
+function allWith(ids: readonly string[], reason: string): Map<string, string> {
+  return new Map(ids.map((id) => [id, reason]));
 }
 
 export async function revalidateInstallPatchesForDelivery(
   reader: CommandRevalidationReader,
   row: CommandRevalidationRow,
 ): Promise<CommandRevalidationResult> {
-  const payload = payloadRecord(row.payload);
-  const patchJobId = typeof payload.patchJobId === 'string' && payload.patchJobId.trim().length > 0
-    ? payload.patchJobId
-    : null;
-  if (!patchJobId) return null;
+  const payload = payloadRecord(row.payload) ?? {};
+  if (payload.patchJobId === undefined || payload.patchJobId === null) return null;
+  // The executor writes the job's uuid. Anything else is not a row it wrote;
+  // held rather than looked up (a cast error would hold it anyway, louder).
+  const patchJobId = GUID.safeParse(payload.patchJobId);
+  if (!patchJobId.success) {
+    throw new Error(`install_patches ${row.id}: payload.patchJobId is not a uuid`);
+  }
 
   // DYNAMIC on purpose, like commandCancelPropagation's patch branch: this
   // module is loaded by commandDispatch (both claim legs), and patchEligibility
@@ -115,35 +151,51 @@ export async function revalidateInstallPatchesForDelivery(
   const [job] = await reader
     .select({ orgId: patchJobs.orgId, patches: patchJobs.patches })
     .from(patchJobs)
-    .where(eq(patchJobs.id, patchJobId))
+    .where(eq(patchJobs.id, patchJobId.data))
     .limit(1);
   if (!job) {
     // Held through the caller's savepoint catch; see the module comment.
-    throw new Error(`install_patches ${row.id}: patch job ${patchJobId} is not readable on the claim connection`);
+    throw new Error(`install_patches ${row.id}: patch job ${patchJobId.data} is not readable on the claim connection`);
   }
 
-  const requestedRaw = (payloadRecord(job.patches)).patchIds;
+  const jobPatches = payloadRecord(job.patches);
+  if (!jobPatches) {
+    // Not "no list": an unreadable snapshot could be a listed job's.
+    throw new Error(`install_patches ${row.id}: patch job ${patchJobId.data} has a malformed patches snapshot`);
+  }
   // No list: a scheduled, ring-driven or config-policy job. Unchanged.
-  if (requestedRaw === undefined) return null;
+  if (jobPatches.patchIds === undefined) return null;
 
   const delivered = deliveredPatchIds(payload);
-  const requested = requestedPatchIdsSchema.safeParse(requestedRaw);
+  const requested = requestedPatchIdsSchema.safeParse(jobPatches.patchIds);
   // The executor never dispatches a job with a malformed list (it skips the
   // device with `invalid_patch_ids`), and never an empty payload. Either one
   // here is a row that is not what was approved: refuse it whole.
-  if (!requested.success || delivered.length === 0) return cancel(delivered);
+  if (!requested.success || delivered.length === 0) return cancel(allWith(delivered, INVALID_JOB_PATCH_LIST));
 
   // Belt and braces over the executor's own narrowing: a delivered id the job
   // did not name was never approved.
   const named = new Set(requested.data);
   const unnamed = delivered.filter((id) => !named.has(id));
-  if (unnamed.length > 0) return cancel(unnamed);
+  if (unnamed.length > 0) return cancel(allWith(unnamed, NOT_REQUESTED_BY_JOB));
 
   // Partner-axis visibility is what makes the verdict trustworthy (module
-  // comment): without it, held rather than judged on rows it cannot see.
+  // comment). Outside system scope the context's partner must be the job
+  // org's partner: any other context reads that partner's policies, rings and
+  // approvals as absent, and would judge on rows it cannot see. Held instead.
   const ctx = getCurrentDbAccessContext();
-  if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) {
-    throw new Error(`install_patches ${row.id}: claim context cannot read partner-wide patch policy; not judging eligibility`);
+  if (!ctx) {
+    throw new Error(`install_patches ${row.id}: no DB context on the claim; not judging eligibility`);
+  }
+  if (ctx.scope !== 'system') {
+    const [org] = await reader
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, job.orgId))
+      .limit(1);
+    if (!org?.partnerId || !ctx.currentPartnerId || ctx.currentPartnerId !== org.partnerId) {
+      throw new Error(`install_patches ${row.id}: claim context cannot read the device partner's patch policy; not judging eligibility`);
+    }
   }
 
   // Every id here is a named uuid (checked above). The resolver reads through
@@ -151,8 +203,12 @@ export async function revalidateInstallPatchesForDelivery(
   // connection, so it runs inside the caller's savepoint like `reader` does.
   const verdict = await resolvePatchInstallEligibility({ deviceId: row.deviceId, orgId: job.orgId, patchIds: delivered });
   const eligible = new Set(verdict.eligible.map((e) => e.patchId));
-  const dropped = delivered.filter((id) => !eligible.has(id));
-  return dropped.length > 0 ? cancel(dropped) : null;
+  const why = new Map(verdict.ineligible.map((e) => [e.patchId, e.reason as string]));
+  const dropped = new Map<string, string>();
+  for (const id of delivered) {
+    if (!eligible.has(id)) dropped.set(id, why.get(id) ?? 'not_outstanding');
+  }
+  return dropped.size > 0 ? cancel(dropped) : null;
 }
 
 registerCommandRevalidation('install_patches', revalidateInstallPatchesForDelivery);

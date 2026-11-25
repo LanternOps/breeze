@@ -526,6 +526,7 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     registerCommandRevalidation('install_patches', async () => ({
       cancel: 'requested_patches_no_longer_eligible',
       detail: { ineligiblePatchIds: ['p1'] },
+      recordReasonOnOwner: true,
     }));
     try {
       const payload = { patchJobId: 'job-1', patchIds: ['p1', 'p2'] };
@@ -534,7 +535,7 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
         row({ id: 'moved', submittedOrgId: OTHER_ORG }),
       ]);
       expect(r.cancelled).toEqual([
-        { id: 'inst', reason: 'requested_patches_no_longer_eligible', detail: { ineligiblePatchIds: ['p1'] } },
+        { id: 'inst', reason: 'requested_patches_no_longer_eligible', detail: { ineligiblePatchIds: ['p1'] }, recordReasonOnOwner: true },
         { id: 'moved', reason: 'device_moved_org' },
       ]);
       expect(r.claimable).toEqual([]);
@@ -571,6 +572,23 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
       expect(on.held).toEqual([]);
     } finally {
       delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
+    }
+  });
+
+  it('#12493: an object-form cancel without recordReasonOnOwner keeps the generic owner reason', async () => {
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('install_patches', async () => ({
+      cancel: 'scope_changed',
+      detail: { note: 'x' },
+    }));
+    try {
+      const payload = { patchJobId: 'job-1' };
+      const r = await partitionClaimable(tx(), device, [row({ id: 'inst', type: 'install_patches', payload })]);
+      expect(r.cancelled).toEqual([{ id: 'inst', reason: 'scope_changed', detail: { note: 'x' } }]);
+      const [subjects] = propagateMock.mock.calls[0] as [Array<Record<string, unknown>>];
+      expect(subjects).toEqual([{ id: 'inst', type: 'install_patches', payload }]);
+    } finally {
+      __resetCommandRevalidationsForTests();
     }
   });
 
