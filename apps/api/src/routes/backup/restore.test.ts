@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -530,6 +532,37 @@ describe('restore routes', () => {
         expect.objectContaining({ targetPath: 'C:\\', allowOverwriteOriginals: true }),
         { userId: 'user-1' }
       );
+    });
+
+    // #12671: the cases shared with the backup helper's tests. Every target
+    // any kind of device would need confirmation for is refused without the
+    // flag; every ordinary folder still goes through without it.
+    const restoreTargetVectors: Array<{ target: string; expect: Record<string, string> }> = JSON.parse(
+      readFileSync(join(__dirname, '../../../../../packages/shared/src/fixtures/restore-target-root-vectors.json'), 'utf8'),
+    ).cases;
+    const needsFlag = restoreTargetVectors.filter((v) => Object.values(v.expect).some((c) => c !== 'not-root')).map((v) => v.target);
+    const folders = restoreTargetVectors
+      .filter((v) => v.target.trim() !== '' && Object.values(v.expect).every((c) => c === 'not-root'))
+      .map((v) => v.target);
+
+    it('reads the shared restore-target cases', () => {
+      expect(needsFlag.length).toBeGreaterThan(50);
+      expect(folders.length).toBeGreaterThan(20);
+    });
+
+    it.each(needsFlag)('refuses shared case %j without the flag', async (targetPath) => {
+      const res = await post({ targetPath });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('restore_would_overwrite_originals');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it.each(folders)('accepts shared folder case %j without the flag', async (targetPath) => {
+      primeRestore(targetPath);
+      const res = await post({ targetPath });
+      expect(res.status).toBe(201);
+      const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('allowOverwriteOriginals');
     });
 
     it('leaves a folder target unchanged: no flag needed, none sent', async () => {

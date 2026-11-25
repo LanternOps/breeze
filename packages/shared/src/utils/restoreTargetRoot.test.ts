@@ -1,5 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isVolumeRootRestoreTarget } from './restoreTargetRoot';
+import {
+  classifyRestoreTarget,
+  isVolumeRootRestoreTarget,
+  type RestoreTargetClass,
+  type RestoreTargetHost,
+} from './restoreTargetRoot';
 
 describe('isVolumeRootRestoreTarget (#12638)', () => {
   it.each([
@@ -18,6 +25,8 @@ describe('isVolumeRootRestoreTarget (#12638)', () => {
     // The whole target is trimmed first: conservative for the forms (\\?\,
     // \??\) where a trailing space could name a real folder.
     '\\\\?\\C:\\ ',
+    // A server with no share.
+    '//server',
   ])('%j is a volume root', (target) => {
     expect(isVolumeRootRestoreTarget(target)).toBe(true);
   });
@@ -28,7 +37,7 @@ describe('isVolumeRootRestoreTarget (#12638)', () => {
     '\\\\?\\Volume{0b6f8f8e-1111-2222-3333-444455556666}\\restore',
     '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\restore',
     '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy2\\restore',
-    'restore', 'C:restore', '//server',
+    'restore', 'C:restore',
   ])('%j is not a volume root', (target) => {
     expect(isVolumeRootRestoreTarget(target)).toBe(false);
   });
@@ -47,6 +56,16 @@ describe('isVolumeRootRestoreTarget cost (#12654)', () => {
     ['dots then a letter', (n) => `C:\\${'.'.repeat(n)}x`],
     ['mixed dots and spaces', (n) => `C:\\${'. '.repeat(n / 2)}x`],
     ['device-path win32 form', (n) => `\\\\.\\C:\\${' '.repeat(n)}x`],
+    // #12671: the separator-insensitive device prefix, the POSIX reading
+    // (split on / only), share and device-volume forms and the macOS rule.
+    ['NT prefix with forward slashes', (n) => `/??/C:/${'a/'.repeat(n / 2)}x`],
+    ['long run of separators', (n) => `/${'/'.repeat(n)}x`],
+    ['long chain of parents', (n) => `/x${'/..'.repeat(n / 3)}/y`],
+    ['backslashes in a POSIX name', (n) => `/x${'\\'.repeat(n)}/..`],
+    ['device prefix then a long tail', (n) => `//./${'.\\'.repeat(n / 2)}x`],
+    ['share then a long tail', (n) => `\\\\srv\\share${'\\. '.repeat(n / 3)}x`],
+    ['GLOBALROOT then parents', (n) => `\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3${'\\x\\..'.repeat(n / 5)}`],
+    ['data volume prefix then a long tail', (n) => `/System/Volumes/Data/${'a/'.repeat(n / 2)}x`],
   ];
 
   it.each(cases)('%s scales linearly', (_name, build) => {
@@ -65,3 +84,44 @@ describe('isVolumeRootRestoreTarget cost (#12654)', () => {
   });
 });
 
+
+type VectorCase = {
+  target: string;
+  expect: Record<RestoreTargetHost, RestoreTargetClass>;
+  note: string;
+};
+
+// #12671: the cases the backup helper's guard is tested against too
+// (agent/internal/backup/restore_target_vectors_test.go).
+const vectors: VectorCase[] = JSON.parse(
+  readFileSync(join(__dirname, '../fixtures/restore-target-root-vectors.json'), 'utf8'),
+).cases;
+const RANK: Record<RestoreTargetClass, number> = { 'not-root': 0, 'needs-confirmation': 1, root: 2 };
+const HOSTS: RestoreTargetHost[] = ['windows', 'posix', 'darwin'];
+
+describe('classifyRestoreTarget shared vectors (#12671)', () => {
+  it('has the shared cases', () => {
+    expect(vectors.length).toBeGreaterThan(100);
+    for (const host of HOSTS) {
+      for (const cls of ['root', 'not-root'] as const) {
+        expect(vectors.some((v) => v.expect[host] === cls)).toBe(true);
+      }
+    }
+  });
+
+  it.each(vectors.map((v) => [v.target, v] as const))('%j', (_target, v) => {
+    for (const host of HOSTS) {
+      expect({ host, cls: classifyRestoreTarget(v.target, host) }).toEqual({ host, cls: v.expect[host] });
+    }
+    // With the device unknown (every caller today), the strictest reading.
+    const strictest = HOSTS.map((h) => v.expect[h]).reduce((a, b) => (RANK[a] >= RANK[b] ? a : b));
+    expect(classifyRestoreTarget(v.target)).toBe(strictest);
+    expect(isVolumeRootRestoreTarget(v.target)).toBe(strictest !== 'not-root');
+  });
+
+  it('accepts every ordinary folder in the cases without confirmation', () => {
+    const folders = vectors.filter((v) => HOSTS.every((h) => v.expect[h] === 'not-root'));
+    expect(folders.length).toBeGreaterThan(20);
+    for (const v of folders) expect(isVolumeRootRestoreTarget(v.target)).toBe(false);
+  });
+});
