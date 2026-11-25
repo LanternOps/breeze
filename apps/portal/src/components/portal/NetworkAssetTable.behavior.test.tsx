@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { NetworkAssetRowDto, NetworkAssetsDto } from '@breeze/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NetworkAssetTable } from './NetworkAssetTable';
@@ -192,5 +192,103 @@ describe('NetworkAssetTable behavior (#6641)', () => {
   it('hides the site filter when the org has fewer than two sites (#7025)', () => {
     render(<NetworkAssetTable initial={ok(['a'], 1)} sites={[SITES[0]]} timezone="UTC" />);
     expect(screen.queryByTestId('portal-network-filter-site')).toBeNull();
+  });
+
+  describe('hashchange after mount (CPEV-W2 site summary links)', () => {
+    // jsdom fires `hashchange` asynchronously after a hash assignment, like a browser.
+    const navigate = (hash: string) => act(() => { window.location.hash = hash; });
+
+    it('a #site=<id> link filters by that site, reflects it in the select and resets the page', async () => {
+      render(<NetworkAssetTable initial={ok(['a'], 120)} sites={SITES} timezone="UTC" />);
+
+      listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['w'], 3) });
+      navigate('#site=s2');
+      await waitFor(() =>
+        expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, assetType: undefined, status: undefined, siteId: 's2' }),
+      );
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-w')).toBeTruthy());
+      expect((screen.getByTestId('portal-network-filter-site') as HTMLSelectElement).value).toBe('s2');
+      expect(screen.getByTestId('portal-network-filter-clear')).toBeTruthy();
+      expect(window.location.hash).toContain('site=s2');
+      expect(listMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a #site= id that is not one of the org sites', async () => {
+      render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+
+      navigate('#site=bogus');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(listMock).not.toHaveBeenCalled();
+      expect((screen.getByTestId('portal-network-filter-site') as HTMLSelectElement).value).toBe('');
+    });
+
+    it('does not refetch when the hash already matches the applied filters (our own replaceState never loops)', async () => {
+      render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+      listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['w'], 3) });
+      fireEvent.change(screen.getByTestId('portal-network-filter-site'), { target: { value: 's2' } });
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-w')).toBeTruthy());
+      expect(listMock).toHaveBeenCalledTimes(1);
+
+      act(() => { window.dispatchEvent(new HashChangeEvent('hashchange')); });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(listMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('going back to an empty hash clears the site filter', async () => {
+      render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+      listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['w'], 3) });
+      navigate('#site=s2');
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-w')).toBeTruthy());
+
+      listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['a'], 5) });
+      navigate('');
+      await waitFor(() => expect(listMock).toHaveBeenLastCalledWith({ page: 1, limit: 50, ...noFilters }));
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-a')).toBeTruthy());
+      expect((screen.getByTestId('portal-network-filter-site') as HTMLSelectElement).value).toBe('');
+    });
+
+    it('a newer hashchange supersedes a slower earlier one', async () => {
+      let resolveSlow!: (v: unknown) => void;
+      render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+      listMock.mockImplementationOnce(() => new Promise((r) => { resolveSlow = r; }));
+      listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['fresh'], 1) });
+
+      navigate('#site=s1');
+      await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+      navigate('#site=s2');
+      await waitFor(() => expect(screen.getByTestId('portal-network-asset-fresh')).toBeTruthy());
+
+      resolveSlow({ statusCode: 200, data: ok(['stale'], 1) });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(screen.queryByTestId('portal-network-asset-stale')).toBeNull();
+      expect((screen.getByTestId('portal-network-filter-site') as HTMLSelectElement).value).toBe('s2');
+    });
+
+    it('scrolls the register heading into view when it applies a hash filter', async () => {
+      const scrollIntoView = vi.fn();
+      Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scrollIntoView, configurable: true });
+      try {
+        render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+        listMock.mockResolvedValueOnce({ statusCode: 200, data: ok(['w'], 3) });
+        navigate('#site=s2');
+        await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+        expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByRole('heading', { name: 'Network assets' }));
+      } finally {
+        delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      }
+    });
+
+    it('removes its listener on unmount', async () => {
+      const removeSpy = vi.spyOn(window, 'removeEventListener');
+      const { unmount } = render(<NetworkAssetTable initial={ok(['a'], 5)} sites={SITES} timezone="UTC" />);
+      unmount();
+      expect(removeSpy.mock.calls.some(([type]) => type === 'hashchange')).toBe(true);
+      removeSpy.mockRestore();
+
+      navigate('#site=s2');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(listMock).not.toHaveBeenCalled();
+    });
   });
 });

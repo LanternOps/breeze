@@ -1,6 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { NetworkOverview } from '../../components/portal/NetworkOverview';
+import { NetworkSiteHealth } from '../../components/portal/NetworkSiteHealth';
 import { NetworkAssetTable } from '../../components/portal/NetworkAssetTable';
 import { ErrorNotice } from '../../components/portal/ui';
 import { portalApi } from '../../lib/api';
@@ -11,12 +12,14 @@ import { redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 const config = buildServerApiConfig(Astro.request);
 // The dashboard rides along only for `timezone` (the network DTOs carry no
 // zone, same as the backups page); its failure is not the page's failure.
-const [response, assets, dashboard, siteList] = await Promise.all([
+const [response, assets, dashboard, siteList, siteHealth] = await Promise.all([
   portalApi.getNetworkOverview(config),
   portalApi.getNetworkAssets({ page: 1, limit: 50 }, config),
   portalApi.getDashboard(config),
   // Site filter options; failure just hides the filter.
   portalApi.getNetworkSites(config),
+  // Per-site health summary (CPEV-W2); failure just hides the section.
+  portalApi.getNetworkSiteHealth(config),
 ]);
 const timezone = dashboard.data?.timezone ?? 'UTC';
 
@@ -45,6 +48,7 @@ if (response.data?.dataStatus === 'not_enabled' || assets.data?.dataStatus === '
       </div>
     )
   }
+  {siteHealth.data && <NetworkSiteHealth health={siteHealth.data} />}
   {/* Overview says "not_enabled" -> already bounced above. client:load so the
       hash-driven filters and paging run. */}
   <NetworkAssetTable
