@@ -9,6 +9,7 @@ import {
 } from './softwareInstallMethods';
 import { db } from '../db';
 import { writeRouteAudit } from '../services/auditEvents';
+import { authMiddleware } from '../middleware/auth';
 
 // Chain-friendly mock builder for Drizzle query builder patterns (mirrors the
 // `selectResult` helper in software.test.ts). A single self-referential proxy
@@ -484,6 +485,143 @@ describe('softwareInstallMethodRoutes', () => {
         expect.anything(),
         expect.objectContaining({ action: 'software.catalog.import', resourceId: CATALOG_ID }),
       );
+    });
+
+    describe('ownership axis (#12675)', () => {
+      const PARTNER_ID = '33333333-3333-4333-8333-333333333333';
+      const ORG_A = '44444444-4444-4444-8444-444444444444';
+      const ORG_B = '55555555-5555-4555-8555-555555555555';
+
+      const setAuth = (auth: Record<string, unknown>) => {
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            userId: 'user-123',
+            ...auth,
+          });
+          return next();
+        });
+      };
+      const setPartnerAuth = (partnerOrgAccess: 'all' | 'selected' | 'none') =>
+        setAuth({
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          partnerOrgAccess,
+          accessibleOrgIds: [ORG_A, ORG_B],
+        });
+
+      /** Records what each insert of the import transaction was asked to write. */
+      const captureInserts = () => {
+        const written: unknown[] = [];
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) =>
+          fn({
+            insert: () => ({
+              values: (v: any) => {
+                written.push(v);
+                return {
+                  returning: async () =>
+                    Array.isArray(v) ? v.map((m, i) => ({ id: `m-${i}`, ...m })) : [{ id: CATALOG_ID, ...v }],
+                };
+              },
+            }),
+          }),
+        );
+        return written;
+      };
+
+      const importPackage = (body: Record<string, unknown>, query = '') =>
+        app.request(`/software/catalog/import-package${query}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'New App', methods: validMethodsPayload, ...body }),
+        });
+
+      it('writes a partner-owned row for a full-partner caller with no organization selected', async () => {
+        setPartnerAuth('all');
+        const written = captureInserts();
+
+        const res = await importPackage({ ownerScope: 'partner' });
+
+        expect(res.status).toBe(201);
+        expect(written[0]).toMatchObject({ orgId: null, partnerId: PARTNER_ID });
+        expect(written[1]).toHaveLength(2);
+        expect(writeRouteAudit).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ action: 'software.catalog.import', orgId: null, resourceId: CATALOG_ID }),
+        );
+      });
+
+      it('ownerScope partner wins over an organization selected in the header and one in the body', async () => {
+        setPartnerAuth('all');
+        const written = captureInserts();
+
+        const res = await importPackage({ ownerScope: 'partner', orgId: ORG_A }, `?orgId=${ORG_A}`);
+
+        expect(res.status).toBe(201);
+        expect(written[0]).toMatchObject({ orgId: null, partnerId: PARTNER_ID });
+      });
+
+      it.each(['selected', 'none'] as const)(
+        'refuses a partner-wide import for a partner caller with orgAccess %s',
+        async (access) => {
+          setPartnerAuth(access);
+
+          const res = await importPackage({ ownerScope: 'partner' });
+
+          expect(res.status).toBe(403);
+          expect((await res.json()).error).toMatch(/full partner org access/);
+          expect(db.transaction).not.toHaveBeenCalled();
+        },
+      );
+
+      it('refuses a partner-wide import for an org-scoped token that carries a partnerId', async () => {
+        setAuth({ scope: 'organization', orgId: ORG_A, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_A] });
+
+        const res = await importPackage({ ownerScope: 'partner' });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toMatch(/full partner org access/);
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+      it('refuses a partner-wide import for system scope, which has no partner of its own', async () => {
+        setAuth({ scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null });
+
+        const res = await importPackage({ ownerScope: 'partner' });
+
+        expect(res.status).toBe(403);
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+      it('writes an org-owned row when ownerScope is organization', async () => {
+        setPartnerAuth('all');
+        const written = captureInserts();
+
+        const res = await importPackage({ ownerScope: 'organization' }, `?orgId=${ORG_B}`);
+
+        expect(res.status).toBe(201);
+        expect(written[0]).toMatchObject({ orgId: ORG_B, partnerId: null });
+      });
+
+      it('still requires an organization when ownerScope is omitted in the All-organizations view', async () => {
+        setPartnerAuth('all');
+
+        const res = await importPackage({});
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('orgId is required for this scope');
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+      it('rejects an unknown ownerScope', async () => {
+        setPartnerAuth('all');
+
+        const res = await importPackage({ ownerScope: 'site' });
+
+        expect(res.status).toBe(400);
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
     });
 
     it('rejects duplicate platform+kind pairs in the body', async () => {

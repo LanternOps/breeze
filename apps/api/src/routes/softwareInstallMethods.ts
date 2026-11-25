@@ -17,7 +17,8 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveScopedOrgId, type AuthScopeContext } from '../services/softwareVersionShared';
 import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
-import { importCatalogPackage } from '../services/softwareCatalogOps';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { importCatalogPackage, type CatalogPackageOwner } from '../services/softwareCatalogOps';
 import {
   importPackageSchema,
   installMethodBodySchema,
@@ -173,20 +174,40 @@ softwareInstallMethodRoutes.post(
   requireMfa(),
   zValidator('json', importPackageSchema),
   async (c) => {
-    const auth = c.get('auth') as AuthScopeContext;
+    const auth = c.get('auth');
     const payload = c.req.valid('json');
-    // payload.orgId (if present) is the intended owner; otherwise fall back to
-    // the ?orgId= query param / auth default, same resolution Task 2 uses.
-    // Either way it's passed through resolveScopedOrgId so a caller can't
-    // smuggle in an org they don't have access to via the body.
-    const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const orgId = orgResult.orgId;
 
-    const { catalogItem, methods } = await importCatalogPackage({ orgId, payload });
+    // Ownership axis (#2135, #12675): the same gate as POST /catalog. The
+    // partner is ALWAYS the caller's own, and an explicit 'partner' wins over
+    // the ?orgId= the web client adds for the organization selected in the
+    // header.
+    let owner: CatalogPackageOwner;
+    if (payload.ownerScope === 'partner') {
+      if (auth.scope !== 'system' && !auth.partnerId) {
+        return c.json({ error: 'Partner-wide packages require partner scope' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: 'Partner-wide packages require full partner org access (orgAccess must be "all")' }, 403);
+      }
+      if (!auth.partnerId) {
+        // System scope has no partner of its own to stamp.
+        return c.json({ error: 'Partner-wide packages require partner scope' }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      // payload.orgId (if present) is the intended owner; otherwise fall back to
+      // the ?orgId= query param / auth default, same resolution Task 2 uses.
+      // Either way it's passed through resolveScopedOrgId so a caller can't
+      // smuggle in an org they don't have access to via the body.
+      const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      owner = { orgId: orgResult.orgId, partnerId: null };
+    }
+
+    const { catalogItem, methods } = await importCatalogPackage({ owner, payload });
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId,
       action: 'software.catalog.import',
       resourceType: 'software_catalog',
       resourceId: catalogItem.id,

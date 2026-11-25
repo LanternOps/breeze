@@ -436,6 +436,9 @@ export default function AddPackageModal({
               category: form.category,
               description: form.description.trim() || undefined,
               homepageUrl: form.managerMethods[0]?.homepageUrl || undefined,
+              // Same rule as the URL/file path below: only partner-scope users
+              // see the selector (#12675).
+              ownerScope: isPartnerScope ? ownerScope : undefined,
               methods: form.managerMethods.map(
                 ({ platform, kind, packageId }) => ({
                   platform,

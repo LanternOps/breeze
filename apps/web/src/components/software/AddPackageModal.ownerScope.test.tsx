@@ -15,10 +15,11 @@ vi.mock('./DetectionRulesEditor', () => ({ default: () => null }));
 
 // Partner-scope All-orgs context (#2135): the selector shows and defaults to
 // partner-wide. The hook itself is covered by useDefaultOwnerScope's contract.
+const scopeMock = vi.hoisted(() => ({ isPartnerScope: true }));
 vi.mock('../../hooks/useDefaultOwnerScope', () => ({
   useDefaultOwnerScope: () => ({
-    isPartnerScope: true,
-    defaultOwnerScope: 'partner' as const,
+    isPartnerScope: scopeMock.isPartnerScope,
+    defaultOwnerScope: scopeMock.isPartnerScope ? ('partner' as const) : ('organization' as const),
   }),
 }));
 
@@ -87,5 +88,72 @@ describe('AddPackageModal owner scope (#2135)', () => {
     expect(screen.queryByTestId('pkg-file-dropped-notice')).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /upload file/i })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('bigapp.msi')).toBeInTheDocument();
+  });
+
+  describe('package-manager source (#12675)', () => {
+    const importBody = async () => {
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(([url]) => url === '/software/catalog/import-package'),
+        ).toBe(true),
+      );
+      const call = fetchMock.mock.calls.find(([url]) => url === '/software/catalog/import-package');
+      return JSON.parse(String(call![1]!.body)) as { ownerScope?: string };
+    };
+
+    const pickPackage = async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /package manager/i }));
+      fireEvent.change(screen.getByLabelText('Search packages'), { target: { value: 'chrome' } });
+      fireEvent.click(await screen.findByRole('button', { name: /Google Chrome/ }));
+    };
+
+    beforeEach(() => {
+      scopeMock.isPartnerScope = true;
+      fetchMock.mockImplementation((url: string) =>
+        Promise.resolve(
+          url.startsWith('/software/package-search')
+            ? jsonResponse({
+                results: [
+                  {
+                    platform: 'windows',
+                    kind: 'winget',
+                    packageId: 'Google.Chrome',
+                    name: 'Google Chrome',
+                    vendor: 'Google',
+                  },
+                ],
+              })
+            : url === '/software/catalog/import-package'
+              ? jsonResponse({ data: { catalogItem: { id: 'cat-9' }, methods: [] } })
+              : jsonResponse({ data: [] }),
+        ),
+      );
+    });
+
+    it('imports with the All organizations scope the dialog shows', async () => {
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      await pickPackage();
+      fireEvent.click(screen.getByRole('button', { name: 'Create package' }));
+
+      expect((await importBody()).ownerScope).toBe('partner');
+    });
+
+    it('imports with the organization scope after the user switches to it', async () => {
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      await pickPackage();
+      fireEvent.click(screen.getByTestId('software-package-owner-org'));
+      fireEvent.click(screen.getByRole('button', { name: 'Create package' }));
+
+      expect((await importBody()).ownerScope).toBe('organization');
+    });
+
+    it('omits ownerScope for a caller who never sees the selector', async () => {
+      scopeMock.isPartnerScope = false;
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      await pickPackage();
+      fireEvent.click(screen.getByRole('button', { name: 'Create package' }));
+
+      expect(await importBody()).not.toHaveProperty('ownerScope');
+    });
   });
 });
