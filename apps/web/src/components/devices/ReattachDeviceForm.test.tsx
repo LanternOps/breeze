@@ -410,6 +410,39 @@ describe('ReattachDeviceForm', () => {
     expect(screen.getByTestId('reattach-confirm-name')).toBeTruthy();
   });
 
+  it('a candidate read from the TPM key that the server still rates hint keeps the name gate (#12641 review)', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValueOnce(json(202, { intent: requestedIntent }));
+    renderForm({ candidate: reattachCandidate({ evidence: 'tpm_ek', evidenceLevel: 'hint', evidenceGap: 'key_shared' }) });
+    await user.click(screen.getByTestId('reattach-possession'));
+    expect(submitButton().disabled).toBe(true);
+    await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
+    expect(submitButton().disabled).toBe(false);
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-pending')).toBeTruthy());
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({
+      confirmTargetName: 'LAPTOP-OLD',
+      expectedEvidenceLevel: 'hint',
+    });
+  });
+
+  it('an evidence level it does not know falls back to hint: the name is asked for and hint is sent (#12641 review)', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValueOnce(json(202, { intent: requestedIntent }));
+    renderForm({
+      candidate: reattachCandidate({
+        evidence: 'tpm_ek',
+        evidenceLevel: 'hardware_attested' as unknown as ReattachCandidate['evidenceLevel'],
+      }),
+    });
+    await user.click(screen.getByTestId('reattach-possession'));
+    expect(submitButton().disabled).toBe(true);
+    await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-pending')).toBeTruthy());
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({ expectedEvidenceLevel: 'hint' });
+  });
+
   it('no gap line when a device simply has no TPM key', () => {
     renderForm({ candidate: reattachCandidate({ evidenceLevel: 'hint', evidenceGap: 'target_no_key' }) });
     expect(screen.queryByTestId('reattach-evidence-gap')).toBeNull();

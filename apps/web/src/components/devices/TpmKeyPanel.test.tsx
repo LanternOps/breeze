@@ -1,6 +1,6 @@
 import '@/lib/i18n';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { fetchMock, mintMock, toastMock, tierMock, capability } = vi.hoisted(() => ({
@@ -221,6 +221,48 @@ describe('TpmKeyPanel (#8318 wave T2)', () => {
     await waitFor(() => expect(screen.queryByTestId('tpm-key-mismatch')).toBeNull());
     expect(mintMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(posts().at(-1)![1]!.body))).toEqual({ action: 'accept', version: VERSION, stepUpGrant: GRANT });
+  });
+
+  describe('a held grant that lapses (#12641 review)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function holdUnspentGrant(user: ReturnType<typeof userEvent.setup>) {
+      fetchMock
+        .mockResolvedValueOnce(json(200, held))
+        .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+        .mockResolvedValueOnce(json(409, { error: 'in progress', code: 'reattach_in_progress' }));
+      await openStepUp(user);
+      await user.type(await screen.findByTestId('tpm-key-stepup-code'), '123456');
+      await user.click(screen.getByTestId('tpm-key-accept'));
+      await waitFor(() => expect(screen.getByTestId('tpm-key-error').textContent).toMatch(/open reattach/));
+      expect(screen.queryByTestId('tpm-key-stepup-code')).toBeNull();
+    }
+
+    it('an idle panel shows the code field again once the grant can no longer be used', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await holdUnspentGrant(user);
+      act(() => {
+        vi.advanceTimersByTime(271_000);
+      });
+      expect(screen.getByTestId('tpm-key-stepup-code')).toBeTruthy();
+      expect((screen.getByTestId('tpm-key-accept') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('a click after the grant lapsed sends nothing and asks for a fresh code, even if the timer ran late', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await holdUnspentGrant(user);
+      const postsBefore = posts().length;
+      // The clock moves on but the expiry timer has not run (a background tab).
+      vi.setSystemTime(Date.now() + 271_000);
+      await user.click(screen.getByTestId('tpm-key-accept'));
+      await screen.findByTestId('tpm-key-stepup-code');
+      expect(posts().length).toBe(postsBefore);
+      expect(mintMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('a failed read says so', async () => {
