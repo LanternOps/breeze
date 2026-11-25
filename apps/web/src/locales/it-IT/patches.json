@@ -491,7 +491,9 @@
       "ring_deleted": "Annullato prima dell’invio: l’anello di aggiornamento è stato eliminato.",
       "ring_disabled": "Annullato prima dell’invio: l’anello di aggiornamento è stato disattivato.",
       "ring_unavailable": "Saltato: l’anello di aggiornamento è stato eliminato o disattivato prima dell’invio a questo dispositivo.",
-      "all_managed_by_vendor_updates": "Saltato: tutti gli aggiornamenti in sospeso su questo dispositivo sono gestiti dagli aggiornamenti del produttore, quindi non serve alcuna approvazione."
+      "all_managed_by_vendor_updates": "Saltato: tutti gli aggiornamenti in sospeso su questo dispositivo sono gestiti dagli aggiornamenti del produttore, quindi non serve alcuna approvazione.",
+      "requested_patches_not_eligible": "Saltato: nessuno degli aggiornamenti selezionati per questo job può essere installato su questo dispositivo con il criterio di aggiornamento attuale.",
+      "invalid_patch_ids": "Saltato: l'elenco degli aggiornamenti selezionati per questo job non era valido, quindi non è stato installato nulla."
     },
     "errors": {
       "load": "Impossibile caricare il job di patch"
@@ -512,6 +514,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Scartare le modifiche non salvate?",
+      "message": "Questo anello ha modifiche non salvate. Chiudendo l’editor verranno scartate.",
+      "confirm": "Scarta"
+    },
     "validation": {
       "selectCategory": "Seleziona una categoria",
       "selectSeverity": "Seleziona almeno una gravità per l'approvazione automatica.",

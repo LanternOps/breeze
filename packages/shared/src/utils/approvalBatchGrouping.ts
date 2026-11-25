@@ -92,3 +92,56 @@ export function approvalBatchGroupParts(
 export function approvalBatchGroupKey(source: ApprovalBatchGroupSource): string {
   return approvalBatchGroupParts(source).join(APPROVAL_BATCH_GROUP_SEPARATOR);
 }
+
+/**
+ * Which homogeneity rule one batch is held to.
+ *
+ *  - `same_org` (the default, and the only scope before this): the full
+ *    `(orgId, actionToolName, action)` key above.
+ *  - `cross_org`: ONE ceremony across several orgs of the caller's own partner,
+ *    for an allowlisted `(actionToolName, action)` pair only. Added because a
+ *    scheduled patch sweep raises one agent run per org, so an MSP approving a
+ *    fleet-wide install paid one passkey ceremony per org (observed on US prod,
+ *    2026-11-19: ~6 ceremonies in 2.5 minutes).
+ *
+ * The server enforces the cross-org rules it alone can check (same partner as
+ * the session, live org access, agent-originated only, never critical) in
+ * `services/approvals/batchDecide.ts`; the scope is folded into the
+ * assertion-challenge key so a signature taken under one scope cannot be
+ * replayed under the other.
+ */
+export type ApprovalBatchScope = 'same_org' | 'cross_org';
+
+/**
+ * `(actionToolName, normalized action)` pairs that may be batched across orgs.
+ * Deliberately an allowlist of BUILT-IN tools: an external tool's name is not a
+ * global identity (two orgs can register different definitions under one
+ * name), and each new pair is a decision that one passkey may cover the same
+ * effect in many customers at once. Extend it deliberately.
+ */
+export const CROSS_ORG_BATCH_ACTIONS: ReadonlyArray<readonly [tool: string, action: string]> =
+  Object.freeze([['manage_patches', 'install'] as const]);
+
+/** Whether this card's `(tool, action)` is on the cross-org allowlist. */
+export function isCrossOrgBatchEligible(
+  source: Pick<ApprovalBatchGroupSource, 'actionToolName' | 'action'>,
+): boolean {
+  const action = normalizeApprovalBatchAction(source.action);
+  if (action === null) return false;
+  return CROSS_ORG_BATCH_ACTIONS.some(
+    ([tool, allowed]) => tool === source.actionToolName && allowed === action,
+  );
+}
+
+/**
+ * `(actionToolName, normalized action)` — the cross-org homogeneity key. Two
+ * parts, so it can never equal a three-part same-org key, even for a null org.
+ * Only meaningful for a card {@link isCrossOrgBatchEligible} accepts.
+ */
+export function approvalCrossOrgBatchKey(
+  source: Pick<ApprovalBatchGroupSource, 'actionToolName' | 'action'>,
+): string {
+  return [source.actionToolName, normalizeApprovalBatchAction(source.action) ?? ''].join(
+    APPROVAL_BATCH_GROUP_SEPARATOR,
+  );
+}

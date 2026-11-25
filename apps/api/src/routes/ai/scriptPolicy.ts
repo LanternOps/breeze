@@ -93,6 +93,7 @@ export function toScriptPolicyDto(row: AiScriptPolicyRow): ScriptPolicyDto {
       deviceTags: row.protectedResources?.deviceTags ?? [],
     },
     unattendedEnabledAt: row.unattendedEnabledAt?.toISOString() ?? null,
+    ...(row.orgId ? {} : { mcpUnattendedProposalMaxRisk: row.mcpUnattendedProposalMaxRisk }),
   };
 }
 

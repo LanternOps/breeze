@@ -87,6 +87,9 @@ export function validateEmailConfig(config: unknown): { valid: boolean; errors: 
         errors.push('Invalid email address');
       }
     } else if (Array.isArray(recipients)) {
+      if (recipients.length === 0) {
+        errors.push('At least one recipient is required');
+      }
       for (const email of recipients) {
         if (!isValidEmail(email as string)) {
           errors.push(`Invalid email address: ${email}`);

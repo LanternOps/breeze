@@ -268,6 +268,14 @@ vi.mock('./helpers', async (importOriginal) => ({
     orgId: null,
     scope: 'partner',
   })),
+  // Refresh re-issues the session's own tenant scope through this resolver
+  // (the real one is exercised by orgSessionPartnerParity.integration.test.ts).
+  resolveSessionTokenContextForRefresh: vi.fn(async () => ({
+    roleId: 'role-1',
+    partnerId: 'partner-1',
+    orgId: null,
+    scope: 'partner',
+  })),
   NoTenantMembershipError: class NoTenantMembershipError extends Error {},
   auditUserLoginFailure: vi.fn(
     async (_c: unknown, opts: { reason: string }) => {
@@ -382,6 +390,8 @@ import { TenantInactiveError } from '../../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import {
   resolveCurrentUserTokenContext,
+  resolveSessionTokenContextForRefresh,
+  SessionTenantAxisError,
   NoTenantMembershipError,
   resolveRefreshToken,
   validateCookieCsrfRequest,
@@ -1731,6 +1741,153 @@ describe('POST /refresh — mfa assurance source is carried forward, never eleva
       expect.objectContaining({ mfa: false, mfaSrc: undefined }),
       expect.anything(),
     );
+  });
+});
+
+describe('POST /refresh — re-issues the session\'s own tenant scope', () => {
+  async function postRefresh(claims: Record<string, unknown>) {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-42',
+      aep: 3,
+      mep: 1,
+      ...claims,
+    } as any);
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breeze-auth-transition': 'v1' },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 3,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 });
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    // A user-wide lookup would answer partner scope (the user also holds a
+    // partner membership). Refresh must not consult it.
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'partner-role',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(resolveSessionTokenContextForRefresh).mockImplementation(async (_userId, minted) => ({
+      roleId: 'org-role',
+      partnerId: 'partner-1',
+      orgId: minted.orgId as string,
+      scope: minted.scope as 'organization',
+    }));
+  });
+
+  it('re-issues an organization session on the same org, resolved from the token\'s own axis', async () => {
+    const res = await postRefresh({ scope: 'organization', orgId: 'org-7', partnerId: 'partner-1', roleId: 'org-role' });
+
+    expect(res.status).toBe(200);
+    expect(resolveSessionTokenContextForRefresh).toHaveBeenCalledWith('user-1', {
+      scope: 'organization',
+      orgId: 'org-7',
+      partnerId: 'partner-1',
+    });
+    expect(resolveCurrentUserTokenContext).not.toHaveBeenCalled();
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'organization', orgId: 'org-7', partnerId: 'partner-1', roleId: 'org-role' }),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    [
+      'the session\'s own membership is gone',
+      () => new SessionTenantAxisError('Organization membership for this session is gone'),
+      { scope: 'organization', orgId: 'org-7', partnerId: 'partner-1' },
+      'Organization membership for this session is gone',
+    ],
+    [
+      'a system session\'s user is no longer a platform admin',
+      () => new NoTenantMembershipError('user-1'),
+      { scope: 'system', orgId: null, partnerId: null },
+      'System session user is no longer a platform admin',
+    ],
+  ])('refuses, revokes the family and audits when %s', async (_label, makeError, claims, reason) => {
+    vi.mocked(resolveSessionTokenContextForRefresh).mockRejectedValueOnce(makeError());
+
+    const res = await postRefresh(claims);
+
+    expect(res.status).toBe(401);
+    expect(revokeFamily).toHaveBeenCalledWith('family-42', 'tenant-axis-lost');
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_tenant_axis_lost');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: 'user-1',
+      action: 'auth.refresh.tenant_axis_lost',
+      resourceType: 'refresh_token_family',
+      resourceId: 'family-42',
+      result: 'denied',
+      details: expect.objectContaining({
+        mintedScope: claims.scope,
+        reason,
+        familyRevocation: { redis: 'confirmed', database: 'confirmed' },
+      }),
+    }));
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+  });
+
+  it('still refuses when the family revocation cannot be confirmed', async () => {
+    vi.mocked(resolveSessionTokenContextForRefresh).mockRejectedValueOnce(new SessionTenantAxisError('gone'));
+    vi.mocked(revokeFamily).mockResolvedValueOnce({ redis: 'failed', database: 'failed' });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await postRefresh({ scope: 'partner', orgId: null, partnerId: 'partner-1' });
+
+    expect(res.status).toBe(401);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('durable family revocation unconfirmed'),
+      expect.objectContaining({ familyId: 'family-42' }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('refuses an inactive tenant without revoking the family', async () => {
+    vi.mocked(resolveSessionTokenContextForRefresh).mockRejectedValueOnce(new TenantInactiveError('Partner is not active'));
+
+    const res = await postRefresh({ scope: 'partner', orgId: null, partnerId: 'partner-1' });
+
+    expect(res.status).toBe(401);
+    expect(revokeFamily).not.toHaveBeenCalled();
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_tenant_inactive');
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('does not turn an unexpected resolver failure into a revocation', async () => {
+    vi.mocked(resolveSessionTokenContextForRefresh).mockRejectedValueOnce(new Error('connection reset'));
+
+    const res = await postRefresh({ scope: 'partner', orgId: null, partnerId: 'partner-1' });
+
+    expect(res.status).toBe(500);
+    expect(revokeFamily).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 });
 

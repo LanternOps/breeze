@@ -166,6 +166,13 @@ describe('buildBreadcrumbs', () => {
     ]);
   });
 
+  it('preserves backslashes inside POSIX folder names', () => {
+    expect(buildBreadcrumbs('/srv/daily\\reports').segments).toEqual([
+      { label: 'srv', path: '/srv' },
+      { label: 'daily\\reports', path: '/srv/daily\\reports' },
+    ]);
+  });
+
   it('handles root-only POSIX path', () => {
     const breadcrumbs = buildBreadcrumbs('/');
 

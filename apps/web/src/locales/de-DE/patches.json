@@ -491,7 +491,9 @@
       "ring_deleted": "Vor der Verteilung abgebrochen: Der Update-Ring wurde gelöscht.",
       "ring_disabled": "Vor der Verteilung abgebrochen: Der Update-Ring wurde deaktiviert.",
       "ring_unavailable": "Übersprungen: Der Update-Ring wurde gelöscht oder deaktiviert, bevor dieses Gerät an der Reihe war.",
-      "all_managed_by_vendor_updates": "Übersprungen: Alle ausstehenden Updates dieses Geräts werden von Hersteller-Updates verwaltet, eine Freigabe ist nicht nötig."
+      "all_managed_by_vendor_updates": "Übersprungen: Alle ausstehenden Updates dieses Geräts werden von Hersteller-Updates verwaltet, eine Freigabe ist nicht nötig.",
+      "requested_patches_not_eligible": "Übersprungen: Keines der für diesen Job ausgewählten Updates kann nach der aktuellen Update-Richtlinie auf diesem Gerät installiert werden.",
+      "invalid_patch_ids": "Übersprungen: Die Liste der für diesen Job ausgewählten Updates war ungültig, daher wurde nichts installiert."
     },
     "errors": {
       "load": "Patch-Job konnte nicht geladen werden"
@@ -512,6 +514,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "Nicht gespeicherte Änderungen verwerfen?",
+      "message": "Dieser Update-Ring hat nicht gespeicherte Änderungen. Beim Schließen des Editors werden sie verworfen.",
+      "confirm": "Verwerfen"
+    },
     "validation": {
       "selectCategory": "Kategorie auswählen",
       "selectSeverity": "Mindestens einen Schweregrad für die automatische Freigabe auswählen.",

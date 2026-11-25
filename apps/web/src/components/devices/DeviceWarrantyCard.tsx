@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { DEVICE_WARRANTY_SECTION_ID } from './revealDeviceTab';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
@@ -18,7 +19,7 @@ type WarrantyEntitlement = {
   endDate: string;
 };
 
-type WarrantyData = {
+export type WarrantyData = {
   id: string;
   deviceId: string;
   manufacturer: string;
@@ -35,7 +36,13 @@ type WarrantyData = {
 
 type DeviceWarrantyCardProps = {
   deviceId: string;
-  compact?: boolean;
+  /** The device's purchase date. A coverage start on the same day is not
+   *  repeated: the purchase date row already says it. */
+  purchaseDate?: string | null;
+  /** The editable purchase-date row, rendered first in the section. */
+  purchase?: ReactNode;
+  /** A lookup or refresh produced a new result (the device header shows warranty too). */
+  onChanged?: () => void;
   /** Override the refresh poll timeout (ms). Test seam only — defaults to
    *  REFRESH_POLL_TIMEOUT_MS in production. */
   pollTimeoutMs?: number;
@@ -134,7 +141,9 @@ function isProviderNotConfigured(err: string | null): boolean {
 
 export default function DeviceWarrantyCard({
   deviceId,
-  compact = false,
+  purchaseDate = null,
+  purchase,
+  onChanged,
   pollTimeoutMs = REFRESH_POLL_TIMEOUT_MS,
 }: DeviceWarrantyCardProps) {
   const { t } = useTranslation('devices');
@@ -223,6 +232,7 @@ export default function DeviceWarrantyCard({
       const next = await fetchWarranty();
       const advanced = !!next?.lastSyncAt && next.lastSyncAt !== previousSyncAt;
       if (advanced) {
+        onChanged?.();
         if (mountedRef.current) {
           setRefreshing(false);
           if (next?.lastSyncError && !isProviderNotConfigured(next.lastSyncError)) {
@@ -255,66 +265,51 @@ export default function DeviceWarrantyCard({
     pollTimerRef.current = setTimeout(poll, REFRESH_POLL_INTERVAL_MS);
   };
 
-  if (loading) {
+  if (!warranty || loading) {
     return (
-      <div className="rounded-lg border bg-card p-4 shadow-xs animate-pulse">
-        <div className="h-4 w-24 rounded bg-muted" />
-        <div className="mt-3 h-6 w-48 rounded bg-muted" />
-      </div>
-    );
-  }
-
-  if (!warranty) {
-    // #9029: on the Overview an empty warranty is one muted line with the one
-    // next step this card offers — a vendor lookup.
-    if (compact && !error) {
-      return (
-        <p
-          data-testid="device-warranty-empty"
-          className="flex flex-wrap items-center gap-x-1.5 rounded-lg border bg-card px-5 py-3 text-sm text-muted-foreground"
-        >
-          <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{t('deviceWarrantyCard.noInformation')}</span>
-          <span aria-hidden="true">·</span>
-          <button
-            type="button"
-            onClick={() => void handleRefresh()}
-            disabled={refreshing}
-            className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground disabled:cursor-progress disabled:no-underline"
-          >
-            {refreshing ? t('deviceWarrantyCard.checking') : t('deviceWarrantyCard.lookUp')}
-          </button>
-        </p>
-      );
-    }
-    if (compact) {
-      return (
-        <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <ShieldCheck className="h-4 w-4" />
-            {t('deviceWarrantyCard.compactTitle')}
-          </div>
-          {error ? (
-            // A fetch failure is distinct from a device that genuinely has no
-            // warranty record — surface it with a retry rather than the
-            // identical "No warranty information" empty state.
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('deviceWarrantyCard.loadFailed')}{' '}
-              <button
-                type="button"
-                onClick={() => { setError(false); setLoading(true); fetchWarranty(); }}
-                className="font-medium text-primary hover:underline"
-              >
-                {t('common:actions.retry')}
-              </button>
-            </p>
+      <WarrantySection
+        title={t('deviceWarrantyCard.sectionTitle')}
+        badge={null}
+        action={null}
+      >
+        <dl className="divide-y">
+          {purchase}
+          {loading ? (
+            <div className="py-2" aria-hidden="true">
+              <div className="ml-auto h-4 w-40 animate-pulse rounded bg-muted" />
+            </div>
           ) : (
-            <p className="mt-2 text-sm text-muted-foreground">{t('deviceWarrantyCard.noInformation')}</p>
+            <WarrantyRow label={t('deviceWarrantyCard.compactTitle')}>
+              {error ? (
+                <span data-testid="device-warranty-error" className="font-normal text-muted-foreground">
+                  {t('deviceWarrantyCard.loadFailed')}{' '}
+                  <button
+                    type="button"
+                    onClick={() => { setError(false); setLoading(true); fetchWarranty(); }}
+                    className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                  >
+                    {t('common:actions.retry')}
+                  </button>
+                </span>
+              ) : (
+                <span data-testid="device-warranty-empty" className="font-normal text-muted-foreground">
+                  {t('deviceWarrantyCard.noInformation')}
+                  <span aria-hidden="true"> · </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleRefresh()}
+                    disabled={refreshing}
+                    className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground disabled:cursor-progress disabled:no-underline"
+                  >
+                    {refreshing ? t('deviceWarrantyCard.checking') : t('deviceWarrantyCard.lookUp')}
+                  </button>
+                </span>
+              )}
+            </WarrantyRow>
           )}
-        </div>
-      );
-    }
-    return null;
+        </dl>
+      </WarrantySection>
+    );
   }
 
   const cfg = WARRANTY_STATUS_BADGE[warranty.status] ?? WARRANTY_STATUS_BADGE.unknown;
@@ -324,93 +319,66 @@ export default function DeviceWarrantyCard({
   const primaryEntitlement = vendorEarlier ? undefined : warranty.entitlements?.[0];
   // For a renewing subscription the stored end date is the next renewal, not an expiry.
   const isSubscription = warranty.isSubscription || warranty.status === 'subscription_active';
-  const endDateLabel = isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.expires');
 
-  if (compact) {
-    return (
-      <div className="rounded-lg border bg-card p-4 shadow-xs">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <ShieldCheck className="h-4 w-4" />
-            {t('deviceWarrantyCard.compactTitle')}
-          </div>
-          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${cfg.color}`}>
-            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
-          </span>
-        </div>
-        <p className="mt-2 text-sm font-medium">
-          {primaryEntitlement
-            ? `${warranty.manufacturer?.toUpperCase()} ${primaryEntitlement.serviceLevelDescription}`
-            : warranty.manufacturer?.toUpperCase() ?? t('deviceWarrantyCard.status.unknown')}
-        </p>
-        {warranty.warrantyEndDate && (
-          <p className="text-xs text-muted-foreground">
-            {endDateLabel} {formatDate(warranty.warrantyEndDate)}
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  // Full expanded view
+  // Details tab: "Warranty & purchase". Manufacturer and serial are not
+  // repeated here — the System section above shows them. Nor is a coverage
+  // start on the same calendar day as the purchase date (date part only): the
+  // purchase row already says it.
+  const startIsPurchase =
+    !!warranty.warrantyStartDate && !!purchaseDate &&
+    warranty.warrantyStartDate.slice(0, 10) === purchaseDate.slice(0, 10);
+  const entitlements = warranty.entitlements ?? [];
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">{t('deviceWarrantyCard.title')}</h3>
-          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${cfg.color}`}>
-            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
-          </span>
-        </div>
+    <WarrantySection
+      title={t('deviceWarrantyCard.sectionTitle')}
+      badge={
+        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${cfg.color}`}>
+          {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
+        </span>
+      }
+      action={
         <button
           type="button"
           onClick={handleRefresh}
           disabled={refreshing}
-          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
         >
-          <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
           {refreshing ? t('deviceWarrantyCard.checking') : t('common:actions.refresh')}
         </button>
-      </div>
+      }
+    >
+      <dl className="divide-y">
+        {purchase}
+        {primaryEntitlement?.serviceLevelDescription && (
+          <WarrantyRow label={t('deviceWarrantyCard.coverage')}>{primaryEntitlement.serviceLevelDescription}</WarrantyRow>
+        )}
+        {warranty.warrantyStartDate && !startIsPurchase && (
+          <WarrantyRow label={t('deviceWarrantyCard.coverageStarts')}>{formatDate(warranty.warrantyStartDate)}</WarrantyRow>
+        )}
+        <WarrantyRow label={isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.coverageEnds')}>
+          {formatDate(warranty.warrantyEndDate)}
+        </WarrantyRow>
+      </dl>
 
-      <div className="grid gap-4 sm:grid-cols-4">
-        <div>
-          <p className="text-xs text-muted-foreground">{t('deviceWarrantyCard.manufacturer')}</p>
-          <p className="text-sm font-medium">{warranty.manufacturer?.toUpperCase() ?? '\u2014'}</p>
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">{t('deviceWarrantyCard.serialNumber')}</p>
-          <p className="text-sm font-medium font-mono">{warranty.serialNumber ?? '\u2014'}</p>
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">{t('deviceWarrantyCard.startDate')}</p>
-          <p className="text-sm font-medium">{formatDate(warranty.warrantyStartDate)}</p>
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">{isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.endDate')}</p>
-          <p className="text-sm font-medium">{formatDate(warranty.warrantyEndDate)}</p>
-        </div>
-      </div>
-
-      {warranty.entitlements && warranty.entitlements.length > 0 && (
-        <div className="rounded-lg border">
+      {entitlements.length > 1 && (
+        <div className="mt-4 overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
-              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2">{t('deviceWarrantyCard.table.serviceLevel')}</th>
-                <th className="px-4 py-2">{t('deviceWarrantyCard.table.type')}</th>
-                <th className="px-4 py-2">{t('deviceWarrantyCard.table.startDate')}</th>
-                <th className="px-4 py-2">{t('deviceWarrantyCard.table.endDate')}</th>
+              <tr className="text-left text-xs font-medium text-muted-foreground">
+                <th className="px-3 py-2">{t('deviceWarrantyCard.table.serviceLevel')}</th>
+                <th className="px-3 py-2">{t('deviceWarrantyCard.table.type')}</th>
+                <th className="px-3 py-2">{t('deviceWarrantyCard.table.startDate')}</th>
+                <th className="px-3 py-2">{t('deviceWarrantyCard.table.endDate')}</th>
               </tr>
             </thead>
             <tbody>
-              {warranty.entitlements.map((e, i) => (
-                <tr key={i} className="border-b last:border-0">
-                  <td className="px-4 py-2">{e.serviceLevelDescription}</td>
-                  <td className="px-4 py-2">{e.entitlementType}</td>
-                  <td className="px-4 py-2">{formatDate(e.startDate)}</td>
-                  <td className="px-4 py-2">{formatDate(e.endDate)}</td>
+              {entitlements.map((e, i) => (
+                <tr key={i} className="border-t">
+                  <td className="px-3 py-2">{e.serviceLevelDescription}</td>
+                  <td className="px-3 py-2">{e.entitlementType}</td>
+                  <td className="px-3 py-2">{formatDate(e.startDate)}</td>
+                  <td className="px-3 py-2">{formatDate(e.endDate)}</td>
                 </tr>
               ))}
             </tbody>
@@ -418,7 +386,7 @@ export default function DeviceWarrantyCard({
         </div>
       )}
 
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>{t('deviceWarrantyCard.lastChecked', { time: timeAgo(warranty.lastSyncAt) })}</span>
         {warranty.dataSource && (
           <span>
@@ -437,10 +405,46 @@ export default function DeviceWarrantyCard({
             Post-v0.13.9, lastSyncError is null for no-provider cases. Remove after re-sync cycle. */}
         {warranty.lastSyncError && (
           warranty.lastSyncError.includes('No configured provider')
-            ? <span className="text-muted-foreground">{t('deviceWarrantyCard.lookupUnavailable')}</span>
-            : <span className="text-red-500">{t('deviceWarrantyCard.error', { error: warranty.lastSyncError })}</span>
+            ? <span>{t('deviceWarrantyCard.lookupUnavailable')}</span>
+            : <span className="text-destructive">{t('deviceWarrantyCard.error', { error: warranty.lastSyncError })}</span>
         )}
       </div>
+    </WarrantySection>
+  );
+}
+
+function WarrantySection({ title, badge, action, children }: {
+  title: string;
+  badge: ReactNode;
+  action: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    // id + tabIndex: the header's "Warranty details" link scrolls here and
+    // moves focus to it (revealDeviceTab).
+    <section
+      id={DEVICE_WARRANTY_SECTION_ID}
+      tabIndex={-1}
+      data-testid="device-warranty"
+      aria-labelledby="device-warranty-title"
+      className="rounded-lg border bg-card p-6 shadow-xs focus:outline-hidden"
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <ShieldCheck className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        <h2 id="device-warranty-title" className="text-sm font-semibold">{title}</h2>
+        {badge}
+        {action && <div className="ml-auto">{action}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function WarrantyRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-2">
+      <dt className="text-sm text-muted-foreground">{label}</dt>
+      <dd className="text-right text-sm font-medium">{children}</dd>
     </div>
   );
 }

@@ -457,6 +457,7 @@ function TraceEntryRow({
           {entry.downgradeReason && <span>{entry.downgradeReason}</span>}
           {entry.intentError && <span className="text-destructive">{entry.intentError}</span>}
           {entry.intentId && (
+            // bare-hash-anchor-exempt: run detail is its own page, a real cross-page link
             <a
               href={`/approvals#intent-${entry.intentId}`}
               data-testid={`run-detail-intent-link-${entry.intentId}`}
@@ -748,6 +749,7 @@ function PatchPlanItem({
           {intentStatusLabel(t, intentStatus)}
         </p>
       ) : (
+        // bare-hash-anchor-exempt: run detail is its own page, a real cross-page link
         <a
           href={`/approvals#intent-${item.intentId}`}
           data-testid={`ai-agent-run-patch-item-${item.index}-intent`}
@@ -1077,6 +1079,7 @@ function SweepProposalContent({
       : undefined;
     return (
       <>
+        {/* bare-hash-anchor-exempt: run detail is its own page, a real cross-page link */}
         <a
           href={proposal.intentId ? `/approvals#intent-${proposal.intentId}` : '/approvals'}
           data-testid={ids.proposalLink(index)}
@@ -2304,6 +2307,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               <li key={intent.id} className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{intent.actionName}</span>
                 <span className="text-xs text-muted-foreground">{intentStatusLabel(t, intent.status)}</span>
+                {/* bare-hash-anchor-exempt: run detail is its own page, a real cross-page link */}
                 <a href={`/approvals#intent-${intent.id}`} className="text-primary hover:underline">
                   {t('aiAgentsPage.runs.detail.intents.viewAll')}
                 </a>

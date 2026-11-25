@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "Das vom Partner konfigurierte Remote-Tool konnte nicht aufgelöst werden (Konfigurationsfehler). Es wird auf den integrierten Remote-Desktop zurückgegriffen.",
       "emptyUrlTemplate": "Für das vom Partner konfigurierte Remote-Tool ist keine URL-Vorlage festgelegt. Es wird auf den integrierten Remote-Desktop zurückgegriffen.",
-      "missingIdentifier": "Diesem Gerät fehlt die gerätespezifische Kennung, die das vom Partner konfigurierte Remote-Tool benötigt (z. B. die RustDesk-Peer-ID). Zurückgreifen auf den integrierten Remote-Desktop. Legen Sie die Kennung unter Geräteeinstellungen → Benutzerdefinierte Felder fest.",
+      "missingIdentifier": "Diesem Gerät fehlt die gerätespezifische Kennung, die das vom Partner konfigurierte Remote-Tool benötigt (z. B. die RustDesk-Peer-ID). Zurückgreifen auf den integrierten Remote-Desktop. Legen Sie die Kennung unter im Tab „Details“ des Geräts → Benutzerdefinierte Felder fest.",
       "providerDisabled": "Das vom Partner konfigurierte Remote-Tool für dieses Gerät ist derzeit deaktiviert. Zurückgreifen auf den integrierten Remote-Desktop."
     },
     "launching": "Start...",
@@ -245,6 +245,7 @@
     "unverifiedHint": "Das Gerät hat nicht rechtzeitig geantwortet – aktualisieren Sie zur Überprüfung"
   },
   "fileManager": {
+    "absolutePathHint": "Absoluten Ordnerpfad eingeben",
     "activeCount": "{{count}} aktiv",
     "activity": "Aktivität",
     "cancelled": "Abgesagt",
@@ -270,6 +271,7 @@
       "upload": "Hochladen fehlgeschlagen",
       "uploadTimeout": "Zeitüberschreitung beim Hochladen nach 2 Minuten. Möglicherweise wird die Datei noch auf das Gerät geschrieben – aktualisieren Sie sie zur Überprüfung."
     },
+    "folderPath": "Ordnerpfad",
     "freeOf": "{{free}} frei von {{total}}",
     "goUp": "Übergeordneten Ordner öffnen",
     "home": "Zuhause",
@@ -284,6 +286,7 @@
       "invalidName": "Ordnernamen dürfen keine Pfadtrennzeichen oder vom Dateisystem dieses Geräts nicht erlaubte Zeichen enthalten.",
       "nameExists": "Hier gibt es bereits eine Datei oder einen Ordner mit diesem Namen."
     },
+    "openFolder": "Ordner öffnen",
     "selectedCount": "Ausgewählte Anzahl",
     "size": "Größe",
     "title": "Dateimanager",

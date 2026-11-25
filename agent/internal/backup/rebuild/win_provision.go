@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,7 +84,7 @@ func winProvision(ctx context.Context, r *run) error {
 		diskGUID = g
 	}
 	var gptParts []WinGPTPartition
-	formatted := 0
+	var formatted []int // partition numbers that get a volume and a format
 	for _, p := range plan.Partitions {
 		partGUID := p.PartUUID
 		if partGUID == "" {
@@ -103,12 +104,15 @@ func winProvision(ctx context.Context, r *run) error {
 			StartBytes: p.StartBytes, SizeBytes: p.SizeBytes, Attributes: attrs,
 		})
 		if p.Filesystem != "" {
-			formatted++
+			formatted = append(formatted, p.Number)
 		}
 	}
 	if err := r.opts.WinSystem.WriteGPT(r.diskNumber, diskGUID, gptParts); err != nil {
 		return err
 	}
+	// Wait for these partitions by number, not for len(formatted) volumes:
+	// a volume for some other partition surfacing first would otherwise
+	// end the wait while one we format is still missing (#12576).
 	vols, err := r.opts.WinSystem.WaitForVolumes(ctx, r.diskNumber, formatted)
 	if err != nil {
 		return err
@@ -120,7 +124,7 @@ func winProvision(ctx context.Context, r *run) error {
 	r.volumes = map[int]string{}
 	for i, p := range plan.Partitions {
 		if p.Filesystem == "" {
-			continue // the MSR carries no filesystem/volume
+			continue // the MSR carries no filesystem/volume (an ESP never reaches here empty: the plan defaults it to fat32)
 		}
 		v, ok := byNumber[p.Number]
 		if !ok {
@@ -191,10 +195,10 @@ func (r *run) winAttach(_ context.Context, create bool) error {
 // idempotent.
 //
 // A fresh attach surfaces its volumes asynchronously, so the live list
-// comes from WaitForVolumes for as many volumes as the earlier run
-// recorded; runState.Volumes is only the expectation to check against (a
-// volume GUID path is not guaranteed stable across attaches). A recorded
-// partition with no volume on the live disk is an error.
+// comes from WaitForVolumes for the partitions the earlier run recorded;
+// runState.Volumes is only the expectation to check against (a volume GUID
+// path is not guaranteed stable across attaches). A recorded partition with
+// no volume on the live disk is an error (the wait's timeout names it).
 func (r *run) winReattach(ctx context.Context) error {
 	if !r.winAttached {
 		if err := r.winAttach(ctx, false); err != nil {
@@ -202,7 +206,12 @@ func (r *run) winReattach(ctx context.Context) error {
 		}
 	}
 	if r.volumes == nil && len(r.state.Volumes) > 0 {
-		vols, err := r.opts.WinSystem.WaitForVolumes(ctx, r.diskNumber, len(r.state.Volumes))
+		recorded := make([]int, 0, len(r.state.Volumes))
+		for number := range r.state.Volumes {
+			recorded = append(recorded, number)
+		}
+		sort.Ints(recorded)
+		vols, err := r.opts.WinSystem.WaitForVolumes(ctx, r.diskNumber, recorded)
 		if err != nil {
 			return fmt.Errorf("resume: volumes of disk %d: %w", r.diskNumber, err)
 		}

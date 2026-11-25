@@ -11,6 +11,8 @@ export interface ReattachDeviceDialogProps {
   candidate: ReattachCandidate;
   passkeyCount?: number;
   mfaMethod?: string | null;
+  /** Whether an authenticator app is enrolled (`GET /users/me`), as primary or backup. */
+  totpEnrolled?: boolean;
   onClose: () => void;
   onRequested: (intent: ReattachRequestedIntent) => void;
   onTargetChanged?: () => void;
@@ -28,6 +30,7 @@ export default function ReattachDeviceDialog({
   candidate,
   passkeyCount,
   mfaMethod,
+  totpEnrolled,
   onClose,
   onRequested,
   onTargetChanged,
@@ -54,6 +57,7 @@ export default function ReattachDeviceDialog({
           candidate={candidate}
           passkeyCount={passkeyCount}
           mfaMethod={mfaMethod}
+          totpEnrolled={totpEnrolled}
           onClose={onClose}
           onRequested={onRequested}
           onTargetChanged={onTargetChanged}

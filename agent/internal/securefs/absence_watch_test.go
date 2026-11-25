@@ -26,8 +26,22 @@ type absenceReport struct {
 	// caller's excuse attributed to something other than a publication gap
 	// (see watchForAbsenceExcusing). Each one reappeared within
 	// absenceCeiling of its first miss.
-	excused []string
+	excused []excusedAbsence
 }
+
+// excusedAbsence is one absence the caller's excuse accepted, with what the
+// watch observed of it, so a control can tell WHICH absence was excused rather
+// than only how many were (#12559).
+type excusedAbsence struct {
+	reason   string
+	evidence absenceEvidence
+	// healed is when the probe that found the destination again was issued.
+	// The watch looked for no new absence before it, so the excuse covered
+	// everything from evidence.firstMiss to healed.
+	healed time.Time
+}
+
+func (e excusedAbsence) String() string { return fmt.Sprintf("%s (%s)", e.reason, e.evidence) }
 
 // absenceExcuse is asked about an absence that outlasted the recheck window.
 // firstMiss and lastMiss are when the first and last not-exist probes of that
@@ -103,8 +117,8 @@ func watchForAbsenceExcusing(probe func() error, stop <-chan struct{}, recheck t
 		}
 		if excuse != nil {
 			if reason, ok := excuse(evidence.firstMiss, evidence.lastMiss); ok {
-				if awaitPresence(probe, clock, issued.Add(absenceCeiling)) {
-					report.excused = append(report.excused, fmt.Sprintf("%s (%s)", reason, evidence))
+				if healed, ok := awaitPresence(probe, clock, issued.Add(absenceCeiling)); ok {
+					report.excused = append(report.excused, excusedAbsence{reason: reason, evidence: evidence, healed: healed})
 					continue
 				}
 				report.persistent = fmt.Errorf("%w (%s; %s, but it did not reappear within %v of the first miss)",
@@ -120,15 +134,18 @@ func watchForAbsenceExcusing(probe func() error, stop <-chan struct{}, recheck t
 }
 
 // awaitPresence re-probes every few milliseconds until the destination exists
-// or deadline passes.
-func awaitPresence(probe func() error, clock absenceClock, deadline time.Time) bool {
-	for clock.now().Before(deadline) {
+// or deadline passes. It returns when the probe that found it was issued.
+func awaitPresence(probe func() error, clock absenceClock, deadline time.Time) (time.Time, bool) {
+	for {
+		issued := clock.now()
+		if !issued.Before(deadline) {
+			return time.Time{}, false
+		}
 		if !errors.Is(probe(), fs.ErrNotExist) {
-			return true
+			return issued, true
 		}
 		clock.sleep(5 * time.Millisecond)
 	}
-	return false
 }
 
 // absenceEvidence is what one recheck observed before giving up.

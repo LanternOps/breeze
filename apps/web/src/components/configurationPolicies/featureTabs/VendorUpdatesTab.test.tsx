@@ -147,9 +147,33 @@ describe('VendorUpdatesTab', () => {
     expect(lastSaved().vendors.dell.categories).toEqual({ driver: true });
   });
 
+  it('VendorUpdatesTab creates its own link from inherited values on Save (#12470)', async () => {
+    serveGates(gates({ driver: true }));
+    const parentSettings = stored({ driver: true });
+    render(<VendorUpdatesTab {...props} parentLink={link(parentSettings)} />);
+    await waitFor(() => expect(box('vendor-updates-enabled').checked).toBe(true));
+    // Locked on the parent's values, no Save until Change for this policy.
+    expect(box('vendor-updates-enabled')).toBeDisabled();
+    expect(screen.queryByTestId('vendor-updates-save')).toBeNull();
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(m.save).not.toHaveBeenCalled();
+    expect(box('vendor-updates-enabled')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('vendor-updates-save'));
+    await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
+    expect(m.save.mock.calls[0][0]).toBeNull();
+    expect(lastSaved()).toMatchObject({ enabled: true, vendors: { dell: { enabled: true } } });
+  });
+
   it('edits the schedule and blocked updates and saves them', async () => {
     serveGates(gates({ driver: true }));
-    render(<VendorUpdatesTab {...props} existingLink={link(stored({ driver: true }))} />);
+    // Blocked updates on HP: Dell does not offer the field (#12265).
+    const withHp = stored({ driver: true }, {
+      vendors: {
+        dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] },
+        hp: { enabled: false, categories: {}, blockedUpdateIds: [] },
+      },
+    });
+    render(<VendorUpdatesTab {...props} existingLink={link(withHp)} />);
     await waitFor(() => expect(box('vendor-updates-enabled').checked).toBe(true));
     fireEvent.change(screen.getByTestId('vendor-updates-week'), { target: { value: 'last' } });
     fireEvent.change(screen.getByTestId('vendor-updates-day'), { target: { value: 'sat' } });
@@ -157,15 +181,50 @@ describe('VendorUpdatesTab', () => {
     fireEvent.change(screen.getByTestId('vendor-updates-window-hours'), { target: { value: '6' } });
     fireEvent.change(screen.getByTestId('vendor-updates-catch-up'), { target: { value: '3' } });
     fireEvent.change(screen.getByTestId('vendor-updates-reboot'), { target: { value: 'never' } });
-    fireEvent.change(screen.getByTestId('vendor-updates-dell-blocked'), { target: { value: 'ABC12, DEF34\nABC12' } });
+    fireEvent.change(screen.getByTestId('vendor-updates-hp-blocked'), { target: { value: 'ABC12, DEF34\nABC12' } });
     fireEvent.click(screen.getByTestId('vendor-updates-save'));
     await waitFor(() => expect(m.save).toHaveBeenCalled());
     expect(lastSaved()).toMatchObject({
       schedule: { weekOfMonth: 'last', dayOfWeek: 'sat', windowStart: '22:30', windowHours: 6 },
       catchUpNights: 3,
       reboot: 'never',
-      vendors: { dell: { blockedUpdateIds: ['ABC12', 'DEF34'] } },
+      vendors: { dell: { blockedUpdateIds: [] }, hp: { blockedUpdateIds: ['ABC12', 'DEF34'] } },
     });
+  });
+
+  // #12265: Dell cannot honour a blocklist, so the tab does not offer one.
+  it('Dell offers no blocked-updates field, with a short reason; other vendors keep it', async () => {
+    serveGates(gates({ driver: true }));
+    const both = stored({ driver: true }, {
+      vendors: {
+        dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] },
+        hp: { enabled: false, categories: {}, blockedUpdateIds: [] },
+      },
+    });
+    render(<VendorUpdatesTab {...props} existingLink={link(both)} />);
+    await waitFor(() => expect(box('vendor-updates-enabled').checked).toBe(true));
+    expect(screen.queryByTestId('vendor-updates-dell-blocked')).toBeNull();
+    expect(screen.getByTestId('vendor-updates-dell-blocked-unsupported').textContent)
+      .toMatch(/Dell does not support blocking individual updates/);
+    expect(screen.getByTestId('vendor-updates-hp-blocked')).toBeTruthy();
+    expect(screen.queryByTestId('vendor-updates-hp-blocked-unsupported')).toBeNull();
+  });
+
+  it('a Dell blocklist stored before #12265 is named as the reason Dell runs stopped, and saving drops it', async () => {
+    serveGates(gates({ driver: true }));
+    const legacy = stored({ driver: true }, {
+      vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: ['ABC12', 'DEF34'] } },
+    });
+    render(<VendorUpdatesTab {...props} existingLink={link(legacy)} />);
+    await waitFor(() => expect(box('vendor-updates-enabled').checked).toBe(true));
+    const notice = screen.getByTestId('vendor-updates-dell-blocked-stored');
+    expect(notice.textContent).toContain('ABC12, DEF34');
+    expect(notice.textContent).toMatch(/no Dell updates run/i);
+    // Not flagged as unreadable: the stored blob still parses, and its other vendors still run.
+    expect(screen.queryByTestId('vendor-updates-stored-invalid')).toBeNull();
+    fireEvent.click(screen.getByTestId('vendor-updates-save'));
+    await waitFor(() => expect(m.save).toHaveBeenCalled());
+    expect(lastSaved().vendors.dell.blockedUpdateIds).toEqual([]);
   });
 
   it('out-of-range schedule values block the save with a message', async () => {

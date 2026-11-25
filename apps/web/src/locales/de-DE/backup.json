@@ -488,6 +488,8 @@
     "failedToLoadToken": "Das Laden des Tokens ist fehlgeschlagen",
     "failedToRefreshToken": "Das Token konnte nicht aktualisiert werden",
     "failedToPreviewBootstrap": "Bootstrap-Vorschau fehlgeschlagen",
+    "previewUnavailableSessionActive": "Vorschau nicht verfügbar: Für dieses Token besteht bereits eine Wiederherstellungssitzung. Eine Vorschau meldet sich mit dem Token an und kann keine Sitzung lesen, die das Wiederherstellungsprogramm hält. Verfolgen Sie die Wiederherstellung mit Aktualisieren.",
+    "previewUnavailableNeedsRecoveryHelper": "Vorschau nicht verfügbar: Dieser Snapshot verweist auf Dateien aus früheren Snapshots, die nur das Wiederherstellungsprogramm lesen kann. Führen Sie den Wiederherstellungsbefehl auf dem Zielcomputer aus.",
     "failedToRevokeToken": "Token konnte nicht widerrufen werden",
     "failedToCopyToClipboard": "Kopieren in die Zwischenablage fehlgeschlagen.",
     "failedToCreateRecoveryBundle": "Wiederherstellungspaket konnte nicht erstellt werden",

@@ -2945,7 +2945,8 @@
         "not_found": "pas un script visible par le propriétaire de cet agent",
         "not_in_partner_baseline": "absent du référentiel du partenaire",
         "run_script_not_allowed": "« Exécuter un script » n'est pas autorisé pour cet agent"
-      }
+      },
+      "circuitOpen": "Le disjoncteur de cet agent est déclenché pour cette organisation : aucune exécution n'a été lancée. Réinitialisez-le depuis la ligne de l'agent pour le relancer."
     },
     "actions": {
       "add": "Nouvel agent",
@@ -5119,6 +5120,27 @@
           "hint": "Plafond total de dépenses par jour pour toutes les exécutions de cet agent."
         }
       }
+    },
+    "circuit": {
+      "badge": "Disjoncteur déclenché",
+      "openedSince": "En pause dans {{org}} depuis le {{at}}.",
+      "opened": "En pause dans {{org}}.",
+      "reason": "Motif : {{reason}}",
+      "reset": "Réinitialiser",
+      "dialog": {
+        "title": "Réinitialiser le disjoncteur ?",
+        "message": "{{agent}} pourra de nouveau s'exécuter dans {{org}}. Si la cause des échecs n'est pas corrigée, il repassera en pause après le même nombre d'échecs.",
+        "reasonLabel": "Motif (enregistré dans le journal d'audit)",
+        "reasonPlaceholder": "Par exemple : la passerelle du modèle répond de nouveau",
+        "confirm": "Réinitialiser le disjoncteur"
+      },
+      "toasts": {
+        "reset": "Disjoncteur réinitialisé. L'agent peut de nouveau s'exécuter.",
+        "resetFailed": "Échec de la réinitialisation du disjoncteur."
+      },
+      "errors": {
+        "mfaRequired": "La réinitialisation nécessite une session ouverte avec l'authentification à deux facteurs. Reconnectez-vous avec votre second facteur."
+      }
     }
   },
   "apiKeyForm": {
@@ -5906,7 +5928,8 @@
   "settingsSectionNav": {
     "settingsSection": "Section des paramètres",
     "settingsSections": "Sections des paramètres",
-    "unsavedChanges": "{{label}} (changements non enregistrés)"
+    "unsavedChanges": "{{label}} (changements non enregistrés)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Le nom du fournisseur est requis",
@@ -8071,7 +8094,18 @@
     "saved": "Paramètres de rédaction de scripts enregistrés.",
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
-    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés.",
+    "mcpCeiling": {
+      "title": "Exécutions de scripts MCP sans supervision",
+      "description": "Le risque évalué le plus élevé auquel un principal MCP listé dans MCP_UNATTENDED_TIER3_PRINCIPALS peut exécuter un script proposé par l'IA sans approbation humaine, jusqu'à Moyen. L'exécution doit aussi respecter les règles de la voie de scripts sans surveillance pour l'organisation de l'appareil : son activation, les classes d'impact autorisées, les ressources protégées, le disjoncteur et la limite horaire. Au-delà du plafond, chaque exécution doit être approuvée.",
+      "label": "Exécuter sans approbation jusqu’à",
+      "options": {
+        "none": "Jamais (toujours exiger une approbation)",
+        "low": "Faible",
+        "medium": "Moyen"
+      },
+      "stepUpBody": "Relever ce plafond nécessite une nouvelle vérification de sécurité. Confirmez, puis sélectionnez Enregistrer de nouveau."
+    }
   },
   "ticketingHubPage": {
     "heading": "Paramètres de tickets",

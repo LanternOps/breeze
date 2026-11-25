@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ComplianceTab from './ComplianceTab';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureEditing';
 
 // useFeatureLink wraps the save/remove API calls; stub it so we can assert the
 // payload the tab submits without hitting the network.
@@ -101,5 +102,59 @@ describe('ComplianceTab', () => {
 
     const input = screen.getByDisplayValue(/Compliance Rule Set/) as HTMLInputElement;
     expect(input.maxLength).toBe(200);
+  });
+
+  const twoRules = {
+    id: 'link-1',
+    featureType: 'compliance',
+    inlineSettings: {
+      items: [{
+        name: 'Baseline',
+        rules: [{ type: 'disk_space_minimum', minGb: 5 }, { type: 'disk_space_minimum', minGb: 9 }],
+        enforcementLevel: 'warn',
+        checkIntervalMinutes: 60,
+      }],
+    },
+  } as unknown as FeatureTabProps['existingLink'];
+
+  it('expanding a rule set does not mark the feature dirty (#12469)', () => {
+    const reporter = vi.fn();
+    render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <ComplianceTab {...baseProps} existingLink={twoRules} />
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Baseline/ }));
+    expect(screen.getByDisplayValue('Baseline')).toBeTruthy();
+    expect(reporter).not.toHaveBeenCalledWith(true);
+  });
+
+  it('reordering compliance rules marks the feature dirty (#12469)', () => {
+    const reporter = vi.fn();
+    const { container } = render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <ComplianceTab {...baseProps} existingLink={twoRules} />
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Baseline/ }));
+    expect(reporter).not.toHaveBeenCalledWith(true);
+
+    const rows = container.querySelectorAll('[draggable="true"]');
+    expect(rows.length).toBe(2);
+    fireEvent.dragStart(rows[0]!);
+    fireEvent.dragOver(rows[1]!);
+    fireEvent.drop(rows[1]!);
+    expect(reporter).toHaveBeenCalledWith(true);
+  });
+
+  it('a read-only viewer can read the compliance rules (#12469)', () => {
+    const { container } = render(
+      <FeatureReadOnlyContext.Provider value>
+        <ComplianceTab {...baseProps} existingLink={twoRules} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    // No toggle press: the rule set's details are already on screen.
+    expect(screen.getByDisplayValue('Baseline')).toBeTruthy();
+    expect(container.querySelectorAll('[draggable="true"]').length).toBe(2);
   });
 });

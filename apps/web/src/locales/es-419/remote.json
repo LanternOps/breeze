@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "No se pudo resolver la herramienta remota configurada por el partner (error de configuración). Se usará el escritorio remoto integrado.",
       "emptyUrlTemplate": "La herramienta remota configurada por el partner no tiene una plantilla de URL definida. Se usará el escritorio remoto integrado.",
-      "missingIdentifier": "A este dispositivo le falta el identificador por dispositivo que necesita la herramienta remota configurada por el socio (por ejemplo, el par RustDesk ID). Recurrir al escritorio remoto integrado. Configure el identificador en Configuración del dispositivo → Campos personalizados.",
+      "missingIdentifier": "A este dispositivo le falta el identificador por dispositivo que necesita la herramienta remota configurada por el socio (por ejemplo, el par RustDesk ID). Recurrir al escritorio remoto integrado. Configure el identificador en la pestaña Detalles del dispositivo → Campos personalizados.",
       "providerDisabled": "La herramienta remota configurada por el socio para este dispositivo está actualmente deshabilitada. Recurrir al escritorio remoto integrado."
     },
     "launching": "Iniciando...",
@@ -245,6 +245,7 @@
     "unverifiedHint": "El dispositivo no respondió a tiempo — actualice para verificar"
   },
   "fileManager": {
+    "absolutePathHint": "Ingresa una ruta absoluta de carpeta",
     "activeCount": "{{count}} activo",
     "activity": "Actividad",
     "cancelled": "Cancelado",
@@ -270,6 +271,7 @@
       "upload": "No se pudo cargar",
       "uploadTimeout": "La carga expiró después de 2 minutos. Es posible que el archivo aún esté escrito en el dispositivo; actualice para verificarlo."
     },
+    "folderPath": "Ruta de la carpeta",
     "freeOf": "{{free}} libre de {{total}}",
     "goUp": "Subir",
     "home": "Inicio",
@@ -284,6 +286,7 @@
       "invalidName": "El nombre de la carpeta no puede contener separadores de ruta ni caracteres que el sistema de archivos de este dispositivo no permita.",
       "nameExists": "Ya existe un archivo o una carpeta con este nombre aquí."
     },
+    "openFolder": "Abrir carpeta",
     "selectedCount": "Recuento seleccionado",
     "size": "Tamaño",
     "title": "Administrador de archivos",

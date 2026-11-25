@@ -160,7 +160,7 @@
       "unexpectedAlert": "Autorisations inattendues détectées",
       "unknownPermission": "Autorisation inconnue (rôle {{appRoleId}})",
       "grantsVerifiedAt": "Autorisations vérifiées",
-      "graphTokenOnly": "Autorisations Graph vérifiées. Les autorisations sur les autres ressources Microsoft n'ont pas été vérifiées ; accordez Application.Read.All pour une vérification complète."
+      "graphTokenOnly": "Autorisations Graph vérifiées. Les autorisations sur les autres ressources Microsoft n'ont pas pu être vérifiées. N'accordez pas d'autorisations supplémentaires pour corriger cela : toute autorisation hors de l'ensemble requis est signalée comme inattendue."
     },
     "actions": {
       "connect": "Connecter",

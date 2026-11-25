@@ -16,6 +16,7 @@ import { formatRelativeTime } from '@/lib/utils';
 import { concernIdFromHash } from '../wisp/wispThreadHash';
 import { needsYouOrder } from '../wisp/wispHome';
 import { safeActivityHref } from '../wisp/wispActivity';
+import { claimSamePageHashClick } from '../../lib/samePageHashClick';
 
 const LIVE: ConcernStatus[] = ['open', 'snoozed'];
 const ALL: ConcernStatus[] = ['open', 'snoozed', 'resolved', 'dismissed'];
@@ -279,6 +280,10 @@ export function WispConcernsPanel({
         {c.approvalIntentId && (
           <a
             href={`/approvals#intent-${encodeURIComponent(c.approvalIntentId)}`}
+            // The panel can be open on /approvals itself (#12476).
+            onClick={(event) => {
+              claimSamePageHashClick(event, event.currentTarget.getAttribute('href') ?? '');
+            }}
             data-testid={`wisp-concern-approval-${c.id}`}
             className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"
           >

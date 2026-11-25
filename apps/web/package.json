@@ -20,7 +20,7 @@
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {
-    "@astrojs/node": "^11.1.11",
+    "@astrojs/node": "^11.1.14",
     "@astrojs/react": "^7.1.9",
     "@breeze/document-ui": "workspace:*",
     "@breeze/extension-web-sdk": "workspace:*",
@@ -38,12 +38,12 @@
     "@tiptap/extension-table": "^3.33.1",
     "@tiptap/extension-underline": "^3.33.1",
     "@tiptap/pm": "^3.33.1",
-    "@tiptap/react": "^3.33.1",
+    "@tiptap/react": "^3.34.0",
     "@tiptap/starter-kit": "^3.33.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
-    "astro": "^7.4.7",
+    "astro": "^7.4.13",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.34.3",

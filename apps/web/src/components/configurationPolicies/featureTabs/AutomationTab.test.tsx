@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AutomationTab from './AutomationTab';
+import { FeatureReadOnlyContext } from './featureEditing';
 import { fetchWithAuth } from '../../../stores/auth';
 import { applyLocale, i18n } from '@/lib/i18n';
 
@@ -260,5 +261,58 @@ describe('AutomationTab — featurePolicyId payload (#5080)', () => {
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     const payload = saveMock.mock.calls[0][1];
     expect(payload.featurePolicyId).toBeNull();
+  });
+});
+
+describe('AutomationTab — read-only viewer (#12469)', () => {
+  it('a read-only viewer can read an automation\'s actions (#12469)', () => {
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <AutomationTab
+          policyId="policy-1"
+          existingLink={{
+            id: 'link-1',
+            featureType: 'automation',
+            featurePolicyId: null,
+            inlineSettings: {
+              items: [{
+                name: 'Nightly cleanup', enabled: true, triggerType: 'schedule',
+                cronExpression: '0 2 * * *', timezone: 'UTC', eventType: '',
+                actions: [{ type: 'run_script' }], onFailure: 'stop',
+              }],
+            },
+          }}
+          linkedPolicyId={null}
+          onLinkChanged={vi.fn()}
+        />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    // Collapsed by default for an editor; a read-only viewer cannot press the
+    // (disabled) toggle, so the details render without it.
+    expect(screen.getByDisplayValue('Run Script')).toBeTruthy();
+    expect(screen.getByDisplayValue('Nightly cleanup')).toBeTruthy();
+  });
+
+  it('an editor still sees a saved automation collapsed', () => {
+    render(
+      <AutomationTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'automation',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [{
+              name: 'Nightly cleanup', enabled: true, triggerType: 'schedule',
+              cronExpression: '0 2 * * *', timezone: 'UTC', eventType: '',
+              actions: [{ type: 'run_script' }], onFailure: 'stop',
+            }],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+    expect(screen.queryByDisplayValue('Run Script')).toBeNull();
   });
 });

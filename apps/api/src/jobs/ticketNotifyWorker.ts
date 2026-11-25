@@ -27,7 +27,8 @@
  * after the context exits.
  */
 
-import { Worker, type Job } from 'bullmq';
+import { createHash } from 'node:crypto';
+import { DelayedError, Worker, type Job } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { organizations, partners, tickets, ticketComments, devices, ticketStatuses } from '../db/schema';
@@ -55,7 +56,8 @@ import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
 import { sendPushoverNotification, validatePushoverConfig, type PushoverConfig, type PushoverNotificationPayload } from '../services/notificationSenders';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../services/partnerPushoverDefaults';
 import { loadUserPushoverKey } from '../services/ticketPushover';
-import type { AlertSeverity } from '../services/email';
+import type { AlertSeverity, EmailSendHeldError, SendTrigger } from '../services/email';
+import { heldSendDecision, isEmailSendHeldError, logHeldSendDropped } from '../services/emailDomains/heldSend';
 import {
   admitPush,
   assertSamePartner,
@@ -112,7 +114,13 @@ interface EmailPayloadBase {
  */
 type EmailPayloadSender =
   | { purpose: 'ticket.staff_notification' }
-  | { purpose: 'ticket.customer_notification'; partnerId: string | null; partnerName: string | null };
+  | {
+      purpose: 'ticket.customer_notification';
+      /** Who caused this mail (#12249). Only the inbound autoresponse is external. */
+      trigger: SendTrigger;
+      partnerId: string | null;
+      partnerName: string | null;
+    };
 
 type EmailPayload = EmailPayloadBase & EmailPayloadSender;
 
@@ -552,6 +560,7 @@ async function collectRequesterEmail(
       html: composed.html,
       graphMailbox,
       purpose: 'ticket.customer_notification',
+      trigger: 'internal',
       partnerId: ticket.partnerId ?? null,
       partnerName: composed.partnerName,
     }];
@@ -631,6 +640,7 @@ async function collectRequesterEmail(
     headers,
     graphMailbox,
     purpose: 'ticket.customer_notification',
+    trigger: 'internal',
     partnerId: ticket.partnerId ?? null,
     partnerName: composed.partnerName,
   }];
@@ -739,6 +749,7 @@ async function collectMergeNotifications(
     replyTo: partner.replyTo,
     headers: Object.keys(built).length > 0 ? built : undefined,
     purpose: 'ticket.customer_notification',
+    trigger: 'internal',
     partnerId: partnerId ?? null,
     partnerName: partner.name.trim() || null,
   }];
@@ -824,6 +835,8 @@ async function collectAutoresponse(
     graphMailbox,
     threadedReplyUsesSubject: true,
     purpose: 'ticket.customer_notification',
+    // External (#12249): an inbound email from anyone caused this acknowledgement.
+    trigger: 'external',
     partnerId: ticket.partnerId ?? null,
     partnerName: partner.name.trim() || null,
   }];
@@ -929,7 +942,23 @@ async function collectSlaBreachNotification(
  * Core handler: runs DB work inside the system context, collects email payloads,
  * then sends emails after the context exits.
  */
-export async function handleTicketEvent(event: TicketEvent, jobId?: string): Promise<void> {
+/**
+ * A customer mail in this event was HELD (#12249). Carries the keys of the
+ * payloads that did go out, so the rescheduled re-run sends only the rest.
+ */
+export class TicketMailHeldError extends Error {
+  constructor(readonly held: EmailSendHeldError, readonly deliveredKeys: string[]) {
+    super('ticket mail held');
+    this.name = 'TicketMailHeldError';
+  }
+}
+
+export interface HandleTicketEventOptions {
+  /** Payload keys delivered by an earlier run of this job before a hold (#12249). */
+  alreadyDelivered?: ReadonlySet<string>;
+}
+
+export async function handleTicketEvent(event: TicketEvent, jobId?: string, opts: HandleTicketEventOptions = {}): Promise<void> {
   // W07 (#3901): the dedupe anchor. Jobs queued before eventId shipped lack it,
   // so fall back to the BullMQ job id (stable across that job's retries).
   const eventId = event.eventId ?? jobId ?? `legacy:${event.ticketId}:${event.type}`;
@@ -1072,7 +1101,15 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   }
 
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
-  const delivery = await sendEmailPayloads(emailPayloads);
+  const delivery = await sendEmailPayloads(emailPayloads, opts.alreadyDelivered);
+
+  // #12249: a held mail is rescheduled by processTicketEventJob, not retried
+  // here. Release an approval claim first: the re-run must be able to claim it
+  // again, and the delivered keys stop it re-sending what already went out.
+  if (delivery.held) {
+    if (approvalThrottle) await releaseApprovalMail(approvalThrottle, eventId);
+    throw new TicketMailHeldError(delivery.held, delivery.deliveredKeys);
+  }
 
   // Approval mail is best-effort per recipient, so a failure would otherwise
   // be swallowed while the throttle claim stays held — and the approver would
@@ -1117,14 +1154,37 @@ function approvalMailPayload(m: ApprovalMail): EmailPayload {
     html: m.html,
     bestEffort: true,
     purpose: 'ticket.customer_notification',
+    trigger: 'internal',
     partnerId: m.partnerId,
     partnerName: m.partnerName,
   };
 }
 
+/**
+ * Identifies a payload across a rescheduled re-run of the same job (#12249).
+ * Hashed: the key is stored in the job's Redis data, which outlives the job,
+ * and must not carry the recipient address or the ticket subject.
+ */
+export function ticketPayloadKey(p: { purpose: string; to: string; subject: string }): string {
+  return createHash('sha256').update([p.purpose, p.to, p.subject].join('\n')).digest('hex');
+}
+
+interface EmailDelivery {
+  attempted: number;
+  delivered: number;
+  deliveredKeys: string[];
+  /** The first held send (#12249). A held payload never throws out of the loop. */
+  held: EmailSendHeldError | null;
+}
+
 /** `delivered` counts payloads handed to a transport; a missing transport or a swallowed best-effort error is not delivered. */
-async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attempted: number; delivered: number }> {
-  if (emailPayloads.length === 0) return { attempted: 0, delivered: 0 };
+async function sendEmailPayloads(
+  emailPayloads: EmailPayload[],
+  alreadyDelivered: ReadonlySet<string> = new Set(),
+): Promise<EmailDelivery> {
+  const deliveredKeys: string[] = [];
+  let held: EmailSendHeldError | null = null;
+  if (emailPayloads.length === 0) return { attempted: 0, delivered: 0, deliveredKeys, held };
   let delivered = 0;
   // getEmailService() may be null (no platform transport configured). Graph payloads
   // must still send in that case, so the null-guard moved inside the loop's EmailService
@@ -1160,6 +1220,7 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attem
           replyTo: payload.replyTo,
           headers: payload.headers,
           purpose: 'ticket.customer_notification',
+          trigger: payload.trigger,
           partnerId: payload.partnerId,
           partnerName: payload.partnerName,
         });
@@ -1176,28 +1237,84 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attem
       return true;
     };
 
-    if (payload.bestEffort) {
-      try {
-        if (await send()) delivered += 1;
-      } catch (err) {
-        console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
+    const key = ticketPayloadKey(payload);
+    if (alreadyDelivered.has(key)) {
+      // Sent by an earlier run of this job, before a hold rescheduled it.
+      delivered += 1;
+      deliveredKeys.push(key);
+      continue;
+    }
+    try {
+      if (payload.bestEffort) {
+        try {
+          if (await send()) { delivered += 1; deliveredKeys.push(key); }
+        } catch (err) {
+          if (isEmailSendHeldError(err)) throw err;
+          console.error('[TicketNotify] email send failed', err instanceof Error ? err.message : err);
+        }
+      } else {
+        // Non-best-effort: let throw bubble up so BullMQ can retry.
+        if (await send()) { delivered += 1; deliveredKeys.push(key); }
       }
-    } else {
-      // Non-best-effort: let throw bubble up so BullMQ can retry.
-      if (await send()) delivered += 1;
+    } catch (err) {
+      // A held send is not a failure to retry in seconds: note it, carry on
+      // with the other payloads, and let the job reschedule (#12249).
+      if (!isEmailSendHeldError(err)) throw err;
+      held ??= err;
     }
   }
-  return { attempted: emailPayloads.length, delivered };
+  return { attempted: emailPayloads.length, delivered, deliveredKeys, held };
 }
 
-let worker: Worker<TicketEvent> | null = null;
+/**
+ * The longest a held customer mail waits (#12249): one full UTC day plus the
+ * retry spread, so a mail held just after midnight still gets the next window.
+ * Past it the mail is dropped with a logged reason; ticket mail older than
+ * that would be noise, not news.
+ */
+export const TICKET_HELD_MAX_AGE_MS = 26 * 60 * 60 * 1000;
+
+type TicketEventJobData = TicketEvent & { heldDeliveredKeys?: string[] };
+
+/**
+ * The worker's processor. A held mail moves the job to the held error's
+ * retryAt (moveToDelayed + DelayedError: no attempt is spent) while the job is
+ * younger than TICKET_HELD_MAX_AGE_MS, recording what already went out; past
+ * that it completes with a logged drop. Every other error keeps BullMQ's
+ * normal retry.
+ */
+export async function processTicketEventJob(job: Job<TicketEventJobData>, token: string | undefined): Promise<void> {
+  const alreadyDelivered = new Set(job.data.heldDeliveredKeys ?? []);
+  try {
+    await handleTicketEvent(job.data, job.id, { alreadyDelivered });
+  } catch (err) {
+    if (!(err instanceof TicketMailHeldError)) throw err;
+    const decision = heldSendDecision(err.held, { firstAttemptAt: job.timestamp, maxAgeMs: TICKET_HELD_MAX_AGE_MS });
+    if (decision.action === 'drop') {
+      logHeldSendDropped('ticketNotifyWorker', err.held, {
+        jobId: job.id, ticketId: job.data.ticketId, eventType: job.data.type, dropReason: decision.reason,
+      });
+      return;
+    }
+    // Without the lock token the job cannot be moved; the normal retry applies.
+    if (!token) throw err.held;
+    await job.updateData({ ...job.data, heldDeliveredKeys: [...new Set([...alreadyDelivered, ...err.deliveredKeys])] });
+    await job.moveToDelayed(decision.at.getTime(), token);
+    console.warn('[TicketNotify] held customer mail rescheduled', {
+      jobId: job.id, ticketId: job.data.ticketId, reason: err.held.reason, at: decision.at.toISOString(),
+    });
+    throw new DelayedError();
+  }
+}
+
+let worker: Worker<TicketEventJobData> | null = null;
 
 export function initializeTicketNotifyWorker(): Promise<void> {
   if (worker) return Promise.resolve();
 
-  worker = new Worker<TicketEvent>(
+  worker = new Worker<TicketEventJobData>(
     TICKET_EVENTS_QUEUE,
-    async (job: Job<TicketEvent>) => handleTicketEvent(job.data, job.id),
+    (job: Job<TicketEventJobData>, token?: string) => processTicketEventJob(job, token),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
   attachWorkerObservability(worker, 'ticketNotifyWorker');

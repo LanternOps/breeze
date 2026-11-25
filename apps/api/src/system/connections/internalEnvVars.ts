@@ -146,6 +146,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
+  BREEZE_BROWSER_DESKTOP_ENABLED: 'browser remote desktop rollout flag (#9557, removed after the lab leg)',
   BREEZE_OEM_UPDATES_DISABLED_LANES: 'vendor update per-lane kill switch (#11065)',
   BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
   BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',

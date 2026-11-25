@@ -15,7 +15,7 @@ import {
   Terminal,
   FileCode,
   RotateCcw,
-  Settings,
+  Pencil,
   Shield,
   Trash2,
   Zap,
@@ -3953,13 +3953,13 @@ export default function DeviceList({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      onAction?.("settings", device);
+                                      onAction?.("edit-details", device);
                                       setRowMenuOpenId(null);
                                     }}
                                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                                   >
-                                    <Settings className="h-4 w-4" />
-                                    {t("deviceList.settings")}{" "}
+                                    <Pencil className="h-4 w-4" />
+                                    {t("deviceList.editDetails")}{" "}
                                   </button>
                                   {/* #9796: a site move is a DB write, not an
                                       agent command — not gated on status (the

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cpu, HardDrive, MemoryStick, Network } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
-import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import AssetCircuitCard from "./AssetCircuitCard";
 import StorageHealthSection from "./hardware/StorageHealthSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
@@ -699,7 +699,10 @@ export default function DeviceHardwareInventory({
         </div>
       </div>
 
-      <DeviceWarrantyCard deviceId={deviceId} />
+      {/* WAN role and circuit sit below the adapters they describe; a
+          workstation lists a "Mark as WAN" link per virtual adapter, which is
+          noise anywhere but here. */}
+      <AssetCircuitCard subject="device" id={deviceId} />
     </div>
   );
 }

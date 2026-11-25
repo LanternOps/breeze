@@ -11,7 +11,7 @@ const h = vi.hoisted(() => {
   const results: unknown[][] = [];
   const chain = (): Record<string, unknown> => {
     const p: Record<string, unknown> = {};
-    for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'limit', 'orderBy']) p[m] = vi.fn(() => p);
+    for (const m of ['from', 'innerJoin', 'leftJoin', 'where', 'limit', 'orderBy', 'groupBy']) p[m] = vi.fn(() => p);
     p.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(results.shift() ?? []).then(res, rej);
     return p;
   };
@@ -159,6 +159,18 @@ describe('postSpecialistResult', () => {
     expect(p.title).toBe('Device troubleshooting on WS-01: waiting for your approval');
     expect(p.body).toContain('2 steps are waiting for your approval.');
     expect(p.specialist.dedupeKey).toBe(`wisp.specialist_result:${RUN}:awaiting_approval`);
+  });
+
+  // #11965: the post when a parked run settles names how each step ended.
+  it('a completed run that proposed steps names how they ended', async () => {
+    queue([runRow({ intentIds: ['i1', 'i2', 'i3', 'i4'] })], [
+      { status: 'completed', count: 2 }, { status: 'rejected', count: 1 }, { status: 'expired', count: 1 },
+    ], []);
+    await postSpecialistResult(RUN);
+    const p = h.notifyUser.mock.calls[0]![0];
+    expect(p.title).toBe('Device troubleshooting on WS-01: finished');
+    expect(p.body).toContain('Spooler service crashed three times');
+    expect(p.body).toMatch(/\n\nSteps: 2 ran, 1 denied, 1 expired\.$/);
   });
 
   it('awaiting_approval with 1 pending intent uses the singular', async () => {

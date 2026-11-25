@@ -10,7 +10,7 @@ import { NO_VALUE_OPERATORS } from '../components/devices/filterMigration';
 // value === '' by construction. Mirrors the check DeviceList used before the
 // resolution was lifted here so the list and grid share one id set (grid
 // previously ignored the advanced filter entirely).
-function hasValidConditions(filter: FilterConditionGroup): boolean {
+export function hasValidConditions(filter: FilterConditionGroup): boolean {
   return filter.conditions.some(c => {
     if ('conditions' in c) return true;
     if (NO_VALUE_OPERATORS.includes(c.operator)) return true;

@@ -37,6 +37,20 @@ const dbMocks = vi.hoisted(() => {
   };
 });
 
+// #12566: lets a test make key derivation fail (no key configured) — the
+// real module caches the derived key, so env stubs alone cannot undo it.
+const secretCryptoHook = vi.hoisted(() => ({ fail: false }));
+vi.mock('./secretCrypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./secretCrypto')>();
+  return {
+    ...actual,
+    getSecretDerivedKeyMaterials: (domain: string) => {
+      if (secretCryptoHook.fail) throw new Error('Missing APP_ENCRYPTION_KEY for secret encryption in production.');
+      return actual.getSecretDerivedKeyMaterials(domain);
+    },
+  };
+});
+
 vi.mock('../db', () => ({
   db: { update: dbMocks.updateMock },
   withSystemDbAccessContext: dbMocks.withSystemDbAccessContextMock,
@@ -54,7 +68,9 @@ import {
   getStringValue,
   hashRecoveryToken,
   isHelperVersionAtLeast,
+  issueRecoverySessionRenewal,
   RECOVERY_DOWNLOAD_SESSION_TTL_MS,
+  verifyRecoverySessionRenewal,
   resolveServerUrl,
   toIsoString,
 } from './recoveryBootstrap';
@@ -534,5 +550,73 @@ describe('expireUnusedRecoveryTokens', () => {
     const cutoff = params.find((p) => typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p));
     expect(cutoff).toBeDefined();
     expect(Math.abs(Date.now() - new Date(cutoff as string).getTime())).toBeLessThan(5_000);
+  });
+});
+
+// ── recovery session renewal credential (#12566) ─────────────────────────────
+describe('recovery session renewal credential', () => {
+  const TOKEN_HASH = hashRecoveryToken(`brz_rec_${'a'.repeat(64)}`);
+  const OTHER_HASH = hashRecoveryToken(`brz_rec_${'b'.repeat(64)}`);
+
+  beforeEach(() => {
+    vi.stubEnv('APP_ENCRYPTION_KEY', 'test-only-app-encryption-key-32chars!');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('issues a credential that verifies only for the token it was issued for', () => {
+    const credential = issueRecoverySessionRenewal(TOKEN_HASH);
+
+    expect(credential).toMatch(/^brz_rsr_[A-Za-z0-9_-]{43}$/);
+    expect(verifyRecoverySessionRenewal(TOKEN_HASH, credential!)).toBe(true);
+    expect(verifyRecoverySessionRenewal(OTHER_HASH, credential!)).toBe(false);
+  });
+
+  it('rejects malformed, truncated and tampered credentials', () => {
+    const credential = issueRecoverySessionRenewal(TOKEN_HASH)!;
+    const lastChar = credential.at(-1) === 'A' ? 'B' : 'A';
+
+    for (const bad of ['', 'brz_rsr_', credential.slice(0, -1), `${credential.slice(0, -1)}${lastChar}`, credential.replace('brz_rsr_', 'brz_rec_'), `${credential}=`]) {
+      expect(verifyRecoverySessionRenewal(TOKEN_HASH, bad)).toBe(false);
+    }
+  });
+
+  it('keeps verifying a credential issued under a key that has since been rotated out of active use', () => {
+    vi.stubEnv('APP_ENCRYPTION_KEYRING', JSON.stringify({ old: 'old-key-material', next: 'next-key-material' }));
+    vi.stubEnv('APP_ENCRYPTION_KEY_ID', 'old');
+    const credential = issueRecoverySessionRenewal(TOKEN_HASH)!;
+
+    vi.stubEnv('APP_ENCRYPTION_KEY_ID', 'next');
+    expect(issueRecoverySessionRenewal(TOKEN_HASH)).not.toBe(credential);
+    expect(verifyRecoverySessionRenewal(TOKEN_HASH, credential)).toBe(true);
+  });
+
+  it('issues nothing and verifies nothing when no key is configured, instead of throwing', () => {
+    const credential = issueRecoverySessionRenewal(TOKEN_HASH)!;
+    secretCryptoHook.fail = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(issueRecoverySessionRenewal(TOKEN_HASH)).toBeNull();
+      expect(verifyRecoverySessionRenewal(TOKEN_HASH, credential)).toBe(false);
+    } finally {
+      secretCryptoHook.fail = false;
+      warn.mockRestore();
+    }
+  });
+
+  it('carries the credential on the envelope and the nested bootstrap, and omits it when absent', () => {
+    const base = {
+      tokenId: 'token-1', deviceId: 'device-1', snapshotId: 'snapshot-1', restoreType: 'bare_metal',
+      targetConfig: null, authenticatedAt: new Date('2026-03-31T10:00:00.000Z'), device: null,
+      snapshot: { snapshotId: 'provider-snap-1' }, providerType: 's3', config: null,
+    };
+    const withCredential = buildAuthenticatedBootstrapPayload({ ...base, sessionRenewal: 'brz_rsr_x' });
+    expect(withCredential.sessionRenewal).toBe('brz_rsr_x');
+    expect(withCredential.bootstrap.sessionRenewal).toBe('brz_rsr_x');
+
+    const without = buildAuthenticatedBootstrapPayload(base);
+    expect('sessionRenewal' in without).toBe(false);
+    expect('sessionRenewal' in without.bootstrap).toBe(false);
   });
 });

@@ -467,6 +467,168 @@ describe('resolveSourcedParameters — tenantSecret source (secretEnv)', () => {
   });
 });
 
+// #12613 — an OPTIONAL secret parameter (`required: false`). "Optional" covers
+// exactly one condition: the secret is NOT DEFINED for the device's
+// organization. Then the script runs and the parameter is simply absent — no
+// `secretEnv` entry (so no `BREEZE_VAR_*` at all, not an empty one), nothing in
+// `parameters`, no binding descriptor. Every other secret outcome — unreadable,
+// not a secret, above the script's tier — still fails the device.
+describe('resolveSourcedParameters — optional tenantSecret (#12613)', () => {
+  const secretParam = (required?: boolean) => ({
+    name: 'api_token',
+    source: 'tenantSecret',
+    variableKey: 'vendor_token',
+    ...(required === undefined ? {} : { required }),
+  });
+  const noUnreadable = new Set<string>();
+
+  it('required (the default) + not defined -> fails the device, as before', () => {
+    for (const definition of [secretParam(), secretParam(true)]) {
+      const result = expectFailed(
+        resolve({ definitions: [definition], variables: varsWith(), unreadableVariableKeys: noUnreadable }),
+      );
+      expect(result.code).toBe('unresolved_parameters');
+      expect(result.error).toContain('no value for required parameter(s) "api_token"');
+    }
+  });
+
+  it('optional + not defined -> runs with the secret ABSENT (no secretEnv key, not an empty string)', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam(false), { name: 'level', type: 'string', source: 'runtime' }],
+        callerParameters: { level: 'debug' },
+        variables: varsWith(),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+
+    expect(result.secretEnv).toEqual({});
+    expect(Object.prototype.hasOwnProperty.call(result.secretEnv, 'api_token')).toBe(false);
+    expect(result.parameters).toEqual({ level: 'debug' });
+    expect(result.bindings).toEqual([]);
+  });
+
+  it('optional + not defined never lets a caller value stand in for the secret', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam(false)],
+        callerParameters: { api_token: 'caller-supplied' },
+        variables: varsWith(),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+
+    expect(result.parameters).toEqual({});
+    expect(result.secretEnv).toEqual({});
+    expect(result.ignoredParameters).toEqual(['api_token']);
+  });
+
+  it('optional + defined -> delivers the secret exactly like a required one', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam(false)],
+        variables: varsWith(variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true })),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+    expect(result.parameters).toEqual({});
+  });
+
+  it('optional + defined but UNREADABLE -> still fails the device (never treated as absent)', () => {
+    for (const definition of [secretParam(false), secretParam(true)]) {
+      const result = expectFailed(
+        resolve({
+          definitions: [definition],
+          variables: varsWith(),
+          unreadableVariableKeys: new Set(['vendor_token']),
+        }),
+      );
+      expect(result.code).toBe('unresolved_parameters');
+      expect(result.error).toContain('could not be read');
+      expect(result.error).toContain('api_token');
+    }
+  });
+
+  it('optional + target is NOT a secret -> still fails the device', () => {
+    const result = expectFailed(
+      resolve({
+        definitions: [secretParam(false)],
+        variables: varsWith(variable({ key: 'vendor_token', value: 'plaintext-value', isSecret: false })),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+    expect(result.error).toContain('is not a secret');
+    expect(result.error).not.toContain('plaintext-value');
+  });
+
+  it('optional + partner-wide secret above an org-owned script -> still fails the device', () => {
+    for (const definition of [secretParam(false), secretParam(true)]) {
+      const result = expectFailed(
+        resolve({
+          definitions: [definition],
+          variables: varsWith(
+            variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true, ownerScope: 'partner' }),
+          ),
+          unreadableVariableKeys: noUnreadable,
+          scriptOwnerScope: 'organization',
+        }),
+      );
+      expect(result.code).toBe('unresolved_parameters');
+      expect(result.error).toContain('is bound to partner-wide secret variable "vendor_token"');
+      expect(result.error).not.toContain('no value for required parameter');
+      expect(result.error).not.toContain('sup3r-s3cret');
+    }
+  });
+
+  it('optional + only a partner-wide secret, partner-wide script -> delivers it (not "undefined")', () => {
+    const result = expectOk(
+      resolve({
+        definitions: [secretParam(false)],
+        variables: varsWith(
+          variable({ key: 'vendor_token', value: 'sup3r-s3cret', isSecret: true, ownerScope: 'partner' }),
+        ),
+        unreadableVariableKeys: noUnreadable,
+        scriptOwnerScope: 'partner',
+      }),
+    );
+    expect(result.secretEnv).toEqual({ api_token: 'sup3r-s3cret' });
+  });
+
+  it('an undefined optional secret does not disturb a defined one beside it, nor excuse a required one', () => {
+    const other = { name: 'db_password', source: 'tenantSecret', variableKey: 'vendor_db' };
+    const defined = variable({ key: 'vendor_db', value: 'db-s3cret', isSecret: true });
+    const mixed = expectOk(
+      resolve({
+        definitions: [secretParam(false), other],
+        variables: varsWith(defined),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+    expect(mixed.secretEnv).toEqual({ db_password: 'db-s3cret' });
+
+    const failed = expectFailed(
+      resolve({
+        definitions: [secretParam(false), other],
+        variables: varsWith(),
+        unreadableVariableKeys: noUnreadable,
+      }),
+    );
+    expect(failed.error).toContain('no value for required parameter(s) "db_password"');
+    expect(failed.error).not.toContain('api_token');
+  });
+
+  // Fail closed: without the unreadable set an undecryptable secret is
+  // indistinguishable from an undefined one, and for an OPTIONAL secret that
+  // would turn "unreadable" into "run without it".
+  it('throws when an optional secret is absent and no unreadable set was supplied', () => {
+    expect(() =>
+      resolve({ definitions: [secretParam(false)], variables: varsWith() }),
+    ).toThrow(/unreadableVariableKeys is required/i);
+  });
+});
+
 // #3409 PR4c-2 review finding 2 — every fixture above declares exactly ONE
 // `tenantSecret` parameter, so a bug that dropped all but the last entry
 // (assigning `secretEnv` instead of accumulating into it) would pass the whole

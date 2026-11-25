@@ -32,6 +32,7 @@ import { scriptKind } from '../monitors/kinds/script';
 import { backupContinuityKind } from '../monitors/kinds/backupContinuity';
 import { compositeKind } from '../monitors/kinds/composite';
 import { eventLogKind } from '../monitors/kinds/eventLog';
+import { softwarePresenceKind } from '../monitors/kinds/softwarePresence';
 
 describe('condition registry wiring (issue #1857)', () => {
   it('resolves the legacy "status" condition type to the offline handler', () => {
@@ -690,6 +691,83 @@ describe('event_log alert messages', () => {
         'device-1',
       );
       expect(result.context).toMatchObject({ actualValue: 95, count: 3 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('template values across leaves (#12253 review)', () => {
+  const eventLogValues = { count: 9, category: 'system', windowMinutes: 30, message: 'events' };
+
+  beforeEach(() => {
+    mockDbSelect.mockReset();
+    getLatestMetricMock.mockReset();
+    getLatestMetricMock.mockResolvedValue(null as never);
+  });
+
+  it('fills {{name}} from the real software_presence handler through evaluateConditions', async () => {
+    // No inventory row matches: the app is not installed.
+    const rows: unknown[] = [];
+    mockDbSelect.mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
+    } as never);
+    const compiled = softwarePresenceKind.toAlertCondition(
+      softwarePresenceKind.conditionSchema.parse({ name: 'TeamViewer', presence: 'not_installed' }),
+      COMPILE_CTX,
+    );
+
+    const result = await evaluateConditions(compiled, 'device-1');
+
+    expect(result.triggered).toBe(true);
+    expect(result.context.name).toBe('TeamViewer');
+    expect(renderKindMessage(softwarePresenceKind.titleTemplate, result, { deviceName: 'PC-1' }))
+      .toBe('TeamViewer on PC-1');
+  });
+
+  it.each([
+    ['both passed', true, true],
+    ['only the event_log leaf passed', false, true],
+    ['only the software_presence leaf passed', true, false],
+  ])('keeps the tokens of a software_presence leaf and an event_log leaf (%s)', async (_label, softwarePassed, eventsPassed) => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate')
+      .mockImplementationOnce(async () => ({ passed: softwarePassed, description: 'app', templateValues: { name: 'TeamViewer' } }))
+      .mockImplementationOnce(async () => ({ passed: eventsPassed, description: 'events', templateValues: eventLogValues }));
+    try {
+      const result = await evaluateConditions(
+        { logic: 'or', conditions: [{ type: 'software_presence' }, { type: 'event_log' }] } as never,
+        'device-1',
+      );
+      expect(result.context).toMatchObject({ name: 'TeamViewer', ...eventLogValues });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never mixes two leaves of the same kind: the passing one is taken whole', async () => {
+    const spy = vi.spyOn(conditionRegistry, 'evaluate')
+      .mockImplementationOnce(async () => ({
+        passed: true,
+        description: 'first',
+        // No category key: the second leaf's category must not fill it.
+        templateValues: { count: 2, windowMinutes: 10, message: 'first' },
+      }))
+      .mockImplementationOnce(async () => ({
+        passed: true,
+        description: 'second',
+        templateValues: { count: 9, category: 'system', windowMinutes: 30, message: 'second' },
+      }));
+    try {
+      const result = await evaluateConditions(
+        { logic: 'and', conditions: [{ type: 'event_log' }, { type: 'event_log' }] } as never,
+        'device-1',
+      );
+      expect(result.context).toMatchObject({ count: 2, windowMinutes: 10, message: 'first' });
+      expect(result.context.category).toBeUndefined();
     } finally {
       spy.mockRestore();
     }

@@ -1624,6 +1624,104 @@ describe('dispatchScriptToDevice — tenantSecret parameters', () => {
     });
   }
 
+  // #12613 — an OPTIONAL secret (`required: false`), through the dispatch
+  // chokepoint both launchers share. Run for a manual run and for `automation`
+  // (what a SCHEDULED automation dispatches as; nothing on the server emits
+  // `scheduled`): "not defined" omits the secret entirely (no `secretEnv` key,
+  // so the agent sets no BREEZE_VAR_* at all); "unreadable" still fails. The
+  // real launchers are covered in scriptSecretDelivery.integration.test.ts.
+  describe('optional secret (#12613)', () => {
+    const optionalSecretScript = (required: boolean) =>
+      savedScript({
+        parameters: [
+          { name: 'api_token', source: 'tenantSecret', variableKey: 'vendor_token', required },
+          { name: 'level', type: 'string', source: 'runtime' },
+        ],
+      });
+
+    for (const triggerType of ['manual', 'automation'] as const) {
+      describe(`triggerType ${triggerType}`, () => {
+        it('optional + not defined: queues the script with the secret ABSENT, nothing sealed or preflighted', async () => {
+          const r = await dispatchScriptToDevice({
+            device: device(),
+            source: { kind: 'saved', script: optionalSecretScript(false) },
+            variableScope: buildScope('org-a', []),
+            parameters: { level: 'debug' },
+            triggerType,
+          } as any);
+
+          expect(r.ok).toBe(true);
+          const sealInput = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![1] as Record<string, unknown>;
+          // Absent, not set-but-empty: the key is not on the payload at all.
+          expect(sealInput).not.toHaveProperty('secretEnv');
+          expect(sealInput.parameters).toEqual({ level: 'debug' });
+          const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+          expect(payload as Record<string, unknown>).not.toHaveProperty('secretEnv');
+          expect(payload as Record<string, unknown>).not.toHaveProperty('secretEnvEnvelope');
+          expect(secretDeliveryPreflight).not.toHaveBeenCalled();
+          // No binding is recorded for a secret that was not delivered.
+          const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+          expect(execValues.parameters).toEqual({ level: 'debug' });
+        });
+
+        it('required + not defined: fails the device before anything is written', async () => {
+          const r = await dispatchScriptToDevice({
+            device: device(),
+            source: { kind: 'saved', script: optionalSecretScript(true) },
+            variableScope: buildScope('org-a', []),
+            parameters: { level: 'debug' },
+            triggerType,
+          } as any);
+
+          expect(r.ok).toBe(false);
+          if (!r.ok) {
+            expect(r.code).toBe('unresolved_parameters');
+            expect(r.error).toContain('no value for required parameter(s) "api_token"');
+          }
+          expect(db.insert).not.toHaveBeenCalled();
+          expect(queueCommand).not.toHaveBeenCalled();
+        });
+
+        for (const required of [false, true]) {
+          it(`${required ? 'required' : 'optional'} + UNREADABLE: fails the device, never treated as absent`, async () => {
+            const r = await dispatchScriptToDevice({
+              device: device(),
+              source: { kind: 'saved', script: optionalSecretScript(required) },
+              variableScope: buildScope('org-a', [], ['vendor_token']),
+              parameters: { level: 'debug' },
+              triggerType,
+            } as any);
+
+            expect(r.ok).toBe(false);
+            if (!r.ok) {
+              expect(r.code).toBe('unresolved_parameters');
+              expect(r.error).toContain('could not be read');
+            }
+            expect(db.insert).not.toHaveBeenCalled();
+            expect(queueCommand).not.toHaveBeenCalled();
+            expect(encryptSensitivePayloadFields).not.toHaveBeenCalled();
+          });
+        }
+
+        it('optional + defined: seals and delivers the secret like a required one', async () => {
+          mockSealOnce();
+          const r = await dispatchScriptToDevice({
+            device: device(),
+            source: { kind: 'saved', script: optionalSecretScript(false) },
+            variableScope: secretScope(),
+            parameters: { level: 'debug' },
+            triggerType,
+          } as any);
+
+          expect(r.ok).toBe(true);
+          const sealInput = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![1] as Record<string, unknown>;
+          expect(sealInput.secretEnv).toEqual({ api_token: SECRET_VALUE });
+          expect(secretDeliveryPreflight).toHaveBeenCalled();
+        });
+      });
+    }
+  });
+
   // Hot-path regression guard (the preload trap from PR2): the gate must cost
   // nothing for the overwhelming majority of scripts, which have no secret.
   it('never calls the preflight for a script with no tenantSecret parameter', async () => {

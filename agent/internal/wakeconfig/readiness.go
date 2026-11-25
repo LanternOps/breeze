@@ -24,6 +24,9 @@ const (
 	StateUnproven      = "unproven"
 	StateNeedsReboot   = "needs_reboot"
 	StateApplyFailed   = "apply_failed"
+	// StateFirmwareProtected: a firmware setting is wrong and writes are on,
+	// but a BIOS password or the BitLocker guard stops the write.
+	StateFirmwareProtected = "firmware_protected"
 )
 
 // adapterMemoryTTL is how long an adapter that is no longer present (a laptop
@@ -75,6 +78,9 @@ type Inputs struct {
 	Windows      *WindowsReadings
 	// Firmware is nil when the make has no firmware adapter (ReadFirmware).
 	Firmware *FirmwareReadings
+	// FirmwareAdapter is the adapter that read Firmware; the apply pass
+	// writes through it. Compute never uses it.
+	FirmwareAdapter biosconfig.Adapter
 	// VirtualPlatform is the VM rule's platform name when Virtual (the Surface
 	// observation records which rule decided).
 	VirtualPlatform string
@@ -291,6 +297,16 @@ func Compute(in Inputs) Snapshot {
 			wrong = true
 		}
 		configuring := ap != nil && ap.Configure
+		protected := ""
+		if configuring && verdict == firmwareWrong {
+			protected = ap.FirmwareProtected
+		}
+		if protected != "" {
+			reasons[protected] = true
+		}
+		// A firmware value written but not yet in effect (Breeze never
+		// reboots) holds a correct read at needs_reboot.
+		firmwarePending := ap != nil && verdict == firmwareOK && hasFirmwarePending(ap.Pending)
 		switch {
 		case wrong && configuring && len(ap.Failed) > 0:
 			snap.ReadinessState = StateApplyFailed
@@ -298,12 +314,14 @@ func Compute(in Inputs) Snapshot {
 			if len(ap.Blocked) > 0 {
 				reasons["apply_blocked"] = true
 			}
+		case wrong && protected != "":
+			snap.ReadinessState = StateFirmwareProtected
 		case wrong:
 			snap.ReadinessState = StateNotConfigured
 			if configuring && len(ap.Deferred) > 0 {
 				reasons["apply_deferred"] = true
 			}
-		case !good && goodAfterReboot:
+		case (!good && goodAfterReboot) || (firmwarePending && (good || goodAfterReboot)):
 			snap.ReadinessState = StateNeedsReboot
 			reasons["reboot_pending"] = true
 		case verdict == firmwareOK && fast == "disabled" && proven:
@@ -344,10 +362,15 @@ func Compute(in Inputs) Snapshot {
 		snap.observation = in.Observation
 	}
 	if ap := in.Apply; ap != nil {
-		snap.Details["apply"] = map[string]any{
+		apply := map[string]any{
 			"configure": ap.Configure, "pending": nonNil(ap.Pending), "failed": nonNil(ap.Failed),
 			"blocked": nonNil(ap.Blocked), "deferred": nonNil(ap.Deferred),
 		}
+		if ap.Configure && ap.FirmwareProtected != "" {
+			// Only when set, so snapshots without it are unchanged.
+			apply["firmwareProtected"] = ap.FirmwareProtected
+		}
+		snap.Details["apply"] = apply
 		if !ap.LastApplyAt.IsZero() {
 			at := ap.LastApplyAt.UTC().Format(time.RFC3339)
 			snap.LastApplyAt = &at

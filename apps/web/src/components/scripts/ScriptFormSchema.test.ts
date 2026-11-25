@@ -168,11 +168,11 @@ describe('tenantSecret parameters', () => {
 });
 
 describe('stripSecretParameterValueFields', () => {
-  it('drops the seeded empty default/options and pins type + required on a secret row', () => {
+  it('drops the seeded empty default/options and pins type on a secret row', () => {
     const out = stripSecretParameterValueFields({
       name: 'S',
       parameters: [
-        { name: 'api_token', source: 'tenantSecret', variableKey: 'k', type: 'select', defaultValue: '', options: '', required: false },
+        { name: 'api_token', source: 'tenantSecret', variableKey: 'k', type: 'select', defaultValue: '', options: '', required: true },
       ],
     });
     expect(out.parameters[0]).toEqual({
@@ -182,6 +182,24 @@ describe('stripSecretParameterValueFields', () => {
       type: 'string',
       required: true,
     });
+  });
+
+  // #12613: the Required checkbox is real for a secret row, so the sanitizer
+  // must keep the author's choice rather than pin it back to true.
+  it('keeps required:false on a secret row (an optional secret)', () => {
+    const out = stripSecretParameterValueFields({
+      parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'k', required: false }],
+    });
+    expect(out.parameters[0]).toMatchObject({ required: false });
+  });
+
+  it('defaults a secret row with no boolean required to TRUE (the arm default)', () => {
+    for (const required of [undefined, null, 'false']) {
+      const out = stripSecretParameterValueFields({
+        parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'k', required }],
+      });
+      expect(out.parameters[0]).toMatchObject({ required: true });
+    }
   });
 
   it('leaves every other arm untouched, object identity included', () => {

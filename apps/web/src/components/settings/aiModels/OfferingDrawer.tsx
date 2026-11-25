@@ -182,9 +182,11 @@ export interface OfferingDrawerProps {
   envManaged?: boolean;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
+  /** #12456: Verify answered 202 and finishes in a background job; the card owns the re-read (it outlives this drawer). */
+  onJobQueued?: () => void;
 }
 
-export default function OfferingDrawer({ offering, offerings, envManaged = false, onClose, onSaved }: OfferingDrawerProps) {
+export default function OfferingDrawer({ offering, offerings, envManaged = false, onClose, onSaved, onJobQueued }: OfferingDrawerProps) {
   const { t } = useTranslation('settings');
   const initial = useMemo(() => draftFrom(offering), [offering]);
   const [draft, setDraft] = useState<Draft>(initial);
@@ -235,6 +237,7 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
         friendly,
         onUnauthorized,
       });
+      onJobQueued?.();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.offering.verifyFailed') });

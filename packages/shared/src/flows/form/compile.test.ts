@@ -90,6 +90,37 @@ describe('compileFlowForm', () => {
     expect(String(doc.steps[8]!.input.message)).toContain('steps.a1_run_script.output.succeededCount');
   });
 
+  it('onFailure notify as a summary emits one notice per channel per script, with no for-each and no failed step', () => {
+    const doc = compileFlowForm(byLabel('onFailure summary with two channels over two scripts'));
+    expect(doc.steps.map((s) => s.id)).toEqual([
+      'a0_run_script', 'a0_failsummary_0', 'a0_failsummary_1',
+      'a1_run_script', 'a1_failsummary_0', 'a1_failsummary_1', 'a2_notify',
+    ]);
+    const when = 'length(steps.a1_run_script.output.failedDeviceIds) > 0';
+    expect(doc.steps[5]).toEqual({
+      approval: 'default', onFailure: 'continue', timeoutSec: 300,
+      id: 'a1_failsummary_1', tool: 'notify', when,
+      input: {
+        channelId: CHANNEL_2, title: 'Failure summary action failed', severity: 'warning',
+        message: 'Automation Failure summary action 2 could not be sent to every device.'
+          + '\n\nDevices: {{steps.a1_run_script.output.succeededCount}} succeeded, {{steps.a1_run_script.output.failedCount}} failed.',
+      },
+    });
+    for (const s of doc.steps) expect(s.forEach).toBeUndefined();
+    expect(doc.steps.some((s) => s.tool === 'resolve_targets')).toBe(false);
+    // The second script still chains on the first's succeeded set.
+    expect(doc.steps[3]!.input.fromStep).toEqual({ stepId: 'a0_run_script', set: 'succeeded' });
+  });
+
+  it('the notice shape is the only difference between per-device and summary', () => {
+    const summary = byLabel('onFailure summary with two channels over two scripts');
+    const perDevice = { ...summary, onFailure: { ...summary.onFailure, notice: 'perDevice' } } as FlowFormValues;
+    expect(ids(perDevice)).toEqual([
+      'a0_run_script', 'a0_failed', 'a0_failnotice_0', 'a0_failnotice_1',
+      'a1_run_script', 'a1_failed', 'a1_failnotice_0', 'a1_failnotice_1', 'a2_notify',
+    ]);
+  });
+
   it('description is omitted when empty or whitespace', () => {
     const base = byLabel('scheduled script on a group');
     expect('description' in compileFlowForm({ ...base, description: '   ' })).toBe(false);

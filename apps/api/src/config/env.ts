@@ -113,6 +113,13 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// Browser remote desktop rollout flag (#9557). Default OFF. Temporary: removed
+// once the lab leg passes (W7 of the browser remote desktop plan). Read at CALL
+// time so a test can flip it per-case without vi.resetModules().
+export function browserDesktopEnabled(): boolean {
+  return envFlag('BREEZE_BROWSER_DESKTOP_ENABLED', false);
+}
+
 // Remote desktop start fence (#5537). Every remote-desktop start dispatch site
 // refuses an agent that has not declared desktopFenceProtocolVersion=1 (the
 // durable start/terminal generation fence) with 503 agent_upgrade_required —

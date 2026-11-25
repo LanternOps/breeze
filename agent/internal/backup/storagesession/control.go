@@ -336,10 +336,21 @@ func (c *sessionControl) checkDeadline() error {
 
 // ensureLease renews the lease once less than a third of it remains, judged
 // on the control plane's clock (see serverNow), so a device clock that is
-// off neither lets the lease lapse nor renews on every call. Renewal is
-// single-flight. A failed renew is not fatal by itself (the server decides
-// whether the lease still holds); a rejected renew (the session was revoked
-// or ended) ends the session.
+// off neither lets the lease lapse nor renews on every call. Until some
+// answer has shown the control plane's clock it renews regardless: a device
+// clock behind the control plane's would otherwise hide a lapsed lease.
+// Renewal is single-flight. A rejected renew (the session was revoked or
+// ended) ends the session.
+//
+// A renew that fails (transport error, 429, 5xx, an unusable answer) is not
+// fatal while the lease still holds: the call goes ahead on what is left. Once
+// the lease has lapsed (on the control plane's clock as best known) it is
+// retried after the backoff the failure set, within ctx and up to
+// transientMaxAttempts, and never falls through: the control plane refuses
+// any other call on a lapsed lease with 410, which ends the session. A lapsed
+// lease is normal for a session that waited before its first use (#11813, and
+// a write session queued behind another backup, #11012); its first renew
+// re-arms it.
 func (c *sessionControl) ensureLease(ctx context.Context) error {
 	return c.ensureLeaseAt(ctx, false)
 }
@@ -347,15 +358,38 @@ func (c *sessionControl) ensureLease(ctx context.Context) error {
 // ensureLeaseAt is ensureLease; force renews whatever remains (the renewer
 // uses it once, to learn the clock skew before any other call has).
 func (c *sessionControl) ensureLeaseAt(ctx context.Context, force bool) error {
-	if err := c.sessionLost(); err != nil {
-		return err
+	afterBackoff := false
+	for attempt := 1; ; attempt++ {
+		if err := c.sessionLost(); err != nil {
+			return err
+		}
+		if err := c.checkDeadline(); err != nil {
+			return err
+		}
+		if !c.canRenew {
+			return nil
+		}
+		wait, err := c.renewIfDue(ctx, force, afterBackoff)
+		if err != nil || wait <= 0 {
+			return err
+		}
+		if attempt >= transientMaxAttempts {
+			return sessionErr("the lease has lapsed and could not be renewed after %d attempts", attempt)
+		}
+		slog.Warn("storage session: lease has lapsed and its renew failed; retrying before any other call",
+			"sessionId", c.desc.SessionID, "attempt", attempt, "wait", wait.String())
+		if err := retrySleep(ctx, wait); err != nil {
+			return fmt.Errorf("storage session: renew cancelled: %w", err)
+		}
+		afterBackoff = true
 	}
-	if err := c.checkDeadline(); err != nil {
-		return err
-	}
-	if !c.canRenew {
-		return nil
-	}
+}
+
+// renewIfDue renews the lease when it is due (see ensureLease). It returns a
+// positive wait only when the lease has lapsed and is still not renewed: how
+// long to back off before trying again. afterBackoff renews even inside the
+// backoff a previous failure set (the caller has just waited it out).
+func (c *sessionControl) renewIfDue(ctx context.Context, force, afterBackoff bool) (time.Duration, error) {
 	c.leaseMu.Lock()
 	defer c.leaseMu.Unlock()
 	now := c.serverNow()
@@ -368,20 +402,31 @@ func (c *sessionControl) ensureLeaseAt(ctx context.Context, force bool) error {
 		c.leaseDuration = max(c.leaseDuration+skew, minLeaseDuration)
 		c.leaseDurationProvisional = false
 	}
-	if !force && c.leaseExpiresAt.Sub(now) > c.leaseDuration/3 {
-		return nil
+	if !force && c.clockKnown() && c.leaseExpiresAt.Sub(now) > c.leaseDuration/3 {
+		return 0, nil
 	}
-	if now.Before(c.renewNotBefore) {
-		return nil
+	// backoff records a failed renew. The lease is judged on the control
+	// plane's clock after the answer, which may have taught the skew.
+	backoff := func(wait time.Duration) time.Duration {
+		c.renewNotBefore = now.Add(wait)
+		if c.serverNow().Before(c.leaseExpiresAt) {
+			return 0
+		}
+		return wait
+	}
+	if now.Before(c.renewNotBefore) && !afterBackoff {
+		if now.Before(c.leaseExpiresAt) {
+			return 0, nil
+		}
+		return c.renewNotBefore.Sub(now), nil
 	}
 	resp, err := c.controlRequest(ctx, "renew", map[string]any{})
 	if err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("storage session: renew cancelled: %w", ctx.Err())
+			return 0, fmt.Errorf("storage session: renew cancelled: %w", ctx.Err())
 		}
-		c.renewNotBefore = now.Add(renewFailureBackoff)
 		slog.Warn("storage session: lease renew failed; will retry", "sessionId", c.desc.SessionID, "error", err.Error())
-		return nil
+		return backoff(renewFailureBackoff), nil
 	}
 	defer drain(resp)
 	switch status := resp.StatusCode; {
@@ -393,8 +438,7 @@ func (c *sessionControl) ensureLeaseAt(ctx context.Context, force bool) error {
 			ExpiresIn *int64 `json:"expiresIn"`
 		}
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&wire); err != nil {
-			c.renewNotBefore = now.Add(renewFailureBackoff)
-			return nil
+			return backoff(renewFailureBackoff), nil
 		}
 		now = c.serverNow() // the answer may have taught the skew
 		expiresAt, err := time.Parse(time.RFC3339, wire.ExpiresAt)
@@ -402,8 +446,7 @@ func (c *sessionControl) ensureLeaseAt(ctx context.Context, force bool) error {
 			expiresAt, err = now.Add(time.Duration(*wire.ExpiresIn)*time.Second), nil
 		}
 		if err != nil || !expiresAt.After(now) {
-			c.renewNotBefore = now.Add(renewFailureBackoff)
-			return nil
+			return backoff(renewFailureBackoff), nil
 		}
 		if expiresAt.After(c.desc.deadline) {
 			expiresAt = c.desc.deadline
@@ -412,19 +455,18 @@ func (c *sessionControl) ensureLeaseAt(ctx context.Context, force bool) error {
 		c.leaseDuration = leaseDurationFrom(expiresAt, now)
 		c.leaseDurationProvisional = false
 		c.renewNotBefore = time.Time{}
-		return nil
+		return 0, nil
 	case status == http.StatusUnauthorized, status == http.StatusForbidden,
 		status == http.StatusNotFound, status == http.StatusGone:
-		return c.markLost(fmt.Errorf("renew rejected with status %d", status))
+		return 0, c.markLost(fmt.Errorf("renew rejected with status %d", status))
 	case status >= 300 && status < 400:
-		return c.markLost(fmt.Errorf("control plane answered renew with a redirect (status %d); redirects are not followed", status))
+		return 0, c.markLost(fmt.Errorf("control plane answered renew with a redirect (status %d); redirects are not followed", status))
 	default:
 		wait := httputil.ParseRetryAfter(resp.Header, time.Now())
 		if wait <= 0 {
 			wait = renewFailureBackoff
 		}
-		c.renewNotBefore = now.Add(wait)
-		return nil
+		return backoff(wait), nil
 	}
 }
 

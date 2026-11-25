@@ -6,6 +6,7 @@
   "scripts": {
     "ai:tool-capture": "tsx src/services/llm/__scripts__/tool-capture.ts",
     "ai:tool-eval": "tsx src/services/llm/__scripts__/tool-eval.ts",
+    "ai:discovery-report": "tsx src/services/llm/__scripts__/discovery-report.ts",
     "ai:research-eval": "tsx src/services/llm/__scripts__/research-eval.ts",
     "build": "tsup",
     "clean": "rm -rf dist",
@@ -114,7 +115,7 @@
     "reflect-metadata": "^0.2.2",
     "resend": "^6.28.1",
     "sanitize-html": "^2.18.0",
-    "semver": "^7.8.5",
+    "semver": "^7.8.6",
     "ssh2-sftp-client": "^12.1.1",
     "stream-chain": "4.2.6",
     "stream-json": "3.7.0",

@@ -8,39 +8,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Mail, MessageSquare, Bell, Webhook, Phone, Smartphone } from 'lucide-react';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
 import { cn } from '@/lib/utils';
+import { isValidEmail } from '@/lib/email';
 import type { NotificationChannelType } from './NotificationChannelList';
 
 const E164_PHONE_REGEX = /^\+[1-9]\d{1,14}$/;
-
-const emailConfigSchema = z.object({
-  recipients: z.array(z.string().email('Invalid email address')).min(1, 'At least one recipient is required')
-});
-
-const slackConfigSchema = z.object({
-  webhookUrl: z.string().url('Invalid URL').min(1, 'Webhook URL is required'),
-  channel: z.string().optional()
-});
-
-const teamsConfigSchema = z.object({
-  webhookUrl: z.string().url('Invalid URL').min(1, 'Webhook URL is required')
-});
-
-const pagerdutyConfigSchema = z.object({
-  integrationKey: z.string().min(1, 'Integration key is required'),
-  severity: z.enum(['critical', 'error', 'warning', 'info']).optional()
-});
-
-const smsConfigSchema = z.object({
-  phoneNumbers: z.array(z.string().min(1, 'Phone number is required')).min(1, 'At least one phone number is required')
-});
-
-const pushoverConfigSchema = z.object({
-  token: z.string().max(30, 'Token must be 30 characters or fewer').optional(),
-  user: z.string().min(1, 'User or group key is required').max(30, 'User key must be 30 characters or fewer'),
-  device: z.string().max(25, 'Device name must be 25 characters or fewer').optional(),
-  priority: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1), z.literal(2)]).optional(),
-  sound: z.string().max(40).optional()
-});
 
 const createNotificationChannelSchema = (t: TFunction<'alerts'>) => z.object({
   name: z.string().min(1, t('notificationChannelForm.validation.channelNameRequired')),
@@ -92,6 +63,26 @@ const createNotificationChannelSchema = (t: TFunction<'alerts'>) => z.object({
         code: z.ZodIssueCode.custom,
         path: ['pushoverDevice'],
         message: t('notificationChannelForm.validation.deviceNameTooLong')
+      });
+    }
+  }
+
+  if (data.type === 'email') {
+    const recipients = (data.emailRecipients || [])
+      .map((entry) => entry.value.trim())
+      .filter(Boolean);
+
+    if (recipients.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['emailRecipients'],
+        message: t('notificationChannelForm.validation.emailRequired')
+      });
+    } else if (!recipients.every(isValidEmail)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['emailRecipients'],
+        message: t('notificationChannelForm.validation.allEmailFormat')
       });
     }
   }
@@ -361,6 +352,10 @@ export default function NotificationChannelForm({
               </div>
             ))}
           </div>
+          {/* react-hook-form files an error on the array itself under `.root`, not `.message` */}
+          {errors.emailRecipients?.root?.message && (
+            <p className="mt-2 text-sm text-destructive">{errors.emailRecipients.root.message}</p>
+          )}
         </div>
       )}
 
@@ -763,8 +758,8 @@ export default function NotificationChannelForm({
               </p>
             </div>
           </div>
-          {errors.smsPhoneNumbers?.message && (
-            <p className="mt-2 text-sm text-destructive">{errors.smsPhoneNumbers.message}</p>
+          {errors.smsPhoneNumbers?.root?.message && (
+            <p className="mt-2 text-sm text-destructive">{errors.smsPhoneNumbers.root.message}</p>
           )}
         </div>
       )}

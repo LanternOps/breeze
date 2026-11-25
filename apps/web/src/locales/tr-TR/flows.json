@@ -44,6 +44,8 @@
     "createdInChat": "Breeze AI'da oluşturuldu",
     "movedFromJob": "İşten taşındı",
     "movedFromJobReverted": "(geri taşındı)",
+    "shadowingNotice": "Bu akış {{name}} işinin gölgesinde çalışıyor. İşten geçiş yaptığınızda canlıya alınır.",
+    "shadowingLink": "İşin Taşı penceresini aç",
     "edit": "Düzenle",
     "delete": "Taslağı sil",
     "deleteConfirmTitle": "Bu taslak silinsin mi?",
@@ -184,6 +186,7 @@
     "generic": "Akış etkinleştirilemedi.",
     "webhookSecretMissing": "Bu akışı etkinleştirmeden önce bir webhook gizli anahtarı oluşturun.",
     "aiBudgetUnavailable": "Bu kuruluşun harcayabileceği bir yapay zeka bütçesi yok, bu nedenle yapay zeka adımı olan bir akış etkinleştirilemez.",
+    "conversionNotSwitched": "Bu akış bir işin gölgesinde çalışıyor; bu yüzden buradan değil, işin kendisinden geçiş yaptığınızda canlıya alınır.",
     "webhookSecretInvalidated": "Bu sürümü etkinleştirmek, daha eski bir taslak için oluşturulduğundan webhook gizli anahtarını temizledi. Yeni bir gizli anahtar oluşturup göndericiye verene kadar tüm istekler reddedilir."
   },
   "run": {
@@ -832,7 +835,9 @@
       "trigger": {
         "title": "Ne zaman çalışır",
         "timezone": "Saat dilimi",
-        "eventDeviceHelp": "Eylemler, olayı oluşturan cihazda çalışır. Bir olay cihaz bilgisi olmadan gelirse çalıştırma başarısız olur.",
+        "eventDeviceHelp": "Eylemler, olayı oluşturan cihazda çalışır.",
+        "eventNoDeviceNoRun": "Bir uyarı cihaz bilgisi olmadan gelirse çalıştırma başlamaz.",
+        "eventNoDeviceFails": "Bir olay cihaz bilgisi olmadan gelirse çalıştırma başarısız olur.",
         "filter": "Yalnızca olay eşleştiğinde",
         "filterHelp": "Her alan değeriyle tam olarak eşit olmalıdır. Bu türdeki her olayda çalıştırmak için boş bırakın.",
         "filterKey": "Olay alanı",
@@ -888,8 +893,40 @@
         "continueHelp": "Sonraki eylemler, betiğin gönderilemediği cihazlarda da çalışır.",
         "notify": "Bildir",
         "notifyHelp": "Betiğin gönderilemediği her cihaz için aşağıdaki kanallara bir bildirim gönderin. Çalıştırma başına en fazla 20 bildirim gönderilir.",
+        "notifySummaryHelp": "Tüm cihazlara gönderilemeyen her betik için aşağıdaki kanallara, başarılı ve başarısız cihaz sayılarını içeren tek bir bildirim gönderin.",
         "noChannels": "Bildir seçeneğini kullanmak için bir bildirim kanalı ekleyin."
       }
+    },
+    "disableWebhookNote": "Bu akışın tetikleyicisi bir webhook. Düzenledikten sonra yeniden etkinleştirmek webhook gizli anahtarını temizler ve gönderici yeni anahtara ihtiyaç duyar.",
+    "shadowLine": "Bu akış bir işi gölge modunda izliyor. Buradan değil, işin Geçiş düğmesinden canlıya alınır.",
+    "validation": {
+      "name": "Akışa bir ad verin (en fazla 120 karakter).",
+      "steps": "Bir akışta en az bir eylem olmalı ve sınırı aşmamalıdır.",
+      "cron": "Zamanlama geçerli bir cron ifadesi değil. Beş alan kullanın, örneğin 0 2 * * *.",
+      "timezone": "Bu saat dilimi tanınmıyor. UTC veya Europe/Istanbul gibi bir ad kullanın.",
+      "script": "Bu eylem için bir betik seçin.",
+      "channel": "Bu eylem için bir bildirim kanalı seçin.",
+      "channels": "En az bir bildirim kanalı seçin.",
+      "duplicateStepId": "İki eylemin kimliği aynı. Her eyleme kendi kimliğini verin.",
+      "unknownStepReference": "Bu, var olmayan bir eyleme başvuruyor. Eylem kimliğini kontrol edin.",
+      "forwardReference": "Bu, daha sonra çalışan bir eylemin sonucunu kullanıyor. O eylemi öne alın veya başvuruyu kaldırın.",
+      "eventUnknown": "Sistem bu olay türünü tanımıyor. Listeden birini seçin.",
+      "toolNotFound": "Bu eylem bu akış için kullanılamıyor. Başka bir tane seçin.",
+      "channelNotOwned": "Bu bildirim kanalı bu akışın sahibine ait değil. Kendinize ait birini seçin.",
+      "referenceNotOwned": "Bu, bu akışın sahibine ait olmayan bir şeye başvuruyor.",
+      "deviceNotOwned": "Bu cihaz bu akışın kuruluşuna ait değil.",
+      "resolverRequired": "Tüm kuruluşlar için bir akışta, müşteri kuruluşunu belirten gövde alanı gerekir.",
+      "resolverNotAllowed": "Bir kuruluşun webhook akışı her zaman o kuruluşta çalışır. Kuruluş aramasını kaldırın.",
+      "documentTooLarge": "Belge çok büyük. Bazı eylemleri veya metni kaldırın.",
+      "secretInDocument": "Belge, gizli anahtara benzeyen bir şey içeriyor. Belgeden kaldırın.",
+      "event": "Bu akışı başlatan olayı seçin.",
+      "eventFilter": "Bir olay filtresi alan adı geçerli değil. Harf, rakam, nokta ve alt çizgi kullanın ve bir harfle başlayın.",
+      "orgResolver": "Kuruluş araması geçerli değil. Gövde alanını body.ad biçiminde, harici bir sistem için de onun adını girin.",
+      "title": "Bu eyleme bir başlık verin (en fazla 200 karakter).",
+      "message": "Bu eylem için bir ileti yazın (en fazla 4000 karakter).",
+      "parameters": "Bir betik parametresi geçerli değil. Her parametreye bir ad verin.",
+      "target": "Bu akışın hangi cihazlarda çalışacağını seçin.",
+      "inputInvalid": "Bu değer geçerli değil. Gösterilen yoldaki alanı kontrol edin."
     },
     "enableOpenFailed": "Taslak kaydedildi, ancak etkinleştirme penceresi açılamadı. Etkinleştirmek için akışı açın."
   }

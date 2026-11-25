@@ -14,7 +14,6 @@ import DeviceCard from './DeviceCard';
 import { toDeviceListRow } from './deviceRowTransform';
 import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
-import DeviceSettingsModal from './DeviceSettingsModal';
 import SendMessageDialog from '../endpointMessages/SendMessageDialog';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { BulkPurgeDialog } from './BulkPurgeDialog';
@@ -409,7 +408,6 @@ export default function DevicesPage() {
   // Bumped whenever a poll chain is superseded (a new run, or unmount), so a
   // tick already in flight cannot land its result over a newer run's.
   const purgePollTokenRef = useRef(0);
-  const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility().has('warranty'));
   const [diskUsageVisible, setDiskUsageVisible] = useState(() => readColumnVisibility().has('diskUsage'));
   const diskUsageRequested = diskUsageVisible && viewMode === 'list';
@@ -1413,9 +1411,10 @@ export default function DevicesPage() {
           openScriptPicker([device]);
           break;
 
-        case 'settings':
-          setSettingsDevice(device);
-          break;
+        case 'edit-details':
+          // A device's record is edited on its Details tab, the one place for it.
+          void navigateTo(`/devices/${device.id}#details`);
+          return;
 
         case 'move-site':
           // The dialog does the PATCH (expectedSiteId-guarded) and reports back via onSaved.
@@ -3085,15 +3084,6 @@ export default function DevicesPage() {
         />
       )}
 
-      {settingsDevice && (
-        <DeviceSettingsModal
-          device={settingsDevice}
-          isOpen={!!settingsDevice}
-          onClose={() => setSettingsDevice(null)}
-          onSaved={refreshDevices}
-          onAction={handleDeviceAction}
-        />
-      )}
       </div>
     </>
   );

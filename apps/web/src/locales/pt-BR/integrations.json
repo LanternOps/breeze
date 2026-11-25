@@ -160,7 +160,7 @@
       "unexpectedAlert": "Permissões inesperadas detectadas",
       "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
       "grantsVerifiedAt": "Permissões verificadas",
-      "graphTokenOnly": "Permissões do Graph verificadas. As permissões em outros recursos da Microsoft não foram verificadas; conceda Application.Read.All para uma verificação completa."
+      "graphTokenOnly": "Permissões do Graph verificadas. Não foi possível verificar as permissões em outros recursos da Microsoft. Não conceda permissões adicionais para resolver isso: qualquer permissão fora do conjunto exigido é informada como inesperada."
     },
     "actions": {
       "connect": "Conectar",

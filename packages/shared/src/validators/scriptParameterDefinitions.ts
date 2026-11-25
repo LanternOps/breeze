@@ -136,9 +136,16 @@ const builtinParameterDefinitionSchema = z.object({
  *   command closed on a miss, and the env var is derived as
  *   `BREEZE_VAR_` + ToUpper(name) with no `-` folding. Rejecting at save beats
  *   failing per device.
- * - `type` is always `string` and `required` is always `true`: a missing or
- *   unreadable secret fails the device closed, so there is no optional secret
- *   and nothing to coerce.
+ * - `type` is always `string`.
+ * - `required` defaults to `true` — the opposite of every other arm — so a
+ *   definition saved before #12613 (which pinned it `true`, or omitted it)
+ *   keeps failing the device closed when the secret is not defined, with no
+ *   data change and an unchanged canonical form. `required: false` (#12613)
+ *   means ONLY "not defined for the device's organization -> the script runs
+ *   and `BREEZE_VAR_<NAME>` is not set at all". A secret that is defined but
+ *   cannot be decrypted, is not a secret, or sits above the script's
+ *   ownership tier still fails the device whatever `required` says — that is
+ *   decided in `apps/api/src/services/sourcedParameters.ts`, not here.
  * - `defaultValue` and `options` are rejected when present. A default would be
  *   a plaintext credential stored in the script definition; the value is never
  *   a choice list. `z.never().optional()` accepts only an absent (or
@@ -157,7 +164,7 @@ const tenantSecretParameterDefinitionSchema = z.object({
   source: z.literal('tenantSecret'),
   variableKey: tenantVariableKeySchema,
   type: z.literal('string').default('string'),
-  required: z.literal(true).default(true),
+  required: z.boolean().default(true),
   defaultValue: z.never({ message: 'A secret parameter cannot carry a default value' }).optional(),
   options: z.never({ message: 'A secret parameter cannot declare options' }).optional(),
 });

@@ -33,7 +33,7 @@ import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo as navigateToPage } from '@/lib/navigation';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
-import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
+import { buildBreadcrumbs, getParentPath, getPathRoot, isPathRoot, isWindowsPath, joinRemotePath } from './filePathUtils';
 import {
   copyFiles,
   moveFiles,
@@ -191,9 +191,14 @@ export default function FileManager({
 }: FileManagerProps) {
   const { t } = useTranslation('remote');
   const [currentPath, setCurrentPath] = useState(initialPath);
+  const [pathDraft, setPathDraft] = useState<string | null>(null);
+  const pathInputValue = pathDraft ?? currentPath;
   const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [directoryLoad, setDirectoryLoad] = useState<'navigate' | 'refresh' | null>(null);
+  const loading = directoryLoad !== null;
+  const [error, setError] = useState<{ message: string; path: string } | null>(null);
+  const canWriteToCurrentFolder = !loading && error === null && pathInputValue === currentPath;
+  const isWindows = osType ? osType.toLowerCase() === 'windows' : isWindowsPath(initialPath);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [transfers, setTransfers] = useState<TransferItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -211,6 +216,8 @@ export default function FileManager({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const directoryRequestId = useRef(0);
+  const displayedDirectory = useRef({ path: initialPath, navigating: false });
 
   // One AbortController per in-flight transfer so Cancel actually aborts the
   // browser-side request instead of just hiding the row (issue #2396).
@@ -221,8 +228,13 @@ export default function FileManager({
   const cancelledTransfersRef = useRef<Set<string>>(new Set());
 
   // Fetch directory contents
-  const fetchDirectory = useCallback(async (path: string) => {
-    setLoading(true);
+  const fetchDirectory = useCallback(async (path: string, mode: 'navigate' | 'refresh' = 'navigate') => {
+    const directory = displayedDirectory.current;
+    // A completed write may have started in a folder the user has since left.
+    if (mode === 'refresh' && (directory.navigating || directory.path !== path)) return;
+    const requestId = ++directoryRequestId.current;
+    directory.navigating = mode === 'navigate';
+    setDirectoryLoad(mode);
     setSelectedItems(new Set());
 
     try {
@@ -241,27 +253,39 @@ export default function FileManager({
         throw new Error(translated || json.error || t('fileManager.errors.loadDirectory'));
       }
       const json = await response.json();
+      if (requestId !== directoryRequestId.current) return;
       const entriesData = Array.isArray(json.data) ? json.data : [];
       setEntries(entriesData);
       // Prefer the path the agent actually listed: navigating into a macOS
       // Finder alias lands on the alias's target, and uploads/breadcrumbs must
       // follow it there rather than stay on the alias file.
-      setCurrentPath(typeof json.path === 'string' && json.path ? json.path : path);
+      const listedPath = typeof json.path === 'string' && json.path ? json.path : path;
+      if (mode === 'navigate' || listedPath !== directory.path) setPathDraft(null);
+      directory.path = listedPath;
+      setCurrentPath(listedPath);
       setError(null);
     } catch (err) {
+      if (requestId !== directoryRequestId.current) return;
       const message = err instanceof Error ? err.message : t('fileManager.errors.loadDirectory');
       console.error('[FileManager] Failed to load directory:', err);
       onError?.(message);
-      setError(message);
+      setError({ message, path });
       setEntries([]);
     } finally {
-      setLoading(false);
+      if (requestId === directoryRequestId.current) {
+        directory.navigating = false;
+        setDirectoryLoad(null);
+      }
     }
   }, [deviceId, onError]);
 
   // Navigate to directory
   const navigateTo = useCallback((path: string) => {
     fetchDirectory(path);
+  }, [fetchDirectory]);
+
+  const refreshDirectory = useCallback((path: string) => {
+    fetchDirectory(path, 'refresh');
   }, [fetchDirectory]);
 
   // Go up one directory
@@ -421,6 +445,8 @@ export default function FileManager({
 
   // Handle file upload
   const handleUpload = useCallback(async (files: FileList) => {
+    if (!canWriteToCurrentFolder) return;
+
     for (const file of Array.from(files)) {
       const transferId = crypto.randomUUID();
       const controller = new AbortController();
@@ -485,7 +511,7 @@ export default function FileManager({
         ));
 
         // Refresh directory to show new file
-        fetchDirectory(currentPath);
+        refreshDirectory(currentPath);
       } catch (error) {
         const aborted = isAbortError(error);
         if (cancelledTransfersRef.current.has(transferId)) {
@@ -521,13 +547,13 @@ export default function FileManager({
         cancelledTransfersRef.current.delete(transferId);
       }
     }
-  }, [deviceId, currentPath, fetchDirectory]);
+  }, [deviceId, currentPath, refreshDirectory, canWriteToCurrentFolder]);
 
   // Handle drag and drop
   const handleDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
-    setIsDragging(true);
-  }, []);
+    if (canWriteToCurrentFolder) setIsDragging(true);
+  }, [canWriteToCurrentFolder]);
 
   const handleDragLeave = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -644,14 +670,14 @@ export default function FileManager({
       const response = await copyFiles(deviceId, items);
       const { result, summary } = summarizeBulkResults(response.results);
       addActivity('copy', selectedPaths, result, summary);
-      fetchDirectory(currentPath);
+      refreshDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
       addActivity('copy', selectedPaths, 'failure', err instanceof Error ? err.message : t('fileManager.errors.copy'));
     } finally {
       setOperationLoading(false);
     }
-  }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
+  }, [deviceId, selectedItems, currentPath, refreshDirectory, addActivity]);
 
   // Handle move to destination
   const handleMoveTo = useCallback(async (destPath: string) => {
@@ -666,14 +692,14 @@ export default function FileManager({
       const response = await moveFiles(deviceId, items);
       const { result, summary } = summarizeBulkResults(response.results);
       addActivity('move', selectedPaths, result, summary);
-      fetchDirectory(currentPath);
+      refreshDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
       addActivity('move', selectedPaths, 'failure', err instanceof Error ? err.message : t('fileManager.errors.move'));
     } finally {
       setOperationLoading(false);
     }
-  }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
+  }, [deviceId, selectedItems, currentPath, refreshDirectory, addActivity]);
 
   // Handle delete confirmation
   const handleDelete = useCallback(async (permanent: boolean) => {
@@ -684,14 +710,14 @@ export default function FileManager({
       const response = await deleteFiles(deviceId, selectedPaths, permanent);
       const { result, summary } = summarizeBulkResults(response.results);
       addActivity('delete', selectedPaths, result, summary);
-      fetchDirectory(currentPath);
+      refreshDirectory(currentPath);
       setSelectedItems(new Set());
     } catch (err) {
       addActivity('delete', selectedPaths, 'failure', err instanceof Error ? err.message : t('fileManager.errors.delete'));
     } finally {
       setOperationLoading(false);
     }
-  }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
+  }, [deviceId, selectedItems, currentPath, refreshDirectory, addActivity]);
 
   // Create a folder in the current directory
   const handleCreateFolder = useCallback(async (name: string) => {
@@ -710,7 +736,7 @@ export default function FileManager({
       });
       addActivity('mkdir', [path], 'success');
       setShowNewFolder(false);
-      fetchDirectory(currentPath);
+      refreshDirectory(currentPath);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       handleActionError(err, fallback);
@@ -719,7 +745,7 @@ export default function FileManager({
         // The folder may exist by now, so the listing is the way to find out.
         addActivity('mkdir', [path], 'unverified', message);
         setShowNewFolder(false);
-        fetchDirectory(currentPath);
+        refreshDirectory(currentPath);
       } else {
         // The dialog stays open so the name can be corrected and retried.
         addActivity('mkdir', [path], 'failure', message);
@@ -727,7 +753,7 @@ export default function FileManager({
     } finally {
       setCreatingFolder(false);
     }
-  }, [deviceId, currentPath, fetchDirectory, addActivity, t]);
+  }, [deviceId, currentPath, refreshDirectory, addActivity, t]);
 
   // Handle context menu
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
@@ -811,6 +837,7 @@ export default function FileManager({
             ref={fileInputRef}
             type="file"
             multiple
+            disabled={!canWriteToCurrentFolder}
             className="hidden"
             onChange={(e) => e.target.files && handleUpload(e.target.files)}
           />
@@ -860,7 +887,7 @@ export default function FileManager({
 
           <button
             type="button"
-            onClick={() => fetchDirectory(currentPath)}
+            onClick={() => refreshDirectory(currentPath)}
             disabled={loading}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
             title={t('common:actions.refresh')}
@@ -885,7 +912,7 @@ export default function FileManager({
             type="button"
             data-testid="file-manager-new-folder"
             onClick={() => setShowNewFolder(true)}
-            disabled={loading || error !== null}
+            disabled={!canWriteToCurrentFolder}
             className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
             <FolderPlus className="h-4 w-4" />
@@ -895,7 +922,8 @@ export default function FileManager({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+            disabled={!canWriteToCurrentFolder}
+            className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             <Upload className="h-4 w-4" />
             {t('common:actions.upload')}
@@ -904,7 +932,7 @@ export default function FileManager({
       </div>
 
       {/* Navigation */}
-      <div className="flex items-center gap-2 border-b px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
         <button
           type="button"
           onClick={goHome}
@@ -953,7 +981,7 @@ export default function FileManager({
           </div>
         )}
 
-        <div className="flex flex-1 items-center gap-1 text-sm">
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap text-sm">
           <button
             type="button"
             onClick={() => navigateTo(breadcrumbs.rootPath)}
@@ -987,6 +1015,44 @@ export default function FileManager({
           <History className="h-3.5 w-3.5" />
           {t('fileManager.activity')}{activities.length > 0 && ` (${activities.length})`}
         </button>
+
+        <form
+          className="flex w-full min-w-0 items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (loading || !pathInputValue.trim()) return;
+            setShowTrash(false);
+            // A bare drive letter in the address field means the drive root.
+            navigateTo(/^[A-Za-z]:$/.test(pathInputValue) ? getPathRoot(pathInputValue) : pathInputValue);
+          }}
+        >
+          <input
+            type="text"
+            aria-label={t('fileManager.folderPath')}
+            title={t('fileManager.absolutePathHint')}
+            placeholder={t('fileManager.folderPath')}
+            value={pathInputValue}
+            required
+            maxLength={2048}
+            pattern={isWindows ? String.raw`[A-Za-z]:(?:(?:/|\\).*)?` : String.raw`/(?!(?:/|\\)|\?\?(?:/|\\)).*`}
+            readOnly={directoryLoad === 'navigate'}
+            spellCheck={false}
+            autoComplete="off"
+            autoCapitalize="none"
+            onChange={(event) => setPathDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setPathDraft(null);
+            }}
+            className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 font-mono text-sm"
+          />
+          <button
+            type="submit"
+            disabled={loading || !pathInputValue.trim()}
+            className="h-8 shrink-0 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {t('fileManager.openFolder')}
+          </button>
+        </form>
       </div>
 
       {/* Disk Cleanup lives on the device's own tab. */}
@@ -1009,18 +1075,18 @@ export default function FileManager({
       {/* File List + Activity sidebar */}
       <div className="flex flex-1 min-h-0">
       {showTrash ? (
-        <TrashView deviceId={deviceId} onRestore={() => { fetchDirectory(currentPath); addActivity('restore', [], 'success'); }} />
+        <TrashView deviceId={deviceId} onRestore={() => { refreshDirectory(currentPath); addActivity('restore', [], 'success'); }} />
       ) : (
         <div
           className={cn(
             'flex-1 overflow-auto',
-            isDragging && 'ring-2 ring-primary ring-inset'
+            isDragging && canWriteToCurrentFolder && 'ring-2 ring-primary ring-inset'
           )}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {isDragging && (
+          {isDragging && canWriteToCurrentFolder && (
             <div className="absolute inset-0 flex items-center justify-center bg-primary/10 z-10">
               <div className="flex flex-col items-center gap-2 text-primary">
                 <Upload className="h-12 w-12" />
@@ -1096,10 +1162,10 @@ export default function FileManager({
                   <td colSpan={5} className="px-4 py-8 text-center">
                     <div className="flex flex-col items-center gap-2">
                       <AlertCircle className="h-6 w-6 text-red-500" />
-                      <p className="text-sm text-red-500">{error}</p>
+                      <p role="alert" className="text-sm text-red-500">{error.message}</p>
                       <button
                         type="button"
-                        onClick={() => fetchDirectory(currentPath)}
+                        onClick={() => fetchDirectory(error.path)}
                         className="text-xs text-primary hover:underline"
                       >
                         {t('common:actions.retry')}

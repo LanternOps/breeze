@@ -430,6 +430,9 @@ describe('portal routes', () => {
         to: 'portal@example.com',
         resetUrl: 'http://localhost:4321/portal/reset-password?token=nanoid-token&orgId=f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
         purpose: 'portal.password_reset',
+        // #12249: anyone can request a reset for any address, so the external
+        // bucket — reset volume can never spend or stop the partner's own mail.
+        trigger: 'external',
         partnerId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620777',
         partnerName: 'CloudWise',
       });

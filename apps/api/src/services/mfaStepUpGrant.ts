@@ -94,6 +94,9 @@ export type StepUpOperation =
   // out to every org under the partner that has opted in, so it gets the
   // same fresh-MFA-plus-resource-binding treatment as the org-scope grant.
   | 'ai_partner_script_ceiling_grant'
+  // Raising the partner's MCP unattended proposal ceiling lets designated MCP
+  // principals run reviewed AI scripts up to that risk with no human approval.
+  | 'ai_partner_mcp_proposal_ceiling'
   // #5601: a "recent ceremony" credential for consecutive approval decides.
   // THE ONLY MULTI-USE OPERATION IN THIS MODULE — redeemed with the
   // non-consuming `readStepUpGrant`/`validateStepUpGrant` (GET), never
@@ -173,7 +176,13 @@ export type StepUpOperation =
   // to restore a removed record nobody agreed to restore. Consumed inside the
   // intent's creating transaction, after every refusal
   // (services/deviceReattach/requestIntent.ts), so a refusal never burns it.
-  | 'device_reattach';
+  | 'device_reattach'
+  // Accepting a held TPM key change as a device's new baseline (#8318 wave
+  // T2): the key a reattach compares against. Bound by resourceDigest to
+  // { deviceId, baselineVersion }, the opaque version of the exact baseline
+  // and held key the operator reviewed (services/tpmBaseline), so a grant can
+  // never accept a different key. Consumed after every refusal.
+  | 'device_tpm_baseline_accept';
 
 export interface StepUpGrant {
   id: string;
@@ -330,6 +339,22 @@ export interface DeviceReattachResource {
   restoreDecommissioned: boolean;
 }
 
+export interface DeviceTpmBaselineAcceptResource {
+  deviceId: string;
+  /** The opaque version of the baseline and the held key (services/tpmBaseline); hashed as given. */
+  baselineVersion: string;
+}
+
+/** Canonical digest for a `device_tpm_baseline_accept` grant (#8318 wave T2). */
+export function deviceTpmBaselineAcceptResourceDigest(input: DeviceTpmBaselineAcceptResource): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'device_tpm_baseline_accept',
+    deviceId: canonicalId(input.deviceId),
+    baselineVersion: input.baselineVersion,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
 /**
  * Canonical digest for a `device_reattach` grant (#8318 spec §8). The two
  * device ids are uuid-typed at their source and folded (#10119); the target
@@ -484,6 +509,21 @@ export function partnerScriptCeilingResourceDigest(input: {
     partnerId: canonicalId(input.partnerId),
     unattendedAllowed: input.unattendedAllowed,
     widening: canonicalWidening(input.widening),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Binds an `ai_partner_mcp_proposal_ceiling` grant to one partner and the exact
+ * ceiling being saved.
+ */
+export function partnerMcpProposalCeilingResourceDigest(input: {
+  partnerId: string;
+  mcpUnattendedProposalMaxRisk: string;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    partnerId: canonicalId(input.partnerId),
+    mcpUnattendedProposalMaxRisk: input.mcpUnattendedProposalMaxRisk,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

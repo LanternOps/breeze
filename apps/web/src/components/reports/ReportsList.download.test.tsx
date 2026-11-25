@@ -116,6 +116,30 @@ describe('ReportsList download', () => {
     expect(downloadBlob).not.toHaveBeenCalled();
   });
 
+  it("hands the run download's branding to exportReport as serverBranding (#12048)", async () => {
+    const branding = { name: 'Example MSP', logoDataUrl: null, logoAspect: null, pageSize: 'letter' };
+    mountWith((url) => {
+      if (url === '/reports/runs/run-1/download') {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: () => Promise.resolve({ type: 'device_inventory', format: 'pdf', data: { rows: [{ hostname: 'pc-1' }] }, branding }),
+        });
+      }
+      return undefined;
+    });
+
+    render(<ReportsList />);
+    await userEvent.click(await screen.findByText('Recent Runs'));
+    await userEvent.click(await screen.findByText('Download'));
+
+    await waitFor(() => expect(exportReport).toHaveBeenCalledTimes(1));
+    expect(exportReport).toHaveBeenCalledWith(
+      [{ hostname: 'pc-1' }],
+      expect.objectContaining({ serverBranding: branding }),
+    );
+  });
+
   it('surfaces a server error message', async () => {
     mountWith((url) => {
       if (url === '/reports/runs/run-1/download') {

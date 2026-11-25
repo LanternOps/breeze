@@ -193,6 +193,8 @@ vi.mock('./runFinishedNotify', () => ({ deliverRunFinishedNotifications }));
 // W2 (#11085): the thread post-back a troubleshoot finish hands off to.
 const postSpecialistResult = vi.hoisted(() => vi.fn<(runId: string) => Promise<unknown>>(async () => ({ posted: true })));
 vi.mock('../wisp/specialistResult', () => ({ postSpecialistResult }));
+const settleApprovalParkedRun = vi.hoisted(() => vi.fn<(runId: string) => Promise<boolean>>(async () => false));
+vi.mock('./runApprovalSettlement', () => ({ settleApprovalParkedRun }));
 
 const enqueueAgentNotifyRetry = vi.hoisted(() => vi.fn<(runId: string) => Promise<void>>(async () => undefined));
 vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry }));
@@ -458,6 +460,34 @@ describe('device_troubleshooting post-back (W2 #11085)', () => {
     await executeAgentRun(RUN_ID);
     expect(finalTransition()!.to).toBe('awaiting_approval');
     expect(postSpecialistResult).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  // #11965: steps that became final while the run was still going have no
+  // later event, so finishRun checks once right after it parks.
+  it('an awaiting_approval finish checks settlement once, after the waiting post', async () => {
+    seedRun('device_troubleshooting');
+    let postedFirst = false;
+    settleApprovalParkedRun.mockImplementationOnce(async () => { postedFirst = postSpecialistResult.mock.calls.length > 0; return false; });
+    scriptQuery([{ tool: 'set_device_context', input: { deviceId: DEVICE_ID, summary: 'Outlook profile corrupt' } }]);
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.to).toBe('awaiting_approval');
+    expect(settleApprovalParkedRun).toHaveBeenCalledTimes(1);
+    expect(settleApprovalParkedRun).toHaveBeenCalledWith(RUN_ID);
+    expect(postedFirst).toBe(true);
+  });
+
+  it('a completed finish never checks settlement, and a failing check never changes the park', async () => {
+    seedRun('device_troubleshooting');
+    scriptQuery([{ tool: 'get_device_details', input: { deviceId: DEVICE_ID } }]);
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.to).toBe('completed');
+    expect(settleApprovalParkedRun).not.toHaveBeenCalled();
+
+    seedRun('device_troubleshooting');
+    settleApprovalParkedRun.mockRejectedValueOnce(new Error('settle down'));
+    scriptQuery([{ tool: 'set_device_context', input: { deviceId: DEVICE_ID, summary: 'Outlook profile corrupt' } }]);
+    await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
+    expect(finalTransition()!.to).toBe('awaiting_approval');
   });
 
   it('Review Focus 2: a run stopped by the grant posts too (its post says why)', async () => {

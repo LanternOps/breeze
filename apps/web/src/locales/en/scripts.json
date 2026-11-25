@@ -1223,6 +1223,7 @@
       "notSecret": "\"{{key}}\" is not a secret. Choose a secret variable, or switch the source to \"From a variable\".",
       "notSecretRow": "Not a secret — use \"From a variable\"",
       "secretHint": "Delivered only as the environment variable {{env}} — never written into the script. Requires system-context execution and an agent that supports secure secret delivery.",
+      "secretRequiredHelp": "Unchecked: when this secret is not defined for the device's organization, the script still runs and {{env}} is not set. A secret that exists but cannot be read still fails the run.",
       "hint": "Resolved for every target device when the script runs — nobody is asked for it."
     },
     "securityReview": {

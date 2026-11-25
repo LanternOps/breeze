@@ -4,9 +4,13 @@ import type { OpaqueAccessToken } from './tokenClient';
  * Fallback grant source for Admin actions (#12085): the `roles` claim of the
  * app-only Microsoft Graph token this executor acquired itself.
  *
- * Used ONLY when Graph denies the exact inventory read
- * (`/servicePrincipals/{id}/appRoleAssignments`, which needs
- * Application.Read.All — a permission the Admin actions set does not carry).
+ * Used ONLY when Graph denies a read that needs Application.Read.All — a
+ * permission the Admin actions set does not carry:
+ * - the inventory read (`/servicePrincipals/{id}/appRoleAssignments`): the
+ *   roles are the grant source (`graph_token_only`);
+ * - the first resource lookup (`/servicePrincipals/{resourceId}`) after a
+ *   readable inventory: the roles must equal the manifest names of the
+ *   assigned role ids (resourceRoleCrossCheck.ts).
  *
  * Why decoding without verifying the signature is sound here:
  * - The token never comes from a caller. `tokenClient.acquireGraphAppToken`

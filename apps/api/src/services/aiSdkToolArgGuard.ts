@@ -65,8 +65,29 @@ function schemaMap(tools: ReadonlyArray<ToolDecl>): Map<string, z.ZodType> {
 export function createArgCheckedSdkMcpServer(options: SdkServerOptions): SdkServer {
   const server = createSdkMcpServer(options);
   // A test double of the SDK may hand back a non-object; there is nothing to key on.
-  if (server && typeof server === 'object') advertisedSchemas.set(server, schemaMap(options.tools ?? []));
+  if (server && typeof server === 'object') {
+    advertisedSchemas.set(server, schemaMap(options.tools ?? []));
+    advertisedTools.set(server, (options.tools ?? []).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })));
+  }
   return server;
+}
+
+/** Server instance → the tools it advertises (name, description, input schema), in registration order. */
+const advertisedTools = new WeakMap<object, ReadonlyArray<AdvertisedTool>>();
+
+export interface AdvertisedTool {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}
+
+/**
+ * #12421: what a server built here advertises, for the per-session tool
+ * surface fingerprint (aiToolSurfaceFingerprint.ts). Undefined for a server
+ * this module did not build.
+ */
+export function advertisedToolsOf(server: unknown): ReadonlyArray<AdvertisedTool> | undefined {
+  return server && typeof server === 'object' ? advertisedTools.get(server) : undefined;
 }
 
 /** The refusal text for a call, or null when every argument is defined. */

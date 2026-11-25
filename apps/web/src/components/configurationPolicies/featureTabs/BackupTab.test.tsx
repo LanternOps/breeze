@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import BackupTab, { buildInlineSettings, inflateSettings } from './BackupTab';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureEditing';
 import { fetchWithAuth } from '../../../stores/auth';
 
 const saveMock = vi.fn();
@@ -1140,7 +1141,7 @@ describe('BackupTab', () => {
       });
     });
 
-    it('overriding an inherited link copies its retention unchanged', async () => {
+    it('changing an inherited link for this policy copies its retention unchanged', async () => {
       render(
         <BackupTab
           policyId="policy-1"
@@ -1152,7 +1153,9 @@ describe('BackupTab', () => {
       );
 
       await screen.findByText('Primary S3');
-      fireEvent.click(screen.getByRole('button', { name: /^Override$/i }));
+      fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+      expect(saveMock).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
       await waitFor(() => expect(saveMock).toHaveBeenCalled());
       const [linkId, payload] = saveMock.mock.calls[0]!;
@@ -1211,5 +1214,66 @@ describe('BackupTab', () => {
         weeklyDay: 0,
       });
     });
+  });
+
+  it('a read-only viewer gets no retest or downgrade-save controls (#12469)', async () => {
+    const link = {
+      ...baseLink,
+      inlineSettings: {
+        ...baseLink.inlineSettings,
+        retention: {
+          ...((baseLink.inlineSettings?.retention as Record<string, unknown>) ?? {}),
+          immutabilityMode: 'provider',
+          immutableDays: 30,
+        },
+      },
+    };
+    const props = { policyId: 'policy-1', existingLink: link, linkedPolicyId: null, onLinkChanged: vi.fn() } as any;
+
+    const editable = render(<BackupTab {...props} />);
+    await screen.findByText(/Provider immutability is configured/i);
+    expect(screen.getByRole('button', { name: /Save with application protection/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retest config/i })).toBeInTheDocument();
+    editable.unmount();
+
+    render(
+      <FeatureReadOnlyContext.Provider value={true}>
+        <BackupTab {...props} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    await screen.findByText(/Provider immutability is configured/i);
+    expect(screen.queryByRole('button', { name: /Save with application protection/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Retest config/i })).toBeNull();
+  });
+
+  it('a read-only viewer can read the advanced retention section (#12469)', async () => {
+    render(
+      <FeatureReadOnlyContext.Provider value={true}>
+        <BackupTab policyId="policy-1" existingLink={baseLink} linkedPolicyId={null} onLinkChanged={vi.fn()} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    await screen.findByText('Primary S3');
+    // The disclosure toggle is disabled for a read-only viewer; its content is already shown.
+    expect(screen.getByText('GFS Retention')).toBeTruthy();
+    expect(screen.getByText('Backup Window')).toBeTruthy();
+  });
+
+  it('testing or opening a destination does not mark the feature dirty (#12469)', async () => {
+    const reporter = vi.fn();
+    render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <BackupTab policyId="policy-1" existingLink={baseLink} linkedPolicyId={null} onLinkChanged={vi.fn()} />
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    await screen.findByText('Primary S3');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Test$/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/backup/configs/config-1/test', expect.anything()));
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    expect(reporter).not.toHaveBeenCalledWith(true);
+
+    // Typing into the opened form is a real edit.
+    fireEvent.change(screen.getByDisplayValue('Primary S3'), { target: { value: 'Renamed' } });
+    expect(reporter).toHaveBeenCalledWith(true);
   });
 });

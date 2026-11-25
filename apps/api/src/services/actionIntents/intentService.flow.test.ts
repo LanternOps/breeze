@@ -176,6 +176,11 @@ vi.mock('drizzle-orm', () => ({
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', text: strings.join('?'), values })),
 }));
 
+const patchNamesState = vi.hoisted(() => ({
+  resolveApprovalPatchNames: vi.fn(async (): Promise<string[] | null> => ['KB5034441']),
+}));
+vi.mock('./approvalPatchNames', () => ({ resolveApprovalPatchNames: patchNamesState.resolveApprovalPatchNames }));
+
 import { createActionIntent, type CreateActionIntentInput } from './intentService';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -329,6 +334,24 @@ describe('createActionIntent — source flow (#5219)', () => {
     const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ requestingClientLabel: string; actionLabel: string }>;
     expect(rows[0]!.requestingClientLabel).toBe('Flow Disk cleanup');
     expect(rows[0]!.actionLabel).toBe('Step cleanup: run_script');
+  });
+
+  it('a flow step patch install reads no patch names; its label is the step label', async () => {
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+    guardrailState.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'Install 1 patch on 2 devices',
+    });
+
+    await createActionIntent(flowAuth(), flowInput({
+      toolName: 'manage_patches',
+      input: { action: 'install', patchIds: [SCRIPT_ID], deviceIds: [DEVICE_ID, STEP_ROW_ID] },
+    }));
+
+    expect(patchNamesState.resolveApprovalPatchNames).not.toHaveBeenCalled();
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }>;
+    expect(rows[0]!.actionLabel).toBe('Step cleanup: manage_patches');
   });
 
   it('flow intent expires after FLOW_APPROVAL_TTL_HOURS (both scopes)', async () => {

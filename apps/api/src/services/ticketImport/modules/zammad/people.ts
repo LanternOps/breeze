@@ -7,10 +7,19 @@ import { zammadPeople } from './directory';
  * shows the person by reading the source's users live. Read through the
  * directory (the users index the loads already page, cached 30 minutes in
  * this process, dropped with the run), so a report page costs at most one
- * index read plus one request per user created since. A key that is not a
+ * index read plus one request per user created since, capped per call. A key that is not a
  * Zammad user id, or a user the source does not have, is null.
  */
 const ZAMMAD_USER_KEY = /^[1-9]\d{0,11}$/;
+
+/**
+ * Per-user source requests one resolve call may make (#11949 review). A key
+ * can be any of up to SOURCE_USER_KEYS_MAX (200), and every key the users
+ * index lacks costs one request, so a call is bounded here: keys past the cap
+ * come back null (the wizard shows the key) and resolve on a later call, once
+ * the earlier ones are cached.
+ */
+export const ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS = 20;
 
 export async function resolveZammadPeople(src: SourceHandle<unknown>, keys: readonly string[]): Promise<Map<string, SourcePerson | null>> {
   const out = new Map<string, SourcePerson | null>();
@@ -24,7 +33,7 @@ export async function resolveZammadPeople(src: SourceHandle<unknown>, keys: read
     ids.set(id, [...(ids.get(id) ?? []), key]);
   }
   if (ids.size === 0) return out;
-  const people = await zammadPeople(src, ids.keys());
+  const people = await zammadPeople(src, ids.keys(), Date.now(), ZAMMAD_RESOLVE_MAX_UNCACHED_LOOKUPS);
   for (const [id, sameKeys] of ids) {
     const person = people.get(id) ?? null;
     const name = person ? [person.firstname, person.lastname].filter(Boolean).join(' ').trim() || person.login : null;

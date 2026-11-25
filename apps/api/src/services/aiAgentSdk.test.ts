@@ -8,7 +8,7 @@ const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'sess
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson, settleApprovalWaits } from './aiAgentSdk';
 import { flushDeferredToolFailureFlags } from './aiSessionAutoFlag';
-import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
+import { classifyChatReadOnlyDeviceEventLogRead, classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { aiToolExecutions } from '../db/schema';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
@@ -21,6 +21,10 @@ import { APPROVED_COMPLETED_STATUS, APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTI
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { CallerVerificationRequiredError } from './callerVerification/errors';
+import { metricsRegistry } from './metricsRegistry';
+import { createToolDiscoveryObserver } from './aiToolDiscoveryObserver';
+import { assistantToolSearch, userToolSearchResult } from './aiToolDiscoveryObserver.fixtures';
+import { newRoundTripTally } from './aiToolSearchPolicy';
 
 const mockResolveLiveSessionToolAuthority = vi.fn(async (session: any): Promise<any> => ({
   ok: true,
@@ -154,6 +158,9 @@ vi.mock('./aiAgentSdkTools', () => ({
     // tests below stub via checkGuardrails, not this map.
     file_operations: 1,
     get_device_details: 1,
+    // #12453: base tier 1; query / get_event reach Tier 3 via TIER3_ACTIONS,
+    // stubbed here through checkGuardrails.
+    browse_device_event_log: 1,
     // #4883: the handler behind script builder's `execute_script_on_device`.
     run_script: 3,
     // Network-isolation W13 (#10101): four-eyes release.
@@ -1864,6 +1871,145 @@ describe('createSessionPreToolUse', () => {
 
       expect(checkGuardrails).toHaveBeenCalledWith(
         'execute_command',
+        input,
+        expect.objectContaining({ chatSession: true }),
+      );
+    });
+  });
+
+  describe('#12453: chat-only browse_device_event_log reads (System/Setup)', () => {
+    const pinned = Object.freeze({ action: 'query' as const, logName: 'System' as const, level: 'error' as const });
+    const eligibleCheck = {
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      readOnly: true,
+      pinnedDeviceEventLogRead: pinned,
+      description: 'Query System event log',
+    };
+    const input = { action: 'query', deviceId: 'd-1', logName: 'System', level: 'error' };
+    const chatAuth = () => makeAuth({ principal: { kind: 'user_session' } } as any);
+
+    it.each(['per_step', 'auto_approve'] as const)(
+      '%s: auto-executes with the audit row and hands the PINNED read to dispatch',
+      async (approvalMode) => {
+        vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+        const values = mockInsertValues();
+        const session = makeActiveSession({ approvalMode, auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+        expect(checkGuardrails).toHaveBeenCalledWith(
+          'browse_device_event_log',
+          input,
+          expect.objectContaining({ chatSession: true }),
+        );
+        expect(result).toEqual({ allowed: true, context: { pinnedDeviceEventLogRead: pinned } });
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({
+          toolName: 'browse_device_event_log',
+          status: 'executing',
+        }));
+        expect(waitForApproval).not.toHaveBeenCalled();
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      },
+    );
+
+    it('a plan-matched eligible call also carries the pinned read to dispatch', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertValues();
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        auth: chatAuth(),
+        approvedPlanSteps: new Map([[0, { toolName: 'browse_device_event_log', input }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+      expect(result).toEqual({ allowed: true, context: { pinnedDeviceEventLogRead: pinned } });
+    });
+
+    it('paused then approved: the approval exit still carries the pinned read', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertReturning({ id: 'exec-del-1' });
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', isPaused: true, auth: chatAuth() });
+
+      const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+      expect(waitForApproval).toHaveBeenCalled();
+      expect(result).toEqual(expect.objectContaining({ allowed: true, context: { pinnedDeviceEventLogRead: pinned } }));
+    });
+
+    // Same stand-in approach as the #7906 block above: checkGuardrails' #12453
+    // branch (pinned against the real module by
+    // aiGuardrails.chatDeviceEventLogRead.test.ts) on top of the REAL classifier.
+    describe('with the real classifier (gate ↔ classifier integration)', () => {
+      beforeEach(() => {
+        vi.mocked(checkGuardrails).mockImplementation((toolName, toolInput, ctx) => {
+          const pinnedDeviceEventLogRead = ctx?.chatSession
+            ? classifyChatReadOnlyDeviceEventLogRead(toolName, toolInput)
+            : null;
+          return pinnedDeviceEventLogRead
+            ? { allowed: true, tier: 2, requiresApproval: false, readOnly: true, pinnedDeviceEventLogRead, description: 'q' }
+            : { allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'q' };
+        });
+      });
+
+      it('a padded System query auto-executes and pins the canonical channel', async () => {
+        const values = mockInsertValues();
+        const session = makeActiveSession({ approvalMode: 'per_step', auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', { ...input, logName: '  system ' });
+
+        expect(result).toEqual({
+          allowed: true,
+          context: { pinnedDeviceEventLogRead: { action: 'query', logName: 'System', level: 'error' } },
+        });
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+        expect(waitForApproval).not.toHaveBeenCalled();
+      });
+
+      it.each(['Security', 'Application'])('%s does not auto-execute and pins nothing', async (logName) => {
+        mockInsertReturning({ id: 'exec-del-2' });
+        vi.mocked(waitForApproval).mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'auto_approve', auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', { ...input, logName });
+
+        expect(result).toMatchObject({ allowed: false });
+        expect((result as any).context).toBeUndefined();
+        expect(mockCreateActionIntent).toHaveBeenCalled();
+      });
+
+      it.each([
+        ['an ai_agent principal', () => makeAuth({ principal: { kind: 'ai_agent' } } as any)],
+        ['a helper session', () => makeAuth({ principal: { kind: 'user_session' }, helperDeviceId: 'dev-h' } as any)],
+      ])('%s with a System read does not auto-execute', async (_label, auth) => {
+        mockInsertReturning({ id: 'exec-del-3' });
+        vi.mocked(waitForApproval).mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'auto_approve', auth: auth() });
+
+        const result = await createSessionPreToolUse(session)('browse_device_event_log', input);
+
+        expect(result).toMatchObject({ allowed: false });
+        expect((result as any).context).toBeUndefined();
+      });
+    });
+
+    it('postToolUse resolves the SAME tier as the gate (chat opt-in passed there too)', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertValues();
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auth: chatAuth() });
+
+      await createSessionPostToolUse(session)('browse_device_event_log', input, JSON.stringify({ events: [] }), false, 3);
+
+      expect(checkGuardrails).toHaveBeenCalledWith(
+        'browse_device_event_log',
         input,
         expect.objectContaining({ chatSession: true }),
       );
@@ -7451,5 +7597,342 @@ describe('createSessionPostToolUse — auto-flag on a correctable input refusal 
     // Nothing was held, so the turn end adds no second write.
     await flushDeferredToolFailureFlags(session);
     expect(flagSets).toHaveLength(1);
+  });
+});
+
+describe('discovery + tool_use_id stamping, terminal-status counter (#12421 W01)', () => {
+  let ledgerRows: Array<Record<string, unknown>>;
+  let ledgerUpdateCalls: Array<Record<string, unknown>>;
+  let ledgerInsertFails: boolean;
+  let ledgerUpdateResult: unknown;
+
+  const tier1 = { allowed: true, tier: 1, requiresApproval: false };
+  const tier2Card = { allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot' };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    metricsRegistry.resetMetrics();
+    ledgerRows = [];
+    ledgerUpdateCalls = [];
+    ledgerInsertFails = false;
+    ledgerUpdateResult = Object.assign([], { count: 1 });
+    const schema = await import('../db/schema');
+    vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+      values: vi.fn((values: Record<string, unknown>) => {
+        const isLedger = table === schema.aiToolExecutions;
+        if (isLedger && ledgerInsertFails) return Promise.reject(new Error('db down'));
+        if (isLedger) ledgerRows.push(values);
+        return Object.assign(Promise.resolve(undefined), {
+          returning: vi.fn().mockResolvedValue([{ id: typeof values?.id === 'string' ? values.id : 'exec-1' }]),
+        });
+      }),
+    })) as any);
+    vi.mocked(db.update).mockImplementation(((table: unknown) => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(async () => {
+          if (table !== schema.aiToolExecutions) return undefined;
+          ledgerUpdateCalls.push(values);
+          return ledgerUpdateResult;
+        }),
+      })),
+    })) as any);
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    vi.mocked(checkGuardrails).mockReturnValue(tier1 as any);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.mocked(console.error).mockRestore?.();
+  });
+
+  async function toolCalls(): Promise<Array<{ labels: Record<string, unknown>; value: number }>> {
+    const metric = metricsRegistry.getSingleMetric('breeze_ai_tool_call_total');
+    if (!metric) return [];
+    return (await metric.get()).values.map((v) => ({ labels: v.labels as Record<string, unknown>, value: v.value }));
+  }
+  async function countFor(status: string): Promise<number> {
+    return (await toolCalls()).find((s) => s.labels.status === status)?.value ?? 0;
+  }
+  function helperSession(overrides: Record<string, unknown> = {}) {
+    return makeActiveSession({
+      auth: makeAuth({
+        scope: 'organization',
+        helperDeviceId: 'device-7',
+        user: { id: 'device-7', email: 'helper@host-01', name: 'HOST-01' },
+      } as any),
+      ...overrides,
+    });
+  }
+  function rowFor(status: string): Record<string, unknown> {
+    const row = ledgerRows.find((r) => r.status === status);
+    expect(row, `a ${status} ledger row was written`).toBeDefined();
+    return row!;
+  }
+
+  // One entry per `insert(aiToolExecutions)` site. `run` drives the site with
+  // the given session and SDK id; `status` selects the row the site wrote.
+  const sites: Array<{
+    name: string;
+    status: string;
+    tool: string;
+    make: (overrides: Record<string, unknown>) => any;
+    run: (session: any, toolUseId: string | undefined) => Promise<unknown>;
+    skipNullId?: boolean;
+    arrange?: () => void;
+  }> = [
+    {
+      name: 'recordPreHookRefusal (refused)',
+      status: 'refused',
+      tool: 'take_screenshot',
+      make: (o) => makeActiveSession(o),
+      arrange: () => vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked' } as any),
+      run: (s, id) => createSessionPreToolUse(s)('take_screenshot', { deviceId: 'd-1' }, undefined, id),
+    },
+    {
+      name: 'helper pending-approval insert',
+      status: 'pending',
+      tool: 'take_screenshot',
+      make: (o) => helperSession({ approvalMode: 'per_step', ...o }),
+      arrange: () => {
+        vi.mocked(checkGuardrails).mockReturnValue(tier2Card as any);
+        mockDecideHelperToolAction.mockResolvedValue('pending');
+        vi.mocked(waitForApproval).mockResolvedValue(true);
+      },
+      run: (s, id) => createSessionPreToolUse(s)('take_screenshot', {}, undefined, id),
+    },
+    {
+      name: 'auto-approve executing insert',
+      status: 'executing',
+      tool: 'take_screenshot',
+      make: (o) => makeActiveSession({ approvalMode: 'auto_approve', ...o }),
+      arrange: () => vi.mocked(checkGuardrails).mockReturnValue(tier2Card as any),
+      run: (s, id) => createSessionPreToolUse(s)('take_screenshot', { deviceId: 'd-1' }, undefined, id),
+    },
+    {
+      name: 'plan-step executing insert',
+      status: 'executing',
+      tool: 'take_screenshot',
+      make: (o) => makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }]]),
+        ...o,
+      }),
+      arrange: () => vi.mocked(checkGuardrails).mockReturnValue({ ...tier2Card, requiresApproval: true } as any),
+      run: (s, id) => createSessionPreToolUse(s)('take_screenshot', { deviceId: 'd-1' }, undefined, id),
+    },
+    {
+      name: 'approval pending insert',
+      status: 'pending',
+      tool: 'take_screenshot',
+      make: (o) => makeActiveSession({ approvalMode: 'per_step', ...o }),
+      arrange: () => {
+        vi.mocked(checkGuardrails).mockReturnValue(tier2Card as any);
+        vi.mocked(waitForApproval).mockResolvedValue(true);
+      },
+      run: (s, id) => createSessionPreToolUse(s)('take_screenshot', { deviceId: 'd-1' }, undefined, id),
+    },
+    {
+      name: 'Tier-1 post insert',
+      status: 'completed',
+      tool: 'query_devices',
+      make: (o) => makeActiveSession(o),
+      run: (s, id) => createSessionPostToolUse(s)('query_devices', {}, JSON.stringify({ ok: true }), false, 5, undefined, undefined, id),
+    },
+    {
+      name: 'topology post insert',
+      skipNullId: true, // a topology post with no SDK id reaches claimToolUseId's captureMessage, which this file's sentry mock lacks
+      status: 'completed',
+      tool: 'get_topology',
+      make: (o) => makeActiveSession({
+        topologyInvestigation: {
+          investigationId: 'session-1', allowedToolNames: new Set(['get_topology']),
+          append: vi.fn(), startBlock: vi.fn(), noteUsage: vi.fn(() => true),
+          beforeToolCall: vi.fn(async () => ({ allowed: true as const })),
+        },
+        pendingTurnToolExecutionCount: 0,
+        toolUseNames: new Map(),
+        ...o,
+      }),
+      run: (s, id) => createSessionPostToolUse(s)('get_topology', { site_id: 's' }, '{}', false, 5, undefined, undefined, id),
+    },
+  ];
+
+  describe.each(sites)('$name', (site) => {
+    it('stamps discovery from session.discovery.discoveryOf, called with the bare tool name', async () => {
+      site.arrange?.();
+      const discoveryOf = vi.fn(() => 'loaded_earlier');
+
+      await site.run(site.make({ discovery: { discoveryOf } }), 'tu-disc');
+
+      expect(rowFor(site.status)).toMatchObject({ discovery: 'loaded_earlier' });
+      expect(discoveryOf).toHaveBeenCalledWith(site.tool);
+    });
+
+    it('stamps discovery "unknown" when the session has no observer', async () => {
+      site.arrange?.();
+
+      await site.run(site.make({ discovery: null }), 'tu-none');
+
+      expect(rowFor(site.status)).toMatchObject({ discovery: 'unknown' });
+    });
+
+    it('stamps toolUseId from the hook id', async () => {
+      site.arrange?.();
+
+      await site.run(site.make({}), 'toolu_abc');
+
+      expect(rowFor(site.status)).toMatchObject({ toolUseId: 'toolu_abc' });
+    });
+
+    it.skipIf(site.skipNullId === true)('stamps toolUseId null when the SDK sent none', async () => {
+      site.arrange?.();
+
+      await site.run(site.make({}), undefined);
+
+      expect(rowFor(site.status)).toHaveProperty('toolUseId', null);
+    });
+  });
+
+  describe('with a real observer', () => {
+    const ALWAYS = new Set(['query_devices']);
+    function observerSession() {
+      const discovery = createToolDiscoveryObserver({ isAlwaysLoaded: (n) => ALWAYS.has(n) });
+      return { discovery, session: makeActiveSession({ discovery }) };
+    }
+    async function stampedFor(session: any, tool: string, id: string): Promise<unknown> {
+      ledgerRows.length = 0;
+      await createSessionPostToolUse(session)(tool, {}, JSON.stringify({ ok: true }), false, 5, undefined, undefined, id);
+      return ledgerRows[0]?.discovery;
+    }
+
+    it('stamps always_loaded, searched_this_turn and loaded_earlier', async () => {
+      const { discovery, session } = observerSession();
+      expect(await stampedFor(session, 'query_devices', 'tu-1')).toBe('always_loaded');
+
+      discovery.onMessage(assistantToolSearch({ toolUseId: 'ts-1', query: 'services' }));
+      discovery.onMessage(userToolSearchResult({ toolUseId: 'ts-1', toolNames: ['manage_services'] }));
+      expect(await stampedFor(session, 'manage_services', 'tu-2')).toBe('searched_this_turn');
+
+      discovery.endTurn({ aborted: false, tally: newRoundTripTally() });
+      expect(await stampedFor(session, 'manage_services', 'tu-3')).toBe('loaded_earlier');
+    });
+
+    it('recordPreHookRefusal stamps the observer verdict too', async () => {
+      const { session } = observerSession();
+      vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked' } as any);
+      await createSessionPreToolUse(session)('query_devices', {}, undefined, 'tu-r');
+      expect(rowFor('refused')).toMatchObject({ discovery: 'always_loaded', toolUseId: 'tu-r' });
+    });
+  });
+
+  describe('breeze_ai_tool_call_total', () => {
+    it('counts a refusal only after its row was written, with no label but status', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked' } as any);
+      await createSessionPreToolUse(makeActiveSession())('execute_command', { deviceId: 'd-1' }, undefined, 'tu-1');
+
+      expect(await countFor('refused')).toBe(1);
+      expect((await toolCalls()).every((s) => Object.keys(s.labels).join() === 'status')).toBe(true);
+    });
+
+    it('counts nothing when the refusal row failed to write', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked' } as any);
+      ledgerInsertFails = true;
+      await createSessionPreToolUse(makeActiveSession())('execute_command', { deviceId: 'd-1' }, undefined, 'tu-2');
+
+      expect(await countFor('refused')).toBe(0);
+    });
+
+    it.each([
+      [false, 'completed'],
+      [true, 'failed'],
+    ] as const)('Tier-1 post insert (isError=%s) counts the status it wrote: %s', async (isError, status) => {
+      await createSessionPostToolUse(makeActiveSession())('query_devices', {}, JSON.stringify(isError ? { error: 'x' } : { ok: true }), isError, 5, undefined, undefined, 'tu-t1');
+
+      expect(ledgerRows[0]).toMatchObject({ status });
+      expect(await countFor(status)).toBe(1);
+    });
+
+    it('Tier-1 post insert that rejects counts nothing', async () => {
+      ledgerInsertFails = true;
+      await createSessionPostToolUse(makeActiveSession())('query_devices', {}, JSON.stringify({ ok: true }), false, 5, undefined, undefined, 'tu-t1');
+
+      expect(await countFor('completed')).toBe(0);
+    });
+
+    async function closeExecutingRow(isError: boolean) {
+      vi.mocked(checkGuardrails).mockReturnValue(tier2Card as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+      await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' }, undefined, 'tu-x');
+      expect(rowFor('executing')).toBeDefined();
+      await createSessionPostToolUse(session)(
+        'take_screenshot', { deviceId: 'd-1' }, JSON.stringify(isError ? { error: 'boom' } : { ok: true }), isError, 5, undefined, undefined, 'tu-x',
+      );
+    }
+
+    it.each([
+      [false, 'completed'],
+      [true, 'failed'],
+    ] as const)('closing an executing row (isError=%s) counts %s when the update changed a row', async (isError, status) => {
+      ledgerUpdateResult = Object.assign([], { count: 1 });
+      await closeExecutingRow(isError);
+
+      expect(ledgerUpdateCalls).toContainEqual(expect.objectContaining({ status }));
+      expect(await countFor(status)).toBe(1);
+    });
+
+    it('closing an executing row counts nothing when the update matched zero rows', async () => {
+      ledgerUpdateResult = Object.assign([], { count: 0 });
+      await closeExecutingRow(false);
+
+      expect(ledgerUpdateCalls).toContainEqual(expect.objectContaining({ status: 'completed' }));
+      expect(await countFor('completed')).toBe(0);
+    });
+
+    async function liveAuthorityDenial() {
+      vi.mocked(checkGuardrails).mockReturnValue({ ...tier2Card, requiresApproval: true } as any);
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({ ok: false, reason: 'Insufficient permissions' });
+      const verdict = await createSessionPreToolUse(makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} }))(
+        'take_screenshot', { deviceId: 'd-1' }, undefined, 'tu-live',
+      );
+      expect(verdict).toMatchObject({ allowed: false });
+      expect(ledgerUpdateCalls).toContainEqual(expect.objectContaining({ status: 'rejected' }));
+    }
+
+    it('a rejected close-out (live authority lost after approval) counts rejected when a row changed', async () => {
+      ledgerUpdateResult = Object.assign([], { count: 1 });
+      await liveAuthorityDenial();
+      expect(await countFor('rejected')).toBe(1);
+    });
+
+    it('a rejected close-out counts nothing when the update matched zero rows', async () => {
+      ledgerUpdateResult = Object.assign([], { count: 0 });
+      await liveAuthorityDenial();
+      expect(await countFor('rejected')).toBe(0);
+    });
+
+    async function deniedTier3Intent() {
+      vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, description: 'Execute command' } as any);
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-denied' }));
+      mockWaitForIntentDecision.mockResolvedValueOnce('rejected');
+      await createSessionPreToolUse(makeActiveSession())('execute_command', { deviceId: 'd-1' }, undefined, 'tu-i');
+      expect(ledgerUpdateCalls).toContainEqual(expect.objectContaining({ status: 'rejected' }));
+    }
+
+    it('a denied Tier 3 intent counts rejected when its pending row was closed', async () => {
+      ledgerUpdateResult = Object.assign([], { count: 1 });
+      await deniedTier3Intent();
+      expect(await countFor('rejected')).toBe(1);
+    });
+
+    it('a denied Tier 3 intent counts nothing when the close-out matched zero rows', async () => {
+      ledgerUpdateResult = Object.assign([], { count: 0 });
+      await deniedTier3Intent();
+      expect(await countFor('rejected')).toBe(0);
+    });
   });
 });

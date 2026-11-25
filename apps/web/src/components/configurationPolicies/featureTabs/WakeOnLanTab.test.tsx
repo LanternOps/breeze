@@ -17,10 +17,16 @@ vi.mock('./useFeatureLink', () => ({
   }),
 }));
 vi.mock('./WakeStatusPanel', () => ({
-  default: ({ policyId }: { policyId: string }) => <div data-testid="wake-status-panel-stub">{policyId}</div>,
+  default: ({ policyId }: { policyId: string }) => (
+    <div data-testid="wake-status-panel-stub">
+      {policyId}
+      <button type="button" data-testid="wake-stub-page">Next</button>
+    </div>
+  ),
 }));
 
 import WakeOnLanTab from './WakeOnLanTab';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureEditing';
 import type { FeatureLink, FeatureTabProps } from './types';
 
 const baseProps: FeatureTabProps = {
@@ -103,6 +109,33 @@ describe('WakeOnLanTab', () => {
     const { rerender } = render(<WakeOnLanTab {...baseProps} />);
     expect(screen.queryByTestId('wake-status-panel-stub')).toBeNull();
     rerender(<WakeOnLanTab {...baseProps} existingLink={link({ configureSettings: false, buttonMode: 'always' })} />);
-    expect(screen.getByTestId('wake-status-panel-stub').textContent).toBe('policy-1');
+    expect(screen.getByTestId('wake-status-panel-stub').textContent).toContain('policy-1');
+  });
+
+  const saved = link({ configureSettings: false, buttonMode: 'always' });
+
+  it('paging the wake status list does not mark the feature dirty (#12469)', () => {
+    const reporter = vi.fn();
+    render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <WakeOnLanTab {...baseProps} existingLink={saved} />
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(screen.getByTestId('wake-stub-page'));
+    expect(reporter).not.toHaveBeenCalledWith(true);
+    // A real edit still reports dirty.
+    fireEvent.click(screen.getByTestId('wake-button-mode-verified'));
+    expect(reporter).toHaveBeenCalledWith(true);
+  });
+
+  it('a read-only viewer can use the wake status list (#12469)', () => {
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <WakeOnLanTab {...baseProps} existingLink={saved} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    const panel = screen.getByTestId('wake-status-panel-stub');
+    expect(panel.closest('fieldset[disabled]')).toBeNull();
+    expect((screen.getByTestId('wake-stub-page') as HTMLButtonElement).matches(':disabled')).toBe(false);
   });
 });

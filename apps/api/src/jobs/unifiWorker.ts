@@ -1,5 +1,5 @@
 import { Worker, type Job, type Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -7,9 +7,12 @@ import { unifiIntegrations, unifiSiteMappings } from '../db/schema';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { createUnifiClient } from '../services/unifi/unifiClient';
-import { getSyncCredentials, markStatus, markSynced } from '../services/unifi/unifiConnectionService';
-import { collectSyncData, applySyncData } from '../services/unifi/unifiSyncService';
+import { markStatus, markSynced } from '../services/unifi/unifiConnectionService';
+import { getSyncKeys, recordKeyResults, unifiKeyLast4 } from '../services/unifi/unifiKeyService';
+import { collectSyncData, applySyncData, type CollectedSync } from '../services/unifi/unifiSyncService';
 import { attachWorkerObservability } from './workerObservability';
+import { captureException } from '../services/sentry';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 
 export const UNIFI_SYNC_QUEUE = 'unifi-sync';
 const SYNC_SCHEDULER_JOB = 'sync-scheduler';
@@ -56,12 +59,14 @@ export async function enqueueUnifiSync(
   );
 }
 
-function isAuthFailure(message: string): boolean {
-  return /\b401\b|unauthorized/i.test(message);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * A failed run's integration status (plan D6): `reauth_required` only when every
+ * key failed with a 401 or 403 (typed, never matched on message text), or when
+ * there is no enabled key at all; `error` otherwise.
+ */
+function failedStatus(collected: CollectedSync): 'reauth_required' | 'error' {
+  if (!collected.fatalError) return 'error';
+  return collected.keyResults.every((r) => r.status !== 'success' && r.authFailure) ? 'reauth_required' : 'error';
 }
 
 async function processScheduler(): Promise<{ queued: number }> {
@@ -72,7 +77,9 @@ async function processScheduler(): Promise<{ queued: number }> {
         partnerId: unifiIntegrations.partnerId,
       })
       .from(unifiIntegrations)
-      .where(eq(unifiIntegrations.isActive, true))
+      // Only cloud connections are synced from Site Manager; self-hosted ones are
+      // polled by their collectors (plan D6).
+      .where(and(eq(unifiIntegrations.isActive, true), eq(unifiIntegrations.connectionType, 'cloud')))
   );
 
   const queue = getUnifiSyncQueue();
@@ -103,10 +110,10 @@ async function processScheduler(): Promise<{ queued: number }> {
 }
 
 async function processSyncIntegration(data: SyncIntegrationJobData): Promise<void> {
-  // 1) Short DB context: read credentials + mappings. No network I/O here, so no
+  // 1) Short DB context: read the keys + mappings. No network I/O here, so no
   //    pooled connection is held while UniFi is being called.
   const prep = await withSystemDbAccessContext(async () => {
-    const creds = await getSyncCredentials(db, data.integrationId, data.partnerId);
+    const creds = await getSyncKeys(db, data.integrationId, data.partnerId);
     if (!creds) return null;
     const mappings = await db
       .select()
@@ -115,37 +122,75 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
     return { creds, mappings };
   });
 
-  if (!prep) {
-    await withSystemDbAccessContext(() =>
-      markStatus(db, data.integrationId, data.partnerId, 'reauth_required', 'No API key on connection'),
-    );
-    return;
+  // Gone, inactive or self-hosted: there is nothing to sync and nothing to mark.
+  if (!prep) return;
+
+  const integration = { id: data.integrationId, partnerId: data.partnerId };
+  const { keys, baseUrl } = prep.creds;
+  // Each key's status write is conditional on its last_sync_at being older than
+  // this, so a run that finishes late never overwrites a newer run's result.
+  const runStartedAt = new Date();
+
+  // 2) NO DB context: every enabled key's UniFi HTTP (hosts, sites, devices and
+  //    ISP metrics, 429 backoff sleeps) runs here without holding a connection
+  //    idle-in-transaction. A key that does not decrypt gets no client: it is a
+  //    failed key, never a silent skip. Zero keys is a failed run (D6).
+  const collected = await collectSyncData(
+    keys.map((key) => ({
+      id: key.id,
+      label: key.label,
+      client: key.apiKey === null ? null : createUnifiClient({ baseUrl, apiKey: key.apiKey }),
+      decryptError: key.apiKey === null ? key.decryptError : undefined,
+      lastSeenHostIds: key.lastSeenHostIds,
+    })),
+    prep.mappings,
+  );
+  // A backfilled key has no key_last4 yet; it is filled from the key in memory.
+  const keyLast4ById = new Map<string, string>();
+  for (const key of keys) {
+    if (key.apiKey !== null && key.keyLast4 === null) keyLast4ById.set(key.id, unifiKeyLast4(key.apiKey));
   }
+  // The keys' outcomes are real whatever happens to the run: a failure to save
+  // them is logged and never turns a saved run into a failed one.
+  const recordKeys = async () => {
+    try {
+      await withSystemDbAccessContext(() => recordKeyResults(db, {
+        integrationId: data.integrationId,
+        partnerId: data.partnerId,
+        runStartedAt,
+        results: collected.keyResults,
+        keyLast4ById,
+      }));
+    } catch (error) {
+      console.error('[UnifiWorker] Failed to record per-key sync results', { integrationId: data.integrationId, error: safeErrorMessage(error) });
+      captureException(error, undefined, { integrationId: data.integrationId });
+    }
+  };
 
-  // 2) NO DB context: all UniFi HTTP (listHosts, one devices read and one
-  //    ISP-metrics read per run, 429 backoff sleeps) runs here without holding a
-  //    connection idle-in-transaction.
-  const client = createUnifiClient({ baseUrl: prep.creds.baseUrl, apiKey: prep.creds.apiKey });
-  const collected = await collectSyncData(client, prep.mappings);
-
-  // 3) Short DB context(s): persist the run + device reconciliation, then status.
+  // 3) Short DB context(s): persist the run + device reconciliation, then the
+  //    key rows, the run summary and the integration status.
   try {
     const result = await withSystemDbAccessContext(() =>
-      applySyncData(db, { id: data.integrationId, partnerId: data.partnerId }, data.trigger, prep.mappings, collected),
+      applySyncData(db, integration, data.trigger, prep.mappings, collected),
     );
+    await recordKeys();
     await withSystemDbAccessContext(async () => {
       await markSynced(db, data.integrationId, data.partnerId, result.status, result.error ?? null);
       if (result.status === 'failed') {
-        const message = result.error ?? 'UniFi sync failed';
-        await markStatus(db, data.integrationId, data.partnerId, isAuthFailure(message) ? 'reauth_required' : 'error', message);
+        await markStatus(db, data.integrationId, data.partnerId, failedStatus(collected), result.error ?? 'UniFi sync failed');
       } else {
+        // Partial (some keys failed) stays connected; last_sync_error names them.
         await markStatus(db, data.integrationId, data.partnerId, 'connected', result.error ?? null);
       }
     });
   } catch (error) {
-    const message = errorMessage(error);
+    // Logged before anything else can fail: the stored text is all that survives otherwise.
+    const message = safeErrorMessage(error);
+    console.error('[UnifiWorker] Failed to save a sync run', { integrationId: data.integrationId, error: message });
+    captureException(error, undefined, { integrationId: data.integrationId });
+    await recordKeys();
     await withSystemDbAccessContext(async () => {
-      await markStatus(db, data.integrationId, data.partnerId, isAuthFailure(message) ? 'reauth_required' : 'error', message);
+      await markStatus(db, data.integrationId, data.partnerId, failedStatus(collected), message);
       await markSynced(db, data.integrationId, data.partnerId, 'failed', message);
     });
   }

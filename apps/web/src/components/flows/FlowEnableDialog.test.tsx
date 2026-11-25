@@ -1,7 +1,7 @@
 /**
  * Tool Catalog W4 (#5219) B2 — enable dialog with per-step pre-approval.
  */
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -70,6 +70,17 @@ function setup(f = flow()) {
 
 function confirmButton() {
   return screen.getByTestId('flow-enable-confirm') as HTMLButtonElement;
+}
+
+/**
+ * `Dialog` moves focus to its first focusable element in a requestAnimationFrame
+ * after it opens. A test that starts typing before that frame fires has the
+ * focus pulled out from under it mid-keystroke (the later digits land on the
+ * first checkbox, not the input). Wait for the move to land before typing.
+ */
+async function dialogFocusSettled() {
+  const panel = screen.getByRole('dialog');
+  await waitFor(() => expect(panel.contains(document.activeElement)).toBe(true));
 }
 
 function lastEnableBody(): Record<string, unknown> {
@@ -172,6 +183,7 @@ describe('FlowEnableDialog', () => {
     [409, 'slug_unavailable', /already uses this identifier/i],
     [422, 'webhook_secret_missing', /webhook secret/i],
     [422, 'ai_budget_unavailable', /AI budget/i],
+    [409, 'flow_conversion_not_switched', /shadowing a job.*switch/i],
   ])('renders %s %s as localized text, never the raw code', async (status, code, pattern) => {
     const user = userEvent.setup();
     api.enableFlow.mockRejectedValueOnce(new ActionError('x', status, undefined, { error: code }));
@@ -238,6 +250,7 @@ describe('FlowEnableDialog', () => {
       const user = userEvent.setup();
       api.enableFlow.mockResolvedValue({ ok: true });
       setup();
+      await dialogFocusSettled();
       // Unticked: no field, Confirm active.
       expect(screen.queryByTestId('flow-enable-maxtargets-fleet_a')).toBeNull();
       expect(confirmButton().disabled).toBe(false);
@@ -267,6 +280,7 @@ describe('FlowEnableDialog', () => {
       const user = userEvent.setup();
       api.enableFlow.mockResolvedValue({ ok: true });
       setup();
+      await dialogFocusSettled();
       await user.click(screen.getByTestId('flow-enable-preapprove-run_b'));
       await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
       await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_a'), '25');
@@ -289,6 +303,7 @@ describe('FlowEnableDialog', () => {
       const user = userEvent.setup();
       api.enableFlow.mockResolvedValue({ ok: true });
       setup();
+      await dialogFocusSettled();
       await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
       await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_a'), '25');
       await user.click(screen.getByTestId('flow-enable-preapprove-fleet_b'));
@@ -312,6 +327,7 @@ describe('FlowEnableDialog', () => {
       const user = userEvent.setup();
       api.enableFlow.mockResolvedValue({ ok: true });
       const { rerender } = setup();
+      await dialogFocusSettled();
       await user.click(screen.getByTestId('flow-enable-preapprove-run_a'));
       await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
       await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_a'), '25');

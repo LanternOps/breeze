@@ -2,7 +2,7 @@
 // MSP's sending domain, or its company name as the display name); the staff notice is platform lane.
 // Every interpolated value is escaped: the requester's name, company and purpose are attacker-controlled.
 import { escapeHtml, renderButton, renderLayout, renderParagraph } from '../../emailLayout';
-import { getEmailService } from '../../email';
+import { getEmailService, type SendTrigger } from '../../email';
 import { captureException } from '../../sentry';
 
 export interface TrustAccessEmail { subject: string; html: string; text: string }
@@ -94,21 +94,24 @@ async function deliver(purpose: Purpose, requestId: string | null, send: () => P
   }
 }
 
-function sendPartnerLane(purpose: Exclude<Purpose, 'staff.trust_access_request'>, a: PartnerLane, build: () => TrustAccessEmail, requestId: string | null): Promise<boolean> {
+function sendPartnerLane(purpose: Exclude<Purpose, 'staff.trust_access_request'>, trigger: SendTrigger, a: PartnerLane, build: () => TrustAccessEmail, requestId: string | null): Promise<boolean> {
   return deliver(purpose, requestId, async () => {
     const mail = build();
-    await getEmailService()!.sendEmail({ to: a.to, subject: mail.subject, html: mail.html, text: mail.text, purpose, partnerId: a.partnerId, partnerName: a.partnerName });
+    await getEmailService()!.sendEmail({ to: a.to, subject: mail.subject, html: mail.html, text: mail.text, purpose, trigger, partnerId: a.partnerId, partnerName: a.partnerName });
   });
 }
 
 export function sendAccessVerificationEmail(a: PartnerLane, p: Parameters<typeof buildAccessVerificationEmail>[0], requestId: string | null = null): Promise<boolean> {
-  return sendPartnerLane('trust.access_verification', a, () => buildAccessVerificationEmail(p), requestId);
+  // External (#12249): an anonymous visitor on the public trust page asked for access.
+  return sendPartnerLane('trust.access_verification', 'external', a, () => buildAccessVerificationEmail(p), requestId);
 }
 export function sendAccessGrantedEmail(a: PartnerLane, p: Parameters<typeof buildAccessGrantedEmail>[0], requestId: string | null = null): Promise<boolean> {
-  return sendPartnerLane('trust.access_granted', a, () => buildAccessGrantedEmail(p), requestId);
+  // Internal: an MSP staff decision (approve or resend).
+  return sendPartnerLane('trust.access_granted', 'internal', a, () => buildAccessGrantedEmail(p), requestId);
 }
 export function sendAccessDeniedEmail(a: PartnerLane, p: Parameters<typeof buildAccessDeniedEmail>[0], requestId: string | null = null): Promise<boolean> {
-  return sendPartnerLane('trust.access_denied', a, () => buildAccessDeniedEmail(p), requestId);
+  // Internal: an MSP staff decision.
+  return sendPartnerLane('trust.access_denied', 'internal', a, () => buildAccessDeniedEmail(p), requestId);
 }
 
 export async function sendStaffAccessRequestEmail(to: string[], p: Parameters<typeof buildStaffAccessRequestEmail>[0], requestId: string | null = null): Promise<boolean> {

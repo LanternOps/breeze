@@ -38,6 +38,7 @@ import {
 } from './series/listModel';
 import type { SeriesDetail } from './series/types';
 import { exportReport, downloadBlob, getBrowserTimezone, type PostureSummary } from './reportExport';
+import { serverBrandingFrom } from './serverBranding';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
   nextOccurrence,
@@ -450,6 +451,9 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           format: 'pdf',
           reportType: payload.type ?? run.reportType ?? 'report',
           timezone: effectiveTimezone,
+          // #12048: branding the API resolved for the run's org; used only when
+          // the partner branding is unreadable here (org-scoped staff).
+          serverBranding: serverBrandingFrom(payload.branding),
           // The posture / executive-summary covers and the AI org narrative
           // body consume this snapshot; ignored by other report types.
           summary: data?.summary as

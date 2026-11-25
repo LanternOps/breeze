@@ -218,8 +218,11 @@ else
   BASELINES[0]="$PRIMARY_BASELINE"
   echo "check-migration-immutability: selected primary baseline $PRIMARY_BASELINE"
 
+  # Main by its full ref: CI fetches tags, and git resolves a short name to
+  # refs/tags/<name> before refs/remotes/<name>.
+  MAIN_REF=refs/remotes/origin/main
   MAIN_REF_AVAILABLE=false
-  if git rev-parse --verify --quiet 'origin/main^{commit}' >/dev/null; then
+  if git rev-parse --verify --quiet "$MAIN_REF^{commit}" >/dev/null; then
     MAIN_REF_AVAILABLE=true
   fi
 
@@ -230,7 +233,7 @@ else
     # Ordering is intentional: once an exact tag commit reaches origin/main,
     # a retained candidate row must not let an older branch ignore it.
     if [ "$MAIN_REF_AVAILABLE" = true ] && \
-       git merge-base --is-ancestor "$release_sha" origin/main 2>/dev/null; then
+       git merge-base --is-ancestor "$release_sha" "$MAIN_REF" 2>/dev/null; then
       fail "checked lineage is behind mainline release '$release_tag'; merge or rebase onto main, or pass an explicit base ref"
     fi
 

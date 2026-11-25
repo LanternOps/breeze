@@ -413,6 +413,26 @@ If a wake cannot be sent, Breeze returns a specific reason rather than failing s
 - **Every wake that is sent is followed up.** Breeze records the attempt and, within about 12 minutes, resolves it as **came online** (the device has checked in since the wake), **timed out** (the relay sent the packet but the device did not check in within 10 minutes), **send failed** (the relay never confirmed sending it) or **unknown** (the outcome could not be established, for example because the attempt was checked too late to tell when the device came back, or the agent was reinstalled meanwhile). Closed attempts are kept for 90 days by default (`WAKE_ATTEMPT_RETENTION_DAYS`).
 - **Docked laptops are reachable.** A wake targets the MAC addresses the device reports now plus those it reported in the last 30 days (up to eight), so a laptop's dock or USB network adapter is still tried after it is unplugged. A historical MAC that another device in the organization reported more recently is left out.
 
+#### Wake-on-LAN policy and readiness (v0.130.0+)
+
+A **Wake on LAN** tab in [Configuration Policies](/features/configuration-policies/) decides when the Wake button shows for an offline device, and reports how ready each device is to wake. It is read-only: Breeze reads each device's Wake-on-LAN readiness but does not change BIOS, network adapter or Windows settings. Devices with no Wake-on-LAN policy behave exactly as before (the Wake button shows on every offline device).
+
+<Steps>
+
+1. Open a configuration policy and go to the **Wake on LAN** tab.
+2. Under **When the Wake button shows**, choose:
+   - **Always** (the default): Wake shows on every offline device. Devices that keep timing out are flagged in the status panel but never hidden.
+   - **Only when verified ready**: Wake shows only on devices that report ready, or that a past wake has proven by coming online. Expect the button to be hidden on most devices at first. A device that is not yet proven can still be sent one **test wake** from the status panel.
+3. Assign the policy as usual. The setting follows the normal policy hierarchy (partner, organization, site, device group, device).
+
+</Steps>
+
+The **Device status** panel on the tab counts the devices the policy governs by state (**Ready**, **Needs reboot**, **Not configured**, **Unproven**, **No wired adapter**, **Virtual machine**, **Agent update required** and others), lists the reasons for each device (for example "Fast Startup is on", "Adapter magic packet wake is off" or "Energy-Efficient Ethernet is on"), and shows the last wake attempt. From each row you can **Send test wake**, or **Allow wake again** on a device that was flagged after repeated timeouts; both are audited. On a very large fleet the panel scans the first 5,000 devices and says so.
+
+<Aside type="note">
+  Readiness reporting needs the 0.130.0 agent on Windows; older agents show **Agent update required**. The agent reads Fast Startup and, for each wired adapter, magic-packet wake and Energy-Efficient Ethernet, only while a Wake-on-LAN policy applies to the device. Dell PCs also report their BIOS Wake-on-LAN and Deep Sleep Control settings. Other makes report **Unproven** with "Firmware settings cannot be read yet" until a wake proves them. Laptops wake only on AC power, and Modern Standby support varies by model, so a laptop that reports ready may still not come online. Changing BIOS or adapter settings from Breeze is not available yet.
+</Aside>
+
 ### Pluggable Remote-Desktop Launcher
 
 By default, **Connect → Desktop** opens the built-in Breeze WebRTC desktop session. MSPs that standardise on a third-party tool (RustDesk, ScreenConnect, TeamViewer, AnyDesk, and similar) can configure Breeze to hand off to that tool instead, per partner.
@@ -718,6 +738,10 @@ The Linux build of the Breeze Viewer ships as a single AppImage, `breeze-viewer-
 
 Keep the AppImage at a stable path. The registration records the absolute path it was run from, so moving or deleting the file after the first run leaves `breeze://` pointing at a file that no longer exists — run it again from the new location to refresh the entry.
 
+The entry is `~/.local/share/applications/breeze-viewer.desktop`. Each launch checks it and rewrites it only when it is missing, when it is an unedited entry the viewer wrote for a different path, or when it cannot work: its `Exec=` program is gone, it starts an extracted AppImage's `usr/bin/breeze-viewer` directly without a `Path=` key, or it no longer lists `x-scheme-handler/breeze`. Only the first word of `Exec=` is checked, so a script or `env` wrapper counts as working. An entry you edited, for example to run your own launcher script, is otherwise left as it is. Run from a terminal, the viewer prints a line saying when it rewrote or kept the entry. Delete the file to have the viewer write its own again.
+
+If you extracted the AppImage (`--appimage-extract`) and run it from the resulting `squashfs-root` folder, the entry points at `squashfs-root/AppRun`, not at `squashfs-root/usr/bin/breeze-viewer`. `AppRun` sets the working directory the bundled WebKit needs to find its helper processes. Started directly, the binary fails with `Unable to spawn a new child process: ... WebKitNetworkProcess` and the window shows *Connection Error: Load failed*. Viewers older than this fix wrote the `usr/bin` path. Run the new viewer from the extracted folder once and it rewrites that entry.
+
 ### FUSE 2 is required
 
 The AppImage runtime mounts itself with FUSE 2 at launch. On a distribution that no longer ships FUSE 2 by default, the AppImage exits immediately with a message about `libfuse.so.2`, `dlopen`, or `fusermount`, and no window ever appears.
@@ -837,6 +861,9 @@ The AppImage needs FUSE 2 to mount itself. On Debian 13 / Ubuntu 24.04+ the pack
 
 **Linux viewer opens a gray window with no toolbar or buttons.**
 This is webkit2gtk's DMA-BUF renderer failing, most often on the NVIDIA driver. The viewer disables that renderer automatically when it detects the NVIDIA driver; on other hosts, launch it with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. See [Gray window with no controls on NVIDIA](#gray-window-with-no-controls-on-nvidia).
+
+**Linux viewer reports a certificate error for a server with a private CA on Fedora or RHEL.**
+The AppImage bundles its TLS library (GnuTLS) from the Ubuntu build host. That library looks for trusted CAs at the Debian path `/etc/ssl/certs/ca-certificates.crt`, and setting `SSL_CERT_FILE` does not change it. Fedora and RHEL keep the system bundle at `/etc/pki/tls/certs/ca-bundle.crt`, so a private CA trusted system-wide is not seen and the connection fails with an "issuer not found" error. Until the build is fixed ([#12550](https://github.com/LanternOps/breeze/issues/12550)), and only if `/etc/ssl/certs/ca-certificates.crt` does not already exist, link it to the system bundle: `sudo ln -s /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt`. The link points at the bundle that `update-ca-trust` maintains, so CAs you add later are picked up too. Certificate checking stays on; the viewer has no option to turn it off.
 
 **Linux viewer always connects on the WebSocket transport, never WebRTC.**
 The host's webkit2gtk build does not expose `RTCPeerConnection`, so the viewer skips WebRTC and uses the WebSocket (JPEG) transport. The session window shows a notice saying so, and the browser console logs `WebRTC is unavailable in this WebView (no RTCPeerConnection global)`. Installing the GStreamer plugin sets usually restores it — see [WebRTC needs webkit2gtk built with the GStreamer plugins](#webrtc-needs-webkit2gtk-built-with-the-gstreamer-plugins). This is a property of the host, not of the device you are connecting to.

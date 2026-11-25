@@ -422,6 +422,9 @@ export const bmrAuthenticateSchema = z.object({
   token: z.string().min(1),
   capabilities: z.array(z.string().min(1).max(64)).max(16).optional(),
   integrityProtocolVersion: recoveryIntegrityProtocolVersion,
+  // #12566: the session renewal credential a previous successful sign-in
+  // with this token returned. Optional; it only selects the rate-limit bucket.
+  sessionRenewal: z.string().min(1).max(128).optional(),
 });
 
 export const bmrRecoveryDownloadSchema = z.object({

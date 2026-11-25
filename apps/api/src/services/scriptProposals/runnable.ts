@@ -54,6 +54,9 @@ export async function assertProposalRunnable(
   if (proposal.intentId !== null && proposal.intentId !== input.releasingIntentId) {
     return { ok: false, reason: 'consumed' };
   }
+  // An unattended MCP run consumes the proposal without an intent; once it
+  // has, no intent release or second MCP run may reuse it.
+  if (proposal.mcpUnattendedClaimId !== null) return { ok: false, reason: 'consumed' };
   if (proposal.expiresAt.getTime() <= Date.now()) return { ok: false, reason: 'expired' };
 
   const targeted = new Set(proposal.targetDeviceIds);

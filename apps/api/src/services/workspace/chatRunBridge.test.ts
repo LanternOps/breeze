@@ -235,6 +235,21 @@ describe('chatRunBridge (spec §5.5)', () => {
     expect(injected).toMatch(/<untrusted_data source="[^"]+">[\s\S]*Found a corrupt profile/);
   });
 
+  // #11965: a run that settled after its steps were decided tells the model
+  // how they ended and where their results are; no device text, outside the fence.
+  it('a durable result with a step tally names how the steps ended and points at get_ai_agent_run', async () => {
+    const { session } = fakeSession();
+    const injected = drainPendingRunResults(session as never, [{
+      runId: RUN, status: 'completed', profile: 'device_troubleshooting', summary: 'Asked to read the event log.',
+      artifacts: [], stepTally: '2 ran, 1 denied',
+    }]) ?? '';
+    expect(injected).toContain(`Device troubleshooting run ${RUN} completed.\nIts steps: 2 ran, 1 denied. Read each step's result with get_ai_agent_run.`);
+    const withoutTally = drainPendingRunResults(session as never, [{
+      runId: RUN, status: 'completed', profile: 'device_troubleshooting', summary: 'Nothing proposed.', artifacts: [],
+    }]) ?? '';
+    expect(withoutTally).not.toContain('Its steps:');
+  });
+
   it('labels a device_troubleshooting delivery, keeps its summary fenced, and leaves other runs as "Run"', async () => {
     const { session } = fakeSession();
     sessionGet.mockReturnValue(session);

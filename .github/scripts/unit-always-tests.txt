@@ -185,6 +185,7 @@ apps/api/src/__tests__/processLocalCaches.contract.test.ts
 apps/api/src/__tests__/rolePermissionsReaders.contract.test.ts
 apps/api/src/__tests__/singleTableCorrelatedSubquery.contract.test.ts
 apps/api/src/__tests__/site-ceiling-write-coverage.test.ts
+apps/api/src/__tests__/tpmBaselineWriters.contract.test.ts
 apps/api/src/__tests__/unassignedPoolContracts.test.ts
 apps/api/src/__tests__/unassignedPoolVisibility.contract.test.ts
 apps/api/src/__tests__/zodUnitLength.contract.test.ts
@@ -278,6 +279,7 @@ apps/api/src/db/schema/aiAgentOpEvidence.registry.test.ts
 apps/api/src/db/schema/aiModelRegistry.contract.test.ts
 apps/api/src/db/schema/aiPlatformModels.contract.test.ts
 apps/api/src/db/schema/aiRunWorkspaces.enums.test.ts
+apps/api/src/db/schema/aiToolSearchEvents.contract.test.ts
 apps/api/src/db/schema/aiUnattendedExposure.test.ts
 apps/api/src/db/schema/alerts.ownerKind.test.ts
 apps/api/src/db/schema/backupConfigsProviderConfig.test.ts
@@ -363,6 +365,8 @@ apps/api/src/routes/alerts/correlations.ephemeralOrg.contract.test.ts
 apps/api/src/routes/analytics.test.ts
 apps/api/src/routes/autopay/mount.test.ts
 apps/api/src/routes/configurationPolicies/index.test.ts
+apps/api/src/routes/configurationPolicies/precedence.test.ts
+apps/api/src/routes/configurationPolicies/reach.test.ts
 apps/api/src/routes/connectedApps.authorityBoundary.test.ts
 apps/api/src/routes/contracts/adopt.test.ts
 apps/api/src/routes/contracts/deliverables.test.ts
@@ -457,6 +461,7 @@ apps/api/src/services/aiOperator/taskCoordinatorPlanApproval.test.ts
 apps/api/src/services/aiOriginMint.contract.test.ts
 apps/api/src/services/aiRemoteToolsPolicy.contract.test.ts
 apps/api/src/services/aiSdkToolArgGuard.test.ts
+apps/api/src/services/aiToolDiscoveryMetrics.test.ts
 apps/api/src/services/aiToolMfaGate.routeParity.contract.test.ts
 apps/api/src/services/aiToolNames.test.ts
 apps/api/src/services/aiToolOutput.encryptedColumns.test.ts
@@ -706,6 +711,7 @@ apps/portal/src/styles/tokenPresence.test.ts
 apps/web/src/components/ai-risk/tierConfig.systemCleanup.test.ts
 apps/web/src/components/aiOperator/OperatorWorkspace.test.tsx
 apps/web/src/components/auth/signupPrices.guard.test.ts
+apps/web/src/components/automations/AutomationsRedirect.imports.test.ts
 apps/web/src/components/backup/backupDashboardHelpers.test.ts
 apps/web/src/components/billing/InvoiceDocument.parity.test.tsx
 apps/web/src/components/billing/quotes/QuoteDocument.parity.test.tsx

@@ -68,6 +68,10 @@ const FIXTURES = {
     { partnerId: LOWER.partner, unattendedAllowed: true },
     { partnerId: up(LOWER.partner), unattendedAllowed: true },
   ],
+  partnerMcpProposalCeilingResourceDigest: [
+    { partnerId: LOWER.partner, mcpUnattendedProposalMaxRisk: 'critical' },
+    { partnerId: up(LOWER.partner), mcpUnattendedProposalMaxRisk: 'critical' },
+  ],
   topologyArmResourceDigest: [
     { siteId: LOWER.site, action: 'arm_policy', subjectId: LOWER.device },
     { siteId: up(LOWER.site), action: 'arm_policy', subjectId: up(LOWER.device) },
@@ -106,6 +110,10 @@ const FIXTURES = {
   deviceReattachResourceDigest: [
     { sourceDeviceId: LOWER.device, targetDeviceId: LOWER.device2, targetVersion: 'Version-AbC_0123456789012345678901234567890', evidenceLevel: 'hint', restoreDecommissioned: false },
     { sourceDeviceId: up(LOWER.device), targetDeviceId: up(LOWER.device2), targetVersion: 'Version-AbC_0123456789012345678901234567890', evidenceLevel: 'hint', restoreDecommissioned: false },
+  ],
+  deviceTpmBaselineAcceptResourceDigest: [
+    { deviceId: LOWER.device, baselineVersion: 'Version-AbC_0123456789012345678901234567890' },
+    { deviceId: up(LOWER.device), baselineVersion: 'Version-AbC_0123456789012345678901234567890' },
   ],
 } as Record<string, Fixture>;
 

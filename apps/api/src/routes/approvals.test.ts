@@ -4503,6 +4503,54 @@ describe('P2-2 batch decide routes', () => {
     expect(key).toMatch(/^batch-approved-[0-9a-f]{64}$/);
   });
 
+  // Cross-org scope (#12288 follow-up). The service suite owns the rules; these
+  // only prove the routes hand `scope` through instead of dropping it — a set
+  // the default scope accepts must be refused under `cross_org` (the tool is
+  // not on the cross-org allowlist), with nothing minted or decided.
+  it('POST /batch/assertion-challenge applies the cross_org rules when asked', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1', 'appr-b2'], decision: 'approved', scope: 'cross_org' }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-b1', 'appr-b2'] });
+    expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/decide applies the cross_org rules when asked', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+    mockBatchTx();
+
+    const res = await buildApp().request('/approvals/batch/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1', 'appr-b2'], decision: 'approved', scope: 'cross_org' }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/assertion-challenge 400s an unknown scope', async () => {
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1'], decision: 'approved', scope: 'everything' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('POST /batch/assertion-challenge 422s a heterogeneous set without minting', async () => {
     mockBatchDb([
       { approval: batchApproval(1), intent: batchIntent(1) },
