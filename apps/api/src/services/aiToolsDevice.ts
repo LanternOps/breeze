@@ -137,10 +137,10 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
 // summary is computed from every slot first so free-slot counts stay exact.
 const MEMORY_MODULES_TOOL_LIMIT = 32;
 
-// get_fleet_device_stats device sample (#12418 W01): offset paging over a
-// stable hostname, id order.
-const FLEET_STATS_PAGE_DEFAULT = 10;
-const FLEET_STATS_PAGE_MAX = 100;
+// get_fleet_device_stats (#12418 W01). Read only inside the handler: this
+// module and ./aiTools import each other, and registerDeviceTools can run
+// before this module's top-level bindings initialise, so the registration
+// itself must not read a module-level const.
 const fleetStatsArgsSchema = z.object(fleetFilterZodShape());
 
 type MemoryModuleRow = typeof deviceMemoryModules.$inferSelect;
@@ -412,7 +412,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           orgId: { type: 'string', format: 'uuid', description: 'Narrow to one organization' },
           filter: fleetFilterParamSchema(),
           groupBy: fleetGroupByParamSchema(),
-          ...pageParamSchema(FLEET_STATS_PAGE_DEFAULT, FLEET_STATS_PAGE_MAX),
+          ...pageParamSchema(10, 100),
         },
       },
     },
@@ -446,10 +446,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       if (!filter) {
         return JSON.stringify(await queryFleetDeviceStats({ scope, groupBy }));
       }
-      const page = readPageArgs('get_fleet_device_stats', input, {
-        defaultLimit: FLEET_STATS_PAGE_DEFAULT,
-        maxLimit: FLEET_STATS_PAGE_MAX,
-      });
+      const page = readPageArgs('get_fleet_device_stats', input, { defaultLimit: 10, maxLimit: 100 });
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 
