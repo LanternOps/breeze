@@ -19,7 +19,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 
 import type { DbAccessContext } from '../../db';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { devicePatches, devices, patches, softwareInventory } from '../../db/schema';
+import { deviceGroupMemberships, deviceGroups, devicePatches, devices, patches, softwareInventory } from '../../db/schema';
 import { executeTool } from '../../services/aiTools';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -59,6 +59,7 @@ interface Fixture {
   partnerId: string; orgA: string; orgB: string; holding: string; orgC: string;
   s1: string; s2: string; sb: string;
   w1: string; w2: string; l1: string; d1: string; e1: string; b1: string; p1: string; c1: string;
+  wide: string; groupB: string;
   auth: Record<Who, AuthContext>;
 }
 
@@ -67,6 +68,7 @@ const TAG = randomUUID().slice(0, 6);
 async function seedDevice(v: {
   orgId: string; siteId: string; name: string; osType?: 'windows' | 'macos' | 'linux';
   status?: 'online' | 'offline' | 'decommissioned'; isEphemeral?: boolean; parked?: boolean;
+  extra?: Partial<typeof devices.$inferInsert>;
 }): Promise<string> {
   // Only enrollment admission may create a device in a holding org.
   return getTestDb().transaction(async (tx) => {
@@ -74,7 +76,7 @@ async function seedDevice(v: {
     const [row] = await tx.insert(devices).values({
       orgId: v.orgId, siteId: v.siteId, agentId: `fleet-${randomUUID()}`, hostname: `${v.name}-${TAG}`,
       osType: v.osType ?? 'windows', osVersion: '10.0.22631', architecture: 'amd64', agentVersion: '1.0.0',
-      status: v.status ?? 'online', isEphemeral: v.isEphemeral ?? false,
+      status: v.status ?? 'online', isEphemeral: v.isEphemeral ?? false, ...v.extra,
     }).returning({ id: devices.id });
     return row!.id;
   });
@@ -100,9 +102,14 @@ async function seedFixture(): Promise<Fixture> {
   const user = await createUser({ partnerId: partner.id, orgId: orgA.id, email: `fleet-${randomUUID()}@example.com` });
   const otherUser = await createUser({ partnerId: otherPartner.id, orgId: orgC.id, email: `fleet-${randomUUID()}@example.com` });
 
-  const w1 = await seedDevice({ orgId: orgA.id, siteId: s1.id, name: 'w1' });
-  const w2 = await seedDevice({ orgId: orgA.id, siteId: s2.id, name: 'w2', status: 'offline' });
-  const l1 = await seedDevice({ orgId: orgA.id, siteId: s1.id, name: 'l1', osType: 'linux' });
+  const now = new Date();
+  const w1 = await seedDevice({ orgId: orgA.id, siteId: s1.id, name: 'w1', extra: { tags: ['pci'], lastSeenAt: now } });
+  const w2 = await seedDevice({
+    orgId: orgA.id, siteId: s2.id, name: 'w2', status: 'offline',
+    extra: { pendingReboot: true, lastSeenAt: new Date(now.getTime() - 40 * 86_400_000) },
+  });
+  // l1 has never been seen (lastSeenAt NULL).
+  const l1 = await seedDevice({ orgId: orgA.id, siteId: s1.id, name: 'l1', osType: 'linux', extra: { osVersion: '22.04', agentVersion: '2.0.0' } });
   const d1 = await seedDevice({ orgId: orgA.id, siteId: s1.id, name: 'd1', status: 'decommissioned' });
   const e1 = await seedDevice({ orgId: orgA.id, siteId: s1.id, name: 'e1', isEphemeral: true });
   const b1 = await seedDevice({ orgId: orgB.id, siteId: sb.id, name: 'b1' });
@@ -115,6 +122,14 @@ async function seedFixture(): Promise<Fixture> {
   for (const [orgId, id] of [[orgA.id, d1], [orgA.id, e1], [orgB.id, b1], [holding.id, p1], [orgC.id, c1]] as const) {
     await seedSoftware(orgId, id, '7-Zip', '24.08');
   }
+  // A partner-wide group whose members live in two orgs, and an org-B group.
+  const [wide] = await db0.insert(deviceGroups).values({ orgId: null, partnerId: partner.id, name: 'Wide' }).returning({ id: deviceGroups.id });
+  const [groupB] = await db0.insert(deviceGroups).values({ orgId: orgB.id, name: 'Group B' }).returning({ id: deviceGroups.id });
+  await db0.insert(deviceGroupMemberships).values([
+    { groupId: wide!.id, deviceId: w1, orgId: orgA.id },
+    { groupId: wide!.id, deviceId: b1, orgId: orgB.id },
+    { groupId: groupB!.id, deviceId: b1, orgId: orgB.id },
+  ]);
   const [patch] = await db0.insert(patches).values({
     source: 'microsoft', externalId: `KB-${randomUUID()}`, vendor: 'Microsoft', title: `Update ${TAG}`,
     severity: 'critical', requiresReboot: false, releaseDate: '2026-01-01',
@@ -124,7 +139,7 @@ async function seedFixture(): Promise<Fixture> {
   const base = { userId: user.id, partnerId: partner.id };
   return {
     partnerId: partner.id, orgA: orgA.id, orgB: orgB.id, holding: holding.id, orgC: orgC.id,
-    s1: s1.id, s2: s2.id, sb: sb.id, w1, w2, l1, d1, e1, b1, p1, c1,
+    s1: s1.id, s2: s2.id, sb: sb.id, w1, w2, l1, d1, e1, b1, p1, c1, wide: wide!.id, groupB: groupB!.id,
     auth: {
       // The holding org is in the partner caller's accessible set on purpose:
       // RLS lets it read p1, so only the parked exclusion keeps p1 out.
@@ -261,5 +276,52 @@ describe('get_fleet_device_stats typed filter against real Postgres (#12418 W01)
     expect(body).toEqual({
       total: 3, online: 2, offline: 1, byStatus: { online: 2, offline: 1 }, migrationRequiredCount: 0, logShippingFailingCount: 0,
     });
+  });
+
+  runDb('groupBy without a filter still honours the site axis and the device axis', async () => {
+    const site = await run(f.auth.site, { groupBy: 'siteId' });
+    expect(site.total).toBe(2); // w1, l1
+    expect(site.groups).toEqual({ by: 'siteId', rows: [{ key: f.s1, label: 'Site 1', count: 2 }], otherCount: 0 });
+    expect(site.devices).toBeUndefined();
+    const bound = await run(f.auth.deviceBound, { groupBy: 'status' });
+    expect(bound.total).toBe(1);
+    expect(bound.groups.rows).toEqual([{ key: 'offline', count: 1 }]);
+  });
+
+  runDb('a site-restricted caller pointing the filter at a site it cannot see counts zero', async () => {
+    const body = await run(f.auth.site, { filter: { siteId: f.s2 }, groupBy: 'siteId' });
+    expect(body).toMatchObject({ total: 0, devices: [], groups: { rows: [], otherCount: 0 } });
+    // Control: the org caller does see w2 at that site.
+    expect(ids(await run(f.auth.org, { filter: { siteId: f.s2 } }))).toEqual([f.w2]);
+  });
+
+  runDb('a partner-wide group counts only the members inside the caller scope; another org\'s group counts zero', async () => {
+    expect(ids(await run(f.auth.partner, { filter: { groupId: f.wide } }))).toEqual([f.b1, f.w1]);
+    const org = await run(f.auth.org, { filter: { groupId: f.wide } });
+    expect(org.total).toBe(1);
+    expect(ids(org)).toEqual([f.w1]);
+    expect((await run(f.auth.org, { filter: { groupId: f.groupB } })).total).toBe(0);
+    // Control: the group is not empty for a caller that can see org B.
+    expect(ids(await run(f.auth.partner, { filter: { groupId: f.groupB } }))).toEqual([f.b1]);
+  });
+
+  runDb('each remaining filter field matches the seeded device against real SQL', async () => {
+    const one = async (filter: Record<string, unknown>) => ids(await run(f.auth.org, { filter }));
+    expect(await one({ status: 'offline' })).toEqual([f.w2]);
+    expect(await one({ osVersionContains: '22.04' })).toEqual([f.l1]);
+    expect(await one({ hostnameContains: `w1-${TAG}` })).toEqual([f.w1]);
+    expect(await one({ hostnameContains: '%' })).toEqual([]); // LIKE wildcard is literal
+    expect(await one({ tags: ['pci'] })).toEqual([f.w1]);
+    expect(await one({ agentVersion: '2.0.0' })).toEqual([f.l1]);
+    expect(await one({ softwareMissing: '7-Zip' })).toEqual([f.l1, f.w2]);
+    expect(await one({ rebootRequired: true })).toEqual([f.w2]);
+    expect(await one({ criticalAlerts: false })).toEqual([f.l1, f.w1, f.w2]);
+    // l1 was never seen: a NULL lastSeenAt does not match, as the description says.
+    expect(await one({ lastSeenDaysOver: 30 })).toEqual([f.w2]);
+  });
+
+  runDb('groupBy architecture reports the stored value', async () => {
+    const body = await run(f.auth.org, { groupBy: 'architecture' });
+    expect(body.groups.rows).toEqual([{ key: 'amd64', count: 3 }]);
   });
 });
