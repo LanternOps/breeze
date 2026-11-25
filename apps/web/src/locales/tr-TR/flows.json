@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "Kuruluşun yapay zekâ bütçesi tükendi.",
       "ai_output_invalid": "Yapay zekâ sonucu beklenen biçimle eşleşmedi.",
       "ai_token_cap_reached": "Çalıştırma yapay zekâ jeton sınırına ulaştı.",
-      "targets_over_cap": "Adım, bir akış adımının çalışabileceğinden (500) fazla cihazı hedefledi.",
+      "targets_over_cap": "Adım, bu çalıştırmanın işlem yapabileceğinden fazla cihazı hedefledi.",
       "targets_unresolvable": "Adımın cihaz hedefi çözümlenemedi.",
       "alert_create_failed": "Uyarı oluşturulamadı.",
       "script_dispatch_failed": "Betik bir veya daha fazla cihaza gönderilemedi."

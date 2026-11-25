@@ -26,12 +26,12 @@ import { db, runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { deviceGroups, devices } from '../../../db/schema';
 import { resolveAutomationTargetsDetailed } from '../../automationRuntime';
 import { fleetConditions } from '../../deviceStats';
-import { partitionGroupsByExecutionFieldProvenance } from '../../executionTargetGating';
 import { FilterQueryTimeoutError, withFilterStatementTimeout } from '../../filterEngine';
 import { reportFilterPreviewTimeout } from '../../filterPreviewTimeout';
 import { fleetFilterExecutionRefusedFields } from '../../fleetFilter';
 import { notParkedDeviceCondition } from '../../unassignedPool/selectorPredicate';
 import { flowDbAccessContext } from '../flowAuthContext';
+import { classifyFleetFilterGroup } from '../fleetFilterGroupGate';
 
 export interface FleetRunOrg {
   orgId: string;
@@ -133,21 +133,19 @@ export const FLEET_FILTER_TIMEOUT_PROBLEM = 'The device filter took too long to 
 const unresolvedFilter = (problem: string): FleetFilterResolution => ({ count: 0, deviceIds: [], problems: [problem] });
 
 /**
- * Null when `groupId` may select script targets in the run org. A group whose
- * stored rules match on a device-reported field is refused, like every other
- * execution target; so is one the run org does not hold (another org's, a
- * partner-wide group, deleted), because its rules could not be checked.
+ * Null when `groupId` may select script targets in the run org. A group the
+ * run org does not hold (another org's, a partner-wide group, deleted) is
+ * refused, because its rules cannot be checked. Call inside a run-org context.
  */
 async function fleetFilterGroupProblem(orgId: string, groupId: string): Promise<string | null> {
-  const rows = await db
-    .select({ id: deviceGroups.id, filterFieldsUsed: deviceGroups.filterFieldsUsed })
+  const verdict = await classifyFleetFilterGroup(groupId, (ids) => db
+    .select({ id: deviceGroups.id, type: deviceGroups.type, filterFieldsUsed: deviceGroups.filterFieldsUsed, filterConditions: deviceGroups.filterConditions })
     .from(deviceGroups)
-    .where(and(eq(deviceGroups.id, groupId), eq(deviceGroups.orgId, orgId)));
-  if (rows.length === 0) return 'The device group this filter names is not available to this flow run.';
-  const { refusedGroups } = partitionGroupsByExecutionFieldProvenance(rows);
-  return refusedGroups.length === 0
+    .where(and(inArray(deviceGroups.id, ids), eq(deviceGroups.orgId, orgId))));
+  if (verdict === 'missing') return 'The device group this filter names is not available to this flow run.';
+  return verdict === 'ok'
     ? null
-    : 'The device group this filter names is defined by field(s) a device reports about itself; a script cannot be targeted by it.';
+    : 'The device group this filter names is defined by field(s) a device reports about itself, or by rules that cannot be checked; a script cannot be targeted by it.';
 }
 
 /** A typed `fleetFilter`, resolved once in the run org (#12418 W02, Decisions 4, 10 and 11). */

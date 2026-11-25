@@ -170,8 +170,9 @@ describe('validateBuiltinStep', () => {
     describe('fleetFilter', () => {
       const issuesFor = (fleetFilter: unknown, owner: typeof ORG_OWNER | typeof PARTNER_OWNER = ORG_OWNER) =>
         validateBuiltinStep(step('run_script_on_targets', { scriptId: SCRIPT, fleetFilter }), 0, { owner, catalog: catalog() });
-      const group = (filterFieldsUsed: string[] | null) =>
-        vi.mocked(findOwnedDeviceGroups).mockResolvedValue(new Map([[GROUP, { filterFieldsUsed }]]));
+      const group = (filterFieldsUsed: string[] | null, filterConditions: unknown = null) =>
+        vi.mocked(findOwnedDeviceGroups).mockImplementation(async (_org, ids) =>
+          ([...ids].includes(GROUP) ? [{ id: GROUP, type: 'dynamic' as const, filterFieldsUsed, filterConditions }] : []));
       beforeEach(() => {
         vi.mocked(findOwnedDeviceGroups).mockReset();
         group([]);
@@ -219,14 +220,14 @@ describe('validateBuiltinStep', () => {
 
       it('save refuses fleetFilter.groupId naming a group the owner does not hold (reference_not_owned at /fleetFilter/groupId)', async () => {
         vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set());
-        vi.mocked(findOwnedDeviceGroups).mockResolvedValue(new Map());
+        vi.mocked(findOwnedDeviceGroups).mockResolvedValue([]);
         const issues = await issuesFor({ groupId: GROUP });
         expect(issues).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
         expect(vi.mocked(findOwnedDeviceGroupIds)).toHaveBeenCalledWith(ORG, [GROUP]);
       });
 
       it('a group that stops being owned between the two reads is reference_not_owned, never accepted', async () => {
-        vi.mocked(findOwnedDeviceGroups).mockResolvedValue(new Map());
+        vi.mocked(findOwnedDeviceGroups).mockResolvedValue([]);
         expect(await issuesFor({ groupId: GROUP })).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
       });
 
@@ -242,10 +243,15 @@ describe('validateBuiltinStep', () => {
           group(['osType', field]);
           const issues = await issuesFor({ groupId: GROUP });
           expect(issues).toEqual([expect.objectContaining({ code: 'input_invalid', pointer: '/steps/0/input/fleetFilter/groupId' })]);
-          expect(issues[0]!.message).toBe('This device group is defined by field(s) a device reports about itself; a script cannot be targeted by it.');
+          expect(issues[0]!.message).toBe('This device group is defined by field(s) a device reports about itself, or by rules that cannot be checked; a script cannot be targeted by it.');
           expect(vi.mocked(findOwnedDeviceGroups)).toHaveBeenCalledWith(ORG, [GROUP]);
         },
       );
+
+      it('save judges the group\'s live rules, not only its stored field list', async () => {
+        group([], { operator: 'AND', conditions: [{ field: 'hostname', operator: 'contains', value: 'w' }] });
+        expect((await issuesFor({ groupId: GROUP })).map((i) => [i.code, i.pointer])).toEqual([['input_invalid', '/steps/0/input/fleetFilter/groupId']]);
+      });
 
       it.each([[[]], [null], [['osType', 'patches.pending']]] as Array<[string[] | null]>)('save accepts a group whose stored rule fields are %j', async (fields) => {
         group(fields);

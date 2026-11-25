@@ -10,7 +10,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  */
 const m = vi.hoisted(() => ({
   trace: [] as string[],
-  groupRows: [] as Array<{ id: string; filterFieldsUsed: string[] | null }>,
+  groupRows: [] as Array<{ id: string; type: string; filterFieldsUsed: string[] | null; filterConditions: unknown }>,
   filterRows: [] as Array<{ id: string; total: unknown }>,
   captured: { where: undefined as unknown, limit: undefined as unknown, orderBy: undefined as unknown, columns: undefined as unknown, groupWhere: undefined as unknown },
   bound: vi.fn(),
@@ -129,7 +129,7 @@ describe('resolveFleetFilterOnce', () => {
   it.each([['hostname'], ['software.installed'], ['custom.role']])(
     'a dynamic group whose rules changed to %s after save is a problem at resolve, with no device query',
     async (field) => {
-      m.groupRows = [{ id: GROUP, filterFieldsUsed: ['osType', field] }];
+      m.groupRows = [{ id: GROUP, type: 'dynamic', filterFieldsUsed: ['osType', field], filterConditions: null }];
       const out = await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
       expect(out).toMatchObject({ count: 0, deviceIds: [] });
       expect(out.problems).toEqual([expect.stringContaining('a script cannot be targeted by it')]);
@@ -148,7 +148,7 @@ describe('resolveFleetFilterOnce', () => {
   });
 
   it.each([[[]], [null], [['osType']]] as Array<[string[] | null]>)('a group with stored rule fields %j resolves', async (fields) => {
-    m.groupRows = [{ id: GROUP, filterFieldsUsed: fields }];
+    m.groupRows = [{ id: GROUP, type: 'dynamic', filterFieldsUsed: fields, filterConditions: null }];
     expect(await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10)).toEqual({ count: 2, deviceIds: [id(1), id(2)], problems: [] });
   });
 

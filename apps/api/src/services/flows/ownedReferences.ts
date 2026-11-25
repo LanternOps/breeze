@@ -13,6 +13,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceGroups, devices, notificationChannels, scripts } from '../../db/schema';
 import { scriptOwnershipCondition, type AutomationReferenceOwner } from '../automationReferenceAuthorization';
 import type { ToolOwnerRef } from '../toolSources/resolver';
+import type { GatedGroup } from './fleetFilterGroupGate';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -70,20 +71,19 @@ export async function findOwnedDeviceGroupIds(orgId: string, ids: Iterable<strin
 }
 
 /**
- * `findOwnedDeviceGroupIds` with each group's stored rule fields, for the
+ * `findOwnedDeviceGroupIds` with what decides each group's membership, for the
  * execution-provenance gate of a `fleetFilter.groupId` (#12418 W02).
  */
-export async function findOwnedDeviceGroups(orgId: string, ids: Iterable<string>): Promise<Map<string, { filterFieldsUsed: string[] | null }>> {
+export async function findOwnedDeviceGroups(orgId: string, ids: Iterable<string>): Promise<GatedGroup[]> {
   const wanted = uuidsOnly(ids);
-  if (wanted.length === 0) return new Map();
-  const rows = await system(
+  if (wanted.length === 0) return [];
+  return system(
     async () => db
-      .select({ id: deviceGroups.id, filterFieldsUsed: deviceGroups.filterFieldsUsed })
+      .select({ id: deviceGroups.id, type: deviceGroups.type, filterFieldsUsed: deviceGroups.filterFieldsUsed, filterConditions: deviceGroups.filterConditions })
       .from(deviceGroups)
       .where(and(inArray(deviceGroups.id, wanted), eq(deviceGroups.orgId, orgId))),
-    'flowValidator.deviceGroupFields',
+    'flowValidator.deviceGroupRules',
   );
-  return new Map(rows.map((r) => [r.id, { filterFieldsUsed: r.filterFieldsUsed }]));
 }
 
 export async function findOwnedDeviceIds(orgId: string, ids: Iterable<string>): Promise<Set<string>> {

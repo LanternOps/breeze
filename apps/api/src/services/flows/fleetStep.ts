@@ -84,7 +84,8 @@ const NOTE_MAX_CHARS = 600;
 function sampleName(hostname: string): string | null {
   const clean = hostname
     .normalize('NFKC')
-    .replace(/\p{M}/gu, '')
+    // Combining marks, and letters that render as nothing (Hangul fillers).
+    .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, '')
     .replace(/(?:[^\p{L}\p{N}._-]|\p{Lm})+/gu, '_')
     .replace(/^_+|_+$/g, '');
   if (!clean) return null;

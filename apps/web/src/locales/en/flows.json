@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "The organization's AI budget is used up.",
       "ai_output_invalid": "The AI result did not match the expected shape.",
       "ai_token_cap_reached": "The run reached its AI token limit.",
-      "targets_over_cap": "The step targeted more devices than a flow step may run on (500).",
+      "targets_over_cap": "The step targeted more devices than this run is allowed to act on.",
       "targets_unresolvable": "The step's device target could not be resolved.",
       "alert_create_failed": "The alert could not be created.",
       "script_dispatch_failed": "The script could not be sent to one or more devices."

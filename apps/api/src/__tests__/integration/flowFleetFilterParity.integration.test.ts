@@ -240,6 +240,30 @@ describe('flow fleetFilter resolves the set the stats tool counts (#12418 W02, r
     expect(resolved.problems).toEqual([expect.stringContaining('a device reports about itself')]);
   });
 
+  runDb('a group is judged by its live rules as well as its stored field list', async () => {
+    const filter: FleetFilter = { groupId: f.dynamicGroup };
+    for (const filterFieldsUsed of [[], ['osType']]) {
+      await getTestDb().update(deviceGroups).set({
+        filterFieldsUsed, filterConditions: { operator: 'AND', conditions: [{ field: 'hostname', operator: 'contains', value: 'w' }] },
+      }).where(eq(deviceGroups.id, f.dynamicGroup));
+      expect((await stats(f.orgAuth, filter, f.orgA)).total).toBe(2);
+      expect(await resolveFleetFilterOnce(runA(), filter, FLEET_MAX_TARGETS)).toEqual({ count: 0, deviceIds: [], problems: [expect.stringContaining('a device reports about itself')] });
+    }
+  });
+
+  runDb('a group whose rules name another group is judged by that group too', async () => {
+    const [outer] = await getTestDb().insert(deviceGroups).values({
+      orgId: f.orgA, name: 'Outer', type: 'dynamic', filterFieldsUsed: ['groupId'],
+      filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'equals', value: f.dynamicGroup }] },
+    }).returning({ id: deviceGroups.id });
+    await getTestDb().insert(deviceGroupMemberships).values({ groupId: outer!.id, deviceId: f.w1, orgId: f.orgA });
+    expect((await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).deviceIds).toEqual([f.w1]);
+    await getTestDb().update(deviceGroups).set({
+      filterConditions: { operator: 'AND', conditions: [{ field: 'tags', operator: 'contains', value: 'x' }] },
+    }).where(eq(deviceGroups.id, f.dynamicGroup));
+    expect(await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).toMatchObject({ count: 0, deviceIds: [], problems: [expect.any(String)] });
+  });
+
   runDb('a group the run org does not hold is refused: a partner-wide group and another org\'s group', async () => {
     // The membership test alone would match w1 through the partner-wide group.
     expect((await stats(f.orgAuth, { groupId: f.wide }, f.orgA)).ids).toEqual([f.w1]);

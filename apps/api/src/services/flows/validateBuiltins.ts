@@ -29,7 +29,6 @@ import {
   type FlowIssue,
 } from '@breeze/shared';
 import { checkGuardrails } from '../aiGuardrails';
-import { partitionGroupsByExecutionFieldProvenance } from '../executionTargetGating';
 import { fleetFilterRefusedFieldsPresent } from '../fleetFilter';
 import { isChannelMessageType } from '../notificationSenders/channelMessageTypes';
 import { guardrailCheckForTenantTool } from '../toolSources/guardrails';
@@ -43,6 +42,7 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
+import { classifyFleetFilterGroup } from './fleetFilterGroupGate';
 import {
   findOwnedDeviceGroupIds,
   findOwnedDeviceGroups,
@@ -295,13 +295,11 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
 }
 
 async function fleetFilterGroupIssues(orgId: string, ref: FleetReference, at: { stepId: string; pointer: string }): Promise<FlowIssue[]> {
-  const id = ref.value as string;
-  const group = (await findOwnedDeviceGroups(orgId, [id])).get(id);
-  if (!group) return [issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at)];
-  const { refusedGroups } = partitionGroupsByExecutionFieldProvenance([{ id, filterFieldsUsed: group.filterFieldsUsed }]);
-  return refusedGroups.length === 0
+  const verdict = await classifyFleetFilterGroup(ref.value as string, (ids) => findOwnedDeviceGroups(orgId, ids));
+  if (verdict === 'missing') return [issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at)];
+  return verdict === 'ok'
     ? []
-    : [issue('input_invalid', 'This device group is defined by field(s) a device reports about itself; a script cannot be targeted by it.', at)];
+    : [issue('input_invalid', 'This device group is defined by field(s) a device reports about itself, or by rules that cannot be checked; a script cannot be targeted by it.', at)];
 }
 
 async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationContext): Promise<FlowIssue[]> {
