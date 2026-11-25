@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { judgeFleetFilterGroup, MAX_GATED_GROUPS, type GatedGroup } from './fleetFilterGroupGate';
+import { FilterQueryTimeoutError } from '../filterEngine';
+import {
+  GROUP_CHECK_DOCUMENT_BUDGET_MS,
+  GROUP_CHECK_MIN_STATEMENT_MS,
+  GROUP_CHECK_STEP_BUDGET_MS,
+  GroupCheckBudget,
+  judgeFleetFilterGroup,
+  judgeFleetFilterGroups,
+  loadGatedGroups,
+  MAX_GATED_GROUPS,
+  type GatedGroup,
+} from './fleetFilterGroupGate';
 
 const G = (n: number) => `bbbbbbbb-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -10,7 +21,9 @@ const rule = (field: string, value: unknown = valueFor(field), operator = 'equal
 const dyn = (...conditions: unknown[]) => ({ operator: 'AND', conditions });
 const group = (id: string, over: Partial<GatedGroup> = {}): GatedGroup => ({ id, type: 'dynamic', siteId: null, filterFieldsUsed: [], filterConditions: null, hasRuleMembers: false, ...over });
 const loader = (...groups: GatedGroup[]) => vi.fn(async (ids: string[]) => groups.filter((g) => ids.includes(g.id)));
-const judge = (...groups: GatedGroup[]) => judgeFleetFilterGroup(ORG, G(1), loader(...groups));
+/** Never used up. */
+const budget = new GroupCheckBudget(1_000, () => 0);
+const judge = (...groups: GatedGroup[]) => judgeFleetFilterGroup(ORG, G(1), { load: loader(...groups), budget });
 const classify = async (...groups: GatedGroup[]) => (await judge(...groups)).verdict;
 async function members(...groups: GatedGroup[]) {
   const out = await judge(...groups);
@@ -119,7 +132,7 @@ describe('judgeFleetFilterGroup', () => {
       ...Array.from({ length: depth }, (_, i) => layer(i + 2)).flat(), group(G(depth + 2), { type: 'static' }), group(G(depth + 102), { type: 'static' })];
     expect(await classify(...chain(2))).toBe('ok');
     const load = loader(...chain(20));
-    expect((await judgeFleetFilterGroup(ORG, G(1), load)).verdict).toBe('refused');
+    expect((await judgeFleetFilterGroup(ORG, G(1), { load, budget })).verdict).toBe('refused');
   });
 
   it('a dynamic group compiles to its rules within its site, or its pinned devices', async () => {
@@ -142,5 +155,117 @@ describe('judgeFleetFilterGroup', () => {
     // The only stored rows read are pins.
     expect(q.sql.match(/device_group_memberships"\."group_id"/g)).toHaveLength(2);
     expect(q.sql.match(/is_pinned/g)).toHaveLength(2);
+  });
+});
+
+describe('judgeFleetFilterGroups', () => {
+  const link = (a: number, b: number) => group(G(a), { filterConditions: dyn(rule('groupId', G(b))) });
+  const fine = (n: number) => group(G(n), { filterConditions: dyn(rule('osType')) });
+  const verdicts = (out: Map<string, { verdict: string }>) => Object.fromEntries([...out].map(([id, v]) => [id, v.verdict]));
+
+  it('reads each group once, level by level, whatever names it', async () => {
+    const load = loader(link(1, 2), link(2, 3), fine(3), link(4, 2), fine(5));
+    const out = await judgeFleetFilterGroups(ORG, [G(1), G(4), G(5), G(1).toUpperCase(), G(3)], { load, budget });
+    expect(verdicts(out)).toEqual({ [G(1)]: 'ok', [G(4)]: 'ok', [G(5)]: 'ok', [G(3)]: 'ok' });
+    expect(load.mock.calls).toEqual([[[G(1), G(4), G(5), G(3)]], [[G(2)]]]);
+  });
+
+  it('a verdict is each named group\'s own', async () => {
+    const load = loader(link(1, 9), link(2, 3), group(G(3), { filterConditions: dyn(rule('hostname')) }), fine(4), link(5, 6), link(6, 5));
+    const out = await judgeFleetFilterGroups(ORG, [G(9), G(1), G(2), G(3), G(4), G(5)], { load, budget });
+    // Not held: `missing` where it is named, `refused` where another group's rules name it.
+    expect(verdicts(out)).toEqual({ [G(9)]: 'missing', [G(1)]: 'refused', [G(2)]: 'refused', [G(3)]: 'refused', [G(4)]: 'ok', [G(5)]: 'refused' });
+  });
+
+  it('each named group has its own bound on the groups it reaches', async () => {
+    const many = (from: number, n: number) => Array.from({ length: n }, (_, i) => group(G(from + i), { type: 'static' }));
+    const naming = (id: number, groups: GatedGroup[]) => group(G(id), { filterConditions: dyn(rule('groupId', groups.map((g) => g.id), 'in')) });
+    const [a, b] = [many(100, MAX_GATED_GROUPS - 1), many(200, MAX_GATED_GROUPS)];
+    const out = await judgeFleetFilterGroups(ORG, [G(1), G(2)], { load: loader(naming(1, a), naming(2, b), ...a, ...b), budget });
+    expect(verdicts(out)).toEqual({ [G(1)]: 'ok', [G(2)]: 'refused' });
+  });
+
+  it('two named groups compile to their own members', async () => {
+    const out = await judgeFleetFilterGroups(ORG, [G(1), G(2)], { load: loader(fine(1), group(G(2), { filterConditions: dyn(rule('status', 'online')) })), budget });
+    const sqlOf = (id: string) => { const v = out.get(id)!; return v.verdict === 'ok' ? new PgDialect().sqlToQuery(v.members).params : v.verdict; };
+    expect(sqlOf(G(1))).toContain('windows');
+    expect(sqlOf(G(2))).toContain('online');
+    expect(sqlOf(G(2))).not.toContain('windows');
+  });
+
+  it('a chain takes at most one read per group the bound allows', async () => {
+    const chain = Array.from({ length: MAX_GATED_GROUPS * 2 }, (_, i) => link(i + 1, i + 2));
+    const load = loader(...chain);
+    expect((await judgeFleetFilterGroup(ORG, G(1), { load, budget })).verdict).toBe('refused');
+    expect(load).toHaveBeenCalledTimes(MAX_GATED_GROUPS);
+  });
+
+  it.each([1, 2, 3])('a budget used up during read %i of 3 is a time-out for every group, and nothing more is read', async (last) => {
+    const clock = { ms: 0 };
+    const inner = loader(link(1, 2), link(2, 3), fine(3));
+    const load = vi.fn(async (ids: string[]) => {
+      if (load.mock.calls.length === last) clock.ms = 100;
+      return inner(ids);
+    });
+    // G(9) alone would be settled (`missing`) by the first read.
+    await expect(judgeFleetFilterGroups(ORG, [G(1), G(9)], { load, budget: new GroupCheckBudget(100, () => clock.ms) })).rejects.toBeInstanceOf(FilterQueryTimeoutError);
+    expect(load).toHaveBeenCalledTimes(last);
+  });
+
+  it('a budget used up while the groups are compiled is a time-out', async () => {
+    let reads = 0;
+    // Rows are judged on the first three looks at the clock (and the start); compiling takes the next.
+    const budgetOf = (allowed: number) => new GroupCheckBudget(100, () => { reads += 1; return reads <= allowed ? 0 : 100; });
+    const groups = [link(1, 2), link(2, 3), fine(3)];
+    await expect(judgeFleetFilterGroup(ORG, G(1), { load: loader(...groups), budget: budgetOf(4) })).rejects.toBeInstanceOf(FilterQueryTimeoutError);
+    expect(reads).toBe(5);
+    reads = 0;
+    expect((await judgeFleetFilterGroup(ORG, G(1), { load: loader(...groups), budget: budgetOf(7) })).verdict).toBe('ok');
+  });
+});
+
+describe('GroupCheckBudget', () => {
+  /** An executor whose every read takes `cost` ms, and what it was sent. */
+  function fixture(total: number, cost: number, rows: unknown[][]) {
+    const clock = { ms: 1_000 };
+    const sent: string[] = [];
+    const read = (): unknown => {
+      const c: Record<string, unknown> = {
+        from: () => c, where: () => c, innerJoin: () => c,
+        then: (ok: (r: unknown) => unknown) => { sent.push('read'); clock.ms += cost; return Promise.resolve(rows.shift() ?? []).then(ok); },
+      };
+      return c;
+    };
+    const executor = {
+      select: read, selectDistinct: read,
+      execute: async (q: unknown) => { sent.push(String(new PgDialect().sqlToQuery(q as never).params[0])); },
+    } as unknown as Parameters<typeof loadGatedGroups>[0];
+    return { clock, sent, executor, budget: new GroupCheckBudget(total, () => clock.ms) };
+  }
+  const staticRow = { id: G(1), type: 'static', siteId: null, filterFieldsUsed: [], filterConditions: null };
+
+  it('each statement may run for what is left, never longer than the bound for one statement', async () => {
+    const f = fixture(700, 299.75, [[staticRow]]);
+    expect(await loadGatedGroups(f.executor, ORG, [G(1)], f.budget)).toMatchObject([{ id: G(1), hasRuleMembers: false }]);
+    expect(f.sent).toEqual(['500ms', 'read', '400ms', 'read', '100ms', 'read']);
+    await expect(loadGatedGroups(f.executor, ORG, [G(1)], f.budget)).rejects.toBeInstanceOf(FilterQueryTimeoutError);
+    expect(f.sent).toHaveLength(6);
+  });
+
+  it.each([[275.5], [299.5], [300]])('too little left (%f ms of 300 used) is nothing left: no statement is sent with a limit that short', async (cost) => {
+    const f = fixture(300, cost, [[staticRow]]);
+    await expect(loadGatedGroups(f.executor, ORG, [G(1)], f.budget)).rejects.toBeInstanceOf(FilterQueryTimeoutError);
+    expect(f.sent).toEqual(['300ms', 'read']);
+  });
+
+  it('a statement is sent while the least time for one is left', async () => {
+    const f = fixture(300, 275, [[staticRow]]);
+    await expect(loadGatedGroups(f.executor, ORG, [G(1)], f.budget)).rejects.toBeInstanceOf(FilterQueryTimeoutError);
+    expect(f.sent).toEqual(['300ms', 'read', `${GROUP_CHECK_MIN_STATEMENT_MS}ms`, 'read']);
+  });
+
+  it('a step has one statement\'s time; a document has a little more, and less than a held connection may take', () => {
+    expect(GROUP_CHECK_STEP_BUDGET_MS).toBe(500);
+    expect(GROUP_CHECK_DOCUMENT_BUDGET_MS).toBe(1_500);
   });
 });

@@ -34,7 +34,13 @@ import { fleetFilterExecutionRefusedFields, isEmptyFleetFilter } from '../../fle
 import { pgErrorCode } from '../../../utils/pgErrors';
 import { notParkedDeviceCondition } from '../../unassignedPool/selectorPredicate';
 import { flowDbAccessContext } from '../flowAuthContext';
-import { judgeFleetFilterGroup, loadGatedGroups, type FleetFilterGroupVerdict } from '../fleetFilterGroupGate';
+import {
+  GROUP_CHECK_STEP_BUDGET_MS,
+  GroupCheckBudget,
+  judgeFleetFilterGroup,
+  loadGatedGroups,
+  type FleetFilterGroupVerdict,
+} from '../fleetFilterGroupGate';
 
 export interface FleetRunOrg {
   orgId: string;
@@ -171,9 +177,12 @@ function isRuleEvaluationError(error: unknown): boolean {
 async function fleetFilterGroupMembers(orgId: string, groupId: string): Promise<{ members: SQL } | { problem: string }> {
   let judged: FleetFilterGroupVerdict;
   try {
-    judged = await judgeFleetFilterGroup(orgId, groupId, (ids) => withFilterStatementTimeout((tx) => loadGatedGroups(tx, orgId, ids)));
+    judged = await withFilterStatementTimeout((tx) => {
+      const budget = new GroupCheckBudget(GROUP_CHECK_STEP_BUDGET_MS);
+      return judgeFleetFilterGroup(orgId, groupId, { budget, load: (ids) => loadGatedGroups(tx, orgId, ids, budget) });
+    });
   } catch (error) {
-    // Cancelled inside its own savepoint; the run-org transaction is still usable.
+    // Cancelled, or out of time, inside its own savepoint; the run-org transaction is still usable.
     if (!(error instanceof FilterQueryTimeoutError)) throw error;
     reportFilterPreviewTimeout(orgId);
     return { problem: GROUP_CHECK_TIMEOUT_PROBLEM };

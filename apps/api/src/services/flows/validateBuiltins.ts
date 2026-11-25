@@ -43,13 +43,13 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
-import { judgeFleetFilterGroup, type FleetFilterGroupVerdict } from './fleetFilterGroupGate';
+import { GROUP_CHECK_DOCUMENT_BUDGET_MS, judgeFleetFilterGroups, type FleetFilterGroupVerdict } from './fleetFilterGroupGate';
 import {
   findOwnedDeviceGroupIds,
-  findOwnedDeviceGroups,
   findOwnedDeviceIds,
   findOwnedNotificationChannel,
   findOwnedScriptIds,
+  withOwnedDeviceGroupReads,
   type ScriptReadExecutor,
 } from './ownedReferences';
 import { fleetApprovalScope } from './builtins/fleetApprovalScope';
@@ -64,6 +64,8 @@ export interface BuiltinValidationContext {
   earlierSteps?: readonly FlowStep[];
   /** W6 B3: the conversion switch's transaction, for the script-ownership read only (ownedReferences.ts). */
   scriptReadExecutor?: ScriptReadExecutor;
+  /** #12418 W02: the document's `fleetFilter` groups, judged together for this validation (`checkFleetFilterGroups`). */
+  fleetGroupChecks?: FleetGroupChecks;
 }
 
 /** A flow tool (`flow__<slug>`, W5 Decision 7) — never a step, never an `ai` tool. */
@@ -295,12 +297,38 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
   return out;
 }
 
-async function fleetFilterGroupIssues(orgId: string, ref: FleetReference, at: { stepId: string; pointer: string }): Promise<FlowIssue[]> {
-  let verdict: FleetFilterGroupVerdict['verdict'];
+/**
+ * The verdicts of one validation call, by org and group. A group with no entry
+ * was not judged (the check ran out of time, or it is not this org's check) and
+ * is refused.
+ */
+export type FleetGroupChecks = ReadonlyMap<string, FleetFilterGroupVerdict['verdict']>;
+
+const fleetGroupKey = (orgId: string, groupId: string): string => `${orgId}:${groupId.toLowerCase()}`;
+
+/**
+ * Judges the groups the steps' `fleetFilter`s name (literals; at most one per
+ * step, so at most `FLOW_LIMITS.maxSteps`) in one transaction under one time
+ * budget, each group once. The result is for the calling validation only: a run
+ * judges again when the step resolves.
+ */
+export async function checkFleetFilterGroups(orgId: string, steps: ReadonlyArray<Pick<FlowStep, 'tool' | 'input'>>): Promise<FleetGroupChecks> {
+  const ids = steps
+    .flatMap((s) => fleetBuiltinReferences(s.tool, s.input))
+    .filter((r) => r.path === FLEET_FILTER_GROUP_PATH && typeof r.value === 'string' && !containsTemplate(r.value))
+    .map((r) => r.value as string);
+  if (ids.length === 0) return new Map();
   try {
-    ({ verdict } = await judgeFleetFilterGroup(orgId, ref.value as string, (ids) => findOwnedDeviceGroups(orgId, ids)));
+    const judged = await withOwnedDeviceGroupReads(orgId, GROUP_CHECK_DOCUMENT_BUDGET_MS, (reads) => judgeFleetFilterGroups(orgId, ids, reads));
+    return new Map([...judged].map(([id, v]) => [fleetGroupKey(orgId, id), v.verdict]));
   } catch (error) {
     if (!(error instanceof FilterQueryTimeoutError)) throw error;
+    return new Map();
+  }
+}
+
+function fleetFilterGroupIssues(verdict: FleetFilterGroupVerdict['verdict'] | undefined, at: { stepId: string; pointer: string }): FlowIssue[] {
+  if (verdict === undefined) {
     return [issue('input_invalid', 'This device group could not be checked in time. Try again, or name the devices or another filter field.', at)];
   }
   if (verdict === 'missing') return [issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at)];
@@ -346,7 +374,10 @@ async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationC
       // #12418 W02, Decision 10: a group a fleetFilter names is gated like every
       // other execution target. Checked again when the step resolves.
       const filterGroup = groups.find((r) => r.path === FLEET_FILTER_GROUP_PATH && ok.has(r.value as string));
-      if (filterGroup) out.push(...await fleetFilterGroupIssues(ctx.owner.orgId, filterGroup, at(filterGroup.path)));
+      if (filterGroup) {
+        const checks = ctx.fleetGroupChecks ?? await checkFleetFilterGroups(ctx.owner.orgId, [step]);
+        out.push(...fleetFilterGroupIssues(checks.get(fleetGroupKey(ctx.owner.orgId, filterGroup.value as string)), at(filterGroup.path)));
+      }
     }
   }
   if (step.tool === 'run_script_on_targets') {

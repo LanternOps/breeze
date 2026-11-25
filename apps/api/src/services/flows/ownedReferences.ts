@@ -14,7 +14,7 @@ import { deviceGroups, devices, notificationChannels, scripts } from '../../db/s
 import { scriptOwnershipCondition, type AutomationReferenceOwner } from '../automationReferenceAuthorization';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { withFilterStatementTimeout } from '../filterEngine';
-import { loadGatedGroups, type GatedGroup } from './fleetFilterGroupGate';
+import { GroupCheckBudget, loadGatedGroups, type GroupReads } from './fleetFilterGroupGate';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -72,15 +72,24 @@ export async function findOwnedDeviceGroupIds(orgId: string, ids: Iterable<strin
 }
 
 /**
- * `findOwnedDeviceGroupIds` with what decides each group's membership, for the
- * execution-provenance gate of a `fleetFilter.groupId` (#12418 W02). Throws
- * `FilterQueryTimeoutError` when the read outruns the engine's statement bound.
+ * Reads of `orgId`'s device groups with what decides each one's membership, for
+ * the execution-provenance gate of `fleetFilter.groupId` (#12418 W02). All of
+ * `check`'s reads share ONE transaction and one time budget; `check` must read
+ * nothing else. Throws `FilterQueryTimeoutError` when a read is cancelled or
+ * the budget is used up.
  */
-export async function findOwnedDeviceGroups(orgId: string, ids: Iterable<string>): Promise<GatedGroup[]> {
-  const wanted = uuidsOnly(ids);
-  if (wanted.length === 0) return [];
+export function withOwnedDeviceGroupReads<T>(orgId: string, budgetMs: number, check: (reads: GroupReads) => Promise<T>): Promise<T> {
   return system(
-    () => withFilterStatementTimeout((tx) => loadGatedGroups(tx, orgId, wanted)),
+    () => withFilterStatementTimeout((tx) => {
+      const budget = new GroupCheckBudget(budgetMs);
+      return check({
+        budget,
+        load: async (ids) => {
+          const wanted = uuidsOnly(ids);
+          return wanted.length === 0 ? [] : loadGatedGroups(tx, orgId, wanted, budget);
+        },
+      });
+    }),
     'flowValidator.deviceGroupRules',
   );
 }

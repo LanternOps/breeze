@@ -72,6 +72,8 @@ const GROUP = '44444444-4444-4444-8444-444444444444';
 const RUN = { orgId: ORG, partnerId: PARTNER };
 const id = (n: number) => `aaaaaaaa-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const rows = (n: number, total: unknown = String(n)) => Array.from({ length: n }, (_, i) => ({ id: id(i + 1), total }));
+/** Goes before each read of the group check. */
+const LIMIT = "select set_config('statement_timeout', $1, true)";
 const render = (w: unknown) => new PgDialect().sqlToQuery(w as never);
 
 beforeEach(() => {
@@ -123,7 +125,13 @@ describe('resolveFleetFilterOnce', () => {
     m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: [], filterConditions: null }];
     await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
     expect(m.contextOptions).toEqual({ isolationLevel: 'repeatable read' });
-    expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', 'group-query', 'bound', "select set_config('jit', 'off', true)", 'filter-query']);
+    expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', LIMIT, 'group-query', 'bound', "select set_config('jit', 'off', true)", 'filter-query']);
+  });
+
+  it('every read of one group check is made in one bounded transaction, each with its own limit', async () => {
+    m.groupRows = [{ id: GROUP, type: 'static', siteId: null, filterFieldsUsed: [], filterConditions: null }];
+    await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
+    expect(m.trace.slice(2, -3)).toEqual(['bound', LIMIT, 'group-query', LIMIT, 'member-query', LIMIT, 'member-query']);
   });
 
   it('a dynamic group is compiled into the statement that counts', async () => {
@@ -201,7 +209,7 @@ describe('resolveFleetFilterOnce', () => {
       const out = await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
       expect(out).toMatchObject({ count: 0, deviceIds: [] });
       expect(out.problems).toEqual([expect.stringContaining('a script cannot be targeted by it')]);
-      expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', 'group-query']);
+      expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', LIMIT, 'group-query']);
     },
   );
 

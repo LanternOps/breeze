@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./ownedReferences', () => ({
   findOwnedScriptIds: vi.fn(),
   findOwnedDeviceGroupIds: vi.fn(),
-  findOwnedDeviceGroups: vi.fn(),
+  withOwnedDeviceGroupReads: vi.fn(),
   findOwnedDeviceIds: vi.fn(),
   findOwnedNotificationChannel: vi.fn(),
 }));
@@ -12,8 +12,9 @@ import type { FlowIssue } from '@breeze/shared';
 import type { TenantToolDescriptor } from '../toolSources/resolver';
 import type { FlowCatalog, FlowCatalogEntry } from './catalog';
 import { FilterQueryTimeoutError } from '../filterEngine';
-import { findOwnedDeviceGroupIds, findOwnedDeviceGroups, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
-import { builtinStepTier, fleetBuiltinReferences, validateBuiltinStep, validateNoticesChannel } from './validateBuiltins';
+import { GROUP_CHECK_DOCUMENT_BUDGET_MS, GroupCheckBudget, type GatedGroup } from './fleetFilterGroupGate';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds, withOwnedDeviceGroupReads } from './ownedReferences';
+import { builtinStepTier, checkFleetFilterGroups, fleetBuiltinReferences, validateBuiltinStep, validateNoticesChannel, type FleetGroupChecks } from './validateBuiltins';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -171,11 +172,15 @@ describe('validateBuiltinStep', () => {
     describe('fleetFilter', () => {
       const issuesFor = (fleetFilter: unknown, owner: typeof ORG_OWNER | typeof PARTNER_OWNER = ORG_OWNER) =>
         validateBuiltinStep(step('run_script_on_targets', { scriptId: SCRIPT, fleetFilter }), 0, { owner, catalog: catalog() });
+      /** The groups one check reads; `reads` is called once per check, whatever it loads. */
+      const load = vi.fn<(orgId: string, ids: string[]) => Promise<GatedGroup[]>>();
       const group = (filterFieldsUsed: string[] | null, filterConditions: unknown = null) =>
-        vi.mocked(findOwnedDeviceGroups).mockImplementation(async (_org, ids) =>
+        load.mockImplementation(async (_org, ids) =>
           ([...ids].includes(GROUP) ? [{ id: GROUP, type: 'dynamic' as const, siteId: null, hasRuleMembers: false, filterFieldsUsed, filterConditions }] : []));
       beforeEach(() => {
-        vi.mocked(findOwnedDeviceGroups).mockReset();
+        load.mockReset();
+        vi.mocked(withOwnedDeviceGroupReads).mockReset().mockImplementation(async (orgId, _ms, check) =>
+          check({ budget: new GroupCheckBudget(60_000), load: (ids) => load(orgId, ids) }));
         group([]);
       });
 
@@ -222,7 +227,7 @@ describe('validateBuiltinStep', () => {
       });
 
       it('save refuses a static group whose members were not all added by hand', async () => {
-        vi.mocked(findOwnedDeviceGroups).mockResolvedValue([{ id: GROUP, type: 'static', siteId: null, hasRuleMembers: true, filterFieldsUsed: [], filterConditions: null }]);
+        load.mockResolvedValue([{ id: GROUP, type: 'static', siteId: null, hasRuleMembers: true, filterFieldsUsed: [], filterConditions: null }]);
         expect((await issuesFor({ groupId: GROUP })).map((i) => [i.code, i.pointer])).toEqual([['input_invalid', '/steps/0/input/fleetFilter/groupId']]);
       });
 
@@ -232,28 +237,28 @@ describe('validateBuiltinStep', () => {
 
       it('save refuses fleetFilter.groupId naming a group the owner does not hold (reference_not_owned at /fleetFilter/groupId)', async () => {
         vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set());
-        vi.mocked(findOwnedDeviceGroups).mockResolvedValue([]);
+        load.mockResolvedValue([]);
         const issues = await issuesFor({ groupId: GROUP });
         expect(issues).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
         expect(vi.mocked(findOwnedDeviceGroupIds)).toHaveBeenCalledWith(ORG, [GROUP]);
       });
 
       it('a group that stops being owned between the two reads is reference_not_owned, never accepted', async () => {
-        vi.mocked(findOwnedDeviceGroups).mockResolvedValue([]);
+        load.mockResolvedValue([]);
         expect(await issuesFor({ groupId: GROUP })).toEqual([expect.objectContaining({ code: 'reference_not_owned', pointer: '/steps/0/input/fleetFilter/groupId' })]);
       });
 
       it('a group that cannot be checked in time is an issue; any other failure propagates', async () => {
-        vi.mocked(findOwnedDeviceGroups).mockRejectedValueOnce(new FilterQueryTimeoutError());
+        load.mockRejectedValueOnce(new FilterQueryTimeoutError());
         expect((await issuesFor({ groupId: GROUP })).map((i) => [i.code, i.pointer])).toEqual([['input_invalid', '/steps/0/input/fleetFilter/groupId']]);
-        vi.mocked(findOwnedDeviceGroups).mockRejectedValueOnce(new Error('connection lost'));
+        load.mockRejectedValueOnce(new Error('connection lost'));
         await expect(issuesFor({ groupId: GROUP })).rejects.toThrow('connection lost');
       });
 
       it('a partner-wide flow cannot name a group in fleetFilter', async () => {
         expect((await issuesFor({ groupId: GROUP }, PARTNER_OWNER)).map((i) => [i.code, i.pointer]))
           .toEqual([['group_in_partner_flow', '/steps/0/input/fleetFilter/groupId']]);
-        expect(vi.mocked(findOwnedDeviceGroups)).not.toHaveBeenCalled();
+        expect(vi.mocked(withOwnedDeviceGroupReads)).not.toHaveBeenCalled();
       });
 
       it.each([['hostname'], ['software.installed'], ['custom.anything'], ['tags']])(
@@ -263,7 +268,7 @@ describe('validateBuiltinStep', () => {
           const issues = await issuesFor({ groupId: GROUP });
           expect(issues).toEqual([expect.objectContaining({ code: 'input_invalid', pointer: '/steps/0/input/fleetFilter/groupId' })]);
           expect(issues[0]!.message).toBe('This device group is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.');
-          expect(vi.mocked(findOwnedDeviceGroups)).toHaveBeenCalledWith(ORG, [GROUP]);
+          expect(load).toHaveBeenCalledExactlyOnceWith(ORG, [GROUP]);
         },
       );
 
@@ -281,9 +286,54 @@ describe('validateBuiltinStep', () => {
         expect(await issuesFor({ osType: 'windows', pendingPatches: true, siteId: DEVICE, lastSeenDaysOver: 30, groupId: GROUP })).toEqual([]);
       });
 
+      describe('one check for a whole document', () => {
+        const OTHER_ORG = '99999999-9999-4999-8999-999999999999';
+        const fleetStep = (groupId: string) => step('run_script_on_targets', { scriptId: SCRIPT, fleetFilter: { groupId } });
+        const pointers = async (checks: FleetGroupChecks, owner = ORG_OWNER) =>
+          (await validateBuiltinStep(fleetStep(GROUP), 0, { owner, catalog: catalog(), fleetGroupChecks: checks })).map((i) => [i.code, i.pointer]);
+
+        it('judges every group the steps name in one bounded read, each once, and the steps read nothing more', async () => {
+          const checks = await checkFleetFilterGroups(ORG, [fleetStep(GROUP), fleetStep(GROUP), step('resolve_targets', { target: { type: 'groups', groupIds: [GROUP] } }), fleetStep('{{inputs.g}}')]);
+          expect(vi.mocked(withOwnedDeviceGroupReads)).toHaveBeenCalledExactlyOnceWith(ORG, GROUP_CHECK_DOCUMENT_BUDGET_MS, expect.any(Function));
+          expect(load).toHaveBeenCalledExactlyOnceWith(ORG, [GROUP]);
+          expect(await pointers(checks)).toEqual([]);
+          expect(load).toHaveBeenCalledTimes(1);
+        });
+
+        it('one group spelled in two cases is judged once, and both spellings find its verdict', async () => {
+          const lower = 'abcdefab-5555-4555-8555-555555555555';
+          load.mockImplementation(async (_org, ids) => ids.map((id) => ({ id, type: 'static' as const, siteId: null, hasRuleMembers: false, filterFieldsUsed: [], filterConditions: null })));
+          vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set([lower, lower.toUpperCase()]));
+          const steps = [fleetStep(lower), fleetStep(lower.toUpperCase())];
+          const checks = await checkFleetFilterGroups(ORG, steps);
+          expect(load).toHaveBeenCalledExactlyOnceWith(ORG, [lower]);
+          for (const s of steps) expect(await validateBuiltinStep(s, 0, { owner: ORG_OWNER, catalog: catalog(), fleetGroupChecks: checks })).toEqual([]);
+        });
+
+        it('a document that names no group reads nothing', async () => {
+          expect((await checkFleetFilterGroups(ORG, [step('wait', { minutes: 1 }), fleetStep('{{inputs.g}}')])).size).toBe(0);
+          expect(vi.mocked(withOwnedDeviceGroupReads)).not.toHaveBeenCalled();
+        });
+
+        it('a verdict is not used for another org, or for a group that was not judged', async () => {
+          const checks = await checkFleetFilterGroups(ORG, [fleetStep(GROUP)]);
+          expect(await pointers(checks)).toEqual([]);
+          const refused = [['input_invalid', '/steps/0/input/fleetFilter/groupId']];
+          expect(await pointers(checks, { ...ORG_OWNER, orgId: OTHER_ORG })).toEqual(refused);
+          expect(await pointers(new Map())).toEqual(refused);
+        });
+
+        it('a check that runs out of time refuses every step, without another read', async () => {
+          load.mockRejectedValue(new FilterQueryTimeoutError());
+          const checks = await checkFleetFilterGroups(ORG, [fleetStep(GROUP)]);
+          expect(await pointers(checks)).toEqual([['input_invalid', '/steps/0/input/fleetFilter/groupId']]);
+          expect(load).toHaveBeenCalledTimes(1);
+        });
+      });
+
       it('the group provenance read is not made for a target selector', async () => {
         await codesFor('run_script_on_targets', { scriptId: SCRIPT, target: { type: 'groups', groupIds: [GROUP] } });
-        expect(vi.mocked(findOwnedDeviceGroups)).not.toHaveBeenCalled();
+        expect(vi.mocked(withOwnedDeviceGroupReads)).not.toHaveBeenCalled();
       });
 
       it('fleetBuiltinReferences lists fleetFilter.groupId (run-time revalidation reads the same list)', () => {

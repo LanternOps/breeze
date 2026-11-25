@@ -46,7 +46,7 @@ import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds, type ScriptReadExecutor } from './flows/ownedReferences';
-import { builtinApprovalScope, builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
+import { builtinApprovalScope, builtinStepTier, checkFleetFilterGroups, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
 import {
   containsTemplate,
   escapePointerSegment,
@@ -271,6 +271,9 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
 
   if (document.notices) issues.push(...await validateNoticesChannel(document.notices.channelId, owner));
 
+  // One check for the whole document, for this validation only.
+  const fleetGroupChecks = owner.orgId ? await checkFleetFilterGroups(owner.orgId, document.steps) : undefined;
+
   for (const [i, step] of document.steps.entries()) {
     const base = `/steps/${i}/input`;
     const input = step.input;
@@ -295,6 +298,7 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       source = 'builtin';
       issues.push(...await validateBuiltinStep(step, i, {
         owner, catalog, earlierSteps: document.steps.slice(0, i),
+        ...(fleetGroupChecks ? { fleetGroupChecks } : {}),
         ...(ctx.scriptReadExecutor ? { scriptReadExecutor: ctx.scriptReadExecutor } : {}),
       }));
       tier = builtinStepTier(step, catalog);
