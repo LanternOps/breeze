@@ -332,6 +332,11 @@ describe('fleetTargetNote (what the approver reads)', () => {
     expect(m1, note).not.toBeNull();
     // Only hostname characters survive: no space, so no readable sentence.
     expect(m1![1]).toMatch(/^[\p{L}\p{N}._-]+…?$/u);
+    expect(m1![1]).not.toMatch(/\p{Lm}/u); // modifier letters include quote look-alikes
+  });
+
+  it('look-alike forms read as the plain name, and a name in another script is kept', () => {
+    expect(fleetTargetNote(summary({ sampleHostnames: ['ＨＯＳＴ-1', 'cafe\u0301', '東京-01'] }))).toContain('Sample: "HOST-1", "café", "東京-01".');
   });
 
   it('a hostname with nothing printable is left out; a long one is cut', () => {
