@@ -5580,7 +5580,12 @@
     "networkError": "Netzwerkfehler",
     "networkErrorDuringRevoke": "Netzwerkfehler beim Widerrufen",
     "revoking": "Widerrufen…",
-    "revoke": "Widerrufen"
+    "revoke": "Widerrufen",
+    "toolListFull": "Werkzeugliste: Vollständig",
+    "toolListProgressive": "Werkzeugliste: Progressiv",
+    "toolListDefault": "Werkzeugliste: Standard der Bereitstellung",
+    "toolListMixed": "Werkzeugliste: je nach Verbindung unterschiedlich",
+    "toolListHint": "Das legt jeder Nutzer für seine eigene Verbindung unter Konto → Verbundene Apps fest."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Bewahren Sie diese Codes sicher auf. Jeder Code kann einmal verwendet werden. Die Codes können nicht erneut angezeigt werden.",

@@ -2863,6 +2863,26 @@
         "admin": "Amministrazione",
         "ai": "Agenti IA"
       }
+    },
+    "mcpToolListMode": {
+      "label": "Elenco degli strumenti MCP",
+      "inherit": "Eredita (predefinito della distribuzione: {{mode}})",
+      "full": "Completo",
+      "progressive": "Progressivo",
+      "mixed": "Più valori",
+      "effective": "Mostrato ora: {{mode}} — {{source}}",
+      "sourceKey": "impostato su questa chiave",
+      "sourceConnection": "impostato su questa connessione",
+      "sourceDeploymentDefault": "predefinito della distribuzione",
+      "hint": "L’elenco completo mostra tutti gli strumenti. Quello progressivo mostra un piccolo nucleo più la ricerca degli strumenti, per i client che non hanno una ricerca degli strumenti propria. Cambia ciò che viene mostrato, mai ciò che è consentito.",
+      "perKey": "Impostato per chiave. Le organizzazioni non possono sostituirlo.",
+      "perConnection": "Impostato per connessione. Le organizzazioni non possono sostituirlo.",
+      "allConnections": "Si applica a tutte le tue connessioni attive a questa app, in tutti i partner.",
+      "mixedHelp": "Le tue connessioni a questa app hanno valori diversi. Scegline uno da applicare a tutte.",
+      "save": "Salva elenco degli strumenti",
+      "saving": "Salvataggio in corso…",
+      "saved": "Elenco degli strumenti MCP salvato",
+      "saveFailed": "Impossibile salvare l’elenco degli strumenti MCP"
     }
   },
   "whatsNew": {

@@ -5580,7 +5580,12 @@
     "networkError": "Erro de rede",
     "networkErrorDuringRevoke": "Erro de rede durante a revogação",
     "revoking": "Revogando…",
-    "revoke": "Revogar"
+    "revoke": "Revogar",
+    "toolListFull": "Lista de ferramentas: Completa",
+    "toolListProgressive": "Lista de ferramentas: Progressiva",
+    "toolListDefault": "Lista de ferramentas: padrão da implantação",
+    "toolListMixed": "Lista de ferramentas: varia por conexão",
+    "toolListHint": "Cada pessoa define isso para a própria conexão em Conta → Aplicativos conectados."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Guarde estes códigos em um local seguro. Cada código pode ser usado uma vez. Eles não podem ser exibidos novamente.",

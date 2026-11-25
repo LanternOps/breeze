@@ -2863,6 +2863,26 @@
         "admin": "Gestion administrative",
         "ai": "Agents IA"
       }
+    },
+    "mcpToolListMode": {
+      "label": "Liste d’outils MCP",
+      "inherit": "Hériter (valeur par défaut du déploiement : {{mode}})",
+      "full": "Liste complète",
+      "progressive": "Liste progressive",
+      "mixed": "Plusieurs valeurs",
+      "effective": "Affichée actuellement : {{mode}} — {{source}}",
+      "sourceKey": "définie sur cette clé",
+      "sourceConnection": "définie sur cette connexion",
+      "sourceDeploymentDefault": "valeur par défaut du déploiement",
+      "hint": "La liste complète affiche tous les outils. La liste progressive affiche un petit noyau plus la recherche d’outils, pour les clients qui n’ont pas de recherche d’outils propre. Ce réglage modifie ce qui est affiché, jamais ce qui est autorisé.",
+      "perKey": "Définie par clé. Les organisations ne peuvent pas la remplacer.",
+      "perConnection": "Définie par connexion. Les organisations ne peuvent pas la remplacer.",
+      "allConnections": "S’applique à toutes vos connexions actives à cette application, pour tous les partenaires.",
+      "mixedHelp": "Vos connexions à cette application ont des valeurs différentes. Choisissez-en une à appliquer à toutes.",
+      "save": "Enregistrer la liste d’outils",
+      "saving": "Enregistrement…",
+      "saved": "Liste d’outils MCP enregistrée",
+      "saveFailed": "Impossible d’enregistrer la liste d’outils MCP"
     }
   },
   "whatsNew": {

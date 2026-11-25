@@ -5570,7 +5570,12 @@
     "networkError": "Erreur réseau",
     "networkErrorDuringRevoke": "Erreur réseau lors de la révocation",
     "revoking": "Révoque...",
-    "revoke": "Révoquer"
+    "revoke": "Révoquer",
+    "toolListFull": "Liste d’outils : complète",
+    "toolListProgressive": "Liste d’outils : progressive",
+    "toolListDefault": "Liste d’outils : valeur par défaut du déploiement",
+    "toolListMixed": "Liste d’outils : varie selon la connexion",
+    "toolListHint": "Chaque personne la définit pour sa propre connexion sous Compte → Applications connectées."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Conservez ces codes en lieu sûr. Chaque code est utilisable une seule fois. Ils ne peuvent pas être affichés à nouveau.",

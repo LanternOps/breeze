@@ -2863,6 +2863,26 @@
         "admin": "Yönetim",
         "ai": "Yapay zekâ ajanları"
       }
+    },
+    "mcpToolListMode": {
+      "label": "MCP araç listesi",
+      "inherit": "Devral (dağıtım varsayılanı: {{mode}})",
+      "full": "Tam",
+      "progressive": "Aşamalı",
+      "mixed": "Birden çok değer",
+      "effective": "Şu anda gösterilen: {{mode}} — {{source}}",
+      "sourceKey": "bu anahtarda ayarlı",
+      "sourceConnection": "bu bağlantıda ayarlı",
+      "sourceDeploymentDefault": "dağıtım varsayılanı",
+      "hint": "Tam, her aracı listeler. Aşamalı, kendi araç araması olmayan istemciler için küçük bir çekirdek ile araç aramasını listeler. Neyin listeleneceğini değiştirir, neye izin verileceğini asla.",
+      "perKey": "Anahtar başına ayarlanır. Kuruluşlar bunu geçersiz kılamaz.",
+      "perConnection": "Bağlantı başına ayarlanır. Kuruluşlar bunu geçersiz kılamaz.",
+      "allConnections": "Bu uygulamayla olan tüm etkin bağlantılarınız için, tüm iş ortaklarında geçerlidir.",
+      "mixedHelp": "Bu uygulamayla olan bağlantılarınızın değerleri farklı. Hepsine uygulanacak birini seçin.",
+      "save": "Araç listesini kaydet",
+      "saving": "Kaydediliyor…",
+      "saved": "MCP araç listesi kaydedildi",
+      "saveFailed": "MCP araç listesi kaydedilemedi"
     }
   },
   "whatsNew": {

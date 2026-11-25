@@ -5570,7 +5570,12 @@
     "networkError": "Errore di rete",
     "networkErrorDuringRevoke": "Errore di rete durante la revoca",
     "revoking": "Revoca in corso…",
-    "revoke": "Revoca"
+    "revoke": "Revoca",
+    "toolListFull": "Elenco degli strumenti: Completo",
+    "toolListProgressive": "Elenco degli strumenti: Progressivo",
+    "toolListDefault": "Elenco degli strumenti: predefinito della distribuzione",
+    "toolListMixed": "Elenco degli strumenti: varia in base alla connessione",
+    "toolListHint": "Ogni persona lo imposta per la propria connessione in Account → App connesse."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Conserva questi codici in un luogo sicuro. Ogni codice può essere usato una sola volta. Non possono essere mostrati di nuovo.",
