@@ -36,6 +36,7 @@ import type { AuthContext } from '../middleware/auth';
 import { MAX_OFFSET } from './aiToolPagination';
 import { encodePageCursor, PAGE_RESUME_KEY } from './aiToolPageResume';
 import { FilterQueryTimeoutError } from './filterEngine';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from './actionIntents/runScriptLimits';
 
 const NAME = 'get_fleet_device_stats';
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -228,6 +229,19 @@ describe(`${NAME} filter, groupBy and device page (#12418 W01)`, () => {
     expect(out.devices).toEqual(pageRows);
     expect(typeof out.nextCursor).toBe('string');
     expect(out.filter).toEqual({ fieldsUsed: ['patches.pending'], executionRefusedFields: [] });
+  });
+
+  // #12418 W02: the model reads the ceiling beside the count it is about to act on.
+  it('with a filter the result carries aiActionLimit = RUN_SCRIPT_AI_MAX_DEVICES', async () => {
+    const out = JSON.parse(await setup().handler({ filter: { osType: 'windows' } }, authFor()));
+    expect(out.aiActionLimit).toBe(10);
+    expect(out.aiActionLimit).toBe(RUN_SCRIPT_AI_MAX_DEVICES);
+  });
+
+  it('groupBy alone and the unfiltered count carry no aiActionLimit', async () => {
+    m.stats.mockResolvedValue(counts);
+    expect(JSON.parse(await setup().handler({ groupBy: 'osType' }, authFor()))).not.toHaveProperty('aiActionLimit');
+    expect(await setup().handler({}, authFor())).toBe(JSON.stringify(counts));
   });
 
   it('a software filter is labelled execution-refused in the result', async () => {

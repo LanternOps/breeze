@@ -19,6 +19,7 @@ import {
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from './actionIntents/runScriptLimits';
 import { MAX_OFFSET, pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { FilterQueryTimeoutError, withFilterStatementTimeout } from './filterEngine';
 import { reportFilterPreviewTimeout } from './filterPreviewTimeout';
@@ -499,6 +500,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           fieldsUsed: fleetFilterFieldsUsed(filter),
           executionRefusedFields: fleetFilterExecutionRefusedFields(filter),
         },
+        // #12418 W02: the most devices an AI-initiated action may cover; a larger set is refused, not truncated.
+        aiActionLimit: RUN_SCRIPT_AI_MAX_DEVICES,
         ...pageEnvelope({
           key: 'devices',
           items: rows,
