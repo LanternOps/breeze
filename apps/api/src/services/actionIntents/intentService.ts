@@ -214,6 +214,13 @@ export interface CreateActionIntentInput {
   /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
   reason?: string;
   /**
+   * #12418 W02 — a sentence added to the end of the impact summary, which is
+   * what the approver READS (`approval_requests.risk_summary`). TRUSTED,
+   * INTERNAL-ONLY: the flow runner builds it; refused from any other principal
+   * (`flow_source_mismatch`). Display text: feeds no digest.
+   */
+  approverNote?: string;
+  /**
    * Human headline for the approver — "Restart service "Spooler" on KIT".
    * Distinct from `reason`: callers that pass a justification as `reason`
    * (agent runs, ticket triage) must not have it surface as the action.
@@ -1484,6 +1491,9 @@ export async function createActionIntent(
       'flow_source_mismatch',
     );
   }
+  if (input.approverNote !== undefined && !flowPrincipal) {
+    throw new ActionIntentError('approverNote is reserved for the flow principal of a run', 'flow_source_mismatch');
+  }
   const flowRunInput = flowPrincipal ? input.flowRun! : null;
   // Tool catalog W05 (#5220), Decision 12: built-in flow step names are not
   // registered tools. They are accepted only from a flow principal's own run
@@ -2324,7 +2334,11 @@ export async function createActionIntent(
     const { intentRequiresPartnerAxisApprover } = await import('./partnerAxisApprover');
     requirePartnerAxis = await intentRequiresPartnerAxisApprover({ actionName: input.toolName, arguments: input.input, orgId });
   }
-  const impactSummary = requirePartnerAxis ? `${baseImpactSummary} ${PARTNER_LEVEL_APPROVER_NOTE}` : baseImpactSummary;
+  const impactSummary = [
+    baseImpactSummary,
+    ...(requirePartnerAxis ? [PARTNER_LEVEL_APPROVER_NOTE] : []),
+    ...(input.approverNote ? [input.approverNote] : []),
+  ].join(' ');
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
