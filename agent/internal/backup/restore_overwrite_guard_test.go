@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -66,19 +67,30 @@ func volumeRootOf(p string) string {
 // those paths.
 func setupRestoreTestSnapshotAt(t *testing.T, files map[string]string, dirs []string) (*providers.LocalProvider, string) {
 	t.Helper()
+	ordered := make([][2]string, 0, len(files))
+	for path, content := range files {
+		ordered = append(ordered, [2]string{path, content})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i][0] < ordered[j][0] })
+	return setupRestoreTestSnapshotOrdered(t, ordered, dirs)
+}
+
+// setupRestoreTestSnapshotOrdered is setupRestoreTestSnapshotAt with the
+// manifest's file entries in the order given ({path, content} pairs).
+func setupRestoreTestSnapshotOrdered(t *testing.T, files [][2]string, dirs []string) (*providers.LocalProvider, string) {
+	t.Helper()
 	provider := privateTestLocalProvider(t, t.TempDir())
 	snapshotID := "inplace-at-snap"
 	prefix := filepath.Join("snapshots", snapshotID)
 	now := time.Now().UTC()
 	var entries []SnapshotFile
-	i := 0
-	for path, content := range files {
+	for i, file := range files {
+		path, content := file[0], file[1]
 		src := filepath.Join(t.TempDir(), "content")
 		if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		key := filepath.ToSlash(filepath.Join(prefix, "files", fmt.Sprintf("f%d.gz", i)))
-		i++
 		if err := provider.Upload(src, key); err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +247,7 @@ func TestOverwritesOriginals_AliasedTarget(t *testing.T) {
 		t.Fatalf("link to /: count %d, %v; want 1", count, err)
 	}
 
-	first := strings.SplitN(strings.TrimPrefix(original, "/"), "/", 2)[0]
+	first, _, _ := strings.Cut(strings.TrimPrefix(original, "/"), "/")
 	nested := t.TempDir()
 	if err := os.Symlink("/"+first, filepath.Join(nested, first)); err != nil {
 		t.Fatal(err)
@@ -335,13 +347,8 @@ func TestRefuseRestoreOverOriginals_AllEntryKinds(t *testing.T) {
 		}
 		result := &RestoreResult{}
 		g := newOriginalsGuard(target)
-		for _, f := range append(tc.dirs, tc.links...) {
-			g.noteOriginal(restoreSourcePath(f))
-		}
-		for _, j := range tc.junctions {
-			g.noteOriginal(j.restorePath())
-		}
-		if !refuseRestoreOverOriginals(g, nil, tc.links, tc.dirs, tc.junctions, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
+		originals := noteAll(g, append(tc.dirs, tc.links...), tc.junctions)
+		if !refuseRestoreOverOriginals(g, nil, tc.links, tc.dirs, tc.junctions, originals, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
 			t.Errorf("%s at its own volume root: result %+v, want refused", name, result)
 		}
 	}
@@ -461,8 +468,24 @@ func overwritesOriginals(targetBase string, recorded []string) (example string, 
 	for _, p := range recorded {
 		g.noteOriginal(p)
 	}
-	f := g.check(recorded)
+	f := g.check(recorded, originalsOf(recorded))
 	return f.entry, f.count, f.uncheckedErr
+}
+
+// noteAll notes every entry as the manifest decode would and returns them
+// as the originals source the second pass streams.
+func noteAll(g *originalsGuard, files []SnapshotFile, junctions []SnapshotJunction) originalSource {
+	var recorded []string
+	for _, f := range files {
+		recorded = append(recorded, restoreSourcePath(f))
+	}
+	for _, j := range junctions {
+		recorded = append(recorded, j.restorePath())
+	}
+	for _, p := range recorded {
+		g.noteOriginal(p)
+	}
+	return originalsOf(recorded)
 }
 
 // A Windows VSS backup records the shadow-copy device path as SourcePath and
@@ -479,14 +502,9 @@ func TestRefuseRestoreOverOriginals_VSSOriginalPath(t *testing.T) {
 		"junction": {junctions: []SnapshotJunction{junction}},
 	} {
 		g := newOriginalsGuard(`C:\`)
-		for _, f := range tc.files {
-			g.noteOriginal(restoreSourcePath(f))
-		}
-		for _, j := range tc.junctions {
-			g.noteOriginal(j.restorePath())
-		}
+		originals := noteAll(g, tc.files, tc.junctions)
 		result := &RestoreResult{}
-		if !refuseRestoreOverOriginals(g, tc.files, nil, nil, tc.junctions, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
+		if !refuseRestoreOverOriginals(g, tc.files, nil, nil, tc.junctions, originals, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
 			t.Errorf("VSS %s restored to C:\\: result %+v, want refused", name, result)
 		}
 	}
@@ -500,7 +518,8 @@ func TestRefuseRestoreOverOriginals_CheckFailure(t *testing.T) {
 	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, denied })
 	g.identity.hostStyle = stylePOSIX
 	result := &RestoreResult{}
-	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: "/home/a/x"}}, nil, nil, nil, result) {
+	selected := []SnapshotFile{{SourcePath: "/home/a/x"}}
+	if !refuseRestoreOverOriginals(g, selected, nil, nil, nil, noteAll(g, selected, nil), result) {
 		t.Fatal("restore went ahead although the check could not finish")
 	}
 	if result.Status != "failed" || result.Code != ResultCodeRestoreOverwriteCheckFailed ||
@@ -512,11 +531,9 @@ func TestRefuseRestoreOverOriginals_CheckFailure(t *testing.T) {
 	// another original: the definite hit is what is reported.
 	g = newOriginalsGuard("/target")
 	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, denied })
-	for _, p := range []string{"/target/x", "/target/target/x"} {
-		g.noteOriginal(p)
-	}
+	originals := noteAll(g, []SnapshotFile{{SourcePath: "/home/a/y"}, {SourcePath: "/target/x"}, {SourcePath: "/target/target/x"}}, nil)
 	result = &RestoreResult{}
-	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: "/home/a/y"}, {SourcePath: "/target/x"}}, nil, nil, nil, result) ||
+	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: "/home/a/y"}, {SourcePath: "/target/x"}}, nil, nil, nil, originals, result) ||
 		result.Code != ResultCodeRestoreWouldOverwriteOriginals || !strings.Contains(result.Error, "/target/x would overwrite /target/target/x") {
 		t.Fatalf("result %+v; want the definite overwrite reported", result)
 	}

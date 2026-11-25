@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 )
 
 // Alternate-location restores must not write over the originals (#12638).
@@ -217,9 +218,9 @@ func restoreDestinationKey(targetBase, sourcePath string) (dest, original pathKe
 //   - lexical, in the entry's own path style: the destination equals the
 //     recorded path of some entry in the snapshot (itself, when the target is
 //     its volume root; another, when the target lies inside the backed-up
-//     tree and a nested copy was itself backed up — selected or not). Only
-//     originals beneath the target can collide, so only those are kept
-//     (noteOriginal sees every manifest entry as it is decoded).
+//     tree and a nested copy was itself backed up — selected or not). Every
+//     destination lies beneath the target, so only an original beneath it
+//     can collide.
 //   - by identity, for entries recorded in this host's style: a destination
 //     directory that is the original's directory under another name (a
 //     volume GUID or `\\?\` spelling, a SUBST drive, a bind mount, a link to
@@ -227,17 +228,26 @@ func restoreDestinationKey(targetBase, sourcePath string) (dest, original pathKe
 //     down, stopping at the first destination or original directory that
 //     does not exist.
 //
+// Memory follows the selection, not the snapshot (the #11234 bound): while
+// the manifest streams, the guard keeps one flag (does any original lie
+// beneath the target?), not the originals. The lexical check indexes the
+// selected entries' destinations and streams the originals a second time
+// against that index (check's originals argument).
+//
 // A safety check, not an atomic guarantee: a mount or link created under the
 // target after it runs is not seen (the per-file writes still refuse links).
 type originalsGuard struct {
 	targetBase string
 	targetKeys map[pathStyle]pathKey
-	under      map[string]string // pathKey string → the recorded path it came from
-	identity   *dirIdentityCheck
+	// originalsBeneath is set when an original noted while the manifest
+	// streamed lies beneath the target: without one, no destination can
+	// be an original lexically and the second pass is skipped.
+	originalsBeneath bool
+	identity         *dirIdentityCheck
 }
 
 func newOriginalsGuard(targetBase string) *originalsGuard {
-	g := &originalsGuard{targetBase: targetBase, targetKeys: map[pathStyle]pathKey{}, under: map[string]string{}, identity: newDirIdentityCheck(targetBase)}
+	g := &originalsGuard{targetBase: targetBase, targetKeys: map[pathStyle]pathKey{}, identity: newDirIdentityCheck(targetBase)}
 	for _, style := range []pathStyle{stylePOSIX, styleWindows} {
 		if k, ok := parsePathKey(targetBase, style); ok {
 			g.targetKeys[style] = k
@@ -246,17 +256,27 @@ func newOriginalsGuard(targetBase string) *originalsGuard {
 	return g
 }
 
-// noteOriginal records a recorded path the snapshot holds, selected or not,
-// when it lies beneath the target.
+// noteOriginal sees a recorded path the snapshot holds, selected or not, and
+// remembers only whether one lies beneath the target.
 func (g *originalsGuard) noteOriginal(recorded string) {
+	if !g.originalsBeneath {
+		_, g.originalsBeneath = g.originalKeyBeneath(recorded)
+	}
+}
+
+// originalKeyBeneath is recorded's pathKey string when it lies beneath the
+// target in its own path style.
+func (g *originalsGuard) originalKeyBeneath(recorded string) (string, bool) {
 	style := recordedPathStyle(recorded)
 	target, ok := g.targetKeys[style]
 	if !ok {
-		return
+		return "", false
 	}
-	if original, ok := parsePathKey(recorded, style); ok && target.contains(original) {
-		g.under[original.String()] = recorded
+	original, ok := parsePathKey(recorded, style)
+	if !ok || !target.contains(original) {
+		return "", false
 	}
+	return original.String(), true
 }
 
 // observing wraps a manifest-decode predicate so every entry is noted before
@@ -277,17 +297,66 @@ type overwriteFinding struct {
 	uncheckedErr     error
 }
 
+// originalSource streams every recorded path the snapshot holds (each by
+// restoreSourcePath's rule), selected or not, to yield.
+type originalSource func(yield func(recorded string)) error
+
+// originalsOf is an originalSource over paths already in memory.
+func originalsOf(recorded ...[]string) originalSource {
+	return func(yield func(string)) error {
+		for _, group := range recorded {
+			for _, p := range group {
+				yield(p)
+			}
+		}
+		return nil
+	}
+}
+
 // check examines the selected entries (each by its recorded path,
-// restoreSourcePath's rule). Every original the snapshot holds must have
-// been noted first. An entry whose identity could not be examined does not
-// stop the check: definite hits are still counted and reported first.
-func (g *originalsGuard) check(recorded []string) overwriteFinding {
+// restoreSourcePath's rule) against every original the snapshot holds:
+// noteOriginal must have seen each of them, and originals streams them
+// again when one lies beneath the target. Only the selected entries'
+// destinations are held. An entry whose identity could not be examined
+// does not stop the check: definite hits are still counted and reported
+// first.
+func (g *originalsGuard) check(recorded []string, originals originalSource) overwriteFinding {
 	var f overwriteFinding
+	overwrites := map[string]string{} // destination key → the original found there
+	if g.originalsBeneath {
+		// Each selected destination, and at once any that is the entry's
+		// own original (a target at its volume root, #12638's case: found
+		// even if the second pass cannot finish).
+		for _, p := range recorded {
+			if dest, original, ok := restoreDestinationKey(g.targetBase, p); ok {
+				key := dest.String()
+				if key == original.String() {
+					overwrites[key] = p
+				} else if _, seen := overwrites[key]; !seen {
+					overwrites[key] = ""
+				}
+			}
+		}
+		if len(overwrites) > 0 {
+			err := originals(func(original string) {
+				key, beneath := g.originalKeyBeneath(original)
+				if !beneath {
+					return
+				}
+				if found, ok := overwrites[key]; ok && found == "" {
+					overwrites[key] = original
+				}
+			})
+			if err != nil {
+				f.uncheckedErr = fmt.Errorf("re-read the snapshot's original paths: %w", err)
+			}
+		}
+	}
 	for _, p := range recorded {
 		overwritten := ""
-		if len(g.under) > 0 {
+		if len(overwrites) > 0 {
 			if dest, _, ok := restoreDestinationKey(g.targetBase, p); ok {
-				overwritten = g.under[dest.String()]
+				overwritten = overwrites[dest.String()]
 			}
 		}
 		if overwritten == "" {
@@ -381,7 +450,24 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 	return false, nil
 }
 
+// uncheckedPathError is a path the identity check could not examine: the
+// first one is named in the refusal so the operator knows what to fix.
+type uncheckedPathError struct {
+	what string // "restore destination" or "original location"
+	path string
+	err  error
+}
+
+func (e *uncheckedPathError) Error() string {
+	return fmt.Sprintf("examine %s %s: %v", e.what, e.path, e.err)
+}
+
+func (e *uncheckedPathError) Unwrap() error { return e.err }
+
 func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
+	// The destination first: one that does not exist cannot be an
+	// original, whatever the original's state, so an unreadable original
+	// never refuses a restore whose destination is not there yet.
 	destInfo, err := c.stat(dest)
 	if notADirectory(err) {
 		return dirAbsent, nil
@@ -389,13 +475,16 @@ func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 	if err != nil {
 		// Fail closed: a destination that exists but cannot be examined
 		// cannot be shown not to be an original.
-		return 0, fmt.Errorf("examine restore destination %s: %w", dest, err)
+		return 0, &uncheckedPathError{what: "restore destination", path: dest, err: err}
 	}
 	originalInfo, err := c.stat(original)
 	if errors.Is(err, fs.ErrPermission) {
 		// It may well exist, so it may be what the destination is: fail
-		// closed.
-		return 0, fmt.Errorf("examine original location %s: %w", original, err)
+		// closed. Nothing short of its own identity rules that out: the
+		// parent's device does not (the original may be a mount point, or
+		// an APFS firmlink such as /Users, whose device differs from its
+		// parent's).
+		return 0, &uncheckedPathError{what: "original location", path: original, err: err}
 	}
 	if err != nil {
 		// No reachable original directory (gone since the backup, a share
@@ -412,11 +501,12 @@ func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 }
 
 // refuseRestoreOverOriginals runs the guard over every entry the restore
-// selected (files, symlinks, directories, junctions) and, when any would
-// land on an original or could not be checked, marks result failed and
-// reports true: the caller returns it without writing anything. Reported as
-// a result body (nil error) so the code and the reason reach the server.
-func refuseRestoreOverOriginals(g *originalsGuard, files, links, dirs []SnapshotFile, junctions []SnapshotJunction, result *RestoreResult) bool {
+// selected (files, symlinks, directories, junctions), against every original
+// the snapshot holds (streamed by originals), and, when any would land on an
+// original or could not be checked, marks result failed and reports true:
+// the caller returns it without writing anything. Reported as a result body
+// (nil error) so the code and the reason reach the server.
+func refuseRestoreOverOriginals(g *originalsGuard, files, links, dirs []SnapshotFile, junctions []SnapshotJunction, originals originalSource, result *RestoreResult) bool {
 	recorded := make([]string, 0, len(files)+len(links)+len(dirs)+len(junctions))
 	for _, group := range [][]SnapshotFile{files, links, dirs} {
 		for _, f := range group {
@@ -426,14 +516,14 @@ func refuseRestoreOverOriginals(g *originalsGuard, files, links, dirs []Snapshot
 	for _, j := range junctions {
 		recorded = append(recorded, j.restorePath())
 	}
-	f := g.check(recorded)
+	f := g.check(recorded, originals)
 	switch {
 	case f.count > 0:
 		result.Code = ResultCodeRestoreWouldOverwriteOriginals
 		result.Error = alternateRestoreRefusal(g.targetBase, f)
 	case f.uncheckedErr != nil:
 		result.Code = ResultCodeRestoreOverwriteCheckFailed
-		result.Error = fmt.Sprintf("restore refused: could not confirm that restoring to %s leaves the original files untouched (%v). Choose a new, empty folder as the target; nothing was written", g.targetBase, f.uncheckedErr)
+		result.Error = overwriteCheckFailedRefusal(g.targetBase, f.uncheckedErr)
 	default:
 		return false
 	}
@@ -441,6 +531,33 @@ func refuseRestoreOverOriginals(g *originalsGuard, files, links, dirs []Snapshot
 	slog.Warn("restore refused by the originals guard",
 		"snapshotId", result.SnapshotID, "targetPath", g.targetBase, "code", result.Code, "entries", f.count, "error", result.Error)
 	return true
+}
+
+// maxRefusalPathRunes caps each path quoted in a refusal: a path comes from
+// the snapshot or the host, and the advice must survive the server's limit
+// on a result's error text (wire.CriticalResultErrorMaxChars).
+const maxRefusalPathRunes = 512
+
+func refusalPath(p string) string {
+	if utf8.RuneCountInString(p) <= maxRefusalPathRunes {
+		return p
+	}
+	return string([]rune(p)[:maxRefusalPathRunes]) + "…"
+}
+
+// overwriteCheckFailedRefusal is the error text for a restore refused
+// because the check could not finish: what to do first, then the first
+// path that could not be examined.
+func overwriteCheckFailedRefusal(targetBase string, err error) string {
+	msg := fmt.Sprintf("restore refused: could not confirm that restoring to %s leaves the original files untouched; nothing was written. Choose a new, empty folder as the target, or give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again.", refusalPath(targetBase))
+	if unchecked, ok := errors.AsType[*uncheckedPathError](err); ok {
+		reason := unchecked.err
+		if pathErr, ok := errors.AsType[*fs.PathError](reason); ok {
+			reason = pathErr.Err // the path is named already
+		}
+		return fmt.Sprintf("%s First path that could not be checked (%s): %s (%v)", msg, unchecked.what, refusalPath(unchecked.path), reason)
+	}
+	return fmt.Sprintf("%s (%v)", msg, err)
 }
 
 // notADirectory reports a stat error that establishes there is no directory
@@ -453,10 +570,10 @@ func notADirectory(err error) bool {
 // alternateRestoreRefusal is the error text for a refused restore: what was
 // refused, why, and what the operator can do instead.
 func alternateRestoreRefusal(targetBase string, f overwriteFinding) string {
-	example := f.entry
+	example := refusalPath(f.entry)
 	if f.overwrite != f.entry {
-		example = fmt.Sprintf("%s would overwrite %s", f.entry, f.overwrite)
+		example = fmt.Sprintf("%s would overwrite %s", refusalPath(f.entry), refusalPath(f.overwrite))
 	}
-	return fmt.Sprintf("restore refused: restoring to %s would write %d item(s) over files this snapshot was backed up from (for example %s); nothing was written. Choose a new, empty folder outside the backed-up folders as the target. To overwrite the originals on purpose, restore to the root of the drive they came from and confirm overwriting the original files",
-		targetBase, f.count, example)
+	return fmt.Sprintf("restore refused: restoring to %s would write %d item(s) over files this snapshot was backed up from; nothing was written. Choose a new, empty folder outside the backed-up folders as the target. To overwrite the originals on purpose, restore to the root of the drive they came from and confirm overwriting the original files. For example: %s",
+		refusalPath(targetBase), f.count, example)
 }
