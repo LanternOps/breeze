@@ -117,7 +117,7 @@ func ParseReleaseRequest(raw []byte) (ReleaseRequest, error) {
 func Release(_ context.Context, req ReleaseRequest, lane Lane, deps Deps) ReleaseResult {
 	if !IsLane(req.Lane) || lane == nil || lane.ID() != req.Lane {
 		log.Warn("vendor schedule release refused: lane does not match the request", "lane", req.Lane)
-		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseFailed, ErrorCode: strPtr("invalid_request")}
+		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseFailed, ErrorCode: new("invalid_request")}
 	}
 	if deps.Store != nil {
 		if _, err := deps.Store.ReadFile(legacyTakeoverRecordName(req.Lane)); err == nil {
