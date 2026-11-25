@@ -23,8 +23,10 @@ import { deviceGroupMemberships, deviceGroups, devicePatches, devices, patches, 
 import { executeTool } from '../../services/aiTools';
 import { FilterQueryTimeoutError, withFilterStatementTimeout } from '../../services/filterEngine';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
+import { withSlowTimeoutRestore } from './slowTimeoutRestore';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const TOOL = 'get_fleet_device_stats';
@@ -325,6 +327,20 @@ describe('get_fleet_device_stats typed filter against real Postgres (#12418 W01)
     const body = await run(f.auth.org, { groupBy: 'architecture' });
     expect(body.groups.rows).toEqual([{ key: 'amd64', count: 3 }]);
   });
+
+  runDb('groupBy keeps the 50 largest groups after merging empty with unknown, breaks ties by byte order and sums the rest', async () => {
+    const version = (agentVersion: string) => seedDevice({ orgId: f.orgA, siteId: f.s2, name: 'v', extra: { agentVersion } });
+    // Two each, so every one of these ranks by count; '' and 'unknown' reach three only once merged.
+    for (const v of ['', '', 'unknown']) await version(v);
+    // 60 singles: byte order puts every upper-case key before every lower-case one.
+    const singles = (prefix: string) => Array.from({ length: 30 }, (_, i) => `${prefix}${String(i).padStart(2, '0')}`);
+    for (const v of [...singles('a'), ...singles('B')]) await version(v);
+    // Site 2 holds w2 (agentVersion 1.0.0) and the 63 above.
+    const body = await run(f.auth.org, { filter: { siteId: f.s2 }, groupBy: 'agentVersion' });
+    const ordered = ['1.0.0', ...singles('B'), ...singles('a')].map((key) => ({ key, count: 1 }));
+    expect(body.groups).toEqual({ by: 'agentVersion', rows: [{ key: 'unknown', count: 3 }, ...ordered.slice(0, 49)], otherCount: 12 });
+    expect(body.total).toBe(64);
+  }, 60_000);
 });
 
 // Strix finding on #12655: the filtered and grouped statements run under the
@@ -427,6 +443,40 @@ describe('get_fleet_device_stats statement bound against real Postgres (#12655 S
       // A statement inside the bound that finishes in time is unaffected.
       const ok = await withFilterStatementTimeout((tx) => tx.execute(sql`select 1 as one`), { timeoutMs: 1_000 });
       expect(ok).toBeTruthy();
+    });
+  });
+
+  // #12656: the restore runs under whatever limit `run` left behind.
+  runDb('a cancelled restore is a timeout, and the request transaction keeps its own settings and stays usable', async () => {
+    await withSlowTimeoutRestore(async (slow) => {
+      await withDbAccessContext(ctxFor(f.auth.org), async () => {
+        const searchPath = async () => JSON.stringify(await db.execute(sql`select current_setting('search_path') as v`));
+        const before = [await currentTimeout(), await searchPath()];
+        const outcome = await withFilterStatementTimeout(async (tx) => {
+          await tx.execute(sql`select set_config('statement_timeout', '50ms', true)`);
+          await slow(tx);
+        }).then(() => 'resolved', (error: unknown) => error);
+        expect(outcome).toBeInstanceOf(FilterQueryTimeoutError);
+        expect(pgErrorCode((outcome as Error).cause)).toBe('57014');
+        expect([await currentTimeout(), await searchPath()]).toEqual(before);
+        const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.id, f.w1));
+        expect(row!.n).toBe(1);
+      });
+    });
+  });
+
+  runDb('a limit `run` lowered does not outlive the call, whether it returns or throws', async () => {
+    await withDbAccessContext(ctxFor(f.auth.org), async () => {
+      const before = await currentTimeout();
+      const lower = sql`select set_config('statement_timeout', '200ms', true)`;
+      await withFilterStatementTimeout((tx) => tx.execute(lower));
+      expect(await currentTimeout()).toBe(before);
+      const fault = new Error('not a timeout');
+      await expect(withFilterStatementTimeout(async (tx) => {
+        await tx.execute(lower);
+        throw fault;
+      })).rejects.toBe(fault);
+      expect(await currentTimeout()).toBe(before);
     });
   });
 });

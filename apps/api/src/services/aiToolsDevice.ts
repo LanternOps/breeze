@@ -24,6 +24,7 @@ import { MAX_OFFSET, pageEnvelope, pageParamSchema, readPageArgs } from './aiToo
 import { FilterQueryTimeoutError, withFilterStatementTimeout } from './filterEngine';
 import { reportFilterPreviewTimeout } from './filterPreviewTimeout';
 import {
+  FLEET_SAMPLE_PAGE,
   fleetFilterExecutionRefusedFields,
   fleetFilterFieldsUsed,
   fleetFilterParamSchema,
@@ -428,7 +429,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           orgId: { type: 'string', format: 'uuid', description: 'Narrow to one organization' },
           filter: fleetFilterParamSchema(),
           groupBy: fleetGroupByParamSchema(),
-          ...pageParamSchema(10, 100),
+          ...pageParamSchema(FLEET_SAMPLE_PAGE.defaultLimit, FLEET_SAMPLE_PAGE.maxLimit),
         },
       },
     },
@@ -482,7 +483,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           return timedOut(error);
         }
       }
-      const page = readPageArgs('get_fleet_device_stats', input, { defaultLimit: 10, maxLimit: 100 });
+      const page = readPageArgs('get_fleet_device_stats', input, FLEET_SAMPLE_PAGE);
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 

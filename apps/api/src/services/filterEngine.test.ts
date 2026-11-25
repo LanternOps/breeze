@@ -8,6 +8,8 @@ const dbMock = vi.hoisted(() => ({
   executed: [] as unknown[],
   events: [] as Array<'execute' | 'query'>,
   queryError: undefined as Error | undefined,
+  /** Rejects the nth `execute` (1-based) of the next call. */
+  executeError: undefined as { at: number; error: Error } | undefined,
   wheres: [] as unknown[],
 }));
 vi.mock('../db', () => {
@@ -31,6 +33,7 @@ vi.mock('../db', () => {
     execute: async (q: unknown) => {
       dbMock.executed.push(q);
       dbMock.events.push('execute');
+      if (dbMock.executeError?.at === dbMock.executed.length) throw dbMock.executeError.error;
       return [{ value: '2s' }];
     },
     select: () => {
@@ -724,6 +727,7 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     dbMock.executed.length = 0;
     dbMock.events.length = 0;
     dbMock.queryError = undefined;
+    dbMock.executeError = undefined;
   });
 
   const matchesFilter: FilterConditionGroup = {
@@ -771,12 +775,33 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     expectTimeoutWrappedQuery();
   });
 
-  it('restores the captured statement_timeout after a query error', async () => {
+  // #12656. A throw rolls the savepoint back, and that reverts the limit (held
+  // against real Postgres in aiToolsFleetDeviceStatsFilter.integration.test.ts).
+  // A restore statement there could itself fail and replace the real error.
+  it('sends nothing more after a query error, so the error is the one reported', async () => {
     dbMock.queryError = new Error('query failed');
+    dbMock.executeError = { at: 3, error: new Error('restore failed') };
 
     await expect(evaluateFilter(matchesFilter, { orgId: 'org-1' })).rejects.toThrow('query failed');
 
-    expectTimeoutWrappedQuery();
+    expect(dbMock.events.at(-1)).toBe('query');
+  });
+
+  it('a cancelled restore is a timeout, keeping the cause', async () => {
+    const canceled = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    dbMock.executeError = { at: 3, error: canceled };
+
+    const thrown = await evaluateFilter(matchesFilter, { orgId: 'org-1' }).then(() => undefined, (error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(FilterQueryTimeoutError);
+    expect((thrown as Error).cause).toBe(canceled);
+  });
+
+  it('a restore that fails for any other reason keeps its own error', async () => {
+    const fault = Object.assign(new Error('connection lost'), { code: '08006' });
+    dbMock.executeError = { at: 3, error: fault };
+
+    await expect(evaluateFilter(matchesFilter, { orgId: 'org-1' })).rejects.toBe(fault);
   });
 
   /**
@@ -801,8 +826,6 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     // the outer error before the cause, and would mislabel the pg_code tag.
     expect((thrown as { code?: unknown }).code).toBeUndefined();
     expect((thrown as Error).cause).toBe(canceled);
-    // The timeout must still be restored on the way out.
-    expectTimeoutWrappedQuery();
   });
 
   it('leaves any other SQLSTATE untranslated so it keeps its existing 500 path', async () => {

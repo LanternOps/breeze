@@ -63,7 +63,8 @@ export const GROUP_CHECK_DOCUMENT_BUDGET_MS = 3 * FILTER_QUERY_TIMEOUT_MS;
 
 /**
  * Less than this left is nothing left. A statement_timeout of 0 is none at all,
- * and the statement that restores the timeout runs under the last limit set.
+ * and the statement that restores the timeout runs under the last limit set:
+ * cancelled, it is a timeout of the check (`withFilterStatementTimeout`).
  */
 export const GROUP_CHECK_MIN_STATEMENT_MS = 25;
 
@@ -289,8 +290,8 @@ export async function judgeFleetFilterGroup(orgId: string, groupId: string, read
 /**
  * The groups `orgId` holds among `ids`, as the gate judges them. Runs in the
  * caller's context, on a transaction of `withFilterStatementTimeout` (which
- * turns a cancelled statement into `FilterQueryTimeoutError` and restores the
- * timeout).
+ * turns a cancelled statement, its own restore of the timeout included, into
+ * `FilterQueryTimeoutError`).
  */
 export async function loadGatedGroups(
   executor: Pick<typeof db, 'select' | 'selectDistinct' | 'execute'>,

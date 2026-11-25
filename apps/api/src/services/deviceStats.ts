@@ -153,44 +153,43 @@ export interface FleetDeviceStats extends DeviceStats {
   groups?: { by: FleetFilterGroupBy; rows: FleetGroupRow[]; otherCount: number };
 }
 
+/**
+ * One statement loads the largest groups only: equal keys are merged, the total
+ * is taken and the order is fixed before LIMIT. NULL and '' are `unknown`,
+ * merged with a literal `unknown` so a key appears once. Ties are in byte
+ * order ("C"), whatever the database's collation.
+ */
 async function groupCounts(tx: FilterQueryTx, conditions: SQL[], by: FleetFilterGroupBy): Promise<NonNullable<FleetDeviceStats['groups']>> {
-  const column = GROUP_BY_COLUMN[by];
-  let raw: Array<{ key: unknown; label?: unknown; count: unknown }>;
-  if (by === 'siteId') {
+  // A literal, not a bind parameter: SELECT and GROUP BY would number it
+  // differently, and Postgres would not see one expression.
+  const key = sql<string>`coalesce(nullif(${GROUP_BY_COLUMN[by]}::text, ''), ${sql.raw(`'${UNKNOWN_GROUP_KEY}'`)})`;
+  const fields = {
+    key,
+    count: sql<string | number>`count(*)`,
+    total: sql<string | number>`sum(count(*)) over ()`,
+  };
+  const order = [sql`count(*) desc`, sql`${key} collate "C"`];
+  const raw: Array<{ key: string; label?: string | null; count: string | number; total: string | number }> = by === 'siteId'
     // LEFT JOIN: a device whose site row is not visible still counts, with
     // no label, so rows plus otherCount always equal the filtered total.
-    raw = await tx
-      .select({ key: devices.siteId, label: sites.name, count: sql<number>`count(*)` })
+    ? await tx
+      .select({ ...fields, label: sql<string | null>`max(${sites.name})` })
       .from(devices)
       .leftJoin(sites, eq(sites.id, devices.siteId))
       .where(and(...conditions))
-      .groupBy(devices.siteId, sites.name);
-  } else {
-    raw = await tx
-      .select({ key: column, count: sql<number>`count(*)` })
+      .groupBy(key)
+      .orderBy(...order)
+      .limit(FLEET_GROUP_ROW_LIMIT)
+    : await tx
+      .select(fields)
       .from(devices)
       .where(and(...conditions))
-      .groupBy(column);
-  }
+      .groupBy(key)
+      .orderBy(...order)
+      .limit(FLEET_GROUP_ROW_LIMIT);
 
-  // NULL renders as "unknown"; merge it with a literal "unknown" value so a
-  // key appears once.
-  const merged = new Map<string, FleetGroupRow>();
-  for (const r of raw) {
-    const key = r.key === null || r.key === undefined || r.key === '' ? UNKNOWN_GROUP_KEY : String(r.key);
-    const count = Number(r.count);
-    const existing = merged.get(key);
-    if (existing) {
-      existing.count += count;
-    } else {
-      const row: FleetGroupRow = { key, count };
-      if (typeof r.label === 'string' && r.label.length > 0) row.label = r.label;
-      merged.set(key, row);
-    }
-  }
-  const sorted = [...merged.values()].sort((a, b) => b.count - a.count || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const rows = sorted.slice(0, FLEET_GROUP_ROW_LIMIT);
-  const otherCount = sorted.slice(FLEET_GROUP_ROW_LIMIT).reduce((n, r) => n + r.count, 0);
+  const rows = raw.map((r): FleetGroupRow => ({ key: r.key, ...(r.label ? { label: r.label } : {}), count: Number(r.count) }));
+  const otherCount = Number(raw[0]?.total ?? 0) - rows.reduce((n, r) => n + r.count, 0);
   return { by, rows, otherCount };
 }
 

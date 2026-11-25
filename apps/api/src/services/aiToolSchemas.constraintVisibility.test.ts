@@ -12,7 +12,9 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { validateToolInput } from './aiToolSchemas';
+import { aiTools } from './aiTools';
 import { buildBreezeSdkTools } from './aiAgentSdkTools';
+import { FLEET_SAMPLE_PAGE } from './fleetFilter';
 import { FLEET_FILTER_GROUP_BY, fleetFilterSchema } from '@breeze/shared';
 
 const TEST_UUID = '00000000-0000-0000-0000-000000000001';
@@ -198,6 +200,16 @@ describe('get_fleet_device_stats typed filter (#12418 W01)', () => {
     expect(schema.properties.filter.additionalProperties).toBe(false);
     expect(schema.properties.groupBy.enum).toEqual([...FLEET_FILTER_GROUP_BY]);
     expect(schema.properties.filter.properties.softwareVersionBelow.properties.version.pattern).toBe('^\\d');
+  });
+
+  it('the registry, SDK and validateToolInput surfaces share one page size (#12656)', () => {
+    const { defaultLimit, maxLimit } = FLEET_SAMPLE_PAGE;
+    const description = `Max results (default ${defaultLimit}, max ${maxLimit})`;
+    const sdk = emittedInputSchema('get_fleet_device_stats') as { properties: Record<string, any> };
+    expect(sdk.properties.limit).toMatchObject({ maximum: maxLimit, description });
+    expect((aiTools.get('get_fleet_device_stats')!.definition.input_schema.properties as Record<string, any>).limit.description).toBe(description);
+    expect(validateToolInput('get_fleet_device_stats', { filter: {}, limit: maxLimit }).success).toBe(true);
+    expect(validateToolInput('get_fleet_device_stats', { filter: {}, limit: maxLimit + 1 }).success).toBe(false);
   });
 
   it('validateToolInput enforces what the schema shows', () => {

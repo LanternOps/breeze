@@ -14,8 +14,8 @@ const m = vi.hoisted(() => ({
   orderBy: vi.fn(),
   limit: vi.fn(),
   offset: vi.fn(),
-  // Each grouped query shifts one fixture; an empty queue answers statusRows.
-  groupRows: [] as unknown[][],
+  // Awaited at groupBy: the status count. Awaited at limit: the breakdown.
+  groupRows: [] as unknown[],
   pageRows: [] as unknown[],
   // The bounded transaction withFilterStatementTimeout hands out; its own spy
   // proves which executor a statement ran on.
@@ -35,9 +35,9 @@ vi.mock('../db', () => {
   };
   // Offline rows can never carry a log-shipping-failing count (the predicate
   // requires status = 'online'); the fixture mirrors what Postgres returns.
-  chain.groupBy = async (...args: unknown[]) => {
+  chain.groupBy = (...args: unknown[]) => {
     m.groupBy(...args);
-    return m.groupRows.shift() ?? m.statusRows;
+    return { orderBy: chain.orderBy, then: (ok: any, fail: any) => Promise.resolve(m.statusRows).then(ok, fail) };
   };
   chain.orderBy = (...args: unknown[]) => {
     m.orderBy(...args);
@@ -45,7 +45,7 @@ vi.mock('../db', () => {
   };
   chain.limit = (n: unknown) => {
     m.limit(n);
-    return chain;
+    return { offset: chain.offset, then: (ok: any, fail: any) => Promise.resolve(m.groupRows).then(ok, fail) };
   };
   chain.offset = async (n: unknown) => {
     m.offset(n);
@@ -196,62 +196,48 @@ describe('queryFleetDeviceStats', () => {
     expect(q.params.indexOf(ORG)).toBeLessThan(q.params.indexOf('linux'));
   });
 
-  it('groupBy osType runs a grouped query, keeps 50 rows, sums the rest into otherCount, renders NULL as unknown', async () => {
-    // 52 grouped rows in arbitrary order: one NULL key, 51 named keys.
-    const grouped = [
-      { key: null, count: '7' },
-      ...Array.from({ length: 51 }, (_, i) => ({ key: `v${String(i).padStart(2, '0')}`, count: String(100 - i) })),
-    ].reverse();
-    m.groupRows = [m.statusRows, grouped];
+  // Ranking, merging and tie order are SQL: the integration suite holds them.
+  // Here: the statement is bounded, and its rows are read correctly.
+  it('groupBy loads at most 50 groups, largest first, and takes the total before the limit', async () => {
+    m.groupRows = [{ key: 'windows', count: '9', total: '30' }, { key: 'linux', count: '7', total: '30' }];
     const out = await queryFleetDeviceStats(m.tx, { scope: undefined, filter: { status: 'online' }, groupBy: 'osType' });
-    expect(m.groupBy).toHaveBeenCalledTimes(2);
-    expect(m.groupBy.mock.calls[1]).toHaveLength(1);
-    expect(m.groupBy.mock.calls[1]![0]).toBe(devices.osType);
+    expect(m.limit.mock.calls).toEqual([[50]]);
     expect(m.leftJoin).not.toHaveBeenCalled();
     // The grouped query carries the same WHERE as the counts.
     expect(render(m.where.mock.calls[1]![0])).toEqual(render(m.where.mock.calls[0]![0]));
-    expect(out.groups!.by).toBe('osType');
-    expect(out.groups!.rows).toHaveLength(50);
-    expect(out.groups!.rows[0]).toEqual({ key: 'v00', count: 100 });
-    expect(out.groups!.rows[49]).toEqual({ key: 'v49', count: 51 });
-    // Left over: v50 (50) and the NULL key (7).
-    expect(out.groups!.otherCount).toBe(57);
+    const fields = m.txSelect.mock.calls[1]![0] as Record<string, unknown>;
+    expect(render(fields.total).sql).toBe('sum(count(*)) over ()');
+    const key = render(fields.key).sql;
+    expect(m.groupBy.mock.calls[1]!.map((g) => render(g).sql)).toEqual([key]);
+    expect(m.orderBy.mock.calls[0]!.map((o) => render(o).sql)).toEqual(['count(*) desc', `${key} collate "C"`]);
+    expect(out.groups).toEqual({ by: 'osType', rows: [{ key: 'windows', count: 9 }, { key: 'linux', count: 7 }], otherCount: 14 });
     expect(out.total).toBe(3);
   });
 
-  it('a NULL key that sorts into the top rows renders as unknown and merges with a literal unknown', async () => {
-    m.groupRows = [m.statusRows, [{ key: 'workstation', count: '3' }, { key: null, count: '2' }, { key: 'unknown', count: '2' }]];
+  it('no matching device is an empty breakdown', async () => {
     const out = await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: 'deviceRole' });
-    expect(out.groups).toEqual({ by: 'deviceRole', rows: [{ key: 'unknown', count: 4 }, { key: 'workstation', count: 3 }], otherCount: 0 });
+    expect(out.groups).toEqual({ by: 'deviceRole', rows: [], otherCount: 0 });
   });
 
-  it('ties are ordered by key ascending', async () => {
-    m.groupRows = [m.statusRows, [{ key: 'b', count: '2' }, { key: 'a', count: '2' }]];
-    const out = await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: 'agentVersion' });
-    expect(out.groups!.rows.map((r) => r.key)).toEqual(['a', 'b']);
-  });
-
-  it.each(FLEET_FILTER_GROUP_BY)('groupBy %s groups on its own device column', async (by) => {
-    m.groupRows = [m.statusRows, []];
+  it.each(FLEET_FILTER_GROUP_BY)('groupBy %s groups on its own device column, empty and NULL as unknown, with no bind parameter', async (by) => {
     await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: by });
-    const expected = {
+    const column = {
       status: devices.status, osType: devices.osType, osVersion: devices.osVersion, siteId: devices.siteId,
       agentVersion: devices.agentVersion, deviceRole: devices.deviceRole, architecture: devices.architecture,
     }[by];
-    expect(m.groupBy.mock.calls[1]![0]).toBe(expected);
+    // A parameter would be numbered differently in SELECT and GROUP BY, which Postgres reads as two expressions.
+    expect(render(m.groupBy.mock.calls[1]![0])).toMatchObject({
+      sql: `coalesce(nullif("devices"."${column.name}"::text, ''), 'unknown')`, params: [],
+    });
   });
 
   it('groupBy siteId left-joins sites and fills label with the site name', async () => {
-    m.groupRows = [m.statusRows, [{ key: 'site-1', label: 'Site 1', count: '2' }, { key: 'site-2', label: null, count: '1' }]];
+    m.groupRows = [{ key: 'site-1', label: 'Site 1', count: '2', total: '3' }, { key: 'site-2', label: null, count: '1', total: '3' }];
     const out = await queryFleetDeviceStats(m.tx, { scope: undefined, groupBy: 'siteId' });
     expect(m.leftJoin).toHaveBeenCalledTimes(1);
-    expect(m.groupBy.mock.calls[1]![0]).toBe(devices.siteId);
-    expect(m.groupBy.mock.calls[1]![1]).toBe(sites.name);
     expect(m.leftJoin.mock.calls[0]![0]).toBe(sites);
-    expect(out.groups!.rows).toEqual([
-      { key: 'site-1', label: 'Site 1', count: 2 },
-      { key: 'site-2', count: 1 },
-    ]);
+    expect(m.limit.mock.calls).toEqual([[50]]);
+    expect(out.groups).toEqual({ by: 'siteId', rows: [{ key: 'site-1', label: 'Site 1', count: 2 }, { key: 'site-2', count: 1 }], otherCount: 0 });
   });
 });
 
