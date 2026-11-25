@@ -172,7 +172,7 @@ describe('validateBuiltinStep', () => {
         validateBuiltinStep(step('run_script_on_targets', { scriptId: SCRIPT, fleetFilter }), 0, { owner, catalog: catalog() });
       const group = (filterFieldsUsed: string[] | null, filterConditions: unknown = null) =>
         vi.mocked(findOwnedDeviceGroups).mockImplementation(async (_org, ids) =>
-          ([...ids].includes(GROUP) ? [{ id: GROUP, type: 'dynamic' as const, filterFieldsUsed, filterConditions }] : []));
+          ([...ids].includes(GROUP) ? [{ id: GROUP, type: 'dynamic' as const, siteId: null, hasRuleMembers: false, filterFieldsUsed, filterConditions }] : []));
       beforeEach(() => {
         vi.mocked(findOwnedDeviceGroups).mockReset();
         group([]);
@@ -214,6 +214,17 @@ describe('validateBuiltinStep', () => {
         expect(issues[0]!.message).toContain('(hostname, software.installed)');
       });
 
+      it.each([['{}', {}], ['only undefined values', { osType: undefined }]])('save refuses an empty fleetFilter (%s)', async (_l, filter) => {
+        const issues = await issuesFor(filter);
+        expect(issues.map((i) => [i.code, i.pointer])).toEqual([['input_invalid', '/steps/0/input/fleetFilter']]);
+        expect(issues[0]!.message).toContain('names no field');
+      });
+
+      it('save refuses a static group whose members were not all added by hand', async () => {
+        vi.mocked(findOwnedDeviceGroups).mockResolvedValue([{ id: GROUP, type: 'static', siteId: null, hasRuleMembers: true, filterFieldsUsed: [], filterConditions: null }]);
+        expect((await issuesFor({ groupId: GROUP })).map((i) => [i.code, i.pointer])).toEqual([['input_invalid', '/steps/0/input/fleetFilter/groupId']]);
+      });
+
       it('a whole-filter template or a non-object is not read as a filter at save (resolve decides)', async () => {
         expect((await issuesFor('{{inputs.filter}}')).filter((i) => i.pointer === '/steps/0/input/fleetFilter' && /reports about itself/.test(i.message))).toEqual([]);
       });
@@ -243,7 +254,7 @@ describe('validateBuiltinStep', () => {
           group(['osType', field]);
           const issues = await issuesFor({ groupId: GROUP });
           expect(issues).toEqual([expect.objectContaining({ code: 'input_invalid', pointer: '/steps/0/input/fleetFilter/groupId' })]);
-          expect(issues[0]!.message).toBe('This device group is defined by field(s) a device reports about itself, or by rules that cannot be checked; a script cannot be targeted by it.');
+          expect(issues[0]!.message).toBe('This device group is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.');
           expect(vi.mocked(findOwnedDeviceGroups)).toHaveBeenCalledWith(ORG, [GROUP]);
         },
       );

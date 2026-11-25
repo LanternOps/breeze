@@ -5,7 +5,7 @@
  *
  * Proven: the set a fleet step resolves for a filter is exactly the set
  * `get_fleet_device_stats` counts for that filter in that org (same total,
- * same ids; decommissioned, Quick Support, parked and other-org devices on
+ * same ids, for a group whose evaluated members match its rules; decommissioned, Quick Support, parked and other-org devices on
  * neither side); a device-reported field, or a dynamic group defined by one,
  * never resolves to a set; a set above the run's ceiling is refused with the
  * exact count and no ids; a filter that outruns the statement bound is a
@@ -22,7 +22,7 @@ import { db, withDbAccessContext } from '../../db';
 import { deviceGroupMemberships, deviceGroups, devicePatches, devices, patches, softwareInventory } from '../../db/schema';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { executeTool } from '../../services/aiTools';
-import { FLEET_FILTER_TIMEOUT_PROBLEM, resolveFleetFilterOnce } from '../../services/flows/builtins/fleetTargets';
+import { FLEET_FILTER_EMPTY_PROBLEM, FLEET_FILTER_TIMEOUT_PROBLEM, resolveFleetFilterOnce } from '../../services/flows/builtins/fleetTargets';
 import { aiCeilingMessage, resolveFleetSelection, type RunScriptOnTargetsInput } from '../../services/flows/builtins/runScriptOnTargets';
 import { flowDbAccessContext } from '../../services/flows/flowAuthContext';
 import { validateBuiltinStep } from '../../services/flows/validateBuiltins';
@@ -180,9 +180,8 @@ describe('flow fleetFilter resolves the set the stats tool counts (#12418 W02, r
     for (const id of [f.d1, f.e1, f.b1, f.p1]) expect(resolved.deviceIds).not.toContain(id);
   });
 
-  runDb('the two agree for every field that may select targets, and for no field at all', async () => {
+  runDb('the two agree for every field that may select targets', async () => {
     const cases: Array<[FleetFilter, string[]]> = [
-      [{}, [f.w1, f.w2, f.l1]],
       [{ status: 'online' }, [f.w1, f.l1]],
       [{ osVersionContains: '22631' }, [f.w1, f.w2]],
       [{ siteId: f.s1 }, [f.w1, f.l1]],
@@ -202,6 +201,11 @@ describe('flow fleetFilter resolves the set the stats tool counts (#12418 W02, r
       expect(resolved, label).toEqual({ count: expected.length, deviceIds: [...expected].sort(), problems: [] });
       expect(await stats(f.orgAuth, filter, f.orgA), label).toEqual({ total: resolved.count, ids: resolved.deviceIds });
     }
+  });
+
+  runDb('an empty filter counts every device and selects none', async () => {
+    expect((await stats(f.orgAuth, {}, f.orgA)).total).toBe(3);
+    expect(await resolveFleetFilterOnce(runA(), {}, FLEET_MAX_TARGETS)).toEqual({ count: 0, deviceIds: [], problems: [FLEET_FILTER_EMPTY_PROBLEM] });
   });
 
   runDb('a partner-wide count is wider than any one run org\'s set (a flow never crosses orgs)', async () => {
@@ -258,7 +262,8 @@ describe('flow fleetFilter resolves the set the stats tool counts (#12418 W02, r
       filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'equals', value: f.dynamicGroup }] },
     }).returning({ id: deviceGroups.id });
     await getTestDb().insert(deviceGroupMemberships).values({ groupId: outer!.id, deviceId: f.w1, orgId: f.orgA });
-    expect((await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).deviceIds).toEqual([f.w1]);
+    // Resolved from the named group's rules (windows), not from what this group's own rows say.
+    expect((await resolveFleetFilterOnce(runA(), { groupId: outer!.id }, FLEET_MAX_TARGETS)).deviceIds).toEqual([f.w1, f.w2].sort());
     await getTestDb().update(deviceGroups).set({
       filterConditions: { operator: 'AND', conditions: [{ field: 'tags', operator: 'contains', value: 'x' }] },
     }).where(eq(deviceGroups.id, f.dynamicGroup));

@@ -244,6 +244,16 @@ describe(`${NAME} filter, groupBy and device page (#12418 W01)`, () => {
     expect(await setup().handler({}, authFor())).toBe(JSON.stringify(counts));
   });
 
+  it('a filter that names a group is labelled: a flow step resolves the group from its current rules', async () => {
+    const out = JSON.parse(await setup().handler({ filter: { groupId: ORG } }, authFor()));
+    expect(out.filter).toEqual({ fieldsUsed: ['groupId'], executionRefusedFields: [], groupNote: expect.stringContaining('current rules') });
+  });
+
+  it('an empty filter is still counted', async () => {
+    const out = JSON.parse(await setup().handler({ filter: {} }, authFor()));
+    expect(out).toMatchObject({ ...fleetCounts, filter: { fieldsUsed: [], executionRefusedFields: [] } });
+  });
+
   it('a software filter is labelled execution-refused in the result', async () => {
     const out = JSON.parse(await setup().handler({ filter: { softwareInstalled: '7-Zip', osType: 'windows' } }, authFor()));
     expect(out.filter).toEqual({ fieldsUsed: ['osType', 'software.installed'], executionRefusedFields: ['software.installed'] });

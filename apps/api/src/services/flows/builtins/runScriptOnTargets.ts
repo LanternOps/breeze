@@ -65,7 +65,7 @@ export function fleetSelectorName(input: RunScriptOnTargetsInput): FleetSelector
 }
 
 export function aiCeilingMessage(count: number): string {
-  return `The selection resolved to ${count} devices; a run started by the AI assistant may target at most ${RUN_SCRIPT_AI_MAX_DEVICES}. Narrow the filter or name the devices. Nothing was run.`;
+  return `The selection resolved to ${count} devices; an AI-started run may target at most ${RUN_SCRIPT_AI_MAX_DEVICES}. A person can start this flow from the Breeze web app instead, where the limit is ${FLEET_MAX_TARGETS}. Nothing was run.`;
 }
 
 /**

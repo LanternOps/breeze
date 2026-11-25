@@ -64,6 +64,11 @@ export function fleetFilterFieldsUsed(filter: FleetFilter): string[] {
   return [...new Set(keys)].sort();
 }
 
+/** No field is present: it counts every device, and may never select one (#12418 W02). */
+export function isEmptyFleetFilter(filter: FleetFilter): boolean {
+  return compileFleetFilter(filter).conditions.length === 0;
+}
+
 /** The subset of `fleetFilterFieldsUsed` a device reports about itself with targeting value. */
 export function fleetFilterExecutionRefusedFields(filter: FleetFilter): string[] {
   return fleetFilterFieldsUsed(filter).filter(isExecutionRefusedFilterField);

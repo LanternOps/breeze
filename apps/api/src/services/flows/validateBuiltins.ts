@@ -42,7 +42,7 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
-import { classifyFleetFilterGroup } from './fleetFilterGroupGate';
+import { judgeFleetFilterGroup } from './fleetFilterGroupGate';
 import {
   findOwnedDeviceGroupIds,
   findOwnedDeviceGroups,
@@ -295,11 +295,11 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
 }
 
 async function fleetFilterGroupIssues(orgId: string, ref: FleetReference, at: { stepId: string; pointer: string }): Promise<FlowIssue[]> {
-  const verdict = await classifyFleetFilterGroup(ref.value as string, (ids) => findOwnedDeviceGroups(orgId, ids));
+  const { verdict } = await judgeFleetFilterGroup(orgId, ref.value as string, (ids) => findOwnedDeviceGroups(orgId, ids));
   if (verdict === 'missing') return [issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at)];
   return verdict === 'ok'
     ? []
-    : [issue('input_invalid', 'This device group is defined by field(s) a device reports about itself, or by rules that cannot be checked; a script cannot be targeted by it.', at)];
+    : [issue('input_invalid', 'This device group is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.', at)];
 }
 
 async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationContext): Promise<FlowIssue[]> {
@@ -344,7 +344,12 @@ async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationC
   }
   if (step.tool === 'run_script_on_targets') {
     // #12418 W02: a field a device reports about itself counts devices, never selects script targets.
-    const refused = fleetFilterRefusedFieldsPresent(step.input.fleetFilter);
+    const { fleetFilter } = step.input;
+    if (isRecord(fleetFilter) && Object.values(fleetFilter).every((v) => v === undefined)) {
+      // An empty filter would select every device. Checked again when the step resolves.
+      out.push(issue('input_invalid', 'fleetFilter names no field, so it would select every device. Name at least one field.', at('/fleetFilter')));
+    }
+    const refused = fleetFilterRefusedFieldsPresent(fleetFilter);
     if (refused.length > 0) {
       out.push(issue('input_invalid', `fleetFilter matches on field(s) a device reports about itself (${refused.join(', ')}); a script cannot be targeted by them.`, at('/fleetFilter')));
     }

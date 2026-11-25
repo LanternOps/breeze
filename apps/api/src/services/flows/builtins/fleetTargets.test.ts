@@ -10,7 +10,9 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  */
 const m = vi.hoisted(() => ({
   trace: [] as string[],
-  groupRows: [] as Array<{ id: string; type: string; filterFieldsUsed: string[] | null; filterConditions: unknown }>,
+  groupRows: [] as Array<{ id: string; type: string; siteId: string | null; filterFieldsUsed: string[] | null; filterConditions: unknown }>,
+  memberRows: [] as Array<{ groupId: string }>,
+  contextOptions: undefined as unknown,
   filterRows: [] as Array<{ id: string; total: unknown }>,
   captured: { where: undefined as unknown, limit: undefined as unknown, orderBy: undefined as unknown, columns: undefined as unknown, groupWhere: undefined as unknown },
   bound: vi.fn(),
@@ -18,12 +20,13 @@ const m = vi.hoisted(() => ({
 }));
 
 /** Resolves like the drizzle chain: awaitable after `.where()` (group read) and after `.limit()` (device read). */
-function chain(kind: 'group' | 'filter', columns: unknown) {
-  const rows = kind === 'group' ? m.groupRows : m.filterRows;
+function chain(kind: 'group' | 'member' | 'filter', columns: unknown) {
+  const rows = kind === 'group' ? m.groupRows : kind === 'member' ? m.memberRows : m.filterRows;
   if (kind === 'filter') m.captured.columns = columns;
   const c: Record<string, unknown> = {
     from: () => c,
-    where: (w: unknown) => { if (kind === 'filter') m.captured.where = w; else m.captured.groupWhere = w; return c; },
+    innerJoin: () => c,
+    where: (w: unknown) => { if (kind === 'filter') m.captured.where = w; else if (kind === 'group') m.captured.groupWhere = w; return c; },
     orderBy: (o: unknown) => { m.captured.orderBy = o; return c; },
     limit: (n: unknown) => { m.captured.limit = n; return c; },
     then: (ok: (r: unknown) => unknown, bad: (e: unknown) => unknown) => {
@@ -35,9 +38,10 @@ function chain(kind: 'group' | 'filter', columns: unknown) {
 }
 
 vi.mock('../../../db', () => ({
-  db: { select: (columns: unknown) => chain('group', columns) },
+  db: {},
   runOutsideDbContext: (fn: () => unknown) => { m.trace.push('outside'); return fn(); },
-  withDbAccessContext: async (ctx: { scope: string; accessibleOrgIds: string[] }, fn: () => Promise<unknown>) => {
+  withDbAccessContext: async (ctx: { scope: string; accessibleOrgIds: string[] }, fn: () => Promise<unknown>, options: unknown) => {
+    m.contextOptions = options;
     m.trace.push(`context:${ctx.scope}:${ctx.accessibleOrgIds.join(',')}`);
     return fn();
   },
@@ -50,12 +54,17 @@ vi.mock('../../filterEngine', async (orig) => ({
   withFilterStatementTimeout: async (run: (tx: unknown) => Promise<unknown>) => {
     m.trace.push('bound');
     m.bound();
-    return run({ select: (columns: unknown) => chain('filter', columns) });
+    return run({
+      // The device statement is the only one that counts.
+      select: (columns: object) => chain('total' in columns ? 'filter' : 'group', columns),
+      selectDistinct: (columns: unknown) => chain('member', columns),
+      execute: async (q: unknown) => { m.trace.push(render(q).sql); },
+    });
   },
 }));
 
 import { FilterQueryTimeoutError } from '../../filterEngine';
-import { FLEET_FILTER_TIMEOUT_PROBLEM, listFleetFilterDeviceIds, resolveFleetFilterOnce } from './fleetTargets';
+import { FLEET_FILTER_EMPTY_PROBLEM, FLEET_FILTER_TIMEOUT_PROBLEM, listFleetFilterDeviceIds, resolveFleetFilterOnce } from './fleetTargets';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -69,6 +78,8 @@ beforeEach(() => {
   m.trace.length = 0;
   m.groupRows = [];
   m.filterRows = rows(2);
+  m.memberRows = [];
+  m.contextOptions = undefined;
   m.captured = { where: undefined, limit: undefined, orderBy: undefined, columns: undefined, groupWhere: undefined };
   m.bound.mockReset();
   m.timeout.mockReset();
@@ -108,6 +119,55 @@ describe('resolveFleetFilterOnce', () => {
     expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', 'filter-query']);
   });
 
+  it('the rules that are judged and the devices they select are read in one snapshot', async () => {
+    m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: [], filterConditions: null }];
+    await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
+    expect(m.contextOptions).toEqual({ isolationLevel: 'repeatable read' });
+    expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', 'group-query', 'bound', "select set_config('jit', 'off', true)", 'filter-query']);
+  });
+
+  it('a dynamic group is compiled into the statement that counts', async () => {
+    m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: [], filterConditions: { operator: 'AND', conditions: [{ field: 'osVersion', operator: 'contains', value: '22H2' }] } }];
+    await resolveFleetFilterOnce(RUN, { groupId: GROUP, osType: 'windows' }, 10);
+    const q = render(m.captured.where);
+    expect(q.params).toEqual(expect.arrayContaining(['%22H2%', 'windows', ORG]));
+    expect(q.sql.match(/device_group_memberships"\."group_id"/g)).toHaveLength(1);
+    expect(q.sql).toMatch(/"is_pinned" = /);
+  });
+
+  it('a static group with a member that was not added by hand is a problem, with no device query', async () => {
+    m.groupRows = [{ id: GROUP, type: 'static', siteId: null, filterFieldsUsed: [], filterConditions: null }];
+    expect((await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10)).problems).toEqual([]);
+    m.trace.length = 0;
+    m.memberRows = [{ groupId: GROUP }];
+    const out = await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
+    expect(out).toEqual({ count: 0, deviceIds: [], problems: [expect.stringContaining('members that cannot be checked')] });
+    expect(m.trace).not.toContain('filter-query');
+  });
+
+  it('rules Postgres cannot evaluate are a problem; the same error without a group propagates', async () => {
+    m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: [], filterConditions: null }];
+    for (const code of ['22P02', '2201B', '42883']) {
+      let calls = 0;
+      m.bound.mockImplementation(() => { calls += 1; if (calls === 2) throw Object.assign(new Error('secret text'), { code }); });
+      expect(await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10), code).toEqual({ count: 0, deviceIds: [], problems: [expect.stringContaining('cannot be checked')] });
+    }
+    m.bound.mockImplementation(() => { throw Object.assign(new Error('denied'), { code: '42501' }); });
+    await expect(resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10)).rejects.toThrow('denied');
+    m.bound.mockImplementation(() => { throw Object.assign(new Error('bad value'), { code: '22P02' }); });
+    await expect(resolveFleetFilterOnce(RUN, { osType: 'windows' }, 10)).rejects.toThrow('bad value');
+  });
+
+  it.each([['{}', {}], ['only undefined values', { osType: undefined }]])('an empty filter (%s) is a problem without a query', async (_l, filter) => {
+    expect(await resolveFleetFilterOnce(RUN, filter, 10)).toEqual({ count: 0, deviceIds: [], problems: [FLEET_FILTER_EMPTY_PROBLEM] });
+    expect(m.trace).toEqual([]);
+  });
+
+  it('a group filter never reaches the device statement without its judged definition', async () => {
+    await expect(listFleetFilterDeviceIds({ orgId: ORG, filter: { groupId: GROUP }, limit: 10 })).rejects.toThrow(/judged definition/);
+    expect(m.trace).toEqual([]);
+  });
+
   it('above the limit the count is exact and no id is returned', async () => {
     m.filterRows = rows(11, '37');
     expect(await resolveFleetFilterOnce(RUN, { osType: 'windows' }, 10)).toEqual({ count: 37, deviceIds: [], problems: [] });
@@ -130,11 +190,11 @@ describe('resolveFleetFilterOnce', () => {
   it.each([['hostname'], ['software.installed'], ['custom.role']])(
     'a dynamic group whose rules changed to %s after save is a problem at resolve, with no device query',
     async (field) => {
-      m.groupRows = [{ id: GROUP, type: 'dynamic', filterFieldsUsed: ['osType', field], filterConditions: null }];
+      m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: ['osType', field], filterConditions: null }];
       const out = await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10);
       expect(out).toMatchObject({ count: 0, deviceIds: [] });
       expect(out.problems).toEqual([expect.stringContaining('a script cannot be targeted by it')]);
-      expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'group-query']);
+      expect(m.trace).toEqual(['outside', `context:organization:${ORG}`, 'bound', 'group-query']);
     },
   );
 
@@ -149,7 +209,7 @@ describe('resolveFleetFilterOnce', () => {
   });
 
   it.each([[[]], [null], [['osType']]] as Array<[string[] | null]>)('a group with stored rule fields %j resolves', async (fields) => {
-    m.groupRows = [{ id: GROUP, type: 'dynamic', filterFieldsUsed: fields, filterConditions: null }];
+    m.groupRows = [{ id: GROUP, type: 'dynamic', siteId: null, filterFieldsUsed: fields, filterConditions: null }];
     expect(await resolveFleetFilterOnce(RUN, { groupId: GROUP }, 10)).toEqual({ count: 2, deviceIds: [id(1), id(2)], problems: [] });
   });
 

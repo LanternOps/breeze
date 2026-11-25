@@ -13,7 +13,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceGroups, devices, notificationChannels, scripts } from '../../db/schema';
 import { scriptOwnershipCondition, type AutomationReferenceOwner } from '../automationReferenceAuthorization';
 import type { ToolOwnerRef } from '../toolSources/resolver';
-import type { GatedGroup } from './fleetFilterGroupGate';
+import { loadGatedGroups, type GatedGroup } from './fleetFilterGroupGate';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -78,10 +78,7 @@ export async function findOwnedDeviceGroups(orgId: string, ids: Iterable<string>
   const wanted = uuidsOnly(ids);
   if (wanted.length === 0) return [];
   return system(
-    async () => db
-      .select({ id: deviceGroups.id, type: deviceGroups.type, filterFieldsUsed: deviceGroups.filterFieldsUsed, filterConditions: deviceGroups.filterConditions })
-      .from(deviceGroups)
-      .where(and(inArray(deviceGroups.id, wanted), eq(deviceGroups.orgId, orgId))),
+    () => loadGatedGroups(db, orgId, wanted),
     'flowValidator.deviceGroupRules',
   );
 }
