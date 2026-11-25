@@ -476,7 +476,11 @@ function drawTitleBlock(doc: jsPDF, title: string, subtitle: string, meta: strin
   set.text(doc, C.muted);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.text(meta, PAGE.mx, y);
+  // A long meta line (site-filter note, period label, long timezone) must wrap
+  // inside the margins; US Letter's usable width is 17.6 mm narrower than A4's.
+  const metaLines: string[] = doc.splitTextToSize(meta, PAGE.w - PAGE.mx * 2);
+  doc.text(metaLines, PAGE.mx, y);
+  y += (metaLines.length - 1) * 4;
   return y + 4;
 }
 
@@ -671,10 +675,31 @@ function trendFor(opts: RenderOpts, current: number | null | undefined, pick: (s
   if (iso) {
     const d = new Date(iso);
     if (!isNaN(d.getTime())) {
-      since = `since ${new Intl.DateTimeFormat('en-US', { timeZone: opts.timezone, month: 'short', day: 'numeric' }).format(d)}`;
+      since = `since ${formatReportDate(d, L) ?? ''}`.trimEnd();
     }
   }
   return { delta: current - prev, sinceLabel: since };
+}
+
+/**
+ * What the posture report covers (#12048). Device state is a point-in-time
+ * snapshot taken when the report ran; only the elevation activity has a
+ * window, `windowDays` ending at generation (the generator's own
+ * `generatedAt - windowDays`). The label says so: the snapshot is not a
+ * "reporting period", only the elevation figures are. The window is printed as
+ * UTC days like every other report's period; a snapshot with no window or no
+ * generation instant says only "Point-in-time snapshot" instead of inventing
+ * dates.
+ */
+export function posturePeriodLabel(summary: PostureSummary): string {
+  const days = summary.privilegedAccess?.windowDays;
+  const end = summary.generatedAt ? new Date(summary.generatedAt) : null;
+  if (days && days > 0 && end && !Number.isNaN(end.getTime())) {
+    const start = new Date(end.getTime() - days * 86_400_000);
+    const period = formatReportPeriod(start, end, L);
+    if (period) return `Point-in-time snapshot, elevation activity ${period}`;
+  }
+  return 'Point-in-time snapshot';
 }
 
 function drawSectionHeading(doc: jsPDF, text: string, y: number): number {
@@ -1008,8 +1033,9 @@ function renderPostureCover(
   // unassessed. A site filter can leave managed devices out; say how many, so
   // the count reconciles with the org's other reports (#12044).
   const excluded = summary.excludedBySiteFilterCount ?? 0;
+  const period = posturePeriodLabel(summary);
   const meta =
-    `Generated ${opts.generatedAt}   ·   ${deviceCount} device${plural(deviceCount)} in scope` +
+    `Generated ${opts.generatedAt}   ·   ${period}   ·   ${deviceCount} device${plural(deviceCount)} in scope` +
     (excluded > 0 ? `   ·   ${excluded} managed device${plural(excluded)} at other sites not included` : '');
   let y = drawTitleBlock(doc, 'Security & Compliance Posture', summary.org?.name ?? '', meta, PAGE.bandH + 8);
 
@@ -2589,8 +2615,10 @@ function boundChrome(opts: RenderOpts) {
     drawFooter: (d: jsPDF) => withBuildState(state, () => drawFooter(d, opts)),
     drawTitleBlock: (...args: Parameters<typeof drawTitleBlock>) => withBuildState(state, () => drawTitleBlock(...args)),
     drawSectionHeading: (...args: Parameters<typeof drawSectionHeading>) => withBuildState(state, () => drawSectionHeading(...args)),
-    formatDate: (value: string | Date | null | undefined) => formatReportDate(value, locale),
-    formatDateTime: (value: string | Date | null | undefined) => formatReportDateTime(value, locale),
+    formatDate: (value: string | Date | null | undefined, timeZone?: string) =>
+      formatReportDate(value, timeZone ? { ...locale, timeZone } : locale),
+    formatDateTime: (value: string | Date | null | undefined, timeZone?: string) =>
+      formatReportDateTime(value, timeZone ? { ...locale, timeZone } : locale),
     formatPeriod: (start: string | Date | null | undefined, end: string | Date | null | undefined) =>
       formatReportPeriod(start, end, locale),
     metaSeparator: REPORT_META_SEPARATOR,
@@ -2707,7 +2735,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: RenderOpts): jsPDF {
     renderBackupStatusReport(
       doc,
       opts.summary as BackupStatusReportData,
-      { generatedAt: opts.generatedAt, timezone: opts.timezone },
+      { generatedAt: opts.generatedAt },
       chrome,
     );
   } else if (

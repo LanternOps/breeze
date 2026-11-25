@@ -81,7 +81,9 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 
 	var provider providers.BackupProvider
 	if bootstrap.Download != nil {
-		provider = newRecoveryDownloadProvider(ctx, cfg.ServerURL, cfg.RecoveryToken, bootstrap.Download)
+		downloadProvider := newRecoveryDownloadProvider(ctx, cfg.ServerURL, cfg.RecoveryToken, bootstrap.Download)
+		downloadProvider.setSessionRenewal(bootstrap.SessionRenewal)
+		provider = downloadProvider
 	} else {
 		provider, err = providerFromAuthenticatedConfig(authConfig)
 		if err != nil {
@@ -333,7 +335,9 @@ func NewRecoveryProvider(ctx context.Context, serverURL, token string, bs *Boots
 	if bs == nil || bs.Download == nil {
 		return nil, fmt.Errorf("bmr: bootstrap has no download descriptor")
 	}
-	return newRecoveryDownloadProvider(ctx, serverURL, token, bs.Download), nil
+	p := newRecoveryDownloadProvider(ctx, serverURL, token, bs.Download)
+	p.setSessionRenewal(bs.SessionRenewal)
+	return p, nil
 }
 
 // authenticateStatusError is a non-2xx answer from /bmr/recover/authenticate,
@@ -360,10 +364,24 @@ type authenticateRequest struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	// IntegrityProtocolVersion: see exchangeCodeRequest.
 	IntegrityProtocolVersion int `json:"integrityProtocolVersion"`
+	// SessionRenewal: see BootstrapResponse.SessionRenewal. Omitted on a
+	// first sign-in.
+	SessionRenewal string `json:"sessionRenewal,omitempty"`
 }
 
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
-	payload, err := json.Marshal(authenticateRequest{Token: token, Capabilities: ClientCapabilities(), IntegrityProtocolVersion: integrity.ProtocolVersion})
+	return authenticateRecoverySessionRenewal(ctx, serverURL, token, "")
+}
+
+// authenticateRecoverySessionRenewal is authenticate carrying the session
+// renewal credential a previous sign-in returned ("" for none).
+func authenticateRecoverySessionRenewal(ctx context.Context, serverURL, token, sessionRenewal string) (*BootstrapResponse, error) {
+	payload, err := json.Marshal(authenticateRequest{
+		Token:                    token,
+		Capabilities:             ClientCapabilities(),
+		IntegrityProtocolVersion: integrity.ProtocolVersion,
+		SessionRenewal:           sessionRenewal,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("bmr: marshal authenticate request: %w", err)
 	}

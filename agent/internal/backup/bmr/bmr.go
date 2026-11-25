@@ -1316,7 +1316,7 @@ func restoreFiles(
 		skipped := len(manifest.Files) - filesRestored - failedFiles
 		if len(warnings) < maxRecoveryWarnings {
 			warnings = append(warnings, fmt.Sprintf(
-				"aborting: recovery download session lost; %d files not attempted", skipped))
+				"aborting: recovery download session lost; %d files not attempted; %s", skipped, recoverySessionLostResumeHint))
 		}
 	}
 
@@ -1340,8 +1340,8 @@ func restoreFiles(
 
 	if sessionLostErr != nil {
 		return filesRestored, bytesRestored, warnings, failedFiles,
-			fmt.Errorf("bmr: aborted file restore (%d of %d files restored): %w",
-				filesRestored, len(manifest.Files), sessionLostErr)
+			fmt.Errorf("bmr: aborted file restore (%d of %d files restored; %s): %w",
+				filesRestored, len(manifest.Files), recoverySessionLostResumeHint, sessionLostErr)
 	}
 	if breakerTripped {
 		return filesRestored, bytesRestored, warnings, failedFiles,

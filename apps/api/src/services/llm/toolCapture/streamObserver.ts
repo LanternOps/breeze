@@ -1,3 +1,5 @@
+import { walkSdkMessageContent, type SdkContentVisitor } from './sdkMessageWalk';
+
 export interface ApiCallUsage {
   inputTokens: number;
   cacheCreationInputTokens: number;
@@ -57,28 +59,26 @@ export function createStreamObserver(startedAtMs = Date.now()): {
   // carrying that response's id and usage — count each response once.
   const seenMessageIds = new Set<string>();
 
-  function walkContent(content: unknown, assistant: boolean): void {
-    if (Array.isArray(content)) {
-      for (const block of content) walkContent(block, assistant);
-      return;
-    }
-    const block = asRecord(content);
-    if (!block) return;
-    if (assistant && block.type === 'tool_use' && typeof block.name === 'string') {
-      if (block.name === 'ToolSearch') observation.toolSearchUses++;
-      else {
-        if (observation.toolUses.length === 0) observation.firstToolApiCallIndex = observation.apiCalls.length - 1;
-        observation.toolUses.push({ name: block.name, input: asRecord(block.input) ?? {} });
+  // The shared walk (sdkMessageWalk.ts) is also the production
+  // tool-discovery observer's, so the harness and production count alike.
+  const visitor: SdkContentVisitor = {
+    onBlock(block, { assistant }) {
+      if (assistant && block.type === 'tool_use' && typeof block.name === 'string') {
+        if (block.name === 'ToolSearch') observation.toolSearchUses++;
+        else {
+          if (observation.toolUses.length === 0) observation.firstToolApiCallIndex = observation.apiCalls.length - 1;
+          observation.toolUses.push({ name: block.name, input: asRecord(block.input) ?? {} });
+        }
       }
-    }
-    if (block.type === 'tool_search_tool_result' || block.type === 'server_tool_use') {
-      observation.toolSearchResultBlocks++;
-    }
-    if (block.type === 'tool_reference' && typeof block.tool_name === 'string') {
-      observation.toolReferenceNames.push(block.tool_name);
-    }
-    walkContent(block.content, assistant);
-  }
+      if (block.type === 'tool_search_tool_result' || block.type === 'server_tool_use') {
+        observation.toolSearchResultBlocks++;
+      }
+      if (block.type === 'tool_reference' && typeof block.tool_name === 'string') {
+        observation.toolReferenceNames.push(block.tool_name);
+      }
+    },
+  };
+  const walkContent = (content: unknown, assistant: boolean): void => walkSdkMessageContent(content, assistant, visitor);
 
   function recordStderrLine(line: string): void {
     if (/ToolSearch/.test(line)) observation.stderrToolSearchLines.push(line);

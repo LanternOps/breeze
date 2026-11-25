@@ -91,10 +91,15 @@ vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined })
 vi.mock('./aiToolNames', async (orig) => ({
   ...(await orig<typeof import('./aiToolNames')>()),
   hasCoreAiToolName: (name: string) => name === 'list_services',
+  // #12421 W01: the registry is not loaded here; pin which names are always loaded.
+  isAlwaysLoadedToolName: (name: string) => name === 'query_devices',
 }));
 
 // Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
+vi.mock('./aiToolDiscoveryLedger', () => ({
+  persistTurnDiscovery: vi.fn(async () => ({ ok: true, rows: 1, reconciled: 0 })),
+}));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
@@ -477,5 +482,58 @@ describe('dropped input-validation refusal and the session auto-flag (#11968)', 
 
     expect(flagsBeforeResult).toBe(1);
     expect(flagWrites()).toHaveLength(1);
+  });
+});
+
+
+// #12421 W01: a -32602 drop has no ai_tool_executions row, so its discovery is
+// persisted on the dropped result itself — final, because the consumer writes
+// it in stream order after the observer read the message.
+describe('dropped tool_result discovery (#12421 W01)', () => {
+  const searchThenDrop = (toolName: string) => [
+    {
+      type: 'assistant',
+      message: { id: 'msg_1', content: [{ type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query: 'store device context' } }], usage: { input_tokens: 10, output_tokens: 5 } },
+    },
+    {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_s1', content: [{ type: 'tool_search_tool_result', content: [{ type: 'tool_reference', tool_name: 'mcp__breeze__set_device_context' }] }] }] },
+    },
+    toolUseStreamEvent(TOOL_USE_ID, `mcp__breeze__${toolName}`),
+    assistantToolUseMessage(TOOL_USE_ID, `mcp__breeze__${toolName}`, PAREN_INPUT),
+    userToolResultMessage(TOOL_USE_ID, VALIDATION_ERROR_TEXT),
+    RESULT_MSG,
+  ];
+  const droppedDiscovery = () =>
+    (insertedRows.find((r) => r.role === 'tool_result')?.toolOutput as { discovery?: string } | undefined)?.discovery;
+
+  it("persists discovery 'searched_this_turn' when this turn's search returned the tool", async () => {
+    mockSdkQuery(searchThenDrop('set_device_context'));
+    const session = await manager.getOrCreate(
+      'sess-drop-searched', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(droppedDiscovery()).toBe('searched_this_turn');
+  });
+
+  it("persists 'always_loaded' for an always-loaded tool", async () => {
+    mockSdkQuery(searchThenDrop('query_devices'));
+    const session = await manager.getOrCreate(
+      'sess-drop-core', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(droppedDiscovery()).toBe('always_loaded');
+  });
+
+  it("persists 'unknown' on a session that does not observe discovery", async () => {
+    mockSdkQuery(searchThenDrop('set_device_context'));
+    const session = await manager.getOrCreate(
+      'sess-drop-static', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+    expect(session.discovery).toBeNull();
+    expect(droppedDiscovery()).toBe('unknown');
   });
 });

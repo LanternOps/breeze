@@ -132,6 +132,8 @@ import { chatPromptExposure } from './aiModels/sessionToolExposure';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, refusalLedgerText, takeLedgeredRefusal } from './aiChatRefusalLedger';
+import { executionDiscoveryStamp } from './aiToolDiscoveryObserver';
+import { affectedRowCount, noteToolCall } from './aiToolDiscoveryMetrics';
 import { approvalCardKey, publishPendingCard, resolveApprovalCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
@@ -1638,7 +1640,7 @@ async function closePendingLedgerRowAsNotRun(
   outcome: keyof typeof INTENT_NOT_RUN_LEDGER_TEXT,
 ): Promise<void> {
   try {
-    await withDbAccessContext(
+    const closed = await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
       () =>
         db
@@ -1646,6 +1648,7 @@ async function closePendingLedgerRowAsNotRun(
           .set({ status: 'rejected', errorMessage: INTENT_NOT_RUN_LEDGER_TEXT[outcome], completedAt: new Date() })
           .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending'))),
     );
+    if (affectedRowCount(closed) > 0) noteToolCall('rejected');
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)));
     console.error('[AI-SDK] Failed to close a denied pending approval record:', executionId, err instanceof Error ? err.message : err);
@@ -2075,6 +2078,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   toolName,
                   toolInput: redactSensitiveToolInput(input),
                   status: 'pending',
+                  ...executionDiscoveryStamp(session, toolName, toolUseId),
                 })
                 .returning()
           );
@@ -2152,7 +2156,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // status='pending' so a closed or decided row is a no-op, and it
           // stores the reason the card showed (#12084).
           try {
-            await withDbAccessContext(
+            const closed = await withDbAccessContext(
               { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
               () =>
                 db
@@ -2163,6 +2167,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                     eq(aiToolExecutions.status, 'pending'),
                   ))
             );
+            if (affectedRowCount(closed) > 0) noteToolCall('rejected');
           } catch (err) {
             captureException(err instanceof Error ? err : new Error(String(err)));
             console.error('[AI-SDK] Failed to close out settled helper approval record:', helperExec.id, err);
@@ -2289,6 +2294,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   toolName,
                   toolInput: redactSensitiveToolInput(input),
                   status: 'executing',
+                  ...executionDiscoveryStamp(session, toolName, toolUseId),
                 })
             );
             ledger.rowWritten = true;
@@ -2509,6 +2515,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   toolName,
                   toolInput: redactSensitiveToolInput(input),
                   status: 'executing',
+                  ...executionDiscoveryStamp(session, toolName, toolUseId),
                 })
             );
             ledger.rowWritten = true;
@@ -2576,6 +2583,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 toolName,
                 toolInput: redactSensitiveToolInput(input),
                 status: 'pending',
+                ...executionDiscoveryStamp(session, toolName, toolUseId),
               })
               .returning()
         );
@@ -3559,7 +3567,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         try {
           if (approvalWait.timeoutMs <= 0) {
             try {
-              await withDbAccessContext(
+              const closed = await withDbAccessContext(
                 { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
                 () =>
                   db
@@ -3573,6 +3581,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                       eq(aiToolExecutions.status, 'pending'),
                     ))
               );
+              if (affectedRowCount(closed) > 0) noteToolCall('rejected');
             } catch (err) {
               captureException(err instanceof Error ? err : new Error(String(err)));
               console.error('[AI-SDK] Failed to close out zero-budget approval record:', approvalExec.id, err);
@@ -3718,6 +3727,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // is captured to Sentry — and the tool error below must surface
           // regardless.
           try {
+            let rejectedRows = 0;
             await withDbAccessContext(
               // userId is REQUIRED here, not just orgId: approval_requests is
               // Shape-6 (user-id-scoped RLS — see routes/approvals.ts's
@@ -3737,13 +3747,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                     .where(eq(approvalRequests.id, approvalRequestId))
                     .for('update');
                 }
-                await db
+                rejectedRows = affectedRowCount(await db
                   .update(aiToolExecutions)
                   .set({ status: 'rejected', errorMessage: fallbackCloseOutMessage(cardWaitDetail) })
                   .where(and(
                     eq(aiToolExecutions.id, approvalExec!.id),
                     eq(aiToolExecutions.status, 'pending'),
-                  ));
+                  )));
                 if (approvalRequestId) {
                   await db
                     .update(approvalRequests)
@@ -3755,6 +3765,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 }
               }
             );
+            if (rejectedRows > 0) noteToolCall('rejected');
           } catch (err) {
             captureException(err instanceof Error ? err : new Error(String(err)));
             console.error('[AI-SDK] Failed to close out settled approval record:', approvalExec.id, err);
@@ -3771,12 +3782,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         );
         if (liveDenial) {
           try {
-            await withDbAccessContext(
+            const closed = await withDbAccessContext(
               { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
               () => db.update(aiToolExecutions)
                 .set({ status: 'rejected', errorMessage: liveDenial.error })
                 .where(eq(aiToolExecutions.id, approvalExec!.id)),
             );
+            if (affectedRowCount(closed) > 0) noteToolCall('rejected');
           } catch (err) {
             captureException(err instanceof Error ? err : new Error(String(err)));
           }
@@ -3790,12 +3802,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           const standing = await standingInstructionCheck(session, wispCall.current, toolName, input);
           if (standing.action === 'refuse') {
             try {
-              await withDbAccessContext(
+              const closed = await withDbAccessContext(
                 { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
                 () => db.update(aiToolExecutions)
                   .set({ status: 'rejected', errorMessage: standing.error })
                   .where(eq(aiToolExecutions.id, approvalExec!.id)),
               );
+              if (affectedRowCount(closed) > 0) noteToolCall('rejected');
             } catch (err) {
               captureException(err instanceof Error ? err : new Error(String(err)));
             }
@@ -4001,12 +4014,12 @@ function approvedTopologyRun(toolName: string, output: string, isError: boolean)
  * The id comes from an in-memory per-call store, so the filter does not trust
  * it alone. A row already closed (or reaped) matches nothing.
  */
-function closeExecutingLedgerRow(
+async function closeExecutingLedgerRow(
   session: ActiveSession,
   executionId: string,
   values: Partial<typeof aiToolExecutions.$inferInsert>,
 ): Promise<unknown> {
-  return withDbAccessContext(
+  const result = await withDbAccessContext(
     { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
     () =>
       db.update(aiToolExecutions)
@@ -4017,6 +4030,9 @@ function closeExecutingLedgerRow(
           eq(aiToolExecutions.status, 'executing'),
         )),
   );
+  // #12421: counted only when this close changed the row (a lost CAS counts nothing).
+  if (values.status && affectedRowCount(result) > 0) noteToolCall(values.status);
+  return result;
 }
 
 /** A topology call's ledger output: the raw tool output is never persisted. */
@@ -4123,8 +4139,10 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
         status: isError ? 'failed' : 'completed',
         durationMs,
         completedAt: new Date(),
+        ...executionDiscoveryStamp(session, toolName, sdkToolUseId),
       }),
     );
+    noteToolCall(isError ? 'failed' : 'completed');
   } catch (err) {
     console.error(`[AI-SDK] Failed to save topology tool execution record for ${toolName}:`, err instanceof Error ? err.message : err);
   }
@@ -4328,8 +4346,10 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               delegantToolCallId,
               durationMs,
               completedAt: new Date(),
+              ...executionDiscoveryStamp(session, toolName, sdkToolUseId),
             })
         );
+        noteToolCall(isError ? 'failed' : 'completed');
       } catch (err) {
         persistenceError = true;
         console.error(`[AI-SDK] Failed to save tool execution record for ${toolName}:`, err instanceof Error ? err.message : err);
