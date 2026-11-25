@@ -35,6 +35,7 @@ const jsonResponse = (payload: unknown): Response =>
 
 describe('AddPackageModal owner scope (#2135)', () => {
   beforeEach(() => {
+    scopeMock.isPartnerScope = true;
     fetchMock.mockReset();
     fetchMock.mockImplementation((url: string) =>
       Promise.resolve(
@@ -108,7 +109,6 @@ describe('AddPackageModal owner scope (#2135)', () => {
     };
 
     beforeEach(() => {
-      scopeMock.isPartnerScope = true;
       fetchMock.mockImplementation((url: string) =>
         Promise.resolve(
           url.startsWith('/software/package-search')
