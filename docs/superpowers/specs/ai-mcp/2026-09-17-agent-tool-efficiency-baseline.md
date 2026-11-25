@@ -662,3 +662,34 @@ Harness and reading as §14 (`tool-capture.ts --proxy`, `claude-sonnet-5-5`, def
 - **Chat tool index (W19 bounds):** always-on 2,494 B on both. The security block grows 1,268 → 1,644 B (B2 < 2,048 B; still the largest block). The worst page turn stays at 4,731 B (alert; security is not a page-context domain; B3 < 7,040 B).
 - None of the eight is `alwaysLoad`.
 - **Golden eval:** not run (the three new cases g97–g99 are pinned by the count test; the live first-call eval is left for the release sweep).
+
+## 17. External MCP tools/list (progressive disclosure W01)
+
+**Date measured:** 2026-11-24 · **Branch:** `feature/12427-mcp-progressive-disclosure/wave-12428` (W01 of `plans/ai-mcp/2026-11-21-external-mcp-progressive-disclosure-plan.md`, spec `specs/ai-mcp/2026-11-08-external-mcp-progressive-disclosure-spec.md` §3.8) · **Harness:** `pnpm --filter @breeze/api mcp:tools-list-measure` (`services/llm/__scripts__/mcp-tools-list-measure.ts`)
+
+The script builds the real `tools/list` with the route's own list builder (`buildToolsListEntries`, then `presentProgressiveList` for `progressive`) for two synthetic principals, with every enable flag on (M365, Google Workspace, script authoring, flows, Delegant, hosted, AI agents, Wisp, workspace, MCP Apps, MCP intents, MCP Tasks) and tenant and flow tools off. No database read, no tenant data. Tokens are the Anthropic count-tokens endpoint (`claude-sonnet-5-5`) on the list's JSON sent as one user message, so they count the JSON text, not the client's own tool-definition encoding. A client that does not use the Anthropic API renders definitions its own way, so read the tokens as relative, and the bytes as exact.
+
+| Principal | Mode | Tools | Bytes (JSON) | Tokens (count_tokens) | Instructions bytes |
+|---|---|---|---|---|---|
+| unrestricted (`ai:read ai:write ai:execute`) | `full` | 314 | 361,932 | 137,288 | 3,825 |
+| unrestricted | `progressive` | 20 | 26,281 | 9,701 | 4,002 |
+| `core`+`devices` grant (`ai:read ai:write`) | `full` | 49 | 51,203 | 19,101 | 3,825 |
+| `core`+`devices` grant | `progressive` | 13 | 11,971 | 4,457 | 1,832 |
+
+- **`progressive` is 7.3% of `full`** for the unrestricted principal (bytes; 7.1% of tokens). It lists the 14 `alwaysLoad` tools, `whoami`, `get_action_status`, `cancel_action` and the three meta-tools.
+- **Spec §1/§3.8 estimates replaced.** The spec put `full` at about 360 KB and 90–120k tokens fully flagged (inferred), and the `progressive` first list at about 21 KB and 6–7k tokens. The measured `full` matches on bytes (361,932) but costs more tokens (137,288): JSON schemas tokenize at about 2.6 bytes per token, not 3–3.5. The measured `progressive` list is 26,281 bytes. The 14 `alwaysLoad` schemas are larger than the spec's 2026-11-08 count (several gained actions since), and the progressive entries add the two `anthropic/*` hint keys.
+- **Instructions.** `progressive` is a separate compact body: the caller's domain index plus the recipe, condensed rules and the untrusted-output rule. Its bound is ≤ 4,096 bytes (pinned at 4,002 here, fully flagged, unrestricted). The domain index alone is ≤ 2,560 bytes (2,340 here). `full` keeps today's 3,825-byte text unchanged.
+- **Meta-tool results** (unrestricted, `which windows devices are offline`): one `search_tools` result with 8 rows is 4,404 bytes, and one `get_tool_details` for `query_devices` is 2,624 bytes. Both carry the JSON twice, once as the text block and once as `structuredContent`, like every intrinsic.
+- **Search quality** (`services/mcpToolSearch.golden.test.ts`, in CI). Of the chat golden cases whose first expected tool is in the unrestricted catalog, 115 are eligible. 92.2% have an acceptable tool in the top 8 (gate ≥ 90%) and 83.5% in the top 3 (floor ≥ 75%). The ranker is BM25F-style with k1 2, b 0.5 and field weights name 4, hint 1, first sentence 1, domain vocabulary 0.5, chosen from a grid over k1, b and the weights. The default the plan named (k1 1.2, b 0.75, weights 3/2/1/1) scored 87.8%. Vocabulary weight 0 scored highest (93.9%), but the vocabulary is kept as a field per the spec.
+
+### Lab leg (spec §3.8.3) — NOT DONE; owner: Todd or a lab-capable session, after W01 merges
+
+W03 stays closed until this is filled in. Run it on a worktree stack with `MCP_TOOL_LIST_DEFAULT=progressive`, a lab API key and synthetic data only:
+
+| Client | List size as the client reports it | Client token / usage display | Fleet triage prompt | One device investigation | One ticket read | Real tool on the audit row |
+|---|---|---|---|---|---|---|
+| Claude Desktop | | | | | | |
+| Cursor | | | | | | |
+| Claude Code | | | | | | |
+
+For each task, record whether the client completed it through `search_tools` → `get_tool_details` → `call_tool` (or a direct call), and that the `mcp.tools.call` audit row carries `metaTool: 'call_tool'` and the real `toolName`.
