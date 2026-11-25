@@ -60,6 +60,52 @@ func recordedPathStyle(p string) pathStyle {
 
 func isASCIILetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
 
+// localPathRoot is the root of p when p is an absolute path on a volume of
+// this machine, written in style. It is an allow-list decided from the
+// string alone: on Windows a drive letter (`C:\`), its `\\?\C:\` spelling
+// or a volume GUID path (`\\?\Volume{…}\`); on POSIX any path from "/".
+// Anything else (a share, any other device path, a relative path) is not
+// local, and the identity check never opens it.
+func localPathRoot(p string, style pathStyle) (string, bool) {
+	switch style {
+	case stylePOSIX:
+		if strings.HasPrefix(p, "/") {
+			return "/", true
+		}
+	case styleWindows:
+		if len(p) >= 3 && isASCIILetter(p[0]) && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
+			return p[:3], true
+		}
+		const device = `\\?\`
+		if rest, ok := strings.CutPrefix(p, device); ok {
+			if len(rest) >= 3 && isASCIILetter(rest[0]) && rest[1] == ':' && rest[2] == '\\' {
+				return p[:len(device)+3], true
+			}
+			if n := len(volumeGUIDTemplate); len(rest) > n && isVolumeGUIDName(rest[:n]) && rest[n] == '\\' {
+				return p[:len(device)+n+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// volumeGUIDTemplate is the shape of a volume GUID name: x is a hex digit.
+const volumeGUIDTemplate = "Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"
+
+func isVolumeGUIDName(s string) bool {
+	if len(s) != len(volumeGUIDTemplate) || !strings.EqualFold(s[:7], volumeGUIDTemplate[:7]) {
+		return false
+	}
+	for i := 7; i < len(s); i++ {
+		c, want := s[i], volumeGUIDTemplate[i]
+		hex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if want == 'x' && !hex || want != 'x' && c != want {
+			return false
+		}
+	}
+	return true
+}
+
 // pathKey is an absolute path reduced to a comparable form in one path style:
 // a volume ("c:", `unc\srv\share`, `volume{…}`, "" for POSIX) and its
 // components, with "." and ".." resolved and, for Windows, case folded and
@@ -388,6 +434,7 @@ type dirIdentityCheck struct {
 	hostStyle  pathStyle
 	stat       func(string) (os.FileInfo, error)
 	lstat      func(string) (os.FileInfo, error)
+	readlink   func(string) (string, error)
 	sameFile   func(a, b os.FileInfo) bool
 	verdicts   map[string]dirVerdict
 }
@@ -405,7 +452,7 @@ func newDirIdentityCheck(targetBase string) *dirIdentityCheck {
 	if runtime.GOOS == "windows" {
 		host = styleWindows
 	}
-	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, lstat: os.Lstat, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
+	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, lstat: os.Lstat, readlink: os.Readlink, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
 }
 
 // aliasesOriginal reports whether the entry recorded at sourcePath restores
@@ -420,6 +467,9 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 		return false, nil // refused per entry by the restore passes
 	}
 	volume := volumeName(sourcePath)
+	if root, local := localPathRoot(sourcePath, c.hostStyle); !local || !strings.EqualFold(volume, strings.TrimRight(root, `\/`)) {
+		return c.nonLocalOriginal(sourcePath)
+	}
 	originalRoot := volume + string(filepath.Separator)
 	// The entry's ancestors and the entry itself: a directory entry sitting
 	// exactly where an alias begins would otherwise put its metadata on the
@@ -445,7 +495,7 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 		key := strings.ToLower(volume) + "|" + rel
 		verdict, ok := c.verdicts[key]
 		if !ok {
-			verdict, err = c.compare(filepath.Join(c.targetBase, rel), filepath.Join(originalRoot, rel))
+			verdict, err = c.compare(originalRoot, dirs[:depth])
 			if err != nil {
 				return false, err
 			}
@@ -461,6 +511,11 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 	return false, nil
 }
 
+// errNotLocalPath is why the identity check did not examine a path: it is
+// not a local path (localPathRoot), or reaching it would follow a link to
+// one that is not.
+var errNotLocalPath = errors.New("not a local path, so it was not examined")
+
 // uncheckedPathError is a path the identity check could not examine: the
 // first one is named in the refusal so the operator knows what to fix.
 type uncheckedPathError struct {
@@ -475,27 +530,49 @@ func (e *uncheckedPathError) Error() string {
 
 func (e *uncheckedPathError) Unwrap() error { return e.err }
 
-func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
+// nonLocalOriginal decides, without opening it, an entry whose original is
+// not a local path (localPathRoot). Against a local target it is not the
+// same place; the lexical check still applies. Against a target that is not
+// local either, the lexical check decides on the target's own share, and
+// anywhere else the check cannot tell and fails closed.
+func (c *dirIdentityCheck) nonLocalOriginal(sourcePath string) (bool, error) {
+	if _, local := localPathRoot(c.targetBase, c.hostStyle); local {
+		return false, nil
+	}
+	target, targetOK := parsePathKey(c.targetBase, c.hostStyle)
+	original, originalOK := parsePathKey(sourcePath, c.hostStyle)
+	if targetOK && originalOK && target.volume == original.volume {
+		return false, nil
+	}
+	return false, &uncheckedPathError{what: "original location", path: sourcePath, err: errNotLocalPath}
+}
+
+// compare examines the destination directory targetBase/parts and the
+// original directory originalRoot/parts.
+func (c *dirIdentityCheck) compare(originalRoot string, parts []string) (dirVerdict, error) {
 	// The destination first: one that does not exist cannot be an
 	// original, whatever the original's state, so an unreadable original
 	// never refuses a restore whose destination is not there yet.
-	destInfo, err := c.stat(dest)
-	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) {
+	destInfo, err := c.resolveStat(c.targetBase, parts)
+	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, errNotLocalPath) {
 		// Nothing there to alias. A path too long to stat is equally past
-		// every directory already compared as distinct.
+		// every directory already compared as distinct. A link to a path
+		// that is not local is not followed, and the restore writes
+		// through no link beneath the target.
 		return dirAbsent, nil
 	}
 	if err != nil {
 		// Fail closed: a destination that exists but cannot be examined
 		// cannot be shown not to be an original.
-		return 0, &uncheckedPathError{what: "restore destination", path: dest, err: err}
+		return 0, &uncheckedPathError{what: "restore destination", path: filepath.Join(append([]string{c.targetBase}, parts...)...), err: err}
 	}
-	originalInfo, err := c.stat(original)
-	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || unreachableVolume(err) {
-		// No original there to overwrite: gone since the backup, or on a
-		// volume or share this host cannot reach at all. The destination,
-		// which it just opened, cannot be it. The lexical check still
-		// applies.
+	original := filepath.Join(append([]string{originalRoot}, parts...)...)
+	originalInfo, err := c.resolveStat(originalRoot, parts)
+	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || unreachableVolume(err) || errors.Is(err, errNotLocalPath) {
+		// No original there to overwrite: gone since the backup, on a
+		// volume or share this host cannot reach at all, or behind a link
+		// to a path that is not local. The destination, which it just
+		// opened, cannot be it. The lexical check still applies.
 		return dirAbsent, nil
 	}
 	if err != nil {
@@ -511,6 +588,85 @@ func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 		return dirAlias, nil
 	}
 	return dirDistinct, nil
+}
+
+// maxLinkHops bounds the links resolveStat follows for one path.
+const maxLinkHops = 64
+
+// resolveStat is stat(base/parts...) with every link beneath base resolved
+// here rather than by the file system: a link is followed only to a local
+// path (localPathRoot) or a relative one, so the lookup stays on this
+// machine whatever links the tree holds. base itself (the operator's
+// target, or a local volume root) is examined as it is.
+func (c *dirIdentityCheck) resolveStat(base string, parts []string) (os.FileInfo, error) {
+	if len(parts) == 0 {
+		return c.stat(base)
+	}
+	cur := base
+	pending := append([]string(nil), parts...)
+	var info os.FileInfo // cur's, when cur was reached by a plain component
+	for hops := 0; len(pending) > 0; {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur, info = filepath.Dir(cur), nil
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := c.lstat(next)
+		if err != nil {
+			return nil, err
+		}
+		if fi.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+			target, err := c.readlink(next)
+			if err == nil {
+				if hops++; hops > maxLinkHops {
+					return nil, &fs.PathError{Op: "resolve", Path: next, Err: syscall.ELOOP}
+				}
+				if root, local := localPathRoot(target, c.hostStyle); local {
+					cur, info = root, nil
+					pending = append(linkComponents(target[len(root):], c.hostStyle), pending...)
+				} else if relativeLink(target, c.hostStyle) {
+					info = nil
+					pending = append(linkComponents(target, c.hostStyle), pending...)
+				} else {
+					return nil, &fs.PathError{Op: "resolve", Path: next, Err: errNotLocalPath}
+				}
+				continue
+			}
+			if fi.Mode()&fs.ModeSymlink != 0 {
+				return nil, err // a link that cannot be read: fail closed
+			}
+			// Another kind of reparse point, not a link: examined as it is.
+		}
+		cur, info = next, fi
+	}
+	if info == nil {
+		// Ended on a link or "..": cur is where it resolved to, with no
+		// link beneath its base or root.
+		return c.stat(cur)
+	}
+	return info, nil
+}
+
+// relativeLink reports a link target resolved against the link's own
+// directory: no volume, no root.
+func relativeLink(target string, style pathStyle) bool {
+	switch {
+	case target == "", target[0] == '/':
+		return false
+	case style == styleWindows:
+		return target[0] != '\\' && (len(target) < 2 || target[1] != ':')
+	}
+	return true
+}
+
+// linkComponents splits a link target into its components.
+func linkComponents(target string, style pathStyle) []string {
+	return strings.FieldsFunc(target, func(r rune) bool { return r == '/' || style == styleWindows && r == '\\' })
 }
 
 // refuseRestoreOverOriginals runs the guard over every entry the restore
@@ -569,8 +725,11 @@ func overwriteCheckFailedRefusal(targetBase string, err error) string {
 			reason = pathErr.Err // the path is named already
 		}
 		next := "make the path below readable and try again"
-		if errors.Is(reason, fs.ErrPermission) {
+		switch {
+		case errors.Is(reason, fs.ErrPermission):
 			next = "give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again"
+		case errors.Is(reason, errNotLocalPath):
+			next = "choose a folder on a local drive"
 		}
 		return fmt.Sprintf("%s, or %s. First path that could not be checked (%s): %s (%v)", msg, next, unchecked.what, refusalPath(unchecked.path), reason)
 	}
