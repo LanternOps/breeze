@@ -46,6 +46,7 @@ import { __testOnly as patchExecutorTestOnly } from '../../jobs/patchJobExecutor
 import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { computeOccurrence } from '../../services/oemUpdates/occurrence';
 import { REQUESTED_PATCHES_NO_LONGER_ELIGIBLE } from '../../services/installPatchesRevalidation';
+import { clearStatementFaults, failStatementsOn } from './caughtQueryFaults';
 import { createOrganization, createPartner, deviceAgentId, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -605,6 +606,45 @@ describe('install_patches delivery revalidation (#12493) — real PostgreSQL, ag
     const row = await commandRow(cmd!.id);
     expect(row.status).toBe('pending');
     expect(row.result).toBeNull();
+  });
+
+  it('a SQL failure inside the eligibility resolver HOLDS the install; the heartbeat still returns and delivers its other commands', async () => {
+    const { job, cmd } = await queuedAiInstall();
+    const [other] = await getTestDb()
+      .insert(deviceCommands)
+      .values({
+        deviceId: cmd.deviceId,
+        type: 'list_processes',
+        payload: {},
+        status: 'pending',
+        targetRole: 'agent',
+        submittedOrgId: env.organization.id,
+        deliverBy: new Date(Date.now() + 60 * 60 * 1000),
+      })
+      .returning();
+
+    // A real statement failure in one of the resolver's own reads (the
+    // partner-wide approvals), on the claim connection. Nothing else in the
+    // claim reads this table.
+    await failStatementsOn('patch_approvals');
+    let claimed: Awaited<ReturnType<typeof claimAsAgent>>;
+    try {
+      claimed = await claimAsAgent(cmd.deviceId);
+    } finally {
+      await clearStatementFaults();
+    }
+
+    expect(claimed.map((c) => c.id)).toEqual([other!.id]);
+    expect((await commandRow(other!.id)).status).toBe('sent');
+    const held = await commandRow(cmd.id);
+    expect(held.status).toBe('pending');
+    expect(held.result).toBeNull();
+    expect((await jobRow(job.id)).devicesQueued).toBe(1);
+
+    // Recoverable: the next healthy beat delivers it.
+    const next = await claimAsAgent(cmd.deviceId);
+    expect(next.map((c) => c.id)).toEqual([cmd.id]);
+    expect((await commandRow(cmd.id)).status).toBe('sent');
   });
   // -------------------------------------------------------------------------
   // Vendor lane: the one read path the fixtures above never reach. A driver

@@ -24,7 +24,9 @@
  *    codes only, no tenant text);
  *  - a fault in the reads → throw. `partitionClaimable` runs this in a
  *    savepoint and holds the row (`eligibility_check_failed`): never delivered
- *    on an unchecked verdict, never cancelled over a fault.
+ *    on an unchecked verdict, never cancelled over a fault. The `reader` reads
+ *    are on that savepoint; the resolver reads the ambient `db`, so it gets its
+ *    own (`withDbTransaction`) or a SQL fault in it would fail the heartbeat.
  *
  * Out of scope, delivered exactly as before: installs with no `patchJobId` (a
  * technician's install on the device, vulnerability remediation) and installs
@@ -57,7 +59,7 @@
  */
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { getCurrentDbAccessContext } from '../db';
+import { getCurrentDbAccessContext, hasDbAccessContext, withDbTransaction } from '../db';
 import { organizations, patchJobs } from '../db/schema';
 import { requestedPatchIdsSchema } from './patchJobRequestedPatchIds';
 import {
@@ -184,7 +186,7 @@ export async function revalidateInstallPatchesForDelivery(
   // org's partner: any other context reads that partner's policies, rings and
   // approvals as absent, and would judge on rows it cannot see. Held instead.
   const ctx = getCurrentDbAccessContext();
-  if (!ctx) {
+  if (!ctx || !hasDbAccessContext()) {
     throw new Error(`install_patches ${row.id}: no DB context on the claim; not judging eligibility`);
   }
   if (ctx.scope !== 'system') {
@@ -199,9 +201,22 @@ export async function revalidateInstallPatchesForDelivery(
   }
 
   // Every id here is a named uuid (checked above). The resolver reads through
-  // the ambient `db`, which under both legs' contexts is the claim's own
-  // connection, so it runs inside the caller's savepoint like `reader` does.
-  const verdict = await resolvePatchInstallEligibility({ deviceId: row.deviceId, orgId: job.orgId, patchIds: delivered });
+  // the ambient `db`, NOT `reader`: the caller's `tx.transaction(sp => ...)`
+  // savepoint does not redirect the ambient `db`, which still points at the
+  // claim's outer transaction. A failed statement there is remembered by
+  // postgres.js and rethrown when that transaction ends, so the caller's catch
+  // would hold the row and the heartbeat would still fail (and fail again on
+  // every beat while the fault lasts). `withDbTransaction` runs the resolver in
+  // its own savepoint with the ambient `db` bound to it, so a failure rolls
+  // back there and reaches the caller's catch as a plain throw: the row is
+  // held and the rest of the batch is delivered (docs/agents/tenancy-rls.md,
+  // "A catch around a query needs `withDbTransaction`"). The check above
+  // guarantees a held context, which `withDbTransaction` requires. The catch
+  // stays outside, in `partitionClaimable`. Same connection, same RLS context
+  // and GUCs; read-only, so the savepoint never writes.
+  const verdict = await withDbTransaction(() =>
+    resolvePatchInstallEligibility({ deviceId: row.deviceId, orgId: job.orgId, patchIds: delivered }),
+  );
   const eligible = new Set(verdict.eligible.map((e) => e.patchId));
   const why = new Map(verdict.ineligible.map((e) => [e.patchId, e.reason as string]));
   const dropped = new Map<string, string>();

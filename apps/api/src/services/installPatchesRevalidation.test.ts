@@ -6,12 +6,28 @@ const { resolveMock, registerMock, contextMock } = vi.hoisted(() => ({
   contextMock: vi.fn(),
 }));
 
+// `depth > 0` only while the resolver runs inside `withDbTransaction`.
+const savepoint = vi.hoisted(() => ({ depth: 0, opened: 0 }));
 vi.mock('../db', () => ({
   getCurrentDbAccessContext: () => contextMock(),
+  hasDbAccessContext: () => contextMock() !== undefined,
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    savepoint.opened += 1;
+    savepoint.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      savepoint.depth -= 1;
+    }
+  },
 }));
 vi.mock('./patchEligibility', () => ({
-  resolvePatchInstallEligibility: (...a: unknown[]) => resolveMock(...(a as [])),
+  resolvePatchInstallEligibility: (...a: unknown[]) => {
+    resolverRanInSavepoint.push(savepoint.depth > 0);
+    return resolveMock(...(a as []));
+  },
 }));
+const resolverRanInSavepoint: boolean[] = [];
 vi.mock('./commandClaimEligibility', () => ({
   registerCommandRevalidation: (...a: unknown[]) => registerMock(...(a as [])),
 }));
@@ -69,6 +85,8 @@ function cancelled(reasons: Record<string, string>, extra: Record<string, unknow
 describe('install_patches delivery revalidation (#12493)', () => {
   beforeEach(() => {
     resolveMock.mockReset();
+    resolverRanInSavepoint.length = 0;
+    savepoint.opened = 0;
     // The agent heartbeat's context: org-scoped, partner axis = the device org's partner.
     contextMock.mockReturnValue({ scope: 'organization', currentPartnerId: PARTNER });
   });
@@ -125,6 +143,10 @@ describe('install_patches delivery revalidation (#12493)', () => {
 
     expect(await revalidateInstallPatchesForDelivery(r, row({ patchJobId: JOB, patchIds: [P2, P1] }))).toBeNull();
     expect(resolveMock).toHaveBeenCalledWith({ deviceId: DEVICE, orgId: ORG, patchIds: [P1, P2] });
+    // The resolver reads the ambient `db`, so it must get its own savepoint:
+    // otherwise a SQL fault in it fails the claim's outer transaction.
+    expect(savepoint.opened).toBe(1);
+    expect(resolverRanInSavepoint).toEqual([true]);
   });
 
   it('any delivered patch no longer eligible → the whole command is cancelled, naming the dropped ids and why', async () => {
