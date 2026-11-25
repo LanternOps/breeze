@@ -324,6 +324,7 @@ describe('--examples and --suite tuning (W02)', () => {
     expect(await runCli(['--cases', 'g01'])).toBe(0);
     const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
     expect(report.cases[0]).toMatchObject({ schemaCheckedCalls: 1, schemaValid: false });
-    expect(report.summary.schemaValidRate).toBe(report.cases[0].schemaValidCalls / 1);
+    expect(report.summary.schemaValidRate).toBe(0);
+    expect(report.cases[0].schemaInvalidCalls[0].name).toBe('query_devices');
   });
 });

@@ -20,6 +20,8 @@ export interface EvalReport {
   /** W11: the prompt variant appended to every case's system prompt; null = the base prompt. */
   promptVariant: string | null;
   cases: Array<CaseScore & {
+    /** Set when the SDK run failed twice; such a case contributes no schema counts. */
+    error?: string;
     expected: GoldenExpectation[];
     surface: CaptureSurfaceId;
     /** What the policy resolved for this case's surface. */
@@ -71,6 +73,8 @@ export function renderMarkdownReport(input: EvalReport): string {
   }
   lines.push('', summary.schemaValidRate === null ? 'Schema-valid calls: n/a (no call checked).'
     : `Schema-valid calls: ${summary.schemaValidCalls}/${summary.schemaCheckedCalls} = ${(summary.schemaValidRate * 100).toFixed(1)}%.`);
+  const errored = input.cases.filter((c) => c.error !== undefined).length;
+  if (errored > 0) lines.push(`${errored} of ${input.cases.length} case(s) errored and are excluded from the schema-valid rate.`);
   lines.push('', `Mean first-call input tokens: ${input.meanFirstCallInputTokens}; mean context tokens through the first real tool call: ${input.meanContextTokensToFirstTool}; at it: ${input.meanContextTokensAtFirstTool}; API calls to it: ${input.meanApiCallsToFirstTool}; cost to it: ${input.meanCostCentsToFirstTool} cents; system prompt bytes: ${input.systemPromptBytes}.`, '');
   return lines.join('\n');
 }

@@ -1,6 +1,6 @@
 import type { StreamObservation } from '../toolCapture/streamObserver';
 import type { GoldenCase } from './goldenPrompts';
-import { validateToolInput } from '../../aiToolSchemas';
+import { toolInputSchemas, validateToolInput } from '../../aiToolSchemas';
 
 export interface CaseScore {
   id: string;
@@ -26,7 +26,8 @@ export type SchemaScore = Required<Pick<CaseScore, 'schemaValid' | 'schemaChecke
  * Whether the model's tool inputs would pass the production input validator.
  * Unlike `scoreFirstCall` this looks at EVERY call in the observation (a first
  * call can be right while a later one is malformed). ToolSearch is not a
- * registry tool and is skipped.
+ * registry tool and is skipped, as is any tool without a registered input
+ * schema (tenant/BYO tools): those are not counted at all.
  */
 export function scoreSchemaValidity(
   observation: Pick<StreamObservation, 'toolUses'>,
@@ -36,8 +37,11 @@ export function scoreSchemaValidity(
   let checked = 0;
   for (const use of observation.toolUses) {
     if (use.name === 'ToolSearch') continue;
-    checked++;
     const name = use.name.replace(/^mcp__(?:breeze|script_builder)__/, '');
+    // A tool with no registered input schema (tenant/BYO MCP tools, outcome
+    // tools) cannot be judged by the validator; it is neither valid nor invalid.
+    if (validate === validateToolInput && !Object.hasOwn(toolInputSchemas, name)) continue;
+    checked++;
     const result = validate(name, use.input ?? {});
     if (!result.success) invalid.push({ name, error: result.error });
   }

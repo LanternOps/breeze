@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scoreFirstCall, scoreSchemaValidity, summarize } from './score';
 import { renderMarkdownReport } from './report';
+import { toolInputSchemas } from '../../aiToolSchemas';
 
 const c = { id: 'x', prompt: 'p', expect: [{ tool: 'manage_alerts', action: 'list' }, { tool: 'query_monitors' }] };
 
@@ -130,6 +131,17 @@ describe('scoreSchemaValidity', () => {
     expect(scoreSchemaValidity({ toolUses: [] })).toMatchObject({ schemaValid: true, schemaCheckedCalls: 0 });
   });
 
+  it('a tool with no registered input schema (tenant/BYO) is not counted, not invalid', () => {
+    const r = scoreSchemaValidity({ toolUses: [{ name: 'mcp__breeze__hudu__get_asset', input: { id: 1 } }, valid] });
+    expect(r).toMatchObject({ schemaValid: true, schemaCheckedCalls: 1, schemaValidCalls: 1, schemaInvalidCalls: [] });
+  });
+
+  it('every registry tool has an input schema (drift pin for the skip above)', async () => {
+    const { aiTools } = await import('../../aiTools');
+    const missing = [...aiTools.keys()].filter((n) => !Object.hasOwn(toolInputSchemas, n));
+    expect(missing).toEqual([]);
+  });
+
   it('uses the injected validator and strips the surface prefix', () => {
     const seen: string[] = [];
     scoreSchemaValidity({ toolUses: [{ name: 'mcp__script_builder__foo', input: {} }] },
@@ -161,5 +173,16 @@ describe('renderMarkdownReport schema validity', () => {
       toolSearchEnabled: true, surface: 'chat', systemPromptBytes: 1, promptVariant: null, cases: [], summary,
       meanFirstCallInputTokens: 0, meanContextTokensToFirstTool: 0, meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 0, meanCostCentsToFirstTool: 0 });
     expect(md).toContain('Schema-valid calls: 3/4 = 75.0%');
+  });
+});
+
+describe('renderMarkdownReport errored cases', () => {
+  it('says how many cases errored next to the schema rate', () => {
+    const cases = [{ id: 'a', hit: false, observedTool: null, observedAction: null, answeredWithoutTool: true, unavailableTool: false, error: 'SDK down' }] as never;
+    const md = renderMarkdownReport({ generatedAt: 't', model: 'm', suite: 'chat', toolSearch: 'on', surfaceSearch: 'production',
+      toolSearchEnabled: true, surface: 'chat', systemPromptBytes: 1, promptVariant: null, cases, summary: summarize([]),
+      meanFirstCallInputTokens: 0, meanContextTokensToFirstTool: 0, meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 0, meanCostCentsToFirstTool: 0 });
+    expect(md).toContain('Schema-valid calls: n/a');
+    expect(md).toContain('1 of 1 case(s) errored');
   });
 });

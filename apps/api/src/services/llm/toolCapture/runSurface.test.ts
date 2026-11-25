@@ -350,3 +350,13 @@ describe('runSurfaceCapture onRawMessage', () => {
     expect(result.observation.result).not.toBeNull();
   });
 });
+
+describe('runSurfaceCapture toolExamples', () => {
+  it('threads toolExamples into the server options without changing registered tools', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    const off = await runSurfaceCapture({ ...baseOpts, toolExamples: 'off' });
+    queryMock.mockReturnValueOnce(messages([]));
+    const auto = await runSurfaceCapture({ ...baseOpts, toolExamples: 'auto' });
+    expect(off.registeredToolNames).toEqual(auto.registeredToolNames);
+  });
+});

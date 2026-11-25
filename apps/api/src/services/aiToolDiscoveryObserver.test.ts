@@ -330,4 +330,29 @@ describe('captured-shape fixtures (W02, SDK 0.3.323 stream)', () => {
     const msg = CAPTURED_SHAPE_TURNS.invalidInputDrop[1] as { message: { content: Array<{ content: string }> } };
     expect(isMcpInputValidationErrorText(msg.message.content[0]!.content)).toBe(true);
   });
+
+  it('a message with two results does not take the message-level total (unattributable); a block-level total wins over it', () => {
+    const two = (): unknown => ({
+      type: 'user',
+      message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'toolu_a', content: [{ type: 'tool_reference', tool_name: 'mcp__breeze__manage_services' }] },
+        { type: 'tool_result', tool_use_id: 'toolu_b', content: [{ type: 'tool_reference', tool_name: 'mcp__breeze__manage_processes' }] },
+      ] },
+      tool_use_result: { matches: [], query: 'q', total_deferred_tools: 300 },
+    });
+    const o = observer(); const tally = newRoundTripTally();
+    feed(o, tally, [
+      assistantToolSearch({ messageId: 'm1', toolUseId: 'toolu_a', query: 'a' }),
+      assistantToolSearch({ messageId: 'm1', toolUseId: 'toolu_b', query: 'b' }),
+      two(),
+    ]);
+    expect(o.endTurn({ aborted: false, tally }).events.map((e) => e.totalDeferred)).toEqual([null, null]);
+
+    const o2 = observer(); const tally2 = newRoundTripTally();
+    feed(o2, tally2, [
+      assistantToolSearch({ messageId: 'm1', toolUseId: 'toolu_a', query: 'a' }),
+      { ...(userToolSearchResult({ toolUseId: 'toolu_a', toolNames: ['manage_services'], totalDeferred: 7 }) as object), tool_use_result: { total_deferred_tools: 300 } },
+    ]);
+    expect(o2.endTurn({ aborted: false, tally: tally2 }).events[0]!.totalDeferred).toBe(7);
+  });
 });
