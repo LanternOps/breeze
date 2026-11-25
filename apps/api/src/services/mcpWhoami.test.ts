@@ -14,6 +14,7 @@ const base = (overrides: Partial<WhoamiInput> = {}): WhoamiInput => ({
   domainGrant: parseStoredMcpDomains(null),
   approvalGate: { tier3RequiresWebApp: true, unattendedPrincipal: false },
   mfaGatedActionsUnavailable: false,
+  toolListMode: { mode: 'full', source: 'deployment_default' },
   ...overrides,
 });
 
@@ -100,5 +101,11 @@ describe('buildWhoamiResult', () => {
     const keys: string[] = [];
     JSON.stringify(r, (k, v) => { if (k) keys.push(k); return v; });
     for (const k of keys) expect(k).not.toMatch(/keyHash|key_hash|payload|refresh|jwt|token/i);
+  });
+
+  it('#12427: reports the request\'s tool list mode and its source', () => {
+    expect(buildWhoamiResult(base()).toolListMode).toEqual({ mode: 'full', source: 'deployment_default' });
+    expect(buildWhoamiResult(base({ toolListMode: { mode: 'progressive', source: 'request' } })).toolListMode)
+      .toEqual({ mode: 'progressive', source: 'request' });
   });
 });

@@ -12,7 +12,8 @@
 import { API_VERSION } from '../version';
 import { envInt } from '../utils/envInt';
 import { mcpAppsServerExtensions } from './mcpAppsConfig';
-import { buildMcpServerInstructions } from './mcpGuidance';
+import { buildMcpServerInstructions, type McpProgressiveGuidance } from './mcpGuidance';
+import type { ResolvedMcpToolListMode } from './mcpToolListMode';
 import { mcpTasksEffective, mcpTier3IntentsEnabled } from './mcpIntentConfig';
 import { MCP_TASKS_EXTENSION_ID } from './mcpClientExtensions';
 import type { McpRejectReason } from './mcpModernEnvelope';
@@ -70,7 +71,9 @@ export function decorateModernResult(method: string, result: Record<string, unkn
   return decorated;
 }
 
-export function buildDiscoverResult(): Record<string, unknown> {
+export function buildDiscoverResult(
+  opts: { toolListMode?: ResolvedMcpToolListMode; progressive?: McpProgressiveGuidance } = {},
+): Record<string, unknown> {
   // B-W05 (#6159, D-B40): the MCP Apps extension, only while MCP_APPS_ENABLED.
   // B-W06 (#6160, D-B55): the Tasks extension in the SAME object, only while
   // Tasks are effective. Neither on → no `extensions` key (pre-W05 bytes).
@@ -83,7 +86,9 @@ export function buildDiscoverResult(): Record<string, unknown> {
     supportedVersions: [...supportedMcpProtocolVersions(true)],
     capabilities: { tools: {}, resources: {}, prompts: {}, ...(extensions ? { extensions } : {}) },
     // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
-    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled(), opts.progressive),
+    // #12427 (plan Decision 2): progressive only; `full` keeps today's bytes.
+    ...(opts.toolListMode?.mode === 'progressive' ? { toolListMode: { ...opts.toolListMode } } : {}),
     _meta: { [SERVER_INFO_META_KEY]: serverInfo() },
     ttlMs: MCP_CACHE_TTL_MS['server/discover'],
     cacheScope: 'private',

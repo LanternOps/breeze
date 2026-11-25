@@ -54,7 +54,15 @@ import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { callerRefusal } from '../services/callerVerification/refusal';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
-import { buildMcpServerInstructions, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
+import { buildMcpServerInstructions, listMcpPrompts, getMcpPrompt, hasMcpPrompt, type McpProgressiveGuidance } from '../services/mcpGuidance';
+import {
+  MCP_TOOL_LIST_HEADER,
+  MCP_TOOL_LIST_META_KEY,
+  mcpToolListDefault,
+  readRequestedToolListMode,
+  resolveMcpToolListMode,
+  type ResolvedMcpToolListMode,
+} from '../services/mcpToolListMode';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
 import {
@@ -1356,7 +1364,10 @@ mcpServerRoutes.delete('/sse', (c) => {
  * transport. HTTP+SSE `/message` shares this builder and never gets Apps, so
  * the default is false and existing one-argument callers are unchanged.
  */
-export function buildInitializeResult(requestedProtocolVersion?: unknown, opts: { advertiseApps?: boolean } = {}) {
+export function buildInitializeResult(
+  requestedProtocolVersion?: unknown,
+  opts: { advertiseApps?: boolean; toolListMode?: ResolvedMcpToolListMode; progressive?: McpProgressiveGuidance } = {},
+) {
   const extensions = opts.advertiseApps ? mcpAppsServerExtensions() : undefined;
   return {
     protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
@@ -1372,8 +1383,25 @@ export function buildInitializeResult(requestedProtocolVersion?: unknown, opts: 
       version: API_VERSION,
     },
     // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
-    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled(), opts.progressive),
+    // #12427 (plan Decision 2): reported only in progressive, so a `full`
+    // result stays byte-identical to what it was before modes existed.
+    ...(opts.toolListMode?.mode === 'progressive' ? { toolListMode: { ...opts.toolListMode } } : {}),
   };
+}
+
+/**
+ * #12427: the request's own tool-list override. `_meta` is read only in the
+ * stateless era (the legacy envelope has no per-request `_meta` contract);
+ * the header is read on both.
+ */
+function readToolListModeOverride(req: JsonRpcRequest, c: Context | undefined, era: McpDispatchContext['era']) {
+  const meta = req.params?._meta;
+  const metaValue = era === 'modern' && meta !== null && typeof meta === 'object' && !Array.isArray(meta)
+    && Object.hasOwn(meta, MCP_TOOL_LIST_META_KEY)
+    ? (meta as Record<string, unknown>)[MCP_TOOL_LIST_META_KEY]
+    : undefined;
+  return readRequestedToolListMode({ header: c?.req.header(MCP_TOOL_LIST_HEADER), meta: metaValue });
 }
 
 async function handleJsonRpc(
@@ -1385,6 +1413,20 @@ async function handleJsonRpc(
   ctx: McpDispatchContext,
 ): Promise<JsonRpcResponse> {
   try {
+    // #12427: one tool list mode per request, resolved from the ORIGINAL
+    // envelope before anything is dispatched, so initialize, server/discover,
+    // tools/list and tools/call all read the same value. A contradictory or
+    // misspelt override is refused (and audited by the caller), never guessed.
+    const requestedMode = readToolListModeOverride(req, c, ctx.era);
+    if (!requestedMode.ok) return jsonRpcError(req.id, -32602, 'Invalid params', { reason: requestedMode.reason });
+    const toolListMode = resolveMcpToolListMode({
+      requestOverride: requestedMode.mode,
+      // W02 stores a mode on api_keys / oauth_grants; until then only a
+      // partner service principal key has a credential-level answer.
+      credential: apiKey?.partnerServicePrincipalId ? { mcpToolListMode: null, partnerServicePrincipal: true } : null,
+      deploymentDefault: mcpToolListDefault(),
+    });
+
     // B-W03 (#6157, D-B17): lifecycle methods are per era. In the stateless
     // era `initialize` / `notifications/initialized` do not exist and
     // `server/discover` replaces them; each falls through to -32601 in the
@@ -1392,7 +1434,7 @@ async function handleJsonRpc(
     if (ctx.era === 'legacy' && req.method === 'initialize') {
       return jsonRpcResult(req.id, buildInitializeResult(
         (req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion,
-        { advertiseApps: ctx.transport === 'streamable' },
+        { advertiseApps: ctx.transport === 'streamable', toolListMode },
       ));
     }
     if (ctx.era === 'legacy' && req.method === 'notifications/initialized') {
@@ -1400,7 +1442,7 @@ async function handleJsonRpc(
       return jsonRpcResult(req.id, {});
     }
     if (ctx.era === 'modern' && req.method === 'server/discover') {
-      return jsonRpcResult(req.id, buildDiscoverResult());
+      return jsonRpcResult(req.id, buildDiscoverResult({ toolListMode }));
     }
 
     switch (req.method) {
@@ -1411,7 +1453,11 @@ async function handleJsonRpc(
         noteMcpAppToolCall(req.params, ctx.auditExtras);
         // B-W06 (#6160, D-B47): Tasks are modern-only and declared per request.
         const tasksDeclared = ctx.era === 'modern' && (await ctx.resolveClientExtensions()).tasks;
-        const response = await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared);
+        const response = await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared, {
+          surface: 'direct',
+          toolListMode,
+          clientExtensions: await ctx.resolveClientExtensions(),
+        });
         if (tasksDeclared && isCreateTaskResponse(response)) ctx.auditExtras.taskResult = true;
         return response;
       }
@@ -2177,6 +2223,16 @@ function structuredFromSafeText(safeText: string): Record<string, unknown> | und
 // B-W02 (#6156, D-B7): ONLY the two tier-scope denials carry this reason —
 // the one thing a client can fix by re-authorizing with a wider mcp scope.
 // ai:execute_admin, approval, MFA, RBAC, allowlist and domain denials never do.
+/**
+ * #12427: per-call options. `surface` is how the call arrived: `direct` is a
+ * plain tools/call, `call_tool` is the inner call of the call_tool meta-tool.
+ */
+type McpCallOptions = {
+  surface: 'direct' | 'call_tool';
+  toolListMode: ResolvedMcpToolListMode;
+  clientExtensions: McpClientExtensions;
+};
+
 const INSUFFICIENT_SCOPE_EXECUTE = { reason: 'insufficient_scope', requiredScope: 'ai:execute' } as const;
 const INSUFFICIENT_SCOPE_WRITE = { reason: 'insufficient_scope', requiredScope: 'ai:write' } as const;
 
@@ -2188,9 +2244,11 @@ async function handleToolsCall(
   apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
   correlation: McpRequestCorrelation,
-  clientCapabilities: Record<string, unknown> | null = null,
+  clientCapabilities: Record<string, unknown> | null,
   /** B-W06 (#6160): this modern request declared the Tasks extension (and Tasks are effective). */
-  tasksDeclared = false,
+  tasksDeclared: boolean,
+  /** #12427: how this call arrived and the request's resolved tool list mode. No defaults: every caller says. */
+  options: McpCallOptions,
 ): Promise<JsonRpcResponse> {
   const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -2247,7 +2305,7 @@ async function handleToolsCall(
   // (any principal that got past the ai:read preflight may call it). Pure:
   // it reports what the gates below would decide, it does not bypass them.
   if (toolName === MCP_WHOAMI_TOOL_NAME) {
-    return handleWhoamiCall(id, auth, scopes, domainGrant, apiKey);
+    return handleWhoamiCall(id, auth, scopes, domainGrant, options.toolListMode, apiKey);
   }
   // B-W04 (#6158, D-B31): core, server-intrinsic; ownership-checked inside.
   if (toolName === MCP_GET_ACTION_STATUS_TOOL_NAME) {
@@ -3093,6 +3151,7 @@ function handleWhoamiCall(
   auth: AuthContext,
   scopes: string[],
   domainGrant: McpDomainGrant,
+  toolListMode: ResolvedMcpToolListMode,
   apiKey?: McpApiKeyContext,
 ): JsonRpcResponse {
   const name = (apiKey as { name?: unknown } | undefined)?.name;
@@ -3120,6 +3179,7 @@ function handleWhoamiCall(
       return { tier3, tier3RequiresWebApp: tier3 === 'web_app_only', unattendedPrincipal };
     })(),
     mfaGatedActionsUnavailable: mfaGateRefusesCaller(auth),
+    toolListMode,
   });
   return jsonRpcResult(id, {
     content: [{ type: 'text', text: JSON.stringify(result) }],

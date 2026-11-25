@@ -1,3 +1,4 @@
+import type { AiToolDomain } from '@breeze/shared';
 import { buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
 
 // Approximate tool count stated in the instructions below. Kept as a rounded
@@ -7,8 +8,17 @@ import { buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
 // if the two drift apart.
 export const MCP_TOOL_COUNT_APPROX = 372;
 
-/** Server instructions; approval wording follows the action-intents flag (D-B34). */
-export function buildMcpServerInstructions(intentsEnabled: boolean): string {
+/**
+ * #12427: what a progressive tool list's instructions may name — the domains of
+ * the caller's listable registry tools, and every name the caller can list.
+ */
+export type McpProgressiveGuidance = { domains: readonly AiToolDomain[]; listableNames: ReadonlySet<string> };
+
+/**
+ * Server instructions; approval wording follows the action-intents flag (D-B34).
+ * `progressive` (#12427) is wired in a later task; undefined is today's text.
+ */
+export function buildMcpServerInstructions(intentsEnabled: boolean, _progressive?: McpProgressiveGuidance): string {
   return `You are connected to Breeze RMM — a multi-tenant Remote Monitoring and Management platform for MSPs. This server exposes ~${MCP_TOOL_COUNT_APPROX} tools for managing devices, alerts, patches, backups, security, tickets, and configuration policies.
 
 ## Tenant hierarchy
