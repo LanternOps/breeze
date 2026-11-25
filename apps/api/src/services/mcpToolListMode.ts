@@ -10,9 +10,14 @@
  * once-per-process report of an invalid value.
  */
 
-export type McpToolListMode = 'full' | 'progressive';
-export type McpToolListModeSource = 'request' | 'credential' | 'deployment_default';
-export type ResolvedMcpToolListMode = { mode: McpToolListMode; source: McpToolListModeSource };
+import {
+  MCP_TOOL_LIST_MODES,
+  type McpToolListMode,
+  type McpToolListModeSource,
+  type ResolvedMcpToolListMode,
+} from '@breeze/shared';
+
+export type { McpToolListMode, McpToolListModeSource, ResolvedMcpToolListMode };
 
 export const MCP_TOOL_LIST_HEADER = 'Mcp-Tool-List';
 export const MCP_TOOL_LIST_META_KEY = 'app.breeze/toolList';
@@ -22,7 +27,7 @@ export type RequestedToolListMode =
   | { ok: false; reason: 'tool_list_mode_conflict' | 'tool_list_mode_invalid' };
 
 function isMode(value: unknown): value is McpToolListMode {
-  return value === 'full' || value === 'progressive';
+  return (MCP_TOOL_LIST_MODES as readonly unknown[]).includes(value);
 }
 
 /**

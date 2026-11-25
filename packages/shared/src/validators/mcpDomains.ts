@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MCP_GRANTABLE_DOMAINS, type McpGrantableDomain } from '../types/aiToolDomains';
+import { MCP_GRANTABLE_DOMAINS, MCP_TOOL_LIST_MODES, type McpGrantableDomain } from '../types/aiToolDomains';
 
 /**
  * Per-grant MCP tool domains (B-W02 #6156). `null` = unrestricted: every
@@ -29,3 +29,10 @@ export function normalizeMcpDomainsInput(
   const ordered = MCP_GRANTABLE_DOMAINS.filter((d) => selected.has(d));
   return ordered.length === MCP_GRANTABLE_DOMAINS.length ? null : ordered;
 }
+
+/**
+ * A credential's stored MCP tool list mode (#12429). `null` = follow the
+ * deployment default. Exact values only; a misspelt mode is refused, never
+ * guessed.
+ */
+export const mcpToolListModeInputSchema = z.enum(MCP_TOOL_LIST_MODES).nullable();
