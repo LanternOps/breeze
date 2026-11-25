@@ -111,7 +111,8 @@ export async function queuePatchRollbacks(input: {
       // insert below then throws too and nothing is reported as queued.
       result = {};
     }
-    if (result.command) {
+    // A cancelled command carries both a row and an error: it will never run, so it is a failure.
+    if (result.command && !result.error) {
       queued.push({ deviceId: device.id, commandId: result.command.id, commandStatus: result.command.status });
     } else {
       failed.push({ deviceId: device.id, error: result.error ?? 'Rollback command was not queued' });

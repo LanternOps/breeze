@@ -79,6 +79,24 @@ describe('queuePatchRollbacks (#12492)', () => {
     ]);
   });
 
+  it('counts a cancelled command (a row and an error) as failed and records no row for it', async () => {
+    patchLookup([PATCH_ROW]);
+    mockSelect.mockReturnValueOnce({
+      from: () => ({ leftJoin: () => ({ where: () => Promise.resolve([{ ...device('dev-a'), observationId: 'dp-dev-a' }]) }) }),
+    });
+    const queue = vi.fn(async () => ({
+      command: { id: 'cmd-a', status: 'cancelled' },
+      error: 'Command cancelled: device not eligible',
+      refusal: 'cancelled',
+    }));
+
+    const result = await queuePatchRollbacks({ ...input(queue), deviceIds: ['dev-a'] });
+
+    expect(result!.queued).toEqual([]);
+    expect(result!.failed).toEqual([{ deviceId: 'dev-a', error: 'Command cancelled: device not eligible' }]);
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
   it('queues one device at a time, never two queue calls in flight on the shared transaction', async () => {
     patchLookup([PATCH_ROW]);
     mockSelect.mockReturnValueOnce({

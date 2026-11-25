@@ -1728,11 +1728,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           reason: (input.notes as string) ?? 'Initiated via AI assistant',
           initiatedBy: auth.user.id,
           canAccess: (d) => auth.canAccessOrg(d.orgId) && !deviceSiteDenied(auth, d.siteId, d.id),
-          queue: async (d, type, payload) => {
-            const result = await aiQueueCommandForExecution(auth, 'manage_patches', d.id, type, payload, { userId: auth.user.id, expectedOrgId: d.orgId });
-            // A cancelled command carries both a row and an error: it will never run, so it is a failure.
-            return result.error ? { error: result.error } : result;
-          },
+          queue: (d, type, payload) =>
+            aiQueueCommandForExecution(auth, 'manage_patches', d.id, type, payload, { userId: auth.user.id, expectedOrgId: d.orgId }),
         });
         if (!rollback) return JSON.stringify({ error: 'Patch not found' });
         const { queued, failed, skipped } = rollback;
