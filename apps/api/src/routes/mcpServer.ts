@@ -2401,7 +2401,7 @@ async function handleToolsCall(
   // ai:read preflight (already passed) and the always-granted core domain —
   // `decline` additionally needs ai:write, checked inside.
   if (correlation.era === 'modern' && params.requestState !== undefined) {
-    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName), tasksDeclared);
+    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName), tasksDeclared, options.surface);
   }
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
@@ -2772,7 +2772,7 @@ async function handleToolsCall(
     if (!executionOrgId || !apiKey) {
       return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
     }
-    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities }, tasksDeclared);
+    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities, surface: options.surface }, tasksDeclared);
   }
   // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
   // complete + uniform audit. The callback owns executeTool + the MCP response
@@ -2934,6 +2934,8 @@ async function fileMcpActionIntent(
     executionOrgId: string;
     correlation: McpRequestCorrelation;
     clientCapabilities?: Record<string, unknown> | null;
+    /** #12427: sealed into the state, which is then valid on this surface only. */
+    surface: McpCallOptions['surface'];
   },
   /** B-W06 (#6160, D-B47): a live intent is answered with a CreateTaskResult. */
   tasksDeclared = false,
@@ -2978,6 +2980,7 @@ async function fileMcpActionIntent(
         m: 'tools/call',
         t: args.toolName,
         d: computeArgumentDigest(canonicalizeArguments(args.toolInput)),
+        w: args.surface === 'call_tool' ? 1 : 0,
       }, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
       return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
     } catch (err) {
@@ -3074,7 +3077,9 @@ async function handleToolsCallContinuation(
   c: Context | undefined,
   toolName: string,
   /** B-W06 (#6160, D-B51): a still-live outcome is answered with a CreateTaskResult. */
-  tasksDeclared = false,
+  tasksDeclared: boolean,
+  /** #12427: how this retry arrived; a state opens only on the surface that issued it. */
+  surface: McpCallOptions['surface'],
 ): Promise<JsonRpcResponse> {
   const callerRef = canOwnMcpIntents(auth, apiKey) ? mcpOriginRef(auth.principal) : null;
   const invalid = () => jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_request_state' });
@@ -3084,11 +3089,13 @@ async function handleToolsCallContinuation(
   if (!opened.ok && opened.reason === 'invalid_request_state') return invalid();
   const { payload } = opened;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
-  // Every binding (credential, method, tool, arguments) is checked before
-  // the payload's action id is ever exposed — an expired state reveals it
-  // only to the same credential, for the same call.
+  // Every binding (credential, method, tool, arguments, surface) is checked
+  // before the payload's action id is ever exposed — an expired state reveals
+  // it only to the same credential, for the same call, on the same surface. A
+  // state sealed before the surface byte existed is a direct one (#12427).
   if (payload.p !== callerRef || payload.m !== 'tools/call' || payload.t !== toolName
-    || payload.d !== computeArgumentDigest(canonicalizeArguments(toolInput))) {
+    || payload.d !== computeArgumentDigest(canonicalizeArguments(toolInput))
+    || (payload.w ?? 0) !== (surface === 'call_tool' ? 1 : 0)) {
     return invalid();
   }
   if (!opened.ok) {

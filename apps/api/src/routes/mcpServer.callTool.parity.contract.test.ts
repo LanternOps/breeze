@@ -32,12 +32,12 @@ vi.mock('../modules/mcpInvites', () => ({ initMcpBootstrap: () => ({ unauthTools
 vi.mock('../services/toolSources/execute', async (orig) => (await import('./mcpServerToolList.testHarness')).tenantExecuteMock(orig as never));
 vi.mock('../services/toolSources/guardrails', async (orig) => (await import('./mcpServerToolList.testHarness')).tenantGuardrailsMock(orig as never));
 vi.mock('../services/rate-limit', async () => (await import('./mcpServerToolList.testHarness')).rateLimitMock());
-const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn(), loadOwnedMcpIntent: vi.fn(), countLiveMcpIntentsForOrigin: vi.fn(async () => 0) }));
+const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn(), loadOwnedMcpIntent: vi.fn(), countLiveMcpIntentsForOrigin: vi.fn(async () => 0), cancelOwnedMcpIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
   createMcpActionIntent: (...a: unknown[]) => intentMocks.createMcpActionIntent(...a),
   loadOwnedMcpIntent: (...a: unknown[]) => intentMocks.loadOwnedMcpIntent(...a),
   countLiveMcpIntentsForOrigin: (...a: unknown[]) => intentMocks.countLiveMcpIntentsForOrigin(...a),
-  cancelOwnedMcpIntent: vi.fn(),
+  cancelOwnedMcpIntent: (...a: unknown[]) => intentMocks.cancelOwnedMcpIntent(...a),
   resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
 }));
 
@@ -262,4 +262,4 @@ describe('fixtures', () => {
 });
 
 /** [direct, wrapped] values of the sealed surface byte (spec §3.4, T7). */
-const SURFACE_BYTES = [undefined, undefined];
+const SURFACE_BYTES = [0, 1];

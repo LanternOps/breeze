@@ -107,4 +107,17 @@ describe('mcpRequestStateKey', () => {
     vi.stubEnv('NODE_ENV', 'test');
     expect(mcpRequestStateKey().length).toBe(32);
   });
+
+  // #12427 (spec §3.4, OD-8 A): the surface byte. 0 = direct, 1 = through call_tool.
+  it('seals w when given and opens a state sealed before w existed', () => {
+    expect(openMcpRequestState(sealMcpRequestState({ ...base, w: 1 }, KEY, 1000), KEY, 1001))
+      .toEqual({ ok: true, payload: { v: 1, ...base, w: 1, e: 1600 } });
+    expect(openMcpRequestState(sealMcpRequestState({ ...base, w: 0 }, KEY, 1000), KEY, 1001))
+      .toEqual({ ok: true, payload: { v: 1, ...base, w: 0, e: 1600 } });
+    expect(openMcpRequestState(forge({ v: 1, ...base, e: 1600 }), KEY, 1001)).toEqual({ ok: true, payload: { v: 1, ...base, e: 1600 } });
+  });
+
+  it.each([2, '1', null, true])('a state with w = %j is invalid', (w) => {
+    expect(openMcpRequestState(forge({ v: 1, ...base, w, e: 1600 }), KEY, 1001)).toEqual({ ok: false, reason: 'invalid_request_state' });
+  });
 });
