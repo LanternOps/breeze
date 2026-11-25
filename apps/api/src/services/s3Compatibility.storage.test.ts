@@ -208,7 +208,7 @@ describe('artifact storage (blobStorage.ts, managed multipart + ranges)', () => 
 
     await blobs.delete(put.key);
     await expect(blobs.openStream(put.key)).rejects.toBeInstanceOf(BlobNotFoundError);
-    // Abort-on-failure must leave no parts behind.
+    // A completed upload must leave no unfinished multipart uploads behind.
     expect((await admin.send(new ListMultipartUploadsCommand({ Bucket: bucket }))).Uploads ?? []).toHaveLength(0);
   });
 });

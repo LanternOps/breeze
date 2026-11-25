@@ -216,7 +216,7 @@ services:
       - api
 
   # RustFS for S3-compatible object storage (#8350). Pinned by tag AND digest;
-  # bump both together, and the same pin in ci.yml's storage-compat job.
+  # bump both together, and the same pin in ci.yml's Test API job (shard 1).
   # Data starts empty: RustFS cannot read MinIO's on-disk format, so the old
   # breeze-minio-dev-data volume is not reused (docker volume rm it when done).
   rustfs:
