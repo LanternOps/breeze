@@ -3,7 +3,6 @@ package backup
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -108,8 +107,6 @@ func TestRefuseRestoreOverOriginals_SecondPassFailure(t *testing.T) {
 	}
 
 	g = newOriginalsGuard("/")
-	// Identity sees nothing, so only the lexical self-collision can find it.
-	g.identity = newFakeIdentityCheck("/", stylePOSIX, func(string) (os.FileInfo, error) { return nil, fs.ErrNotExist })
 	selected = []SnapshotFile{{SourcePath: "/nonexistent-12638/x"}}
 	noteAll(g, selected, nil)
 	result = &RestoreResult{}
@@ -118,66 +115,11 @@ func TestRefuseRestoreOverOriginals_SecondPassFailure(t *testing.T) {
 	}
 }
 
-// An original the helper may not read does not refuse a restore whose
-// destination is not there: a destination that does not exist cannot be
-// the original, whatever the original's state.
-func TestRefuseRestoreOverOriginals_DeniedOriginalAbsentDestination(t *testing.T) {
-	denied := fmt.Errorf("stat: %w", fs.ErrPermission)
-	g := newOriginalsGuard("/target")
-	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
-		switch {
-		case p == "/target", p == "/":
-			return fakeDirInfo(p), nil
-		case strings.HasPrefix(p, "/target/"):
-			return nil, fs.ErrNotExist
-		default:
-			return nil, denied
-		}
-	})
-	selected := []SnapshotFile{{SourcePath: "/Users/a/Library/Mail/x"}}
-	result := &RestoreResult{}
-	if refuseRestoreOverOriginals(g, selected, nil, nil, nil, noteAll(g, selected, nil), result) {
-		t.Fatalf("denied original, absent destination: refused with %+v; want the restore to go ahead", result)
-	}
-}
-
-// With the destination there, a denied original fails closed, and the
-// refusal says what to do before naming the first path it could not check.
-func TestRefuseRestoreOverOriginals_DeniedOriginalExistingDestination(t *testing.T) {
-	denied := &fs.PathError{Op: "stat", Path: "/Users/a/Library/Mail", Err: fs.ErrPermission}
-	g := newOriginalsGuard("/target")
-	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
-		switch {
-		case strings.HasPrefix(p, "/target"), p == "/", p == "/Users", p == "/Users/a", p == "/Users/a/Library":
-			return fakeDirInfo(p), nil
-		default:
-			return nil, denied
-		}
-	})
-	selected := []SnapshotFile{{SourcePath: "/Users/a/Library/Mail/x"}}
-	result := &RestoreResult{}
-	if !refuseRestoreOverOriginals(g, selected, nil, nil, nil, noteAll(g, selected, nil), result) || result.Code != ResultCodeRestoreOverwriteCheckFailed {
-		t.Fatalf("denied original, existing destination: result %+v; want refused with %s", result, ResultCodeRestoreOverwriteCheckFailed)
-	}
-	msg := result.Error
-	for _, want := range []string{"nothing was written", "new, empty folder", "Full Disk Access", "First path that could not be checked (original location): /Users/a/Library/Mail (permission denied)"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("refusal %q lacks %q", msg, want)
-		}
-	}
-	if strings.Index(msg, "new, empty folder") > strings.Index(msg, "/Users/a/Library/Mail") {
-		t.Errorf("refusal %q names the path before the advice: a cut at the server's limit would drop the advice", msg)
-	}
-	if strings.Count(msg, "/Users/a/Library/Mail") != 1 {
-		t.Errorf("refusal %q repeats the path", msg)
-	}
-}
-
 // Paths quoted in a refusal are capped, so the advice and the code reach
 // the server whole however long the path.
 func TestOverwriteRefusals_CapQuotedPaths(t *testing.T) {
 	long := "/" + strings.Repeat("d/", 3000) + "x"
-	checkFailed := overwriteCheckFailedRefusal("/target", &uncheckedPathError{what: "original location", path: long, err: fs.ErrPermission})
+	checkFailed := overwriteCheckFailedRefusal("/target", &uncheckedPathError{what: "restore destination", path: long, err: errUnplaceablePath})
 	wouldOverwrite := alternateRestoreRefusal(long, overwriteFinding{count: 1, entry: long, overwrite: long + "/y"})
 	for name, msg := range map[string]string{"check failed": checkFailed, "would overwrite": wouldOverwrite} {
 		if n := utf8.RuneCountInString(msg); n > 2500 {
@@ -189,12 +131,17 @@ func TestOverwriteRefusals_CapQuotedPaths(t *testing.T) {
 	}
 }
 
-// The "grant access" advice is given only for a denial; another error that
-// leaves the original unchecked asks for the path to be made readable.
-func TestOverwriteCheckFailedRefusal_AdviceFitsTheError(t *testing.T) {
-	ioErr := &fs.PathError{Op: "stat", Path: "/data/x", Err: errors.New("input/output error")}
-	msg := overwriteCheckFailedRefusal("/target", &uncheckedPathError{what: "original location", path: "/data/x", err: ioErr})
-	if strings.Contains(msg, "Full Disk Access") || !strings.Contains(msg, "make the path below readable") || !strings.Contains(msg, "/data/x (input/output error)") {
-		t.Errorf("refusal for an I/O error: %q", msg)
+// The advice comes before the path (a cut at the server's limit keeps it)
+// and fits the path: a recorded path no target can fix asks for the staging
+// location; anything else for a new, empty folder.
+func TestOverwriteCheckFailedRefusal_AdviceFitsThePath(t *testing.T) {
+	for what, advice := range map[string]string{"recorded path": "default staging location", "restore destination": "new, empty folder", "restore target": "new, empty folder"} {
+		msg := overwriteCheckFailedRefusal("/target", &uncheckedPathError{what: what, path: "/data/x", err: errUnplaceablePath})
+		if !strings.Contains(msg, "nothing was written") || !strings.Contains(msg, advice) || strings.Count(msg, "/data/x") != 1 {
+			t.Errorf("%s: refusal %q; want the advice %q and the path once", what, msg, advice)
+		}
+		if strings.Index(msg, advice) > strings.Index(msg, "/data/x") {
+			t.Errorf("%s: refusal %q names the path before the advice", what, msg)
+		}
 	}
 }

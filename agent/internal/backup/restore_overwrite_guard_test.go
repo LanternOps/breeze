@@ -2,15 +2,12 @@ package backup
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -191,17 +188,40 @@ func TestRestoreDestinationKey_VolumeRootTargets(t *testing.T) {
 		{`/home/..`, `/home/a/x`, true},
 		{`/restore`, `/home/a/x`, false},
 		{`/home/a`, `/home/a/x`, false},
-		// Mixed styles and relative entries never collide.
-		{`/`, `C:\Users\a\x`, false},
-		{`C:\`, `/home/a/x`, false},
-		{`/`, `path_0/x`, false},
-		{`C:\`, `path_0\x`, false},
+		// A path with no volume (another OS's, or relative) is read on the
+		// target's volume root: at a root target it lands on itself.
+		{`/`, `C:\Users\a\x`, true},
+		{`C:\`, `/home/a/x`, true},
+		{`/`, `path_0/x`, true},
+		{`C:\`, `path_0\x`, true},
+		{`/restore`, `C:\Users\a\x`, false},
+		{`D:\restore`, `/home/a/x`, false},
 	} {
-		dest, original, ok := restoreDestinationKey(tc.target, tc.source)
-		if got := ok && dest.String() == original.String(); got != tc.want {
-			t.Errorf("target %q, entry %q: destination is the original = %v (dest %v, original %v), want %v", tc.target, tc.source, got, dest, original, tc.want)
+		host := styleWindows
+		if strings.HasPrefix(tc.target, "/") {
+			host = stylePOSIX
+			if runtime.GOOS == "windows" {
+				continue // placement is the Windows one here
+			}
+		}
+		if got := rootTargetCollides(t, host, tc.target, tc.source); got != tc.want {
+			t.Errorf("target %q, entry %q: destination is the original = %v, want %v", tc.target, tc.source, got, tc.want)
 		}
 	}
+}
+
+// rootTargetCollides runs the guard over a one-entry snapshot on a host of
+// the given style and reports whether the entry lands on its original.
+func rootTargetCollides(t *testing.T, host pathStyle, target, source string) bool {
+	t.Helper()
+	orig := volumeName
+	defer func() { volumeName = orig }()
+	if host == styleWindows && runtime.GOOS != "windows" {
+		volumeName = windowsVolumeName2
+	} else if host == stylePOSIX {
+		volumeName = func(string) string { return "" }
+	}
+	return guardOn(host, target, []string{source}, []string{source}).count == 1
 }
 
 // A target inside the backed-up tree collides when a nested copy of the tree
@@ -220,45 +240,9 @@ func TestOverwritesOriginals_DestinationIsAnotherOriginal(t *testing.T) {
 	if _, count, err := overwritesOriginals(root+"/data", []string{root + "/data/x", root + "/other/y"}); err != nil || count != 0 {
 		t.Fatalf("target inside the tree with no nested copy: count %d, %v; want 0", count, err)
 	}
-	if _, count, err := overwritesOriginals(`C:\data`, []string{`C:\data\x`, `c:\DATA\data\X`}); err != nil || count != 1 {
-		t.Fatalf("Windows nested copy, other case: count %d, %v; want 1", count, err)
-	}
-}
-
-// A target that is the original volume root under another name is caught by
-// file identity: here a symlink to "/", and a target whose first directory
-// is a link to the original one.
-func TestOverwritesOriginals_AliasedTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX path style; Windows aliases are covered by restore_overwrite_guard_windows_test.go")
-	}
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := filepath.Join(dir, "docs", "x.txt")
-	if err := os.MkdirAll(filepath.Dir(original), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	rootAlias := filepath.Join(t.TempDir(), "root")
-	if err := os.Symlink("/", rootAlias); err != nil {
-		t.Fatal(err)
-	}
-	if _, count, err := overwritesOriginals(rootAlias, []string{original}); err != nil || count != 1 {
-		t.Fatalf("link to /: count %d, %v; want 1", count, err)
-	}
-
-	first, _, _ := strings.Cut(strings.TrimPrefix(original, "/"), "/")
-	nested := t.TempDir()
-	if err := os.Symlink("/"+first, filepath.Join(nested, first)); err != nil {
-		t.Fatal(err)
-	}
-	if _, count, err := overwritesOriginals(nested, []string{original}); err != nil || count != 1 {
-		t.Fatalf("target whose %q is a link to /%s: count %d, %v; want 1", first, first, count, err)
-	}
-
-	if _, count, err := overwritesOriginals(t.TempDir(), []string{original}); err != nil || count != 0 {
-		t.Fatalf("plain new folder: count %d, %v; want 0", count, err)
+	withWindowsPaths(t)
+	if f := guardOn(styleWindows, `C:\data`, []string{`C:\data\x`, `c:\DATA\data\X`}, []string{`C:\data\x`}); f.uncheckedErr != nil || f.count != 1 {
+		t.Fatalf("Windows nested copy, other case: %+v; want 1", f)
 	}
 }
 
@@ -337,12 +321,15 @@ func TestRefuseRestoreOverOriginals_AllEntryKinds(t *testing.T) {
 		"symlink":   {links: []SnapshotFile{{SourcePath: "/nonexistent-12638/l", Kind: KindSymlink, LinkTarget: "x"}}},
 		"junction":  {junctions: []SnapshotJunction{{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`}}},
 	} {
-		target := "/"
+		target, host := "/", stylePOSIX
 		if len(tc.junctions) > 0 {
-			target = `C:\`
+			target, host = `C:\`, styleWindows
+			withWindowsPaths(t)
+		} else if runtime.GOOS == "windows" {
+			continue // POSIX entries
 		}
 		result := &RestoreResult{}
-		g := newOriginalsGuard(target)
+		g := newOriginalsGuardFor(target, host)
 		originals := noteAll(g, append(tc.dirs, tc.links...), tc.junctions)
 		if !refuseRestoreOverOriginals(g, nil, tc.links, tc.dirs, tc.junctions, originals, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
 			t.Errorf("%s at its own volume root: result %+v, want refused", name, result)
@@ -375,97 +362,6 @@ func TestRestoreFromSnapshot_UnselectedOriginalIsProtected(t *testing.T) {
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
 		t.Fatalf("target holds %v after a refused restore", entries)
 	}
-}
-
-// Identity verdicts are cached per original volume: C:\x and D:\x restore
-// to the same destination directory, but only the one whose volume the
-// target aliases is an overwrite. Here the target T:\ is D:\ by identity.
-func TestDirIdentityCheck_CacheIsPerVolume(t *testing.T) {
-	withWindowsVolumeName(t)
-	id := map[string]string{"T:": "d", "C:": "c", "D:": "d"}
-	c := newFakeIdentityCheck(`T:\`, styleWindows, func(p string) (os.FileInfo, error) {
-		if v, ok := id[strings.TrimRight(p, `\/`)]; ok { // the host joins with its own separator
-			return fakeDir{id: v}, nil
-		}
-		return nil, fs.ErrNotExist
-	})
-	if same, err := c.aliasesOriginal(`C:\f`); err != nil || same {
-		t.Fatalf("C: entry: alias %v, %v; want distinct", same, err)
-	}
-	if same, err := c.aliasesOriginal(`D:\f`); err != nil || !same {
-		t.Fatalf("D: entry after a C: entry at the same relative path: alias %v, %v; want the D: alias found", same, err)
-	}
-}
-
-// A destination or original that cannot be examined fails the check closed,
-// except where the error itself shows there is nothing there: does not
-// exist, not a directory, a path too long to stat (past everything already
-// compared), or, on Windows, a volume or share that cannot be reached (see
-// restore_overwrite_unreachable_windows.go).
-func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
-	denied := fmt.Errorf("access denied: %w", fs.ErrPermission)
-	for name, stat := range map[string]func(string) (os.FileInfo, error){
-		"destination": func(p string) (os.FileInfo, error) {
-			if strings.HasPrefix(p, "/target") {
-				return nil, denied
-			}
-			return fakeDirInfo(p), nil
-		},
-		"original": func(p string) (os.FileInfo, error) {
-			if strings.HasPrefix(p, "/target") {
-				return fakeDirInfo(p), nil
-			}
-			return nil, denied
-		},
-	} {
-		c := newFakeIdentityCheck("/target", stylePOSIX, stat)
-		if _, err := c.aliasesOriginal("/home/a/x"); !errors.Is(err, denied) {
-			t.Errorf("%s unreadable: err %v, want it reported", name, err)
-		}
-	}
-	c := newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, fs.ErrNotExist })
-	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
-		t.Errorf("nothing exists: alias %v, %v; want not an overwrite", same, err)
-	}
-	for _, err := range []error{fs.ErrNotExist, syscall.ENOTDIR, syscall.ENAMETOOLONG} {
-		c := newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
-			if strings.HasPrefix(p, "/target") {
-				return fakeDirInfo(p), nil
-			}
-			return nil, err
-		})
-		if same, gotErr := c.aliasesOriginal("/home/a/x"); gotErr != nil || same {
-			t.Errorf("original %v: alias %v, %v; want not an overwrite", err, same, gotErr)
-		}
-	}
-	// Any other error leaves the question open: refuse.
-	unknown := errors.New("input/output error")
-	c = newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
-		if strings.HasPrefix(p, "/target") {
-			return fakeDirInfo(p), nil
-		}
-		return nil, unknown
-	})
-	if _, err := c.aliasesOriginal("/home/a/x"); !errors.Is(err, unknown) {
-		t.Errorf("original %v: err %v, want it reported", unknown, err)
-	}
-}
-
-// fakeDir is a directory whose identity is id.
-type fakeDir struct{ id string }
-
-func (d fakeDir) Name() string       { return d.id }
-func (d fakeDir) Size() int64        { return 0 }
-func (d fakeDir) Mode() os.FileMode  { return os.ModeDir | 0o755 }
-func (d fakeDir) ModTime() time.Time { return time.Time{} }
-func (d fakeDir) IsDir() bool        { return true }
-func (d fakeDir) Sys() any           { return nil }
-
-func fakeDirInfo(path string) os.FileInfo { return fakeDir{id: path} }
-
-func newFakeIdentityCheck(target string, host pathStyle, stat func(string) (os.FileInfo, error)) *dirIdentityCheck {
-	return &dirIdentityCheck{targetBase: target, hostStyle: host, stat: stat, lstat: stat, verdicts: map[string]dirVerdict{},
-		sameFile: func(a, b os.FileInfo) bool { return a.(fakeDir).id == b.(fakeDir).id }}
 }
 
 // overwritesOriginals runs the guard over a snapshot whose entries are
@@ -509,7 +405,8 @@ func TestRefuseRestoreOverOriginals_VSSOriginalPath(t *testing.T) {
 		"file":     {files: []SnapshotFile{file}},
 		"junction": {junctions: []SnapshotJunction{junction}},
 	} {
-		g := newOriginalsGuard(`C:\`)
+		withWindowsPaths(t)
+		g := newOriginalsGuardFor(`C:\`, styleWindows)
 		originals := noteAll(g, tc.files, tc.junctions)
 		result := &RestoreResult{}
 		if !refuseRestoreOverOriginals(g, tc.files, nil, nil, tc.junctions, originals, result) || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
@@ -521,28 +418,27 @@ func TestRefuseRestoreOverOriginals_VSSOriginalPath(t *testing.T) {
 // When the check cannot finish, the restore is refused with its own code and
 // a next step; a definite hit found alongside still wins the report.
 func TestRefuseRestoreOverOriginals_CheckFailure(t *testing.T) {
-	denied := fmt.Errorf("access denied: %w", fs.ErrPermission)
-	g := newOriginalsGuard("/target")
-	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, denied })
-	g.identity.hostStyle = stylePOSIX
+	withWindowsPaths(t)
+	const unreadable = `\\srv.invalid`
+	g := newOriginalsGuardFor(`D:\Restore`, styleWindows)
+	selected := []SnapshotFile{{SourcePath: `C:\docs\x`}}
+	originals := noteAll(g, append(selected, SnapshotFile{SourcePath: unreadable}), nil)
 	result := &RestoreResult{}
-	selected := []SnapshotFile{{SourcePath: "/home/a/x"}}
-	if !refuseRestoreOverOriginals(g, selected, nil, nil, nil, noteAll(g, selected, nil), result) {
+	if !refuseRestoreOverOriginals(g, selected, nil, nil, nil, originals, result) {
 		t.Fatal("restore went ahead although the check could not finish")
 	}
 	if result.Status != "failed" || result.Code != ResultCodeRestoreOverwriteCheckFailed ||
-		!strings.Contains(result.Error, "could not confirm") || !strings.Contains(result.Error, "new, empty folder") {
-		t.Fatalf("result %+v; want failed with %s and a next step", result, ResultCodeRestoreOverwriteCheckFailed)
+		!strings.Contains(result.Error, "could not confirm") || !strings.Contains(result.Error, "default staging location") || !strings.Contains(result.Error, unreadable) {
+		t.Fatalf("result %+v; want failed with %s, a next step and the path", result, ResultCodeRestoreOverwriteCheckFailed)
 	}
 
-	// The same unreadable identity, plus an entry that lexically lands on
-	// another original: the definite hit is what is reported.
-	g = newOriginalsGuard("/target")
-	g.identity = newFakeIdentityCheck("/target", stylePOSIX, func(string) (os.FileInfo, error) { return nil, denied })
-	originals := noteAll(g, []SnapshotFile{{SourcePath: "/home/a/y"}, {SourcePath: "/target/x"}, {SourcePath: "/target/target/x"}}, nil)
+	// The same unreadable path, plus an entry that lands on another
+	// original: the definite hit is what is reported.
+	g = newOriginalsGuardFor(`C:\target`, styleWindows)
+	originals = noteAll(g, []SnapshotFile{{SourcePath: `C:\home\y`}, {SourcePath: `C:\target\x`}, {SourcePath: `C:\target\target\x`}, {SourcePath: unreadable}}, nil)
 	result = &RestoreResult{}
-	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: "/home/a/y"}, {SourcePath: "/target/x"}}, nil, nil, nil, originals, result) ||
-		result.Code != ResultCodeRestoreWouldOverwriteOriginals || !strings.Contains(result.Error, "/target/x would overwrite /target/target/x") {
+	if !refuseRestoreOverOriginals(g, []SnapshotFile{{SourcePath: `C:\home\y`}, {SourcePath: `C:\target\x`}}, nil, nil, nil, originals, result) ||
+		result.Code != ResultCodeRestoreWouldOverwriteOriginals || !strings.Contains(result.Error, `C:\target\x would overwrite C:\target\target\x`) {
 		t.Fatalf("result %+v; want the definite overwrite reported", result)
 	}
 }
@@ -619,21 +515,5 @@ func TestRestoreFromSnapshot_RerunWithAbsoluteSymlinkCompletes(t *testing.T) {
 		if err != nil || result.Status != "completed" {
 			t.Fatalf("run %d = %+v, %v; want completed", run, result, err)
 		}
-	}
-}
-
-// A directory entry sitting exactly where an alias begins (a real directory
-// at the destination that is the original, e.g. a bind mount of it) is an
-// overwrite of the original directory's metadata.
-func TestDirIdentityCheck_DirectoryEntryAtAlias(t *testing.T) {
-	ids := map[string]string{"/target": "t", "/": "root", "/target/srv": "srv", "/srv": "srv"}
-	c := newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
-		if id, ok := ids[p]; ok {
-			return fakeDir{id: id}, nil
-		}
-		return nil, fs.ErrNotExist
-	})
-	if same, err := c.aliasesOriginal("/srv"); err != nil || !same {
-		t.Fatalf("directory entry /srv whose destination is /srv itself: alias %v, %v; want true", same, err)
 	}
 }

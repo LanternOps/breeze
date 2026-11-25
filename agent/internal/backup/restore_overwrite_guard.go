@@ -3,27 +3,31 @@ package backup
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 )
 
 // Alternate-location restores must not write over the originals (#12638).
 //
-// A restore to a target keeps each entry's full path beneath it: the volume
-// and leading separators are stripped and the rest is joined under the
-// target (filepath.Join(targetBase, restoreRelativePath(...)), the same as
-// RestoreKey). That join is the identity whenever the target IS the entry's
-// own volume root (`C:\` for `C:\Users\a\x`, `/` for `/home/a/x`), so such
-// a restore writes every file back over the original it was backed up from.
+// A restore to a target keeps each entry's full path beneath it: every
+// writer places an entry at filepath.Join(targetBase, restoreRelativePath(p))
+// (the volume, by this host's filepath.VolumeName, and the leading
+// separators are stripped; the rest is joined under the target). That join
+// is the identity whenever the target IS the entry's own volume root (`C:\`
+// for `C:\Users\a\x`, `/` for `/home/a/x`), so such a restore writes every
+// file back over the original it was backed up from.
 // RestoreConfig.AllowOverwriteOriginals asks for exactly that (an in-place
 // restore); without it, a restore whose destinations would land on an
 // original is refused before anything is written under the target.
+//
+// The guard is lexical and never touches the file system: it compares the
+// destination placement computes with the location each recorded path
+// names on this host, both read by one parser in this host's convention.
+// A target that reaches the original tree through an alias (a substituted
+// drive, a mount, a link to a volume root) is not detected.
 
 // ResultCodeRestoreWouldOverwriteOriginals is RestoreResult.Code for a restore to
 // a target that was refused because entries would be written over the
@@ -32,79 +36,27 @@ const ResultCodeRestoreWouldOverwriteOriginals = "restore_would_overwrite_origin
 
 // ResultCodeRestoreOverwriteCheckFailed is RestoreResult.Code for a restore
 // to a target that was refused because the check could not establish that
-// the originals are safe: a destination directory, or an original one,
-// could not be examined (#12638).
+// the originals are safe: a recorded path it cannot place on this host, or
+// a second read of the snapshot that failed (#12638).
 const ResultCodeRestoreOverwriteCheckFailed = "restore_overwrite_check_failed"
 
 type pathStyle int
 
 const (
-	styleUnknown pathStyle = iota
-	stylePOSIX
+	stylePOSIX pathStyle = iota + 1
 	styleWindows
 )
 
-// recordedPathStyle is the convention a recorded (manifest) path is written
-// in, read from the path itself rather than from the host: a snapshot taken
-// on Windows can be restored on a Linux helper and the other way round.
-func recordedPathStyle(p string) pathStyle {
-	switch {
-	case strings.HasPrefix(p, `\\`), len(p) >= 2 && p[1] == ':' && isASCIILetter(p[0]):
+// hostPathStyle is the convention this host's filepath package (and so the
+// restore's placement) reads paths in.
+func hostPathStyle() pathStyle {
+	if runtime.GOOS == "windows" {
 		return styleWindows
-	case strings.HasPrefix(p, "/"):
-		return stylePOSIX
-	default:
-		return styleUnknown
 	}
+	return stylePOSIX
 }
 
 func isASCIILetter(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') }
-
-// localPathRoot is the root of p when p is an absolute path on a volume of
-// this machine, written in style. It is an allow-list decided from the
-// string alone: on Windows a drive letter (`C:\`), its `\\?\C:\` spelling
-// or a volume GUID path (`\\?\Volume{…}\`); on POSIX any path from "/".
-// Anything else (a share, any other device path, a relative path) is not
-// local, and the identity check never opens it.
-func localPathRoot(p string, style pathStyle) (string, bool) {
-	switch style {
-	case stylePOSIX:
-		if strings.HasPrefix(p, "/") {
-			return "/", true
-		}
-	case styleWindows:
-		if len(p) >= 3 && isASCIILetter(p[0]) && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
-			return p[:3], true
-		}
-		const device = `\\?\`
-		if rest, ok := strings.CutPrefix(p, device); ok {
-			if len(rest) >= 3 && isASCIILetter(rest[0]) && rest[1] == ':' && rest[2] == '\\' {
-				return p[:len(device)+3], true
-			}
-			if n := len(volumeGUIDTemplate); len(rest) > n && isVolumeGUIDName(rest[:n]) && rest[n] == '\\' {
-				return p[:len(device)+n+1], true
-			}
-		}
-	}
-	return "", false
-}
-
-// volumeGUIDTemplate is the shape of a volume GUID name: x is a hex digit.
-const volumeGUIDTemplate = "Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"
-
-func isVolumeGUIDName(s string) bool {
-	if len(s) != len(volumeGUIDTemplate) || !strings.EqualFold(s[:7], volumeGUIDTemplate[:7]) {
-		return false
-	}
-	for i := 7; i < len(s); i++ {
-		c, want := s[i], volumeGUIDTemplate[i]
-		hex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-		if want == 'x' && !hex || want != 'x' && c != want {
-			return false
-		}
-	}
-	return true
-}
 
 // pathKey is an absolute path reduced to a comparable form in one path style:
 // a volume ("c:", `unc\srv\share`, `volume{…}`, "" for POSIX) and its
@@ -132,10 +84,9 @@ func (k pathKey) contains(other pathKey) bool {
 	return true
 }
 
-// parsePathKey reduces an absolute path written in style to a pathKey. ok is
-// false for a path that is not absolute in that style (a relative path, a
-// Windows drive-relative `C:x`, a POSIX path read as Windows, …): such a path
-// can never name the same location as an absolute one of that style.
+// parsePathKey reduces a fully qualified path written in style to a pathKey.
+// ok is false for a path that is not fully qualified in that style (a
+// relative path, a Windows drive-relative `C:x` or rooted `\x`, …).
 func parsePathKey(p string, style pathStyle) (pathKey, bool) {
 	switch style {
 	case stylePOSIX:
@@ -233,96 +184,143 @@ func cleanParts(raw []string, trimWin32 bool) []string {
 	return parts
 }
 
-// restoreDestinationKey is where an alternate-location restore under
-// targetBase writes the entry recorded at sourcePath, and the entry's own
-// original location, both as pathKeys in the style of the recorded path. The
-// destination is targetBase plus sourcePath's components with its volume
-// stripped, exactly as the restore places it (see RestoreKey). ok is false when the
-// recorded path is not absolute, or the target is not an absolute path of
-// the same style (a Windows snapshot restored under a POSIX target): then no
-// destination can be an original location of that style.
-func restoreDestinationKey(targetBase, sourcePath string) (dest, original pathKey, ok bool) {
-	style := recordedPathStyle(sourcePath)
-	original, ok = parsePathKey(sourcePath, style)
-	if !ok {
-		return pathKey{}, pathKey{}, false
-	}
-	target, ok := parsePathKey(targetBase, style)
-	if !ok {
-		return pathKey{}, pathKey{}, false
-	}
-	parts := make([]string, 0, len(target.parts)+len(original.parts))
-	dest = pathKey{volume: target.volume, parts: append(append(parts, target.parts...), original.parts...)}
-	return dest, original, true
+// errUnplaceablePath is why the check could not read a path: it is not a
+// location the check can name on this host.
+var errUnplaceablePath = errors.New("the check cannot tell which location on this computer this path names")
+
+// uncheckedPathError is a path the check could not read: the first one is
+// named in the refusal.
+type uncheckedPathError struct {
+	what string // "restore target", "restore destination" or "recorded path"
+	path string
+	err  error
 }
+
+func (e *uncheckedPathError) Error() string {
+	return fmt.Sprintf("examine %s %s: %v", e.what, e.path, e.err)
+}
+
+func (e *uncheckedPathError) Unwrap() error { return e.err }
 
 // originalsGuard checks, before anything is written under targetBase,
 // whether an alternate-location restore would write any selected entry over
 // an original location the snapshot was backed up from.
 //
-// Two checks, both needed:
-//   - lexical, in the entry's own path style: the destination equals the
-//     recorded path of some entry in the snapshot (itself, when the target is
-//     its volume root; another, when the target lies inside the backed-up
-//     tree and a nested copy was itself backed up — selected or not). Every
-//     destination lies beneath the target, so only an original beneath it
-//     can collide.
-//   - by identity, for entries recorded in this host's style: a destination
-//     directory that is the original's directory under another name (a
-//     volume GUID or `\\?\` spelling, a SUBST drive, a bind mount, a link to
-//     the root). Each distinct directory is compared once, from the target
-//     down, stopping at the first destination or original directory that
-//     does not exist.
+// The check is lexical, in this host's convention: a selected entry's
+// destination (destinationKey, placement's own expression) equals the
+// location some recorded path names (originalKey): its own, when the target
+// is its volume root; another's, when the target lies inside the backed-up
+// tree and a nested copy was itself backed up, selected or not. Every
+// destination lies beneath the target, so only an original beneath it can
+// collide. A path the guard cannot read fails the check: it is never
+// assumed safe.
 //
 // Memory follows the selection, not the snapshot (the #11234 bound): while
 // the manifest streams, the guard keeps one flag (does any original lie
-// beneath the target?), not the originals. The lexical check indexes the
-// selected entries' destinations and streams the originals a second time
-// against that index (check's originals argument).
-//
-// A safety check, not an atomic guarantee: a mount or link created under the
-// target after it runs is not seen (the per-file writes still refuse links).
+// beneath the target?) and the first path it could not read, not the
+// originals. check indexes the selected entries' destinations and streams
+// the originals a second time against that index (its originals argument).
 type originalsGuard struct {
 	targetBase string
-	targetKeys map[pathStyle]pathKey
+	host       pathStyle
+	target     pathKey
+	targetOK   bool
 	// originalsBeneath is set when an original noted while the manifest
 	// streamed lies beneath the target: without one, no destination can
-	// be an original lexically and the second pass is skipped.
+	// be another entry's original and the second pass is skipped.
 	originalsBeneath bool
-	identity         *dirIdentityCheck
+	// unreadable is the first noted original the guard could not read.
+	unreadable error
 }
 
 func newOriginalsGuard(targetBase string) *originalsGuard {
-	g := &originalsGuard{targetBase: targetBase, targetKeys: map[pathStyle]pathKey{}, identity: newDirIdentityCheck(targetBase)}
-	for _, style := range []pathStyle{stylePOSIX, styleWindows} {
-		if k, ok := parsePathKey(targetBase, style); ok {
-			g.targetKeys[style] = k
-		}
-	}
+	return newOriginalsGuardFor(targetBase, hostPathStyle())
+}
+
+func newOriginalsGuardFor(targetBase string, host pathStyle) *originalsGuard {
+	g := &originalsGuard{targetBase: targetBase, host: host}
+	g.target, g.targetOK = parsePathKey(targetBase, host)
 	return g
 }
 
-// noteOriginal sees a recorded path the snapshot holds, selected or not, and
-// remembers only whether one lies beneath the target.
-func (g *originalsGuard) noteOriginal(recorded string) {
-	if !g.originalsBeneath {
-		_, g.originalsBeneath = g.originalKeyBeneath(recorded)
+// destinationKey is where the restore writes the entry recorded at
+// recorded: filepath.Join(targetBase, restoreRelativePath(recorded)), the
+// expression every writer uses (the link/directory pass and
+// restrictDirectoriesFirst in restore.go, contentRestorer.admit,
+// restoreJunctions). placed is false when restoreRelativePath refuses the
+// path: every writer then skips the entry and counts it failed, so it
+// writes nothing and cannot overwrite anything.
+func (g *originalsGuard) destinationKey(recorded string) (dest pathKey, placed bool, err error) {
+	rel, relErr := restoreRelativePath(recorded)
+	if relErr != nil {
+		return pathKey{}, false, nil
 	}
+	joined := filepath.Join(g.targetBase, rel)
+	dest, ok := parsePathKey(joined, g.host)
+	if !ok {
+		return pathKey{}, true, &uncheckedPathError{what: "restore destination", path: joined, err: errUnplaceablePath}
+	}
+	return dest, true, nil
 }
 
-// originalKeyBeneath is recorded's pathKey string when it lies beneath the
-// target in its own path style.
-func (g *originalsGuard) originalKeyBeneath(recorded string) (string, bool) {
-	style := recordedPathStyle(recorded)
-	target, ok := g.targetKeys[style]
-	if !ok {
-		return "", false
+// originalKey is the location the recorded path names on this host. A fully
+// qualified path names itself. Any other is read beneath a volume root, as
+// an in-place restore would place it: its own volume's (`C:x` → `C:\x`)
+// or, when it has no volume by this host's filepath.VolumeName (the volume
+// rule placement strips: `\Users\x`, a POSIX path on Windows, any Windows
+// path on POSIX), the target's, the only reading under which placement's
+// join is the identity. Only a path whose volume the parser cannot read
+// (`\\srv` with no share, `\\?\c:x`) is an error: never assumed safe.
+func (g *originalsGuard) originalKey(recorded string) (pathKey, error) {
+	if k, ok := parsePathKey(recorded, g.host); ok {
+		return k, nil
 	}
-	original, ok := parsePathKey(recorded, style)
-	if !ok || !target.contains(original) {
-		return "", false
+	vol := volumeName(recorded)
+	var volume string
+	switch {
+	case vol == "" && g.targetOK:
+		volume = g.target.volume
+	case vol != "":
+		root, ok := parsePathKey(vol+g.separator(), g.host)
+		if !ok || len(root.parts) > 0 {
+			return pathKey{}, &uncheckedPathError{what: "recorded path", path: recorded, err: errUnplaceablePath}
+		}
+		volume = root.volume
+	default:
+		return pathKey{}, &uncheckedPathError{what: "recorded path", path: recorded, err: errUnplaceablePath}
 	}
-	return original.String(), true
+	return pathKey{volume: volume, parts: g.splitParts(recorded[len(vol):])}, nil
+}
+
+func (g *originalsGuard) separator() string {
+	if g.host == styleWindows {
+		return `\`
+	}
+	return "/"
+}
+
+// splitParts splits a path's components as this host reads them.
+func (g *originalsGuard) splitParts(p string) []string {
+	if g.host == styleWindows {
+		return cleanParts(strings.FieldsFunc(strings.ToLower(p), func(r rune) bool { return r == '\\' || r == '/' }), true)
+	}
+	return cleanParts(strings.Split(p, "/"), false)
+}
+
+// noteOriginal sees a recorded path the snapshot holds, selected or not, and
+// remembers only whether one lies beneath the target, and the first it
+// could not read.
+func (g *originalsGuard) noteOriginal(recorded string) {
+	k, err := g.originalKey(recorded)
+	if err != nil {
+		if g.unreadable == nil {
+			g.unreadable = err
+		}
+		return
+	}
+	if !g.originalsBeneath && g.targetOK && g.target.contains(k) {
+		g.originalsBeneath = true
+	}
 }
 
 // observing wraps a manifest-decode predicate so every entry is noted before
@@ -336,7 +334,7 @@ func (g *originalsGuard) observing(keep func(*SnapshotFile) bool) func(*Snapshot
 
 // overwriteFinding is the outcome of originalsGuard.check: how many selected
 // entries would land on an original, one of them with the original it would
-// overwrite, and the first error that left an entry unchecked.
+// overwrite, and the first error that left the check unfinished.
 type overwriteFinding struct {
 	count            int
 	entry, overwrite string
@@ -363,61 +361,74 @@ func originalsOf(recorded ...[]string) originalSource {
 // restoreSourcePath's rule) against every original the snapshot holds:
 // noteOriginal must have seen each of them, and originals streams them
 // again when one lies beneath the target. Only the selected entries'
-// destinations are held. An entry whose identity could not be examined
-// does not stop the check: definite hits are still counted and reported
-// first.
+// destinations are held. A path that could not be read does not stop the
+// check: definite hits are still counted and reported first.
 func (g *originalsGuard) check(recorded []string, originals originalSource) overwriteFinding {
 	var f overwriteFinding
-	overwrites := map[string]string{} // destination key → the original found there
-	if g.originalsBeneath {
-		// Each selected destination, and at once any that is the entry's
-		// own original (a target at its volume root, #12638's case: found
-		// even if the second pass cannot finish).
-		for _, p := range recorded {
-			if dest, original, ok := restoreDestinationKey(g.targetBase, p); ok {
-				key := dest.String()
-				if key == original.String() {
-					overwrites[key] = p
-				} else if _, seen := overwrites[key]; !seen {
-					overwrites[key] = ""
-				}
-			}
-		}
-		if len(overwrites) > 0 {
-			err := originals(func(original string) {
-				key, beneath := g.originalKeyBeneath(original)
-				if !beneath {
-					return
-				}
-				if found, ok := overwrites[key]; ok && found == "" {
-					overwrites[key] = original
-				}
-			})
-			if err != nil {
-				f.uncheckedErr = fmt.Errorf("re-read the snapshot's original paths: %w", err)
-			}
+	fail := func(err error) {
+		if f.uncheckedErr == nil {
+			f.uncheckedErr = err
 		}
 	}
-	for _, p := range recorded {
-		overwritten := ""
-		if len(overwrites) > 0 {
-			if dest, _, ok := restoreDestinationKey(g.targetBase, p); ok {
-				overwritten = overwrites[dest.String()]
-			}
+	if !g.targetOK {
+		// The restore refuses a target that is not absolute before this
+		// runs; one the parser still cannot read fails closed.
+		f.uncheckedErr = &uncheckedPathError{what: "restore target", path: g.targetBase, err: errUnplaceablePath}
+		return f
+	}
+	if g.unreadable != nil {
+		fail(g.unreadable)
+	}
+	dests := make([]string, len(recorded)) // "" for an entry placement skips
+	overwrites := map[string]string{}      // destination key → the original found there
+	for i, p := range recorded {
+		dest, placed, err := g.destinationKey(p)
+		if !placed {
+			continue
 		}
-		if overwritten == "" {
-			same, err := g.identity.aliasesOriginal(p)
+		if err != nil {
+			fail(err)
+			continue
+		}
+		own, err := g.originalKey(p)
+		if err != nil {
+			fail(err)
+			continue
+		}
+		// An entry landing on its own original (a target at its volume
+		// root, #12638's case) is found even if the second pass cannot
+		// finish.
+		key := dest.String()
+		dests[i] = key
+		if key == own.String() {
+			overwrites[key] = p
+		} else if _, seen := overwrites[key]; !seen {
+			overwrites[key] = ""
+		}
+	}
+	if g.originalsBeneath && len(overwrites) > 0 {
+		err := originals(func(original string) {
+			k, err := g.originalKey(original)
 			if err != nil {
-				if f.uncheckedErr == nil {
-					f.uncheckedErr = err
-				}
-				continue
+				fail(err)
+				return
 			}
-			if same {
-				overwritten = p
+			if !g.target.contains(k) {
+				return
 			}
+			if found, ok := overwrites[k.String()]; ok && found == "" {
+				overwrites[k.String()] = original
+			}
+		})
+		if err != nil {
+			fail(fmt.Errorf("re-read the snapshot's original paths: %w", err))
 		}
-		if overwritten != "" {
+	}
+	for i, p := range recorded {
+		if dests[i] == "" {
+			continue
+		}
+		if overwritten := overwrites[dests[i]]; overwritten != "" {
 			if f.count == 0 {
 				f.entry, f.overwrite = p, overwritten
 			}
@@ -425,248 +436,6 @@ func (g *originalsGuard) check(recorded []string, originals originalSource) over
 		}
 	}
 	return f
-}
-
-// dirIdentityCheck compares destination directories with original ones by
-// file identity (os.SameFile), caching each directory's verdict.
-type dirIdentityCheck struct {
-	targetBase string
-	hostStyle  pathStyle
-	stat       func(string) (os.FileInfo, error)
-	lstat      func(string) (os.FileInfo, error)
-	readlink   func(string) (string, error)
-	sameFile   func(a, b os.FileInfo) bool
-	verdicts   map[string]dirVerdict
-}
-
-type dirVerdict int
-
-const (
-	dirDistinct dirVerdict = iota + 1 // both exist, different directories: look deeper
-	dirAbsent                         // the destination does not exist yet: nothing deeper can alias
-	dirAlias                          // the destination IS the original directory
-)
-
-func newDirIdentityCheck(targetBase string) *dirIdentityCheck {
-	host := stylePOSIX
-	if runtime.GOOS == "windows" {
-		host = styleWindows
-	}
-	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, lstat: os.Lstat, readlink: os.Readlink, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
-}
-
-// aliasesOriginal reports whether the entry recorded at sourcePath restores
-// onto, or beneath, a path that is the matching original itself. Entries recorded in another path style
-// than the host's never name a directory on this host.
-func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
-	if recordedPathStyle(sourcePath) != c.hostStyle {
-		return false, nil
-	}
-	relative, err := restoreRelativePath(sourcePath)
-	if err != nil {
-		return false, nil // refused per entry by the restore passes
-	}
-	volume := volumeName(sourcePath)
-	if root, local := localPathRoot(sourcePath, c.hostStyle); !local || !strings.EqualFold(volume, strings.TrimRight(root, `\/`)) {
-		return c.nonLocalOriginal(sourcePath)
-	}
-	originalRoot := volume + string(filepath.Separator)
-	// The entry's ancestors and the entry itself: a directory entry sitting
-	// exactly where an alias begins would otherwise put its metadata on the
-	// original directory unseen.
-	dirs := strings.Split(relative, string(filepath.Separator))
-	rel := ""
-	for depth := 0; depth <= len(dirs); depth++ {
-		if depth > 0 {
-			rel = filepath.Join(rel, dirs[depth-1])
-		}
-		if depth == len(dirs) && depth > 0 {
-			// The entry itself is compared only when a real directory is
-			// already there. A file, a link or a junction at the
-			// destination (an earlier run of this restore) is replaced by
-			// name, never written through, so following it would wrongly
-			// equate a restored absolute symlink with its original.
-			if info, lerr := c.lstat(filepath.Join(c.targetBase, rel)); lerr != nil || !info.IsDir() {
-				return false, nil
-			}
-		}
-		// Keyed by the original's volume too: `C:\x` and `D:\x` restore to
-		// the same destination directory but are different originals.
-		key := strings.ToLower(volume) + "|" + rel
-		verdict, ok := c.verdicts[key]
-		if !ok {
-			verdict, err = c.compare(originalRoot, dirs[:depth])
-			if err != nil {
-				return false, err
-			}
-			c.verdicts[key] = verdict
-		}
-		switch verdict {
-		case dirAlias:
-			return true, nil
-		case dirAbsent:
-			return false, nil
-		}
-	}
-	return false, nil
-}
-
-// errNotLocalPath is why the identity check did not examine a path: it is
-// not a local path (localPathRoot), or reaching it would follow a link to
-// one that is not.
-var errNotLocalPath = errors.New("not a local path, so it was not examined")
-
-// uncheckedPathError is a path the identity check could not examine: the
-// first one is named in the refusal so the operator knows what to fix.
-type uncheckedPathError struct {
-	what string // "restore destination" or "original location"
-	path string
-	err  error
-}
-
-func (e *uncheckedPathError) Error() string {
-	return fmt.Sprintf("examine %s %s: %v", e.what, e.path, e.err)
-}
-
-func (e *uncheckedPathError) Unwrap() error { return e.err }
-
-// nonLocalOriginal decides, without opening it, an entry whose original is
-// not a local path (localPathRoot). Against a local target it is not the
-// same place; the lexical check still applies. Against a target that is not
-// local either, the lexical check decides on the target's own share, and
-// anywhere else the check cannot tell and fails closed.
-func (c *dirIdentityCheck) nonLocalOriginal(sourcePath string) (bool, error) {
-	if _, local := localPathRoot(c.targetBase, c.hostStyle); local {
-		return false, nil
-	}
-	target, targetOK := parsePathKey(c.targetBase, c.hostStyle)
-	original, originalOK := parsePathKey(sourcePath, c.hostStyle)
-	if targetOK && originalOK && target.volume == original.volume {
-		return false, nil
-	}
-	return false, &uncheckedPathError{what: "original location", path: sourcePath, err: errNotLocalPath}
-}
-
-// compare examines the destination directory targetBase/parts and the
-// original directory originalRoot/parts.
-func (c *dirIdentityCheck) compare(originalRoot string, parts []string) (dirVerdict, error) {
-	// The destination first: one that does not exist cannot be an
-	// original, whatever the original's state, so an unreadable original
-	// never refuses a restore whose destination is not there yet.
-	destInfo, err := c.resolveStat(c.targetBase, parts)
-	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, errNotLocalPath) {
-		// Nothing there to alias. A path too long to stat is equally past
-		// every directory already compared as distinct. A link to a path
-		// that is not local is not followed, and the restore writes
-		// through no link beneath the target.
-		return dirAbsent, nil
-	}
-	if err != nil {
-		// Fail closed: a destination that exists but cannot be examined
-		// cannot be shown not to be an original.
-		return 0, &uncheckedPathError{what: "restore destination", path: filepath.Join(append([]string{c.targetBase}, parts...)...), err: err}
-	}
-	original := filepath.Join(append([]string{originalRoot}, parts...)...)
-	originalInfo, err := c.resolveStat(originalRoot, parts)
-	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || unreachableVolume(err) || errors.Is(err, errNotLocalPath) {
-		// No original there to overwrite: gone since the backup, on a
-		// volume or share this host cannot reach at all, or behind a link
-		// to a path that is not local. The destination, which it just
-		// opened, cannot be it. The lexical check still applies.
-		return dirAbsent, nil
-	}
-	if err != nil {
-		// Denied, or unreadable for a reason that does not establish the
-		// original is gone: it may be what the destination is, so fail
-		// closed. Nothing short of its own identity rules that out; its
-		// parent's device does not (the original may be a mount point, or
-		// an APFS firmlink such as /Users, whose device differs from its
-		// parent's).
-		return 0, &uncheckedPathError{what: "original location", path: original, err: err}
-	}
-	if c.sameFile(destInfo, originalInfo) {
-		return dirAlias, nil
-	}
-	return dirDistinct, nil
-}
-
-// maxLinkHops bounds the links resolveStat follows for one path.
-const maxLinkHops = 64
-
-// resolveStat is stat(base/parts...) with every link beneath base resolved
-// here rather than by the file system: a link is followed only to a local
-// path (localPathRoot) or a relative one, so the lookup stays on this
-// machine whatever links the tree holds. base itself (the operator's
-// target, or a local volume root) is examined as it is.
-func (c *dirIdentityCheck) resolveStat(base string, parts []string) (os.FileInfo, error) {
-	if len(parts) == 0 {
-		return c.stat(base)
-	}
-	cur := base
-	pending := append([]string(nil), parts...)
-	var info os.FileInfo // cur's, when cur was reached by a plain component
-	for hops := 0; len(pending) > 0; {
-		name := pending[0]
-		pending = pending[1:]
-		switch name {
-		case "", ".":
-			continue
-		case "..":
-			cur, info = filepath.Dir(cur), nil
-			continue
-		}
-		next := filepath.Join(cur, name)
-		fi, err := c.lstat(next)
-		if err != nil {
-			return nil, err
-		}
-		if fi.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
-			target, err := c.readlink(next)
-			if err == nil {
-				if hops++; hops > maxLinkHops {
-					return nil, &fs.PathError{Op: "resolve", Path: next, Err: syscall.ELOOP}
-				}
-				if root, local := localPathRoot(target, c.hostStyle); local {
-					cur, info = root, nil
-					pending = append(linkComponents(target[len(root):], c.hostStyle), pending...)
-				} else if relativeLink(target, c.hostStyle) {
-					info = nil
-					pending = append(linkComponents(target, c.hostStyle), pending...)
-				} else {
-					return nil, &fs.PathError{Op: "resolve", Path: next, Err: errNotLocalPath}
-				}
-				continue
-			}
-			if fi.Mode()&fs.ModeSymlink != 0 {
-				return nil, err // a link that cannot be read: fail closed
-			}
-			// Another kind of reparse point, not a link: examined as it is.
-		}
-		cur, info = next, fi
-	}
-	if info == nil {
-		// Ended on a link or "..": cur is where it resolved to, with no
-		// link beneath its base or root.
-		return c.stat(cur)
-	}
-	return info, nil
-}
-
-// relativeLink reports a link target resolved against the link's own
-// directory: no volume, no root.
-func relativeLink(target string, style pathStyle) bool {
-	switch {
-	case target == "", target[0] == '/':
-		return false
-	case style == styleWindows:
-		return target[0] != '\\' && (len(target) < 2 || target[1] != ':')
-	}
-	return true
-}
-
-// linkComponents splits a link target into its components.
-func linkComponents(target string, style pathStyle) []string {
-	return strings.FieldsFunc(target, func(r rune) bool { return r == '/' || style == styleWindows && r == '\\' })
 }
 
 // refuseRestoreOverOriginals runs the guard over every entry the restore
@@ -716,31 +485,18 @@ func refusalPath(p string) string {
 
 // overwriteCheckFailedRefusal is the error text for a restore refused
 // because the check could not finish: what to do first, then the first
-// path that could not be examined.
+// path that could not be read.
 func overwriteCheckFailedRefusal(targetBase string, err error) string {
-	msg := fmt.Sprintf("restore refused: could not confirm that restoring to %s leaves the original files untouched; nothing was written. Choose a new, empty folder as the target", refusalPath(targetBase))
+	msg := fmt.Sprintf("restore refused: could not confirm that restoring to %s leaves the original files untouched; nothing was written", refusalPath(targetBase))
 	if unchecked, ok := errors.AsType[*uncheckedPathError](err); ok {
-		reason := unchecked.err
-		if pathErr, ok := errors.AsType[*fs.PathError](reason); ok {
-			reason = pathErr.Err // the path is named already
+		next := "Choose a new, empty folder as the target"
+		if unchecked.what == "recorded path" {
+			// No other target helps: the path is the snapshot's.
+			next = "Restore to the default staging location instead"
 		}
-		next := "make the path below readable and try again"
-		switch {
-		case errors.Is(reason, fs.ErrPermission):
-			next = "give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again"
-		case errors.Is(reason, errNotLocalPath):
-			next = "choose a folder on a local drive"
-		}
-		return fmt.Sprintf("%s, or %s. First path that could not be checked (%s): %s (%v)", msg, next, unchecked.what, refusalPath(unchecked.path), reason)
+		return fmt.Sprintf("%s. %s. First path that could not be checked (%s): %s (%v)", msg, next, unchecked.what, refusalPath(unchecked.path), unchecked.err)
 	}
-	return fmt.Sprintf("%s. (%v)", msg, err)
-}
-
-// notADirectory reports a stat error that establishes there is no directory
-// at the path: it does not exist, or a component is not a directory. Any
-// other error leaves the identity unresolved.
-func notADirectory(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+	return fmt.Sprintf("%s. Choose a new, empty folder as the target. (%v)", msg, err)
 }
 
 // alternateRestoreRefusal is the error text for a refused restore: what was
