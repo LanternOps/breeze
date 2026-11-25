@@ -11,9 +11,15 @@ import (
 
 // windowsVolumeName2 is filepath.VolumeName as Windows computes it, ported
 // from go1.26 internal/filepathlite volumeNameLen, so the guard can run over
-// Windows paths on any host. On Windows the tests use the real one, and
-// TestOriginalsGuard_PlacementParity pins this port to it.
+// Windows paths on any host: FromSlash of the volume prefix, as
+// filepathlite.VolumeName returns it. On Windows the tests use the real one,
+// and TestOriginalsGuard_PlacementParity pins this port to it.
 func windowsVolumeName2(p string) string {
+	return strings.ReplaceAll(p[:windowsVolumeNameLen(p)], "/", `\`)
+}
+
+// windowsVolumeNameLen is go1.26 internal/filepathlite volumeNameLen.
+func windowsVolumeNameLen(p string) int {
 	isSep := func(b byte) bool { return b == '\\' || b == '/' }
 	hasPrefixFold := func(prefix string) bool {
 		if len(p) < len(prefix) {
@@ -43,23 +49,23 @@ func windowsVolumeName2(p string) string {
 	}
 	switch {
 	case len(p) >= 2 && p[1] == ':':
-		return p[:2]
+		return 2
 	case len(p) == 0 || !isSep(p[0]):
-		return ""
+		return 0
 	case hasPrefixFold(`\\.\UNC`):
-		return p[:uncLen(len(`\\.\UNC\`))]
+		return uncLen(len(`\\.\UNC\`))
 	case hasPrefixFold(`\\.`), hasPrefixFold(`\\?`), hasPrefixFold(`\??`):
 		if len(p) == 3 {
-			return p
+			return 3
 		}
 		if i := strings.IndexAny(p[4:], `\/`); i >= 0 {
-			return p[:4+i]
+			return 4 + i
 		}
-		return p
+		return len(p)
 	case len(p) >= 2 && isSep(p[1]):
-		return p[:uncLen(2)]
+		return uncLen(2)
 	}
-	return ""
+	return 0
 }
 
 // withWindowsPaths makes placement read Windows paths: the real
@@ -253,7 +259,12 @@ func TestOriginalsGuard_EntryPlacementSkipsIsExempt(t *testing.T) {
 
 // Placement splits every form as listed: the host's volumeName and
 // restoreRelativePath (on Windows the real filepath, elsewhere
-// windowsVolumeName2, which this pins to it).
+// windowsVolumeName2, which this pins to it). Go's Windows VolumeName
+// returns the volume with its slashes turned to backslashes
+// (FromSlash(p[:volumeNameLen(p)])), the same length as spelled: placement
+// uses only that length (stripVolumeAndLeadingSeparators) and the
+// separators of the rest are cleaned by filepath.Join, so the split point,
+// the volume as Go returns it and the remainder are what is compared.
 func TestOriginalsGuard_PlacementParity(t *testing.T) {
 	withWindowsPaths(t)
 	for _, tc := range []struct{ path, volume, rel string }{
@@ -262,11 +273,11 @@ func TestOriginalsGuard_PlacementParity(t *testing.T) {
 		{`\\?\C:\Users\a\x`, `\\?\C:`, `Users\a\x`},
 		{`\??\C:\Users\a\x`, `\??\C:`, `Users\a\x`},
 		{`\\.\C:\Users\a\x`, `\\.\C:`, `Users\a\x`},
-		{`//?/C:/Users/a/x`, `//?/C:`, `Users\a\x`},
-		{`/??/C:/Users/a/x`, `/??/C:`, `Users\a\x`},
+		{`//?/C:/Users/a/x`, `\\?\C:`, `Users\a\x`},
+		{`/??/C:/Users/a/x`, `\??\C:`, `Users\a\x`},
 		{`\\?\` + formsGUID + `\Users\x`, `\\?\` + formsGUID, `Users\x`},
 		{`\\srv\share\a\x`, `\\srv\share`, `a\x`},
-		{`//srv/share/a/x`, `//srv/share`, `a\x`},
+		{`//srv/share/a/x`, `\\srv\share`, `a\x`},
 		{`\\.\UNC\srv\share\a\x`, `\\.\UNC\srv\share`, `a\x`},
 		{`\\?\UNC\srv\share\a\x`, `\\?\UNC`, `srv\share\a\x`},
 		{`\??\UNC\srv\share\a\x`, `\??\UNC`, `srv\share\a\x`},
@@ -275,8 +286,12 @@ func TestOriginalsGuard_PlacementParity(t *testing.T) {
 		{`/Users/a/x`, ``, `Users\a\x`},
 		{`C:Users\x`, `C:`, `Users\x`},
 	} {
-		if got := volumeName(tc.path); got != tc.volume {
+		got := volumeName(tc.path)
+		if got != tc.volume {
 			t.Errorf("volumeName(%q) = %q, want %q", tc.path, got, tc.volume)
+		}
+		if len(got) != len(tc.volume) || strings.ReplaceAll(tc.path[:min(len(got), len(tc.path))], "/", `\`) != tc.volume {
+			t.Errorf("volumeName(%q) splits at %d (%q), want after %q", tc.path, len(got), tc.path[:min(len(got), len(tc.path))], tc.volume)
 		}
 		rel, err := restoreRelativePath(tc.path)
 		if err != nil || strings.ReplaceAll(rel, "/", `\`) != tc.rel {
