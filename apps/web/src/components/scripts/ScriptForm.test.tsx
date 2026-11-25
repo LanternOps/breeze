@@ -976,3 +976,125 @@ describe('ScriptForm custom-field help (#5233)', () => {
     await waitFor(() => expect(screen.getByTestId('mock-monaco').textContent).toContain('::breeze:custom-fields::'));
   });
 });
+
+// #12669: a closed CollapsibleSection is `inert`, so react-hook-form cannot
+// focus an invalid field inside it and Save looked like it did nothing.
+describe('ScriptForm opens the collapsed section holding the first error (#12669)', () => {
+  const SCRIPT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const DEVICE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const draft = { name: 'Draft', category: 'Custom', language: 'powershell' as const, osTypes: ['windows' as const], content: 'echo hi' };
+  const isInert = (el: HTMLElement) => el.closest('[inert]') !== null;
+  const toggle = (section: RegExp) => fireEvent.click(screen.getByRole('button', { name: section }));
+
+  // Repro from the issue: open Execution Settings, type a bad timeout, collapse.
+  const collapseWithBadTimeout = () => {
+    toggle(/execution settings/i);
+    const timeout = screen.getByLabelText('Timeout (seconds)') as HTMLInputElement;
+    fireEvent.change(timeout, { target: { value: '9999' } });
+    toggle(/execution settings/i);
+    expect(isInert(timeout)).toBe(true);
+    return timeout;
+  };
+
+  // jsdom models the `inert` attribute but still lets focus() land inside it.
+  // A browser does not, which is the whole bug, so make focus() honour it here.
+  const nativeFocus = HTMLElement.prototype.focus;
+  let focusSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    focusSpy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+      if (!this.closest('[inert]')) nativeFocus.call(this, options);
+    });
+    editorInstances.length = 0;
+    localStorage.clear();
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
+    orgStoreMock.mockReturnValue({ organizations: [], partners: [], sites: [] });
+    fetchWithAuthMock.mockImplementation(async (url: string) =>
+      new Response(JSON.stringify({
+        data: String(url).startsWith('/devices')
+          ? [{ id: DEVICE_ID, hostname: 'test-box', osType: 'windows', status: 'online' }]
+          : [],
+      }), { status: 200 })
+    );
+  });
+  afterEach(() => {
+    focusSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  it('opens Execution Settings and focuses an out-of-range timeout instead of doing nothing', async () => {
+    const onSubmit = vi.fn();
+    render(<ScriptForm isNew onSubmit={onSubmit} defaultValues={draft} />);
+    const timeout = collapseWithBadTimeout();
+
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(isInert(timeout)).toBe(false));
+    await waitFor(() => expect(timeout).toHaveFocus());
+    expect(screen.getByText('Timeout cannot exceed 1 hour (3600 seconds)')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('opens Parameters and focuses the invalid row field', async () => {
+    const onSubmit = vi.fn();
+    render(<ScriptForm isNew onSubmit={onSubmit} defaultValues={draft} />);
+    toggle(/parameters/i);
+    fireEvent.click(screen.getByRole('button', { name: /add parameter/i }));
+    toggle(/parameters/i);
+    const paramName = screen.getByPlaceholderText('paramName');
+    expect(isInert(paramName)).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(isInert(paramName)).toBe(false));
+    await waitFor(() => expect(paramName).toHaveFocus());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('opens Exit Code Severity and focuses the invalid exit code', async () => {
+    const onSubmit = vi.fn();
+    render(<ScriptForm isNew onSubmit={onSubmit} defaultValues={draft} />);
+    toggle(/exit code severity/i);
+    fireEvent.click(screen.getByRole('button', { name: /add exit code/i }));
+    toggle(/exit code severity/i);
+    const exitCode = screen.getByPlaceholderText('e.g. 1');
+    expect(isInert(exitCode)).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(isInert(exitCode)).toBe(false));
+    await waitFor(() => expect(exitCode).toHaveFocus());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('test run save: still fails, and now opens the section and focuses the field', async () => {
+    const onSubmit = vi.fn();
+    render(<ScriptForm scriptId={SCRIPT_ID} onSubmit={onSubmit} defaultValues={draft} />);
+    await screen.findByText('test-box');
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    const timeout = collapseWithBadTimeout();
+
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    // The runner shows its save-failed message only when onSaveChanges resolved false.
+    expect(await screen.findByText(/save failed/i)).toBeInTheDocument();
+    await waitFor(() => expect(isInert(timeout)).toBe(false));
+    await waitFor(() => expect(timeout).toHaveFocus());
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes('/execute'))).toBe(false);
+  });
+
+  it('leaves sections closed when the first error is in an always-visible field', async () => {
+    const onSubmit = vi.fn();
+    render(<ScriptForm isNew onSubmit={onSubmit} defaultValues={draft} />);
+    const timeout = collapseWithBadTimeout();
+    const name = screen.getByLabelText('Script name') as HTMLInputElement;
+    fireEvent.change(name, { target: { value: '' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(name).toHaveFocus());
+    expect(isInert(timeout)).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});

@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useId, useRef, useCallback, type ComponentType } from 'react';
-import { useForm, useFieldArray, Controller, type UseFormRegisterReturn } from 'react-hook-form';
+import { useForm, useFieldArray, Controller, type FieldErrors, type FieldPath, type UseFormRegisterReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles, AlertTriangle, Braces } from 'lucide-react';
@@ -280,6 +280,7 @@ export default function ScriptForm({
     watch,
     getValues,
     setValue,
+    setFocus,
     reset,
     formState: { errors, isSubmitting, isDirty }
   } = useForm<ScriptFormValues>({
@@ -472,6 +473,37 @@ export default function ScriptForm({
     }
   };
 
+  // #12669: a closed CollapsibleSection is `inert`, so RHF's own focus on an
+  // error inside it silently fails. Open the section, and focus only after the
+  // render that removes `inert`.
+  const [focusAfterOpen, setFocusAfterOpen] = useState<FieldPath<ScriptFormValues> | null>(null);
+  useEffect(() => {
+    if (!focusAfterOpen) return;
+    setFocus(focusAfterOpen);
+    setFocusAfterOpen(null);
+  }, [focusAfterOpen, setFocus]);
+
+  const onInvalid = useCallback((formErrors: FieldErrors<ScriptFormValues>) => {
+    // Errors arrive in schema order, which is on-screen order. When an
+    // always-visible field comes first, RHF's default focus already works.
+    const [first] = Object.keys(formErrors);
+    const openSection = ({
+      parameters: setParamsOpen,
+      timeoutSeconds: setSettingsOpen,
+      runAs: setSettingsOpen,
+      exitCodeSeverityMapping: setSeverityOpen,
+    } as Record<string, (open: boolean) => void>)[first];
+    if (!openSection) return;
+    let path = first;
+    for (let node = formErrors[first as keyof ScriptFormValues] as Record<string, unknown> | undefined; node && !('message' in node);) {
+      const [key] = Object.keys(node);
+      path += `.${key}`;
+      node = node[key] as Record<string, unknown> | undefined;
+    }
+    openSection(true);
+    setFocusAfterOpen(path as FieldPath<ScriptFormValues>);
+  }, []);
+
   // Save the form without navigating away — used by the test runner before a
   // run when the buffer is dirty, so the run always executes what's on screen.
   // Resolves false on validation or save failure. Marks the form pristine on
@@ -494,9 +526,12 @@ export default function ScriptForm({
           resolve(false);
         }
       },
-      () => resolve(false)
+      formErrors => {
+        onInvalid(formErrors);
+        resolve(false);
+      }
     )();
-  }), [handleSubmit, onSubmit, reset, getValues]);
+  }), [handleSubmit, onSubmit, reset, getValues, onInvalid]);
 
   const addParameter = () => {
     append({
@@ -590,7 +625,7 @@ export default function ScriptForm({
           // Save failed — re-arm the nav guard so user doesn't lose work
           skipGuardRef.current = false;
         }
-      })}
+      }, onInvalid)}
       className="space-y-8 rounded-lg border bg-card p-6 shadow-xs"
     >
       {/* Availability picker — partner-scope users with >1 org. On create it
