@@ -135,3 +135,11 @@ describe('W04 device-touching tools are rate limited (#6758)', () => {
     },
   );
 });
+
+// #12655 (Strix): get_fleet_device_stats evaluates model-supplied filter-engine
+// SQL across the scoped fleet, so it is capped like the other fleet-wide reads.
+describe('fleet-wide filter reads are rate limited (#12655)', () => {
+  it('get_fleet_device_stats has a read-band limit', () => {
+    expect(TOOL_RATE_LIMITS.get_fleet_device_stats).toEqual({ limit: 30, windowSeconds: 300 });
+  });
+});

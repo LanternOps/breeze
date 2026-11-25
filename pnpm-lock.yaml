@@ -748,8 +748,8 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       react-native-paper:
-        specifier: ^5.15.4
-        version: 5.15.4(react-native-safe-area-context@5.11.1(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
+        specifier: ^5.15.5
+        version: 5.15.5(react-native-safe-area-context@5.11.1(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       react-native-reanimated:
         specifier: 4.7.1
         version: 4.7.1(react-native-worklets@0.13.1(@babel/core@7.29.13)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
@@ -10723,8 +10723,8 @@ packages:
       react: '>=16.2.0'
       react-native: '>=0.50.4'
 
-  react-native-paper@5.15.4:
-    resolution: {integrity: sha512-8ziMr8PEXB3V4LUY3EUdioDqU3AjM3t1F89O0pXHSkRrKLWIDfdTneB4mdsaETYacLa5qUFMtUuhwu2MC23+3Q==}
+  react-native-paper@5.15.5:
+    resolution: {integrity: sha512-rHVig7ywtjBnnOLgrTeYmmfSHhjv1fyrrgfNh2S9OT40ZJOLkpFPrnvmXpExNRl8aOFEw6BP0S2suzPHrcLa4g==}
     peerDependencies:
       react: '*'
       react-native: '*'
@@ -23231,7 +23231,7 @@ snapshots:
       react-native: 0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1)
       react-native-fit-image: 1.5.5
 
-  react-native-paper@5.15.4(react-native-safe-area-context@5.11.1(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1):
+  react-native-paper@5.15.5(react-native-safe-area-context@5.11.1(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1):
     dependencies:
       '@callstack/react-theme-provider': 3.0.9(react@19.3.1)
       color: 3.2.1

@@ -867,7 +867,7 @@ function getIntervalSQL(amount: number, unit: string): SQL<unknown> {
   }
 }
 
-function buildGroupSQL(group: FilterConditionGroup): SQL<unknown> {
+export function buildGroupSQL(group: FilterConditionGroup): SQL<unknown> {
   if (group.conditions.length === 0) {
     return sql`TRUE`;
   }
@@ -961,7 +961,7 @@ function decommissionedScopeCondition(excludeDecommissioned: boolean | undefined
 // transaction-local statement_timeout, which the length cap cannot do on its own.
 const FILTER_QUERY_TIMEOUT_MS = 500;
 
-type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * The bounded `statement_timeout` above cancelled the filter query (SQLSTATE
@@ -994,10 +994,23 @@ export class FilterQueryTimeoutError extends Error {
  * posture are identical to running the query directly — this only adds the bound.
  * Queries MUST run on the passed `tx` (not the `db` proxy) so they execute inside
  * the transaction where the timeout is set.
+ *
+ * Exported for every caller that renders filter-engine SQL (`buildGroupSQL`)
+ * outside this module, e.g. the `get_fleet_device_stats` AI tool (#12655): the
+ * bound is the caller's to apply, so run the statements here. Catch
+ * {@link FilterQueryTimeoutError} OUTSIDE this call, and do not start it beside
+ * sibling statements in a `Promise.all` (it opens savepoints when a request
+ * context is held; docs/agents/tenancy-rls.md). `timeoutMs` exists for tests
+ * only; production callers take the default.
  */
-async function withFilterStatementTimeout<T>(
-  run: (tx: FilterQueryTx) => Promise<T>
+export async function withFilterStatementTimeout<T>(
+  run: (tx: FilterQueryTx) => Promise<T>,
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? FILTER_QUERY_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('withFilterStatementTimeout: timeoutMs must be a positive integer');
+  }
   return db.transaction(async (tx) => {
     const previousResult = await tx.execute(
       sql`select current_setting('statement_timeout', true) as value`
@@ -1011,7 +1024,7 @@ async function withFilterStatementTimeout<T>(
     // configurations that surface an empty value.
     const previousTimeout = previousRow?.value || '0';
     await tx.execute(
-      sql`select set_config('statement_timeout', ${`${FILTER_QUERY_TIMEOUT_MS}ms`}, true)`
+      sql`select set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`
     );
     try {
       // Isolate a timed-out filter statement in its own savepoint. PostgreSQL
