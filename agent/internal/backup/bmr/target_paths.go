@@ -1,7 +1,9 @@
 package bmr
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -210,6 +212,9 @@ type restoreTarget struct {
 	// the entry itself). It is the trusted base the symlink guard walks
 	// from for that entry.
 	folderRoot string
+	// folderSource is the source of the folder mapping whose target is
+	// folderRoot.
+	folderSource string
 	// matched lists every mapping source that names this entry or a
 	// directory above it, including ones a longer source shadowed.
 	matched []string
@@ -271,11 +276,36 @@ func (m *targetPathMap) resolve(origPath string) (restoreTarget, error) {
 	}
 	base := strings.TrimRight(best.target, `/`+sep)
 	return restoreTarget{
-		path:       base + sep + strings.Join(rest, sep),
-		mapped:     true,
-		folderRoot: best.target,
-		matched:    matched,
+		path:         base + sep + strings.Join(rest, sep),
+		mapped:       true,
+		folderRoot:   best.target,
+		folderSource: best.sources[0],
+		matched:      matched,
 	}, nil
+}
+
+// checkFolderTarget refuses a folder-mapping target that exists but is not
+// a real directory. Everything restored under the mapping is created
+// beneath it, so a symlink there (or, on Windows, a junction, which
+// os.Lstat reports as irregular rather than as a directory) would carry
+// those writes somewhere other than the destination the operator named.
+// Only the target itself is checked, not the directories above it: like
+// the root the exact-mapping guard derives (symlinkAncestorBase), the
+// operator chose it, and system-level links above it (macOS /var, a Linux
+// /home link) are legitimate. A target that does not exist yet is created
+// by the restore as a real directory.
+func checkFolderTarget(target, source string, lstat func(string) (fs.FileInfo, error)) error {
+	info, err := lstat(filepath.Clean(target))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("the target %q of folder mapping %q cannot be checked: %w", target, source, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("the target %q of folder mapping %q is not a directory; a folder mapping must name a real directory, not a link to one", target, source)
+	}
+	return nil
 }
 
 // targetPathPlan is the checked plan for one recovery's mappings.
@@ -286,7 +316,35 @@ type targetPathPlan struct {
 	// written through a link this same recovery creates (or an earlier,
 	// interrupted run of it created) and is refused.
 	linkDests map[string]struct{}
+	// folderTargets lists, once each, the folder-mapping targets this
+	// recovery places entries beneath, for planTargetPaths to check on
+	// disk before the first write; folderTargetKeys indexes them by
+	// hostPathKey.
+	folderTargets    []folderTarget
+	folderTargetKeys map[string]folderTarget
 }
+
+// requiredDirectory returns the folder-mapping target that must be a real
+// directory for an entry resolved to rt to be written safely: the target
+// the entry is placed beneath, or, for a directory entry restored AT a
+// target this recovery places entries beneath (the mapping source's own
+// directory, whose mode and attributes are applied there), that target.
+func (p *targetPathPlan) requiredDirectory(rt restoreTarget, kind string) (folderTarget, bool) {
+	if p == nil {
+		return folderTarget{}, false
+	}
+	if rt.folderRoot != "" {
+		return folderTarget{target: rt.folderRoot, source: rt.folderSource}, true
+	}
+	if kind == "dir" && rt.mapped {
+		ft, ok := p.folderTargetKeys[hostPathKey(rt.path, p.m.hostSep)]
+		return ft, ok
+	}
+	return folderTarget{}, false
+}
+
+// folderTarget is one folder-mapping target and the source it maps.
+type folderTarget struct{ target, source string }
 
 // maxNamedMappings bounds how many mapping sources one refusal names.
 const maxNamedMappings = 10
@@ -305,7 +363,16 @@ func hostPathKey(p string, hostSep byte) string {
 // cannot be honoured as given. A nil plan (no overrides) restores every
 // entry to its original path.
 func planTargetPaths(manifest *snapshotManifest, overrides map[string]string) (*targetPathPlan, error) {
-	return planTargetPathsFor(manifest, overrides, os.PathSeparator, filepath.IsAbs)
+	plan, err := planTargetPathsFor(manifest, overrides, os.PathSeparator, filepath.IsAbs)
+	if err != nil || plan == nil {
+		return plan, err
+	}
+	for _, ft := range plan.folderTargets {
+		if err := checkFolderTarget(ft.target, ft.source, os.Lstat); err != nil {
+			return nil, fmt.Errorf("bmr: refusing target path mappings: %w; nothing was restored", err)
+		}
+	}
+	return plan, nil
 }
 
 func planTargetPathsFor(manifest *snapshotManifest, overrides map[string]string, hostSep byte, isAbs func(string) bool) (*targetPathPlan, error) {
@@ -316,7 +383,7 @@ func planTargetPathsFor(manifest *snapshotManifest, overrides map[string]string,
 	if m == nil {
 		return nil, nil
 	}
-	plan := &targetPathPlan{m: m, linkDests: map[string]struct{}{}}
+	plan := &targetPathPlan{m: m, linkDests: map[string]struct{}{}, folderTargetKeys: map[string]folderTarget{}}
 
 	unmatched := make(map[string]bool, len(overrides))
 	for source := range overrides {
@@ -333,6 +400,9 @@ func planTargetPathsFor(manifest *snapshotManifest, overrides map[string]string,
 		dests = make(map[string]placed, len(manifest.Files))
 	}
 	var collision error
+	// allLinkDests holds the destination of every symlink entry, mapped or
+	// restored in place (hostPathKey form).
+	allLinkDests := map[string]struct{}{}
 
 	for _, file := range manifest.Files {
 		origPath := restoreSourcePath(file)
@@ -348,8 +418,19 @@ func planTargetPathsFor(manifest *snapshotManifest, overrides map[string]string,
 		if rt.folderRoot != "" && !isAbs(rt.folderRoot) {
 			badTarget[rt.folderRoot] = rt.matched[0]
 		}
-		if rt.mapped && file.Kind == "symlink" {
-			plan.linkDests[hostPathKey(rt.path, hostSep)] = struct{}{}
+		if file.Kind == "symlink" {
+			if rt.mapped {
+				plan.linkDests[hostPathKey(rt.path, hostSep)] = struct{}{}
+			}
+			allLinkDests[hostPathKey(rt.path, hostSep)] = struct{}{}
+		}
+		if rt.folderRoot != "" && isAbs(rt.folderRoot) {
+			k := hostPathKey(rt.folderRoot, hostSep)
+			if _, seen := plan.folderTargetKeys[k]; !seen {
+				ft := folderTarget{target: rt.folderRoot, source: rt.folderSource}
+				plan.folderTargetKeys[k] = ft
+				plan.folderTargets = append(plan.folderTargets, ft)
+			}
 		}
 		if dests == nil || collision != nil {
 			continue
@@ -396,6 +477,12 @@ func planTargetPathsFor(manifest *snapshotManifest, overrides map[string]string,
 	}
 	if collision != nil {
 		return nil, collision
+	}
+	for _, ft := range plan.folderTargets {
+		if _, ok := allLinkDests[hostPathKey(ft.target, hostSep)]; ok {
+			return nil, fmt.Errorf("bmr: refusing target path mappings: the target %q of folder mapping %q is where this snapshot restores a symlink; a folder mapping must name a real directory; nothing was restored",
+				ft.target, ft.source)
+		}
 	}
 	return plan, nil
 }

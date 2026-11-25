@@ -1168,6 +1168,20 @@ func restoreFiles(
 		// folder-mapped entry that is not itself a link is never written
 		// through a link already at its destination.
 		if overridden {
+			// A folder mapping's target must still be a real directory
+			// when this entry is written beneath it (planTargetPaths
+			// checked it before the first write; this catches one that
+			// changed since).
+			if ft, ok := plan.requiredDirectory(dest, file.Kind); ok {
+				if err := checkFolderTarget(ft.target, ft.source, os.Lstat); err != nil {
+					addFailure("refusing to write %s: %s", targetPath, err.Error())
+					if consecutiveFailures >= maxConsecutiveDownloadFailures {
+						breakerTripped = true
+						break
+					}
+					continue
+				}
+			}
 			base := symlinkAncestorBase(origPath, targetPath)
 			if dest.folderRoot != "" {
 				base = dest.folderRoot
