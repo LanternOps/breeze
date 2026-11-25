@@ -4,6 +4,8 @@ import { deploymentResults, deviceCommands, deviceFilesystemCleanupRuns, securit
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
+// Type-only: this module stays a leaf at runtime (see the header comment).
+import type { ClaimCancelReason } from './commandClaimEligibility';
 import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExecutionTerminal';
 
 /**
@@ -35,6 +37,8 @@ export type DeviceCommandCancelSubject = {
   id: string;
   type: string;
   payload: Record<string, unknown> | null;
+  /** Reason for the owning `patch_job_results` rows; default `cancelled` (#12493). */
+  patchCancelReason?: ClaimCancelReason;
 };
 
 /**
@@ -55,6 +59,7 @@ export async function propagateCancelledDeviceCommands(
       payload: row.payload,
       completedAt,
       executor,
+      ...(row.patchCancelReason ? { patchCancelReason: row.patchCancelReason } : {}),
     });
   }
 }

@@ -36,6 +36,7 @@ import {
   areAllPendingPatchesManagedByVendorLane,
   resolveDevicePatchEvaluation,
 } from '../services/patchEligibility';
+import { requestedPatchIdsSchema } from '../services/patchJobRequestedPatchIds';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
   deliveryTtlMs,
@@ -66,9 +67,9 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 
 // A job that names its patches (`patches.patchIds`, written by the AI tool
-// `manage_patches` action `install`). Same id validation the tool's input
-// schema applies (`z.string().guid()`), so no id the tool accepted is refused.
-const jobPatchIdsSchema = z.array(z.string().guid()).min(1);
+// `manage_patches` action `install`); the schema is shared with the delivery
+// revalidation (services/installPatchesRevalidation.ts).
+const jobPatchIdsSchema = requestedPatchIdsSchema;
 
 // Strict shape for one patches.categoryRules entry as stored in the job JSONB.
 // Matches the evaluator's CategoryRule: severityFilter is the legacy stored

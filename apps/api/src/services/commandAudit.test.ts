@@ -258,3 +258,23 @@ describe('software_install payloads of framework EDR providers (#8170)', () => {
   });
 });
 
+
+describe('claim-eligibility cancel detail in command history (#12493)', () => {
+  it('keeps the ids of the patches that stopped being eligible, so the operator can see which ones', () => {
+    const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+    const out = sanitizeCommandForHistory({
+      type: 'install_patches',
+      payload: null,
+      result: {
+        status: 'cancelled',
+        reason: 'requested_patches_no_longer_eligible',
+        cancelledBy: 'claim_eligibility',
+        detail: { ineligiblePatchIds: ids },
+      },
+    });
+    expect(out.result).toMatchObject({
+      reason: 'requested_patches_no_longer_eligible',
+      detail: { ineligiblePatchIds: ids },
+    });
+  });
+});

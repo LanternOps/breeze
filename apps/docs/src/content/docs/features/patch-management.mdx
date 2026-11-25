@@ -266,6 +266,8 @@ A still-queued install is superseded — not stacked — by the next scheduled o
 
 You can see and cancel a still-waiting install from the device's own page (**Queued actions**), or from the job's device list.
 
+An install the AI assistant created for specific updates (after you approved it) is checked again when the device comes back online. If any of those updates is no longer eligible on that device, the whole queued install is cancelled. This happens when, for example, the update was declined, the device's update ring now blocks it, the device moved to a stricter ring, or the update was installed or superseded in the meantime. Breeze does not install only part of the approved set. The job's device row shows "Cancelled before delivery", and the cancelled command lists the IDs of the updates that are no longer eligible. To install the updates that are still eligible, ask the assistant to run the install again. That creates a new approval for the current set. Scheduled and policy-driven patch jobs, and installs a technician starts from the device page, are not re-checked this way: their queued install is delivered as it was queued.
+
 Scheduled patch jobs are reliable across restarts. If a job's scheduled run is ever lost before it reaches the queue — for example during a service restart — Breeze automatically detects the stranded job after its scheduled time and re-runs it, so no scheduled patch cycle is silently skipped.
 
 ### Monitoring Jobs

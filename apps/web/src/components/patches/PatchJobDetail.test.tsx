@@ -113,6 +113,7 @@ describe('PatchJobDetail', () => {
           skipped('e', 'all_managed_by_vendor_updates'),
           skipped('f', 'requested_patches_not_eligible'),
           skipped('g', 'invalid_patch_ids'),
+          skipped('h', 'requested_patches_no_longer_eligible'),
         ],
       },
     }));
@@ -141,6 +142,10 @@ describe('PatchJobDetail', () => {
     );
     expect(screen.getByTestId('patch-job-result-skip-reason-g')).toHaveTextContent(
       'Skipped: the list of updates selected for this job was not valid, so nothing was installed.',
+    );
+    // #12493: a queued AI install cancelled at delivery because a patch stopped being eligible.
+    expect(screen.getByTestId('patch-job-result-skip-reason-h')).toHaveTextContent(
+      'Cancelled before delivery: at least one of the updates selected for this job is no longer eligible on this device. Run the install again to install the ones that still are.',
     );
   });
 
