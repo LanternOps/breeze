@@ -1002,6 +1002,9 @@ export class FilterQueryTimeoutError extends Error {
  * sibling statements in a `Promise.all` (it opens savepoints when a request
  * context is held; docs/agents/tenancy-rls.md). `timeoutMs` exists for tests
  * only; production callers take the default.
+ *
+ * `run` may lower the limit further. The limit in force before the call is
+ * back when it returns or throws.
  */
 export async function withFilterStatementTimeout<T>(
   run: (tx: FilterQueryTx) => Promise<T>,
@@ -1027,10 +1030,17 @@ export async function withFilterStatementTimeout<T>(
       sql`select set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`
     );
     try {
-      // Isolate a timed-out filter statement in its own savepoint. PostgreSQL
-      // rejects all commands after a statement error until that savepoint is
-      // rolled back, including the restoration in `finally` below.
-      return await tx.transaction((queryTx) => run(queryTx));
+      // A savepoint of its own, so a statement `run` fails AND swallows (the
+      // driver rethrows it when its scope ends) is still classified below.
+      const result = await tx.transaction((queryTx) => run(queryTx));
+      // The restore runs under whatever limit `run` left, so it can be
+      // cancelled too: inside this try, that is the same timeout (#12656). Only
+      // on success: every throw rolls `tx` back, which reverts the limit, and a
+      // statement sent on the way out could replace the error being reported.
+      await tx.execute(
+        sql`select set_config('statement_timeout', ${previousTimeout}, true)`
+      );
+      return result;
     } catch (error) {
       // Anything that is not a cancellation — a bad column, a lock error, a
       // dropped connection — is a real fault and keeps its existing 500 path.
@@ -1049,10 +1059,6 @@ export async function withFilterStatementTimeout<T>(
       // it does not — every other SQLSTATE still propagates untouched.
       if (pgErrorCode(error) === '57014') throw new FilterQueryTimeoutError({ cause: error });
       throw error;
-    } finally {
-      await tx.execute(
-        sql`select set_config('statement_timeout', ${previousTimeout}, true)`
-      );
     }
   });
 }

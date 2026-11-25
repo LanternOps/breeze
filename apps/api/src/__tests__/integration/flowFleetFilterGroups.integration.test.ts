@@ -46,6 +46,7 @@ import { validateFlowDocument } from '../../services/flowValidator';
 import { validateBuiltinStep } from '../../services/flows/validateBuiltins';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { withSlowTimeoutRestore } from './slowTimeoutRestore';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -328,6 +329,30 @@ describe('a group named by a fleetFilter resolves from its definition (#12418 W0
     expect(hook.loads).toBeLessThan(6);
     hook.afterLoad = undefined;
     expect(await resolve(ids[0]!)).toEqual(set(win1)); // control
+  }, 60_000);
+
+  // #12656: the statement that restores the timeout after the last read runs
+  // under the limit that read had, and can be cancelled itself.
+  runDb('a save whose timeout restore is cancelled is refused, not an error', async () => {
+    const g = await group({ filterConditions: all(rule('osType', 'equals', 'windows')) });
+    await withSlowTimeoutRestore(async (slow) => {
+      hook.afterLoad = (executor) => slow(executor as ReturnType<typeof getTestDb>);
+      expect(await groupIssues([g, g])).toEqual(timedOut(2));
+      expect(hook.loads).toBe(1);
+    });
+    hook.afterLoad = undefined;
+    expect(await groupIssues([g, g])).toEqual([]); // control
+  }, 60_000);
+
+  runDb('a step whose timeout restore is cancelled is refused at resolve, not an error', async () => {
+    const g = await group({ filterConditions: all(rule('osType', 'equals', 'windows')) });
+    await withSlowTimeoutRestore(async (slow) => {
+      hook.afterLoad = (executor) => slow(executor as ReturnType<typeof getTestDb>);
+      expect(await resolve(g)).toMatchObject({ kind: 'outcome', outcome: { code: 'targets_unresolvable', message: GROUP_CHECK_TIMEOUT_PROBLEM } });
+      expect(hook.loads).toBe(1);
+    });
+    hook.afterLoad = undefined;
+    expect(await resolve(g)).toEqual(set(win1, win2)); // control
   }, 60_000);
 
   runDb('the number of steps that may name a group is the document\'s own step limit', async () => {

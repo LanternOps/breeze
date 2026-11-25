@@ -25,6 +25,9 @@ import { isExecutionRefusedFilterField, type FilterCondition, type FilterConditi
 /** Rows kept in a grouped breakdown; the remainder is summed into `otherCount`. */
 export const FLEET_GROUP_ROW_LIMIT = 50;
 
+/** Page size of the filtered device sample, for every `get_fleet_device_stats` surface. */
+export const FLEET_SAMPLE_PAGE = { defaultLimit: 10, maxLimit: 100 } as const;
+
 export const FLEET_FILTER_PARAM_DESCRIPTION =
   'Typed device filter, fields ANDed. Adds a paged device sample (limit/offset/cursor). Fields marked count only never select action targets';
 export const FLEET_GROUP_BY_PARAM_DESCRIPTION =
