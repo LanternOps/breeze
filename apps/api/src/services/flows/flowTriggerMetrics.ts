@@ -11,6 +11,7 @@ import { Counter } from 'prom-client';
 import type { FlowAdmissionRefusal } from '@breeze/shared';
 
 import { metricsRegistry } from '../metricsRegistry';
+import type { FleetSelectorName } from './builtins/runScriptOnTargets';
 
 // `code` is one of FLOW_ADMISSION_REFUSALS (bounded cardinality): the active
 // cap (W04) or a monthly cap (W05, #5220 Decision 15).
@@ -35,6 +36,14 @@ const chainDepthRefused = new Counter({
   registers: [metricsRegistry],
 });
 
+// #12418 W02: `selector` is the step input key that named the devices (bounded: FleetSelectorName).
+const fleetStepAiCeilingRefused = new Counter({
+  name: 'flow_fleet_step_ai_ceiling_refused_total',
+  help: 'Fleet steps of AI-initiated flow runs refused because their selection was above the AI device ceiling',
+  labelNames: ['selector'] as const,
+  registers: [metricsRegistry],
+});
+
 export function recordFlowScheduleAdmissionRefused(code: FlowAdmissionRefusal): void {
   scheduleAdmissionRefused.inc({ code });
 }
@@ -45,4 +54,8 @@ export function recordFlowEventAdmissionRefused(code: FlowAdmissionRefusal): voi
 
 export function recordFlowChainDepthRefused(): void {
   chainDepthRefused.inc();
+}
+
+export function recordFleetStepAiCeilingRefused(labels: { selector: FleetSelectorName }): void {
+  fleetStepAiCeilingRefused.inc(labels);
 }
