@@ -134,6 +134,11 @@ describe('a group named by a fleetFilter resolves from its definition (#12418 W0
   runDb('a static group selects the devices added to it by hand', async () => {
     const g = await group({ type: 'static' });
     await member(g, win1);
+    // Neither the log of the add itself nor another device's pin says otherwise.
+    await getTestDb().insert(groupMembershipLog).values([
+      { groupId: g, deviceId: win1, orgId, action: 'added', reason: 'manual' },
+      { groupId: g, deviceId: win2, orgId, action: 'added', reason: 'pinned' },
+    ]);
     expect(await resolve(g)).toEqual(set(win1));
     expect(await saveIssues(g)).toEqual([]);
   });
