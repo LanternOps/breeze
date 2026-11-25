@@ -42,3 +42,18 @@ func TestFolderTargetJunctionIsRefusedOnWindows(t *testing.T) {
 		t.Fatalf("failed=%d dests=%v warnings=%v, want the write refused", failed, provider.dests, warnings)
 	}
 }
+
+// Below a folder mapping's target, a junction is refused like a symlink.
+func TestFolderMappingJunctionBelowTargetIsRefusedOnWindows(t *testing.T) {
+	dst, outside := t.TempDir(), t.TempDir()
+	plantJunction(t, dst, "alice", outside)
+	provider := &destRecorder{}
+	cfg := RecoveryConfig{TargetPaths: map[string]string{`C:\Users`: dst}}
+	_, _, warnings, failed, _ := restoreFilesPlanned(context.Background(), contentManifest(`C:\Users\alice\doc.txt`), cfg, provider)
+	if failed != 1 || len(provider.dests) != 0 {
+		t.Fatalf("failed=%d dests=%v warnings=%v, want the entry below the junction refused", failed, provider.dests, warnings)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "not a directory") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+}

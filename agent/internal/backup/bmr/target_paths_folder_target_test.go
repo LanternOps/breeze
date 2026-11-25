@@ -2,6 +2,7 @@ package bmr
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -43,7 +44,7 @@ func TestPlanTargetPaths_RefusesFolderTargetThatIsALink(t *testing.T) {
 			if err == nil {
 				t.Fatal("plan accepted a folder target that is a link")
 			}
-			if !strings.Contains(err.Error(), src) || !strings.Contains(err.Error(), "not a directory") {
+			if !strings.Contains(err.Error(), fmt.Sprintf("%q", src)) || !strings.Contains(err.Error(), "not a directory") {
 				t.Fatalf("err = %v, want it to name the mapping and say the target is not a directory", err)
 			}
 		})
@@ -113,7 +114,7 @@ func TestRestoreFiles_RefusesFolderTargetReplacedByLinkAfterPlanning(t *testing.
 				t.Fatalf("failed=%d dests=%v warnings=%v, want the write refused", failed, provider.dests, warnings)
 			}
 			joined := strings.Join(warnings, "\n")
-			if !strings.Contains(joined, src) || !strings.Contains(joined, "not a directory") {
+			if !strings.Contains(joined, fmt.Sprintf("%q", src)) || !strings.Contains(joined, "not a directory") {
 				t.Fatalf("warnings = %v, want one naming the mapping", warnings)
 			}
 			if entries, _ := os.ReadDir(outside); len(entries) != 0 {
@@ -165,7 +166,7 @@ func TestPlanTargetPaths_RefusesFolderTargetWhereSnapshotRestoresALink(t *testin
 	manifest := contentManifest(filepath.Join(src, "doc.txt"))
 	manifest.Files = append(manifest.Files, manifestFile{SourcePath: dst, Kind: "symlink", LinkTarget: t.TempDir()})
 	_, err := planTargetPaths(manifest, map[string]string{src: dst})
-	if err == nil || !strings.Contains(err.Error(), src) || !strings.Contains(err.Error(), "symlink") {
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", src)) || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("err = %v, want the mapping refused because its target is a link this snapshot restores", err)
 	}
 }

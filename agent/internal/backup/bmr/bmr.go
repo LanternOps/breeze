@@ -1186,7 +1186,10 @@ func restoreFiles(
 			if dest.folderRoot != "" {
 				base = dest.folderRoot
 			}
-			if err := ensureNoSymlinkAncestor(base, targetPath); err != nil {
+			// Below a folder mapping's target every existing component
+			// must be a real directory, the same rule as for the target
+			// itself (so a Windows junction is refused there too).
+			if err := ensureNoLinkAncestor(base, targetPath, dest.folderRoot != ""); err != nil {
 				addFailure("%s", err.Error())
 				if consecutiveFailures >= maxConsecutiveDownloadFailures {
 					breakerTripped = true
@@ -1414,6 +1417,13 @@ func applyRestoredFileMetadata(targetPath, origPath string, file manifestFile, a
 // root; review finding, PR #5520). Kept local for the same
 // deliberately-independent-mirror reason as restoreContentlessEntry below.
 func ensureNoSymlinkAncestor(base, target string) error {
+	return ensureNoLinkAncestor(base, target, false)
+}
+
+// ensureNoLinkAncestor is ensureNoSymlinkAncestor; with realDirs it also
+// refuses any existing component that is not a real directory (on Windows,
+// os.Lstat reports a junction as irregular, not as a directory or symlink).
+func ensureNoLinkAncestor(base, target string, realDirs bool) error {
 	if base == "" {
 		// symlinkAncestorBase returns "" when it has nothing safe to
 		// derive a trusted root from — explicitly a no-op, not "walk from
@@ -1442,6 +1452,9 @@ func ensureNoSymlinkAncestor(base, target string) error {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to write %s: ancestor %s is a symlink", target, cur)
+		}
+		if realDirs && !info.IsDir() {
+			return fmt.Errorf("refusing to write %s: ancestor %s is not a directory", target, cur)
 		}
 	}
 	return nil
