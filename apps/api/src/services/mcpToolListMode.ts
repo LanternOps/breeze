@@ -67,14 +67,18 @@ export function __resetMcpToolListDefaultWarningForTests(): void {
 /**
  * A principal context's stored mode. Every MCP auth middleware sets it, so a
  * missing value is a wiring bug: it is reported and read as "nothing stored".
- * The mode is presentation only, so there is nothing to fail closed to.
+ * A value that is neither mode (the column's CHECK refuses one) is reported and
+ * read as `full`, never as the deployment default: somebody chose something for
+ * this credential, so a later change of the default must not move it.
  */
 export function parseStoredMcpToolListMode(raw: unknown): McpToolListMode | null {
   if (raw === null || isMode(raw)) return raw;
-  console.error(raw === undefined
-    ? '[MCP] principal context missing mcpToolListMode'
-    : '[MCP] principal context has an unrecognised mcpToolListMode; using the deployment default');
-  return null;
+  if (raw === undefined) {
+    console.error('[MCP] principal context missing mcpToolListMode');
+    return null;
+  }
+  console.error('[MCP] principal context has an unrecognised mcpToolListMode; using "full"');
+  return 'full';
 }
 
 /** What a credential storing `stored` is shown when the request itself asks for nothing. */

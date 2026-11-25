@@ -15,10 +15,11 @@
  */
 import './setup';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
+import { applyMigrationInTransaction } from '../../db/autoMigrate';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { replayMigration } from './replayMigration';
 
@@ -172,8 +173,8 @@ describe(`${MIGRATION}: the first run, as a least-privileged owner under forced 
       const { schema, owner } = await createPreMigrationCopies(tx);
       const seeded = await seedBoth(tx, schema);
       const code = retarget(schema, inBlock ? migrationCode : migrationCode.replaceAll(SCOPE_PERFORM, ''));
-      const statements = code.match(/DO \$\$[\s\S]*?END \$\$;|(?:SELECT|ALTER)[^;]*;/g) ?? [];
-      expect(statements).toHaveLength(5);
+      const statements = code.match(/DO \$\$[\s\S]*?END \$\$;|(?:SET LOCAL|SELECT|ALTER)[^;]*;/g) ?? [];
+      expect(statements).toHaveLength(6);
       await asRole(tx, schema, owner);
       for (const statement of statements) {
         await tx.unsafe(statement);
@@ -238,6 +239,97 @@ describe(`${MIGRATION}: the row-writing statements, as breeze_app under forced R
       for (const table of TABLES) expect(await modes(tx, schema, table)).toEqual({ [seeded[table]]: expected });
     });
   });
+});
+
+describe(`${MIGRATION}: a busy table (the real runner, its own committed copies)`, () => {
+  const holderSql = postgres(process.env.DATABASE_URL ?? '', { max: 1 });
+  afterAll(async () => { await holderSql.end({ timeout: 5 }); });
+
+  /**
+   * A reader holds ACCESS SHARE on `busy` while the file is applied through
+   * applyMigrationInTransaction. Committed copies, because the reader is a second
+   * session; dropped afterwards. The shared tables are never locked.
+   */
+  async function applyWhileRead(
+    busy: Table,
+    code: string,
+    check: (run: { schema: string; ledgerName: string; seeded: Record<Table, string>; apply: () => Promise<void>; release: () => Promise<void> }) => Promise<void>,
+  ) {
+    const { schema, owner } = await adminSql.begin((tx) => createPreMigrationCopies(tx));
+    const ledgerName = `test-${schema}.sql`;
+    let letGo!: () => void;
+    const held = new Promise<void>((resolve) => { letGo = resolve; });
+    let reader: Promise<unknown> = Promise.resolve();
+    try {
+      const seeded = await adminSql.begin((tx) => seedBoth(tx, schema));
+      const content = retarget(schema, code);
+      const checksum = createHash('sha256').update(content).digest('hex');
+      await new Promise<void>((acquired, reject) => {
+        reader = holderSql.begin(async (tx) => {
+          await tx.unsafe(`SELECT count(*) FROM ${schema}.${busy}`);
+          acquired();
+          await held;
+        });
+        reader.catch(reject);
+      });
+      await check({
+        schema, ledgerName, seeded,
+        apply: () => applyMigrationInTransaction(adminSql, ledgerName, content, checksum),
+        release: async () => { letGo(); await reader; },
+      });
+    } finally {
+      letGo();
+      await reader.catch(() => {});
+      await adminSql`DELETE FROM breeze_migrations WHERE filename = ${ledgerName}`;
+      await adminSql.unsafe(`DROP SCHEMA ${schema} CASCADE`);
+      await adminSql.unsafe(`DROP OWNED BY ${owner}`);
+      await adminSql.unsafe(`DROP ROLE ${owner}`);
+    }
+  }
+  const state = async (schema: string, ledgerName: string) => (await adminSql<Record<string, unknown>[]>`
+    SELECT (SELECT count(*)::int FROM information_schema.columns
+             WHERE table_schema = ${schema} AND column_name = 'mcp_tool_list_mode') AS columns,
+           (SELECT count(*)::int FROM pg_constraint
+             WHERE connamespace = ${schema}::regnamespace AND conname LIKE '%mcp_tool_list_mode_check') AS markers,
+           (SELECT count(*)::int FROM pg_class c
+             WHERE c.relnamespace = ${schema}::regnamespace AND c.relkind = 'r' AND c.relrowsecurity AND c.relforcerowsecurity) AS forced,
+           (SELECT count(*)::int FROM breeze_migrations WHERE filename = ${ledgerName}) AS ledger`)[0];
+
+  it.each(TABLES)('a long read of %s fails the file within the bound and rolls all of it back; the next boot applies it', async (busy) => {
+    await applyWhileRead(busy, migrationCode, async ({ schema, ledgerName, seeded, apply, release }) => {
+      const started = Date.now();
+      // The fallback release turns a missing bound into a clean failure, not a hang.
+      const fallback = setTimeout(() => void release(), 15_000);
+      await expect(apply()).rejects.toMatchObject({ code: '55P03', message: 'canceling statement due to lock timeout' });
+      clearTimeout(fallback);
+      expect(Date.now() - started).toBeLessThan(10_000);
+      // oauth_grants is the second table: the api_keys column is rolled back with it.
+      expect(await state(schema, ledgerName)).toEqual({ columns: 0, markers: 0, forced: 2, ledger: 0 });
+      const [setting] = await adminSql<{ lock_timeout: string }[]>`SELECT current_setting('lock_timeout') AS lock_timeout`;
+      expect(setting!.lock_timeout).toBe('0');
+
+      await release();
+      await apply();
+      expect(await state(schema, ledgerName)).toEqual({ columns: 2, markers: 2, forced: 2, ledger: 1 });
+      await adminSql.begin(async (tx) => {
+        for (const table of TABLES) expect(await modes(tx, schema, table)).toEqual({ [seeded[table]]: 'full' });
+      });
+    });
+  }, 40_000);
+
+  it('CONTROL: without the lock_timeout line the file waits as long as the reader does', async () => {
+    const without = migrationCode.replace("SET LOCAL lock_timeout = '5s';", '');
+    expect(without).not.toBe(migrationCode);
+    await applyWhileRead('oauth_grants', without, async ({ schema, ledgerName, apply, release }) => {
+      let settled = false;
+      const applied = apply().finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 8_000));
+      expect(settled).toBe(false);
+      await release();
+      await applied;
+      expect(await state(schema, ledgerName)).toEqual({ columns: 2, markers: 2, forced: 2, ledger: 1 });
+    });
+  }, 40_000);
 });
 
 describe(`${MIGRATION}: on the shared tables`, () => {

@@ -12,6 +12,16 @@
 --
 -- Every table reference is schema-qualified; the integration suite relies on it
 -- to run this file against copies (mcpToolListModeMigration.integration.test.ts).
+--
+-- Every API-key and OAuth request reads these tables, and each ALTER takes ACCESS
+-- EXCLUSIVE, held to commit: an ALTER queued behind one long reader would queue
+-- all of that authentication behind itself. lock_timeout bounds each wait. The two
+-- ADD COLUMNs take both locks before anything else happens (oauth_grants second,
+-- with api_keys already held, so a failed run can hold up authentication for two
+-- waits at most). On timeout the whole file rolls back, autoMigrate aborts boot,
+-- and the file re-runs cleanly on the next start.
+SET LOCAL lock_timeout = '5s';
+
 SELECT set_config('breeze.scope', 'system', true);
 
 ALTER TABLE public.api_keys ADD COLUMN IF NOT EXISTS mcp_tool_list_mode text;

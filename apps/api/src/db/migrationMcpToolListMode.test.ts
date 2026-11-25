@@ -11,11 +11,28 @@ const text = readFileSync(join(__dirname, '../../migrations', MIGRATION), 'utf8'
 const code = text.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
 
 describe(MIGRATION, () => {
-  it('elects system scope before its first UPDATE', () => {
+  it('bounds every lock wait first, then elects system scope, before its first ALTER and UPDATE', () => {
+    // Every authenticated API-key and OAuth request reads these two tables and
+    // each ALTER takes ACCESS EXCLUSIVE. Transaction-local, so it cannot leak into
+    // the migrations after it.
+    const timeout = code.indexOf("SET LOCAL lock_timeout = '5s';");
     const scope = code.indexOf("SELECT set_config('breeze.scope', 'system', true);");
-    const firstUpdate = code.search(/\bUPDATE\b/i);
-    expect(scope).toBe(code.search(/\S/));
-    expect(firstUpdate).toBeGreaterThan(scope);
+    expect(timeout).toBe(code.search(/\S/));
+    expect(code.match(/lock_timeout/g)).toHaveLength(1);
+    // Nothing but the election stands between the timeout and the first ALTER.
+    expect(code.slice(timeout, scope).trim()).toBe("SET LOCAL lock_timeout = '5s';");
+    expect(code.search(/\bALTER\b/i)).toBeGreaterThan(scope);
+    expect(code.search(/\bUPDATE\b/i)).toBeGreaterThan(scope);
+  });
+
+  it('takes both table locks before it lifts FORCE, so a timed-out wait never leaves it lifted', () => {
+    const force = code.indexOf('NO FORCE ROW LEVEL SECURITY');
+    for (const table of ['api_keys', 'oauth_grants']) {
+      const add = code.indexOf(`ALTER TABLE public.${table} ADD COLUMN`);
+      expect(add).toBeGreaterThan(-1);
+      expect(add).toBeLessThan(code.indexOf('DO $$'));
+      expect(add).toBeLessThan(force);
+    }
   });
 
   it('has no inner transaction and adds each column with IF NOT EXISTS', () => {
