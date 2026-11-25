@@ -7,6 +7,8 @@
  *   POST /pre-assignment/switch                 per-partner deploy-key enrollment switch
  *   POST /pre-assignment/deploy-keys/:deployKeyId/expire-devices
  *                                               expire every still-parked device one key parked
+ *   GET/POST /pre-assignment/deploy-keys, POST .../:id/rotate, .../:id/revoke
+ *                                               deploy-key management (routes/preAssignmentDeployKeys.ts)
  *
  * Every route requires partner or system scope, an interactive user session,
  * devices:write + organizations:write, an MFA-assured session, and
@@ -24,29 +26,17 @@
  * move engine. While two-factor authentication is enabled, each request needs a
  * single-use step-up grant bound to exactly what is being assigned.
  */
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import {
-  authMiddleware,
-  requireInteractiveSession,
-  requireMfa,
-  requirePermission,
-  requireScope,
-  type AuthContext,
-} from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
-import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { authMiddleware, type AuthContext } from '../middleware/auth';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import {
   parkedAssignResourceDigest,
   parkedBulkAssignResourceDigest,
   preAssignmentEnableResourceDigest,
-  validateStepUpGrant,
   type StepUpGrantBinding,
-  type StepUpOperation,
 } from '../services/mfaStepUpGrant';
-import { getUserEpochs } from '../services/authEpochs';
-import { ENABLE_2FA } from './auth/schemas';
 import {
   assignParkedDevice,
   assignParkedDevicesBulk,
@@ -60,23 +50,25 @@ import {
   expireDevicesParkedByDeployKey,
   setDeployKeyEnrollmentSwitch,
 } from '../services/unassignedPool/incidentActions';
+import {
+  checkStepUp,
+  partnerQuerySchema,
+  preAssignmentGates as gates,
+  resolvePartner,
+  STEP_UP_REQUIRED_BODY,
+} from './preAssignmentShared';
+import { preAssignmentDeployKeyRoutes } from './preAssignmentDeployKeys';
 
 export const preAssignmentRoutes = new Hono();
 
 preAssignmentRoutes.use('*', authMiddleware);
 
-const gates = [
-  requireScope('partner', 'system'),
-  requireInteractiveSession(),
-  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  requireMfa(),
-] as const;
+// Deploy-key management (list, mint, rotate, revoke) lives in its own file;
+// expire-devices below stays here with the other incident actions.
+preAssignmentRoutes.route('/deploy-keys', preAssignmentDeployKeyRoutes);
 
 /** A lost lock race is retried by the client after this long. */
 const ASSIGNMENT_BUSY_RETRY_AFTER_SECONDS = 2;
-
-const STEP_UP_REQUIRED_BODY = { error: 'Step-up required', code: 'STEP_UP_REQUIRED' } as const;
 
 /** Fields in the list response that the device reported about itself. */
 const DEVICE_REPORTED_FIELDS = [
@@ -89,8 +81,6 @@ const DEVICE_REPORTED_FIELDS = [
   'model',
   'primaryMacAddress',
 ] as const;
-
-const partnerQuerySchema = z.object({ partnerId: z.string().uuid().optional() });
 
 // Ids use .uuid() to match the step-up mint schema exactly
 // (routes/auth/schemas.ts parkedAssignStepUpResource): anything this route
@@ -139,58 +129,6 @@ const REFUSAL_STATUS: Record<ParkedAssignRefusalCode, 400 | 403 | 404 | 409 | 50
   ASSIGNMENT_FAILED: 500,
   isolation_unresolved: 409,
 };
-
-type PartnerResolution = { ok: true; partnerId: string } | { ok: false; response: Response };
-
-/**
- * The partner whose holding area this request acts on. Partner callers act on
- * their own partner only; system callers must name one.
- */
-function resolvePartner(c: Context, auth: AuthContext, requested: string | undefined): PartnerResolution {
-  if (!canManagePartnerWidePolicies(auth)) {
-    return { ok: false, response: c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403) };
-  }
-  if (auth.scope === 'system') {
-    if (!requested) {
-      return { ok: false, response: c.json({ error: 'partnerId is required for system scope' }, 400) };
-    }
-    return { ok: true, partnerId: requested };
-  }
-  if (!auth.partnerId || (requested && requested !== auth.partnerId)) {
-    return { ok: false, response: c.json({ error: 'Access to this partner denied' }, 403) };
-  }
-  return { ok: true, partnerId: auth.partnerId };
-}
-
-/**
- * Builds and validates the step-up binding. Returns null with 2FA off, the
- * binding when the grant validates, or a 403/503 response.
- */
-async function checkStepUp(
-  c: Context,
-  auth: AuthContext,
-  operation: Extract<StepUpOperation, 'parked_device_assign' | 'parked_device_assign_bulk' | 'pre_assignment_enable'>,
-  resourceDigest: string,
-  grantId: string | undefined,
-): Promise<{ binding: StepUpGrantBinding | null } | { response: Response }> {
-  if (!ENABLE_2FA) return { binding: null };
-  const epochs = await getUserEpochs(auth.user.id);
-  const sid = auth.token?.sid;
-  if (!epochs || !sid) return { response: c.json({ error: 'Service temporarily unavailable' }, 503) };
-  const binding: StepUpGrantBinding = {
-    userId: auth.user.id,
-    operation,
-    authEpoch: epochs.authEpoch,
-    mfaEpoch: epochs.mfaEpoch,
-    sid,
-    resourceDigest,
-  };
-  // Missing, stale and mismatched grants are one response on purpose.
-  if (!grantId || !(await validateStepUpGrant(grantId, binding))) {
-    return { response: c.json(STEP_UP_REQUIRED_BODY, 403) };
-  }
-  return { binding };
-}
 
 preAssignmentRoutes.get('/devices', ...gates, zValidator('query', partnerQuerySchema), async (c) => {
   const auth = c.get('auth');

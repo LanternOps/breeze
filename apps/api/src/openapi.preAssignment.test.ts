@@ -9,6 +9,10 @@ describe('pre-assignment OpenAPI registration', () => {
     ['/pre-assignment/devices/assign-bulk', 'post', 'assignParkedDevicesBulk'],
     ['/pre-assignment/switch', 'post', 'setPreAssignmentSwitch'],
     ['/pre-assignment/deploy-keys/{deployKeyId}/expire-devices', 'post', 'expireDevicesParkedByDeployKey'],
+    ['/pre-assignment/deploy-keys', 'get', 'listDeployKeys'],
+    ['/pre-assignment/deploy-keys', 'post', 'mintDeployKey'],
+    ['/pre-assignment/deploy-keys/{deployKeyId}/rotate', 'post', 'rotateDeployKey'],
+    ['/pre-assignment/deploy-keys/{deployKeyId}/revoke', 'post', 'revokeDeployKey'],
   ])('documents %s %s', (path, method, operationId) => {
     const op = (openApiSpec.paths as unknown as Record<string, Record<string, { operationId: string; tags: readonly string[] }>>)[path]?.[method];
     expect(op, `${method.toUpperCase()} ${path}`).toBeDefined();

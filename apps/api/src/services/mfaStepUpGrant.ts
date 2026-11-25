@@ -83,6 +83,12 @@ export type StepUpOperation =
   // only accepts enabled=true. Turning it OFF is a kill switch and needs no
   // step-up.
   | 'pre_assignment_enable'
+  // Minting or rotating a holding-area deploy key (#8318 wave D-1): each opens
+  // a new way for devices to enroll into the partner's holding area. Mint is
+  // bound to { partnerId, imageLabel }; rotate to { partnerId, deployKeyId }
+  // (the key being rotated). Revoking only closes, so it needs no step-up.
+  | 'deploy_key_mint'
+  | 'deploy_key_rotate'
   // AI script authoring W04 (#5612): enabling the unattended lane on an org
   // is the same class of action as enabling agent act mode — a fresh MFA
   // proof, bound to the org AND to the value being set, so a grant minted to
@@ -433,6 +439,21 @@ export function parkedBulkAssignResourceDigest(items: readonly ParkedAssignResou
 /** Binding for turning ON deploy-key enrollment for one partner. */
 export function preAssignmentEnableResourceDigest(input: { partnerId: string }): `sha256:${string}` {
   const canonical = JSON.stringify({ kind: 'pre_assignment_enable', partnerId: canonicalId(input.partnerId), enabled: true });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Binding for minting a deploy key for one image of one partner. The label is
+ * hashed exactly as the route accepts it (trimmed, case kept).
+ */
+export function deployKeyMintResourceDigest(input: { partnerId: string; imageLabel: string }): `sha256:${string}` {
+  const canonical = JSON.stringify({ kind: 'deploy_key_mint', partnerId: canonicalId(input.partnerId), imageLabel: input.imageLabel });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/** Binding for rotating one deploy key of one partner. */
+export function deployKeyRotateResourceDigest(input: { partnerId: string; deployKeyId: string }): `sha256:${string}` {
+  const canonical = JSON.stringify({ kind: 'deploy_key_rotate', partnerId: canonicalId(input.partnerId), deployKeyId: canonicalId(input.deployKeyId) });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

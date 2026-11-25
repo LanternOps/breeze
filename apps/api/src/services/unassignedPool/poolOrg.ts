@@ -18,7 +18,8 @@ export const HOLDING_ORG_NAME = 'Unassigned devices';
  * organizations_partner_unassigned_pool_uniq) and the site are created exactly
  * once.
  *
- * No production caller yet; deploy-key minting will be the first.
+ * Callers: deploy-key mint and rotate (services/deployKeys/manage.ts), before
+ * their own transaction.
  */
 export async function getOrCreateUnassignedPoolOrg(
   partnerId: string,

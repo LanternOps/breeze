@@ -16,6 +16,12 @@ import { sql, type SQL } from 'drizzle-orm';
  * this lock first (admitParkedEnrollment does), and never hold the partners
  * row lock while waiting for it — the reverse order deadlocks against a
  * concurrent assignment.
+ *
+ * A `partner_deploy_keys` row is taken AFTER this lock: mint and rotate
+ * (services/deployKeys/manage.ts) lock the holding area, then the key being
+ * rotated; an enrollment's use claim on the key row must also come after the
+ * lock. Revoke locks only the key row and never waits for this lock while
+ * holding it.
  */
 export function holdingAreaLockKey(partnerId: string): string {
   return `unassigned_pool:${partnerId}`;

@@ -37,10 +37,10 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, partnerMcpProposalCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource, wispGrantStepUpResource, deviceReattachStepUpResource, deviceTpmBaselineAcceptStepUpResource } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, partnerMcpProposalCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, deployKeyMintStepUpResource, deployKeyRotateStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource, wispGrantStepUpResource, deviceReattachStepUpResource, deviceTpmBaselineAcceptStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { consumeStepUpGrant, forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, partnerMcpProposalCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest, deviceReattachResourceDigest, deviceTpmBaselineAcceptResourceDigest } from '../../services/mfaStepUpGrant';
+import { consumeStepUpGrant, forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, partnerMcpProposalCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, deployKeyMintResourceDigest, deployKeyRotateResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest, deviceReattachResourceDigest, deviceTpmBaselineAcceptResourceDigest } from '../../services/mfaStepUpGrant';
 import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -1007,6 +1007,8 @@ const RESOURCE_BOUND_OPERATIONS = {
   parked_device_assign: parkedAssignStepUpResource,
   parked_device_assign_bulk: parkedBulkAssignStepUpResource,
   pre_assignment_enable: preAssignmentEnableStepUpResource,
+  deploy_key_mint: deployKeyMintStepUpResource,
+  deploy_key_rotate: deployKeyRotateStepUpResource,
   ai_script_lane_grant: scriptLaneStepUpResource,
   ai_partner_script_ceiling_grant: partnerScriptCeilingStepUpResource,
   ai_partner_mcp_proposal_ceiling: partnerMcpProposalCeilingStepUpResource,
@@ -1057,7 +1059,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
   const auth = c.get('auth');
   const body = c.req.valid('json');
   const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
-  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof forceRebootStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof partnerMcpProposalCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | z.infer<typeof orgPaymentSettingsStepUpResource> | z.infer<typeof migrationWindowOpenStepUpResource> | z.infer<typeof callerVerificationAdministrativeStepUpResource> | z.infer<typeof wispGrantStepUpResource> | z.infer<typeof deviceReattachStepUpResource> | z.infer<typeof deviceTpmBaselineAcceptStepUpResource> | undefined;
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof forceRebootStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof partnerMcpProposalCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof deployKeyMintStepUpResource> | z.infer<typeof deployKeyRotateStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | z.infer<typeof orgPaymentSettingsStepUpResource> | z.infer<typeof migrationWindowOpenStepUpResource> | z.infer<typeof callerVerificationAdministrativeStepUpResource> | z.infer<typeof wispGrantStepUpResource> | z.infer<typeof deviceReattachStepUpResource> | z.infer<typeof deviceTpmBaselineAcceptStepUpResource> | undefined;
   if (resourceSchema) {
     const parsedResource = resourceSchema.safeParse(body.resource);
     if (!parsedResource.success) {
@@ -1212,6 +1214,10 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
             ? parkedBulkAssignResourceDigest((boundResource as z.infer<typeof parkedBulkAssignStepUpResource>).items)
             : body.operation === 'pre_assignment_enable'
             ? preAssignmentEnableResourceDigest({ partnerId: (boundResource as z.infer<typeof preAssignmentEnableStepUpResource>).partnerId })
+            : body.operation === 'deploy_key_mint'
+            ? deployKeyMintResourceDigest(boundResource as z.infer<typeof deployKeyMintStepUpResource>)
+            : body.operation === 'deploy_key_rotate'
+            ? deployKeyRotateResourceDigest(boundResource as z.infer<typeof deployKeyRotateStepUpResource>)
             : body.operation === 'ai_script_lane_grant'
               ? scriptLanePolicyResourceDigest(boundResource as z.infer<typeof scriptLaneStepUpResource>)
               : body.operation === 'ai_partner_script_ceiling_grant'

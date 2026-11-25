@@ -6,6 +6,7 @@ import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
 import { PARKED_ASSIGN_MAX_BULK_ITEMS } from '../../services/unassignedPool/limits';
+import { deployKeyImageLabelSchema } from '../../services/deployKeys/schemas';
 
 // ============================================
 // Feature flags
@@ -179,6 +180,8 @@ const STEP_UP_OPERATIONS = [
   'parked_device_assign',
   'parked_device_assign_bulk',
   'pre_assignment_enable',
+  'deploy_key_mint',
+  'deploy_key_rotate',
   'ai_script_lane_grant',
   'ai_partner_script_ceiling_grant',
   'ai_partner_mcp_proposal_ceiling',
@@ -270,6 +273,19 @@ export const preAssignmentEnableStepUpResource = z.object({
   partnerId: z.string().uuid(),
   enabled: z.literal(true),
 });
+// Minting a holding-area deploy key (#8318 wave D-1): bound to the partner and
+// the image label, under the same label rule the route applies. Rotating one:
+// bound to the partner and the key being rotated. Both strict, and FIRST in
+// the coarse union below, so the non-strict { partnerId, ... } members cannot
+// match first and strip imageLabel / deployKeyId.
+export const deployKeyMintStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  imageLabel: deployKeyImageLabelSchema,
+}).strict();
+export const deployKeyRotateStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  deployKeyId: z.string().uuid(),
+}).strict();
 // Coarse pre-filter only. The AUTHORITY on "does this resource match this
 // operation" is RESOURCE_BOUND_OPERATIONS in routes/auth/mfa.ts, which
 // re-parses under the operation's own schema — a union member alone would
@@ -372,7 +388,7 @@ export const wispGrantStepUpResource = z.object({
   orgId: z.string().uuid().nullable(),
   requestedCeilingHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
-const stepUpResource = z.union([deviceTpmBaselineAcceptStepUpResource, deviceReattachStepUpResource, wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, partnerMcpProposalCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
+const stepUpResource = z.union([deployKeyMintStepUpResource, deployKeyRotateStepUpResource, deviceTpmBaselineAcceptStepUpResource, deviceReattachStepUpResource, wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, partnerMcpProposalCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

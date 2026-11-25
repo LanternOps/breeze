@@ -263,6 +263,9 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   parkedAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0a551900000000000000000000000000000000000000000000000000001'),
   parkedBulkAssignResourceDigest: vi.fn(() => 'sha256:9a7ked0b01k000000000000000000000000000000000000000000000000000002'),
   preAssignmentEnableResourceDigest: vi.fn(() => 'sha256:9reass19ne00000000000000000000000000000000000000000000000000000003'),
+  // Deploy keys (#8318 wave D-1): two more distinct constants, same reason.
+  deployKeyMintResourceDigest: vi.fn(() => 'sha256:de9101e7000000000000000000000000000000000000000000000000000000d1'),
+  deployKeyRotateResourceDigest: vi.fn(() => 'sha256:de9107a7000000000000000000000000000000000000000000000000000000d2'),
   // Script lane / partner ceiling (#8112): two more distinct constants, so a
   // mint dispatch that swapped the two digest functions fails below.
   scriptLanePolicyResourceDigest: vi.fn(() => 'sha256:5c719710a9e000000000000000000000000000000000000000000000000000004'),
@@ -498,7 +501,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, partnerMcpProposalCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, deployKeyMintResourceDigest, deployKeyRotateResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, partnerMcpProposalCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
 import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5692,6 +5695,56 @@ describe('auth routes', () => {
 				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'ai_partner_mcp_proposal_ceiling', resource }),
 			});
 			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		it('mints a deploy_key_mint grant bound to the partner and the trimmed image label', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-mint');
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'deploy_key_mint', resource: { partnerId: '00000000-0000-4000-8000-000000000040', imageLabel: '  Win11 Q4 ' } }),
+			});
+			expect(res.status).toBe(200);
+			expect(deployKeyMintResourceDigest).toHaveBeenCalledWith({ partnerId: '00000000-0000-4000-8000-000000000040', imageLabel: 'Win11 Q4' });
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'deploy_key_mint',
+				resourceDigest: 'sha256:de9101e7000000000000000000000000000000000000000000000000000000d1',
+			}));
+		});
+
+		it('mints a deploy_key_rotate grant bound to the partner and the key', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-rotate');
+			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', deployKeyId: '00000000-0000-4000-8000-000000000041' };
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'deploy_key_rotate', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(deployKeyRotateResourceDigest).toHaveBeenCalledWith(resource);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'deploy_key_rotate',
+				resourceDigest: 'sha256:de9107a7000000000000000000000000000000000000000000000000000000d2',
+			}));
+		});
+
+		it.each([
+			['deploy_key_mint without an image label', 'deploy_key_mint', { partnerId: '00000000-0000-4000-8000-000000000040' }],
+			['deploy_key_mint with a blank image label', 'deploy_key_mint', { partnerId: '00000000-0000-4000-8000-000000000040', imageLabel: '   ' }],
+			['deploy_key_mint with a rotate-shaped resource', 'deploy_key_mint', { partnerId: '00000000-0000-4000-8000-000000000040', deployKeyId: '00000000-0000-4000-8000-000000000041' }],
+			['deploy_key_rotate with a mint-shaped resource', 'deploy_key_rotate', { partnerId: '00000000-0000-4000-8000-000000000040', imageLabel: 'Win11' }],
+			['deploy_key_rotate without a resource', 'deploy_key_rotate', undefined],
+		])('rejects %s, before factor verification', async (_label, operation, resource) => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation, ...(resource ? { resource } : {}) }),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
 			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 

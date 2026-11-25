@@ -1,14 +1,15 @@
 /**
  * Pre-assignment holding area — the ruled numbers, in one place.
  *
- * Dependency-free on purpose, so each number exists once: the step-up mint
- * schema (routes/auth/schemas.ts) imports the bulk-assignment maximum and the
- * deploy-key image-label length; the pre-assignment routes, the assignment
+ * Dependency-free on purpose, so each number exists once. The step-up mint
+ * schema (routes/auth/schemas.ts) imports only the bulk-assignment maximum
+ * directly; the deploy-key ceilings reach it and the deploy-key routes through
+ * services/deployKeys/schemas.ts. The pre-assignment routes, the assignment
  * service, the admission helpers, the expiry/purge jobs, the deploy-key
- * service (services/deployKeys/*) and the enrollment rate buckets import the
- * rest. None of them is partner-configurable: a deploy key's own lifetime,
- * use count and parked cap are chosen per key by the admin, at most these
- * ceilings (spec 2026-10-12 §10.2, §13 decision 8).
+ * service and the enrollment rate buckets import the rest. None of them is
+ * partner-configurable: a deploy key's own lifetime, use count and parked cap
+ * are chosen per key by the admin, at most these ceilings (spec 2026-10-12
+ * §10.2, §13 decision 8).
  */
 
 /** Most parked devices one partner may hold at a time (counted under the per-partner lock). */

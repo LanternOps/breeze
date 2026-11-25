@@ -4,7 +4,8 @@
  *   - expire every device a given deploy key parked that is still parked.
  * Both run in fresh system contexts bound to ONE partner id the route
  * resolved (the ledger and the holding org are invisible to a request
- * context). Deploy-key revocation itself arrives with deploy keys.
+ * context). Deploy-key revocation (services/deployKeys/manage.ts) runs the
+ * expiry below after it commits.
  */
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';

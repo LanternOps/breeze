@@ -334,6 +334,16 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transactions each open their own system context.
   { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/switch\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/expire-devices\/?$/ },
+  // Deploy keys (#8318 wave D-1). Mint and rotate create the holding org in
+  // its own system context and then run one system transaction (holding-area
+  // lock, step-up consumption); revoke commits the revocation and then runs
+  // the per-device expiry transactions; the list is a partner-scoped system
+  // read. Under the ambient request transaction each would pin a second
+  // pooled connection while the request's sat idle (#1105).
+  { method: 'GET', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/rotate\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/revoke\/?$/ },
   // Reinstall reattach (#8318 wave 2-2). The request reads Redis (target
   // liveness) before any lock, then runs one system transaction that holds the
   // holding-area lock and both device rows while it consumes the step-up grant
