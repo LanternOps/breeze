@@ -424,7 +424,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await search(number, [fx.orgB.id])).toEqual([]);
   });
 
-  runDb('the staff search finds a ticket by a substring of its customer-facing ticket_number, any case, in visible orgs only', async () => {
+  runDb('the staff search finds a ticket by a case-insensitive substring of its customer-facing ticket_number', async () => {
     const fx = await seed();
     const window = await openWindow(fx);
     const imported = await importTicket(window.id, source(fx, { subject: 'Unrelated subject', comments: [] }), { partnerId: fx.partner.id });
@@ -435,6 +435,9 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       .where(and(inArray(tickets.orgId, orgIds), ticketSearchCondition(term, orgIds))));
     expect(await search(customerNumber.toLowerCase(), [fx.orgA.id])).toEqual([{ id: imported.ticketId }]);
     expect(await search(customerNumber.slice(2, -1).toUpperCase(), [fx.orgA.id])).toEqual([{ id: imported.ticketId }]);
+    // Negative control: a term that is not a substring matches nothing.
+    expect(await search(`${customerNumber}ZZ`, [fx.orgA.id])).toEqual([]);
+    // Org scoping is the caller's `tickets.orgId` filter (routes/tickets/tickets.ts), as for subject and internal_number.
     expect(await search(customerNumber, [fx.orgB.id])).toEqual([]);
   });
 

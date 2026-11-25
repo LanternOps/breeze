@@ -19,6 +19,7 @@ describe('ticketSearchCondition (staff search box; #8313 spec §5)', () => {
   it('escapes ILIKE wildcards in the substring term', () => {
     const { params } = dialect.sqlToQuery(ticketSearchCondition('50%_off', [ORG_A]));
     expect(params[0]).toBe('%50\\%\\_off%');
+    expect(params.slice(0, 3)).toEqual(Array(3).fill('%50\\%\\_off%'));
   });
 
   it('matches no ref for a caller with no visible org, and does not bound a system-scope caller', () => {
