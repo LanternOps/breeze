@@ -5,12 +5,13 @@
  * (each table's own CHECK) exists on the shared tables and a replay there can
  * only prove the no-op. The FIRST run — the one that grandfathers existing
  * credentials — needs pre-migration tables, so it runs in a schema of its own:
- * structural copies of the two tables without the column, owned by breeze_app,
- * with FORCE ROW LEVEL SECURITY and the real policies cloned from the catalog.
- * The whole shipped file runs there (every table name in it is
- * `public.`-qualified; the substitution is counted), as breeze_app — a table
- * owner bound by RLS, like the migration role of a database without a
- * superuser. The shared tables' markers are never touched.
+ * structural copies of the two tables without the column, with FORCE ROW LEVEL
+ * SECURITY and the real policies cloned from the catalog. The whole shipped file
+ * runs there (every table name in it is `public.`-qualified; the substitution is
+ * counted) as a table owner that is neither superuser, BYPASSRLS nor a member of
+ * breeze_app: the least-privileged role a database can be migrated with. The
+ * row-writing statements also run alone as breeze_app, with and without the
+ * scope line. The shared tables' markers are never touched.
  */
 import './setup';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -49,11 +50,12 @@ beforeEach(async () => {
 });
 
 /** The shipped file, retargeted at `schema`. The counts prove every reference moved. */
-function retarget(schema: string, sqlText = migrationSql): string {
-  const code = sqlText.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
+const migrationCode = migrationSql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
+function retarget(schema: string, code = migrationCode, expectedReferences = 10): string {
   const references = code.match(/\bpublic\.(api_keys|oauth_grants)\b/g) ?? [];
-  // Per table: ALTER ADD COLUMN, the marker regclass, UPDATE, ALTER ADD CONSTRAINT.
-  expect(references).toHaveLength(8);
+  // Per table: ALTER ADD COLUMN, the marker regclass, UPDATE, ALTER ADD CONSTRAINT;
+  // oauth_grants also NO FORCE and FORCE.
+  expect(references).toHaveLength(expectedReferences);
   // Nothing may name a table unqualified, or the copy run would write the shared tables.
   expect(code).not.toMatch(/(?<!public\.)(?<!_)\b(api_keys|oauth_grants)\b(?!_mcp_tool_list_mode)(?!:)(?=\s+(ADD|SET))/);
   const out = code.replaceAll(/\bpublic\.(api_keys|oauth_grants)\b/g, `${schema}.$1`);
@@ -61,10 +63,14 @@ function retarget(schema: string, sqlText = migrationSql): string {
   return out;
 }
 
-async function createPreMigrationCopies(tx: Tx): Promise<string> {
+/** The copies, owned by a role of their own; returns both names. Rolled back with the transaction. */
+async function createPreMigrationCopies(tx: Tx): Promise<{ schema: string; owner: string }> {
   const schema = `mcp_mode_${randomUUID().slice(0, 8)}`;
+  const owner = `${schema}_owner`;
   await tx.unsafe(`CREATE SCHEMA ${schema}`);
-  await tx.unsafe(`GRANT USAGE, CREATE ON SCHEMA ${schema} TO breeze_app`);
+  await tx.unsafe(`CREATE ROLE ${owner} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+  await tx.unsafe(`GRANT USAGE, CREATE ON SCHEMA ${schema} TO ${owner}`);
+  await tx.unsafe(`GRANT USAGE ON SCHEMA ${schema} TO breeze_app`);
   for (const table of TABLES) {
     await tx.unsafe(`CREATE TABLE ${schema}.${table} (LIKE public.${table} INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`);
     // Dropping the column drops the copied CHECK — the run-once marker — too.
@@ -83,9 +89,10 @@ async function createPreMigrationCopies(tx: Tx): Promise<string> {
       await tx.unsafe(`CREATE POLICY ${p.policyname} ON ${schema}.${table} AS ${p.permissive} FOR ${p.cmd} TO ${p.roles.map((r) => (r === 'public' ? 'PUBLIC' : r)).join(', ')}`
         + (p.qual ? ` USING (${p.qual})` : '') + (p.with_check ? ` WITH CHECK (${p.with_check})` : ''));
     }
-    await tx.unsafe(`ALTER TABLE ${schema}.${table} OWNER TO breeze_app`);
+    await tx.unsafe(`ALTER TABLE ${schema}.${table} OWNER TO ${owner}`);
+    await tx.unsafe(`GRANT SELECT, UPDATE ON ${schema}.${table} TO breeze_app`);
   }
-  return schema;
+  return { schema, owner };
 }
 
 async function seed(tx: Tx, schema: string, table: Table, id: string) {
@@ -107,58 +114,105 @@ const modes = async (tx: Tx, schema: string, table: Table) => Object.fromEntries
   (await tx.unsafe(`SELECT id::text AS id, mcp_tool_list_mode AS m FROM ${schema}.${table}`)).map((r) => [r.id, r.m]),
 );
 
-/** Switch to the unprivileged role; the assertion rules out a vacuous pass. */
-async function asAppRole(tx: Tx, schema: string) {
-  await tx.unsafe('SET LOCAL ROLE breeze_app');
-  const [who] = await tx<{ u: string; bypass: boolean; scope: string; forced: number }[]>`
+/** Switch to an unprivileged role; the assertion rules out a vacuous pass. */
+async function asRole(tx: Tx, schema: string, role: string) {
+  await tx`SELECT set_config('breeze.scope', 'none', true)`;
+  await tx.unsafe(`SET LOCAL ROLE ${role}`);
+  const [who] = await tx<Record<string, unknown>[]>`
     SELECT current_user AS u,
            (SELECT rolbypassrls OR rolsuper FROM pg_roles WHERE rolname = current_user) AS bypass,
            public.breeze_current_scope() AS scope,
            (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = ${schema} AND c.relrowsecurity AND c.relforcerowsecurity) AS forced`;
-  expect(who).toEqual({ u: 'breeze_app', bypass: false, scope: 'none', forced: 2 });
+             WHERE n.nspname = ${schema} AND c.relrowsecurity AND c.relforcerowsecurity) AS forced,
+           pg_has_role(current_user, 'breeze_app', 'usage') AS member`;
+  expect(who).toEqual({ u: role, bypass: false, scope: 'none', forced: 2, member: role === 'breeze_app' });
+}
+const forcedTables = async (tx: Tx, schema: string) => (await tx<{ n: number }[]>`
+  SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = ${schema} AND c.relrowsecurity AND c.relforcerowsecurity`)[0]!.n;
+
+async function seedBoth(tx: Tx, schema: string) {
+  const seeded = { api_keys: randomUUID(), oauth_grants: randomUUID() };
+  for (const table of TABLES) await seed(tx, schema, table, seeded[table]);
+  return seeded;
 }
 
-describe(`${MIGRATION}: the first run, as the unprivileged role under forced RLS`, () => {
+describe(`${MIGRATION}: the first run, as a least-privileged owner under forced RLS`, () => {
   it.each(TABLES)('%s: existing rows read full after the first apply; a later null row survives a replay', async (table) => {
     await inRolledBackTx(async (tx) => {
-      const schema = await createPreMigrationCopies(tx);
+      const { schema, owner } = await createPreMigrationCopies(tx);
       const [a, b, later] = [randomUUID(), randomUUID(), randomUUID()];
       await seed(tx, schema, table, a);
       await seed(tx, schema, table, b);
 
-      await asAppRole(tx, schema);
+      await asRole(tx, schema, owner);
       await tx.unsafe(retarget(schema));
       await tx.unsafe('RESET ROLE');
       expect(await modes(tx, schema, table)).toEqual({ [a]: 'full', [b]: 'full' });
+      expect(await forcedTables(tx, schema)).toBe(2);
 
       // A credential created after the migration inherits (null) — and stays
       // null when the file is applied again.
       await seed(tx, schema, table, later);
       expect((await modes(tx, schema, table))[later]).toBeNull();
-      await tx`SELECT set_config('breeze.scope', 'none', true)`;
-      await asAppRole(tx, schema);
+      await asRole(tx, schema, owner);
       await tx.unsafe(retarget(schema));
       await tx.unsafe('RESET ROLE');
       expect(await modes(tx, schema, table)).toEqual({ [a]: 'full', [b]: 'full', [later]: null });
+      expect(await forcedTables(tx, schema)).toBe(2);
     });
   });
 
-  it('CONTROL: without the system-scope line the same file writes zero rows, silently', async () => {
+  it('CONTROL: without lifting FORCE, oauth_grants is silently not backfilled for that owner', async () => {
     await inRolledBackTx(async (tx) => {
-      const schema = await createPreMigrationCopies(tx);
-      const seeded = { api_keys: randomUUID(), oauth_grants: randomUUID() };
-      for (const table of TABLES) await seed(tx, schema, table, seeded[table]);
-
-      const withoutScope = migrationSql.replace(SCOPE_LINE, '');
-      // The mutation must have landed, or this control proves nothing.
-      expect(withoutScope).not.toBe(migrationSql);
-      expect(withoutScope).not.toContain("set_config('breeze.scope'");
-
-      await asAppRole(tx, schema);
-      await tx.unsafe(retarget(schema, withoutScope));
+      const { schema, owner } = await createPreMigrationCopies(tx);
+      const seeded = await seedBoth(tx, schema);
+      const line = 'ALTER TABLE public.oauth_grants NO FORCE ROW LEVEL SECURITY;';
+      const without = migrationCode.replace(line, '');
+      expect(without).not.toBe(migrationCode);
+      await asRole(tx, schema, owner);
+      await tx.unsafe(retarget(schema, without, 9));
       await tx.unsafe('RESET ROLE');
-      for (const table of TABLES) expect(await modes(tx, schema, table)).toEqual({ [seeded[table]]: null });
+      expect(await modes(tx, schema, 'oauth_grants')).toEqual({ [seeded.oauth_grants]: null });
+      expect(await modes(tx, schema, 'api_keys')).toEqual({ [seeded.api_keys]: 'full' });
+    });
+  });
+
+  it('CONTROL: without the system-scope line, api_keys is silently not backfilled for that owner', async () => {
+    await inRolledBackTx(async (tx) => {
+      const { schema, owner } = await createPreMigrationCopies(tx);
+      const seeded = await seedBoth(tx, schema);
+      const without = migrationCode.replace(SCOPE_LINE, '');
+      expect(without).not.toBe(migrationCode);
+      expect(without).not.toContain("set_config('breeze.scope'");
+      await asRole(tx, schema, owner);
+      await tx.unsafe(retarget(schema, without));
+      await tx.unsafe('RESET ROLE');
+      expect(await modes(tx, schema, 'api_keys')).toEqual({ [seeded.api_keys]: null });
+    });
+  });
+});
+
+describe(`${MIGRATION}: the row-writing statements, as breeze_app under forced RLS`, () => {
+  // The app role owns nothing, so it cannot run the DDL: the column is added
+  // first and only the file's own UPDATE statements run as the role.
+  const updates = migrationCode.match(/UPDATE public\.[\s\S]*?;/g) ?? [];
+
+  it.each([
+    ['with the system-scope line: rows written', true, 'full'],
+    ['CONTROL: without it: zero rows, silently', false, null],
+  ] as const)('%s', async (_name, elect, expected) => {
+    expect(updates).toHaveLength(2);
+    expect(migrationCode.split(SCOPE_LINE)).toHaveLength(2);
+    await inRolledBackTx(async (tx) => {
+      const { schema } = await createPreMigrationCopies(tx);
+      const seeded = await seedBoth(tx, schema);
+      for (const table of TABLES) await tx.unsafe(`ALTER TABLE ${schema}.${table} ADD COLUMN mcp_tool_list_mode text`);
+      await asRole(tx, schema, 'breeze_app');
+      if (elect) await tx.unsafe(SCOPE_LINE);
+      await tx.unsafe(retarget(schema, updates.join('\n'), 2));
+      await tx.unsafe('RESET ROLE');
+      for (const table of TABLES) expect(await modes(tx, schema, table)).toEqual({ [seeded[table]]: expected });
     });
   });
 });

@@ -120,6 +120,8 @@ describe('parseStoredMcpToolListMode', () => {
 });
 
 describe('effectiveMcpToolListMode', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   it.each([
     ['full', 'progressive', { mode: 'full', source: 'credential' }],
     ['progressive', 'full', { mode: 'progressive', source: 'credential' }],
@@ -132,6 +134,5 @@ describe('effectiveMcpToolListMode', () => {
   it('reads MCP_TOOL_LIST_DEFAULT when no default is passed', () => {
     vi.stubEnv('MCP_TOOL_LIST_DEFAULT', 'progressive');
     expect(effectiveMcpToolListMode(null)).toEqual({ mode: 'progressive', source: 'deployment_default' });
-    vi.unstubAllEnvs();
   });
 });

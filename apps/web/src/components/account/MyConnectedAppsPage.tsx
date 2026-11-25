@@ -41,19 +41,25 @@ export default function MyConnectedAppsPage() {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [revoking, setRevoking] = useState(false);
 
-  const load = useCallback(async () => {
-    setState({ kind: 'loading' });
+  // `background` keeps the rows on screen: another row may hold an unsaved
+  // choice, and a failed refresh must not replace the page after a good save.
+  const load = useCallback(async (opts: { background?: boolean } = {}) => {
+    if (!opts.background) setState({ kind: 'loading' });
+    const fail = (message: string) => {
+      if (opts.background) showToast({ type: 'error', message });
+      else setState({ kind: 'error', message });
+    };
     try {
       const res = await fetchWithAuth('/me/oauth-clients');
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setState({ kind: 'error', message: body.error ?? `Request failed (${res.status})` });
+        fail(body.error ?? `Request failed (${res.status})`);
         return;
       }
       const body = (await res.json()) as { clients: OauthClient[]; mcpToolListDefault?: McpToolListMode };
       setState({ kind: 'ready', clients: body.clients ?? [], mcpToolListDefault: body.mcpToolListDefault ?? 'full' });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      fail(err instanceof Error ? err.message : 'Network error');
     }
   }, []);
 
@@ -223,10 +229,12 @@ export default function MyConnectedAppsPage() {
                   </div>
                   {active && client.toolListMode && client.toolListMode.kind !== 'none' && (
                     <ConnectionToolListMode
+                      // A changed stored value starts this row's draft over.
+                      key={client.toolListMode.kind === 'uniform' ? `uniform:${client.toolListMode.stored}` : 'mixed'}
                       clientId={client.clientId}
                       mode={client.toolListMode}
                       deploymentDefault={state.mcpToolListDefault}
-                      onSaved={load}
+                      onSaved={() => load({ background: true })}
                     />
                   )}
                 </li>

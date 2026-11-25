@@ -33,7 +33,9 @@ export default function ApiKeysPage() {
   // #12429: what a key with no mode of its own is shown; an API that does not
   // say is an older one, whose only behaviour is `full`.
   const [mcpToolListDefault, setMcpToolListDefault] = useState<McpToolListMode>('full');
-  const [toolListDraft, setToolListDraft] = useState<McpToolListMode | null>(null);
+  // The view modal's unsaved choice, with the key it belongs to: a save that
+  // answers after another key was opened must not touch that one's draft.
+  const [toolListDraft, setToolListDraft] = useState<{ keyId: string; mode: McpToolListMode | null } | null>(null);
   // API keys are org-scoped objects. With an org context the key inherits it;
   // in fleet view (no org selected) the create form asks for the target org
   // up front instead of erroring after submit.
@@ -82,7 +84,7 @@ export default function ApiKeysPage() {
 
   const handleView = (apiKey: ApiKey) => {
     setSelectedKey(apiKey);
-    setToolListDraft(apiKey.mcpToolListMode ?? null);
+    setToolListDraft({ keyId: apiKey.id, mode: apiKey.mcpToolListMode ?? null });
     setModalMode('view');
   };
 
@@ -144,7 +146,7 @@ export default function ApiKeysPage() {
   // The view modal's one editable field (#12429). The modal shows a snapshot of
   // the row, so a save updates both from the response instead of refetching.
   const handleSaveToolListMode = async () => {
-    if (!selectedKey) return;
+    if (!selectedKey || toolListDraft?.keyId !== selectedKey.id) return;
     const { id } = selectedKey;
     setSubmitting(true);
     try {
@@ -152,7 +154,7 @@ export default function ApiKeysPage() {
         request: () =>
           fetchWithAuth(`/api-keys/${id}`, {
             method: 'PATCH',
-            body: JSON.stringify({ mcpToolListMode: toolListDraft })
+            body: JSON.stringify({ mcpToolListMode: toolListDraft.mode })
           }),
         successMessage: tc('longTail.mcpToolListMode.saved'),
         errorFallback: tc('longTail.mcpToolListMode.saveFailed'),
@@ -164,7 +166,7 @@ export default function ApiKeysPage() {
       };
       setApiKeys(keys => keys.map(k => (k.id === id ? { ...k, ...patch } : k)));
       setSelectedKey(key => (key?.id === id ? { ...key, ...patch } : key));
-      setToolListDraft(patch.mcpToolListMode);
+      setToolListDraft(draft => (draft?.keyId === id ? { keyId: id, mode: patch.mcpToolListMode } : draft));
     } catch (err) {
       handleActionError(err, tc('longTail.mcpToolListMode.saveFailed'));
     } finally {
@@ -373,19 +375,19 @@ export default function ApiKeysPage() {
                   </p>
                 </div>
               </div>
-              {selectedKey.scopes.some(s => s.startsWith('ai:')) && (
+              {toolListDraft && selectedKey.scopes.some(s => s.startsWith('ai:')) && (
                 <div className="space-y-2">
                   <McpToolListModeField
                     idPrefix="api-key-view"
                     variant="key"
-                    value={toolListDraft}
+                    value={toolListDraft.mode}
                     effective={
-                      toolListDraft === (selectedKey.mcpToolListMode ?? null)
+                      toolListDraft.mode === (selectedKey.mcpToolListMode ?? null)
                         ? selectedKey.mcpToolListModeEffective ?? null
                         : null
                     }
                     deploymentDefault={mcpToolListDefault}
-                    onChange={setToolListDraft}
+                    onChange={mode => setToolListDraft({ keyId: selectedKey.id, mode })}
                     disabled={submitting || selectedKey.status !== 'active'}
                   />
                   {selectedKey.status === 'active' && (
@@ -394,7 +396,7 @@ export default function ApiKeysPage() {
                         type="button"
                         data-testid="api-key-tool-list-save"
                         onClick={handleSaveToolListMode}
-                        disabled={submitting || toolListDraft === (selectedKey.mcpToolListMode ?? null)}
+                        disabled={submitting || toolListDraft.mode === (selectedKey.mcpToolListMode ?? null)}
                         className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {submitting ? tc('longTail.mcpToolListMode.saving') : tc('longTail.mcpToolListMode.save')}

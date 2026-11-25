@@ -140,7 +140,7 @@ export const DEFAULT_FIXTURE_CATALOG: Record<string, FixtureTool> = {
 
 export const UNRESTRICTED_KEY = {
   id: '0a0a0a0a-0000-4000-8000-00000000000a', orgId: 'org-1', partnerId: 'partner-1',
-  scopes: ['ai:read', 'ai:write', 'ai:execute'], mcpDomains: null,
+  scopes: ['ai:read', 'ai:write', 'ai:execute'], mcpDomains: null, mcpToolListMode: null,
 } as Record<string, unknown>;
 
 // Explicit so the declaration does not have to name @vitest/spy's internals.

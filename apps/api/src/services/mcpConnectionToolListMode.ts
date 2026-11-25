@@ -35,9 +35,9 @@ function groupByClient(rows: Array<{ clientId: string; mode: McpToolListMode | n
 /** Stored values are compared, not effective ones: `full` and an inherited `full` are `mixed`. */
 function summarizeConnection(stored: Array<McpToolListMode | null>): McpConnectionToolListMode {
   if (stored.length === 0) return NO_CONNECTION;
-  const [first] = stored;
+  const first = stored[0] ?? null;
   if (stored.some((mode) => mode !== first)) return { kind: 'mixed', grantCount: stored.length };
-  return { kind: 'uniform', stored: first!, effective: effectiveMcpToolListMode(first!), grantCount: stored.length };
+  return { kind: 'uniform', stored: first, effective: effectiveMcpToolListMode(first), grantCount: stored.length };
 }
 
 /**

@@ -43,6 +43,18 @@ describe(MIGRATION, () => {
     expect(block).toContain('WHERE mcp_tool_list_mode IS NULL');
   });
 
+  it('lifts FORCE on oauth_grants only around its one UPDATE, and restores it in the same block', () => {
+    const block = (code.match(/DO \$\$[\s\S]*?END \$\$;/g) ?? []).find((b) => b.includes('UPDATE public.oauth_grants '))!;
+    const off = block.indexOf('ALTER TABLE public.oauth_grants NO FORCE ROW LEVEL SECURITY;');
+    const update = block.indexOf('UPDATE public.oauth_grants ');
+    const on = block.indexOf('ALTER TABLE public.oauth_grants FORCE ROW LEVEL SECURITY;');
+    expect(off).toBeGreaterThan(-1);
+    expect(update).toBeGreaterThan(off);
+    expect(on).toBeGreaterThan(update);
+    expect(on).toBeLessThan(block.indexOf('ADD CONSTRAINT'));
+    expect(code.match(/ROW LEVEL SECURITY/g)).toHaveLength(2);
+  });
+
   it('has no UPDATE outside the two guarded blocks', () => {
     expect(code.match(/\bUPDATE\b/g)).toHaveLength(2);
   });

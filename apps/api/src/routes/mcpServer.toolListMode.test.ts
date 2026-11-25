@@ -141,6 +141,18 @@ describe("the credential's stored mode (#12429)", () => {
     expect(whoamiMode(await mcp.legacy('tools/call', WHOAMI))).toEqual({ mode: 'progressive', source: 'deployment_default' });
   });
 
+  it('a context missing the field resolves like null and logs once per request; a stored null logs nothing', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const missing = () => error.mock.calls.filter(([m]) => m === '[MCP] principal context missing mcpToolListMode').length;
+    storing(null);
+    await mcp.modern('tools/call', WHOAMI);
+    expect(missing()).toBe(0);
+    storing(undefined);
+    expect(whoamiMode(await mcp.modern('tools/call', WHOAMI))).toEqual({ mode: 'full', source: 'deployment_default' });
+    expect(missing()).toBe(1);
+    error.mockRestore();
+  });
+
   it('a stored mode does not soften a refusal: a misspelt header is still refused', async () => {
     storing('progressive');
     const res = await mcp.legacy('tools/list', undefined, { headers: { 'Mcp-Tool-List': 'Full' } });

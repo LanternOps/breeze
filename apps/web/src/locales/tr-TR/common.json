@@ -2871,6 +2871,7 @@
       "progressive": "Aşamalı",
       "mixed": "Birden çok değer",
       "effective": "Şu anda gösterilen: {{mode}} — {{source}}",
+      "effectiveUnsaved": "Gösterilecek: {{mode}} — {{source}}",
       "sourceKey": "bu anahtarda ayarlı",
       "sourceConnection": "bu bağlantıda ayarlı",
       "sourceDeploymentDefault": "dağıtım varsayılanı",

@@ -653,7 +653,7 @@ These write tools follow the same per-action tiers as in-product chat. Every Tie
 | `full` | Every tool this connection can call. The default. |
 | `progressive` | A small core of tools plus three meta-tools, `search_tools`, `get_tool_details` and `call_tool`. The other tools are found and run through them. |
 
-Use `progressive` for a client that loads every listed tool into its context up front. Claude Code already defers tool definitions, so it usually works best on `full`.
+Use `progressive` for a client that loads every listed tool into its context up front. A client that already defers tool definitions or searches them itself, as Claude Code does, gains little from it and may prefer `full`.
 
 ### How the mode is chosen
 
@@ -676,9 +676,9 @@ The mode is set per credential. Organizations cannot override it. Leave it on **
 | API key | **Settings > API Keys**: the **MCP tool list** field when you create a key with an `ai:*` scope, and in the key's details afterwards. Over the API it is `mcpToolListMode`, see [API keys](/reference/api-keys/#mcp-tool-list-mcptoollistmode). Rotating a key keeps it. |
 | OAuth connection | On the consent screen when you connect, then under **Account > Connected apps**. Changing it there applies to all of your active connections to that app, across all partners, and takes effect on the next request. |
 
-When you reconnect an app, the consent screen starts from the mode of your latest active connection for the selected partner. If your connections to one app store different values, the page shows **Multiple values** until you choose one. Partner administrators see each app's mode, read-only, under **Settings > Connected Apps**.
+An OAuth connection's mode belongs to that authorization. When you reconnect an app while a connection is still active, the consent screen starts from the mode of your latest active one for the selected partner; once it has expired or been revoked, the screen starts on **Inherit**. If your connections to one app store different values, the page shows **Multiple values** until you choose one. Partner administrators see each app's mode, read-only, under **Settings > Connected Apps**.
 
-API keys and OAuth connections that existed before this setting did are stored as `full`, so a later change to the deployment default does not change what they list. Ones created since start on **Inherit**.
+API keys and OAuth connections that existed before this setting did are stored as `full`, so a later change to the deployment default does not change what they list for as long as they last. Ones created since start on **Inherit**, including a reconnection after the old one ended.
 
 ### The three meta-tools
 

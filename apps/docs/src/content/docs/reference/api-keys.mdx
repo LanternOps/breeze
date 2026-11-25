@@ -119,7 +119,7 @@ Which tool list a client using this key is shown by the [MCP server](/features/m
 - Values are exact. Anything else is rejected with a 400.
 - The create, update, rotate, `GET /api-keys` and `GET /api-keys/:id` responses include `mcpToolListMode` (the stored value) and `mcpToolListModeEffective` (`{ mode, source }`, where `source` is `credential` or `deployment_default`). The two `GET` responses also include `mcpToolListDefault`.
 - To change it, send `PATCH /api-keys/:id` with `{ "mcpToolListMode": "progressive" }`, or `{ "mcpToolListMode": null }` to follow the default again. The change is audited with the previous and the next value.
-- Rotating a key keeps it. Rotating a service principal's key copies it from the principal's most recent active key.
+- Rotating a key keeps it. Rotating an organization service principal's key copies it from the principal's most recent active key, or from its most recent key if none is active.
 - Keys created before this field existed are stored as `full`.
 - Partner service principal keys have no stored mode. They use `full` unless the request asks for another.
 

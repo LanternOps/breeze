@@ -2871,6 +2871,7 @@
       "progressive": "Progressive",
       "mixed": "Multiple values",
       "effective": "Shown now: {{mode}} — {{source}}",
+      "effectiveUnsaved": "Will show: {{mode}} — {{source}}",
       "sourceKey": "set on this key",
       "sourceConnection": "set on this connection",
       "sourceDeploymentDefault": "deployment default",

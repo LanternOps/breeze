@@ -292,6 +292,29 @@ describe('ApiKeysPage — MCP tool list mode (#12429)', () => {
     expect(screen.getByTestId('api-key-tool-list-save')).not.toBeDisabled();
   });
 
+  it('a save that answers after another key was opened does not touch that key\'s draft', async () => {
+    const other = { ...AI_KEY, id: 'key-2', name: 'Second key' };
+    let answer!: (r: Response) => void;
+    fetchMock.mockImplementation(async (_input: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') {
+        return jsonResponse({ data: [AI_KEY, other], pagination: { page: 1, limit: 20, total: 2 }, mcpToolListDefault: 'full' });
+      }
+      return new Promise<Response>((resolve) => { answer = resolve; });
+    });
+    await renderPage();
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[0]!);
+    fireEvent.change(select(), { target: { value: 'progressive' } });
+    fireEvent.click(screen.getByTestId('api-key-tool-list-save'));
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[1]!);
+    expect(select().value).toBe('full');
+    answer(jsonResponse({ ...AI_KEY, mcpToolListMode: 'progressive', mcpToolListModeEffective: { mode: 'progressive', source: 'credential' } }));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+    expect(select().value).toBe('full');
+    expect(screen.getByTestId('api-key-tool-list-save')).toBeDisabled();
+  });
+
   it('a discarded choice does not survive closing the modal', async () => {
     route(AI_KEY);
     await openView();
@@ -301,7 +324,7 @@ describe('ApiKeysPage — MCP tool list mode (#12429)', () => {
     expect(select().value).toBe('full');
   });
 
-  it('no field on a key that cannot reach the MCP server; read-only on one that is no longer active', async () => {
+  it('no field on a key that cannot reach the MCP server', async () => {
     route({ ...AI_KEY, scopes: ['devices:read'] });
     await openView();
     expect(screen.queryByTestId('mcp-tool-list-mode')).toBeNull();

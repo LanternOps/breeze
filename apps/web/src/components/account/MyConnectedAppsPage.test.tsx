@@ -105,6 +105,43 @@ describe('MyConnectedAppsPage — MCP tool list (#12429)', () => {
     await waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
   });
 
+  it('saving one app keeps another app\'s unsaved choice, and a failed refresh keeps the page', async () => {
+    let gets = 0;
+    fetchMock.mockImplementation(async (_input: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET') return jsonResponse({ updated: 1 });
+      gets += 1;
+      if (gets === 3) return jsonResponse({ error: 'Refresh failed' }, 500);
+      const a = gets === 1 ? uniform('full', 'full') : uniform('progressive', 'progressive');
+      return jsonResponse({ clients: [row('app-a', a), row('app-b', uniform('full', 'full'))], mcpToolListDefault: 'full' });
+    });
+    render(<MyConnectedAppsPage />);
+    await screen.findByTestId('connection-tool-list-app-a');
+    fireEvent.change(field('app-a'), { target: { value: 'progressive' } });
+    fireEvent.change(field('app-b'), { target: { value: 'inherit' } });
+    fireEvent.click(save('app-a'));
+    await waitFor(() => expect(section('app-a').getByTestId('mcp-tool-list-effective').textContent).toBe('Shown now: Progressive — set on this connection'));
+    expect(field('app-b').value).toBe('inherit');
+    expect(save('app-b')).not.toBeDisabled();
+
+    fireEvent.click(save('app-b'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Refresh failed' })));
+    expect(screen.getByTestId('connection-tool-list-app-a')).toBeTruthy();
+  });
+
+  it('a stored value that changed elsewhere replaces the draft on refresh', async () => {
+    let gets = 0;
+    fetchMock.mockImplementation(async (_input: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET') return jsonResponse({ updated: 1 });
+      gets += 1;
+      return jsonResponse({ clients: [row('app-a', gets === 1 ? uniform('full', 'full') : { kind: 'mixed', grantCount: 2 })], mcpToolListDefault: 'full' });
+    });
+    render(<MyConnectedAppsPage />);
+    await screen.findByTestId('connection-tool-list-app-a');
+    fireEvent.change(field('app-a'), { target: { value: 'progressive' } });
+    fireEvent.click(save('app-a'));
+    await waitFor(() => expect(field('app-a').value).toBe('mixed'));
+  });
+
   it('no control for a client with no active connection, a revoked one, or an API that does not send the mode', async () => {
     routeFetch([
       row('ended', { kind: 'none', grantCount: 0 }),

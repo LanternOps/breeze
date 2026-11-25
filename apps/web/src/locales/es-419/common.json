@@ -2871,6 +2871,7 @@
       "progressive": "Progresiva",
       "mixed": "Varios valores",
       "effective": "Se muestra ahora: {{mode}} — {{source}}",
+      "effectiveUnsaved": "Se mostrará: {{mode}} — {{source}}",
       "sourceKey": "definida en esta clave",
       "sourceConnection": "definida en esta conexión",
       "sourceDeploymentDefault": "predeterminado de la implementación",

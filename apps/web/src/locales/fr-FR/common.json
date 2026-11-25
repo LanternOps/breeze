@@ -2871,6 +2871,7 @@
       "progressive": "Liste progressive",
       "mixed": "Plusieurs valeurs",
       "effective": "Affichée actuellement : {{mode}} — {{source}}",
+      "effectiveUnsaved": "Sera affichée : {{mode}} — {{source}}",
       "sourceKey": "définie sur cette clé",
       "sourceConnection": "définie sur cette connexion",
       "sourceDeploymentDefault": "valeur par défaut du déploiement",

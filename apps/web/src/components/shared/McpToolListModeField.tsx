@@ -15,7 +15,7 @@ const INHERIT = 'inherit';
 export type McpToolListModeFieldProps = {
   value: McpToolListModeFieldValue;
   onChange: (value: McpToolListMode | null) => void;
-  /** The server's resolution of `value`; null when `value` is an unsaved choice. */
+  /** The server's resolution of `value`; null when `value` is an unsaved choice, which is shown as one. */
   effective: ResolvedMcpToolListMode | null;
   deploymentDefault: McpToolListMode;
   /** What the mode is set on, for the copy. */
@@ -68,7 +68,9 @@ export default function McpToolListModeField({
       </select>
       {shown && (
         <p data-testid="mcp-tool-list-effective" className="text-xs font-medium">
-          {t('longTail.mcpToolListMode.effective', { mode: modeLabel(shown.mode), source: sourceLabel(shown.source) })}
+          {effective
+            ? t('longTail.mcpToolListMode.effective', { mode: modeLabel(shown.mode), source: sourceLabel(shown.source) })
+            : t('longTail.mcpToolListMode.effectiveUnsaved', { mode: modeLabel(shown.mode), source: sourceLabel(shown.source) })}
         </p>
       )}
       <p className="text-xs text-muted-foreground">{t('longTail.mcpToolListMode.hint')}</p>

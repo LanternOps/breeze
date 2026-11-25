@@ -60,7 +60,14 @@ describe('McpToolListModeField', () => {
 
   it("shows the server's effective mode for the stored value", () => {
     setup({ initial: null, deploymentDefault: 'full', effective: { mode: 'progressive', source: 'deployment_default' } });
-    expect(effective()).toContain('Progressive — deployment default');
+    expect(effective()).toBe('Shown now: Progressive — deployment default');
+  });
+
+  it('an unsaved choice is never presented as the mode in effect', () => {
+    setup({ initial: 'full', effective: { mode: 'full', source: 'credential' } });
+    expect(effective()).toBe('Shown now: Full — set on this key');
+    fireEvent.change(select(), { target: { value: 'progressive' } });
+    expect(effective()).toBe('Will show: Progressive — set on this key');
   });
 
   it('emits the mode, and null for inherit; clearing an explicit value shows what is inherited', () => {
