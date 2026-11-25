@@ -544,7 +544,7 @@ func TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath(t *testing.T) {
 		Size: int64(len(content)),
 	}
 
-	filesRestored, bytesRestored, warnings, _, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, bytesRestored, warnings, _, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -609,7 +609,7 @@ func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
 		},
 	}
 
-	filesRestored, _, warnings, _, err := restoreFiles(context.Background(), manifest, cfg, provider)
+	filesRestored, _, warnings, _, err := restoreFilesPlanned(context.Background(), manifest, cfg, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -698,7 +698,7 @@ func TestRestoreFiles_CapsWarningsAndCountsFailedFiles(t *testing.T) {
 	}
 	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err == nil {
 		t.Fatal("expected restoreFiles to report an error when most files fail")
 	}
@@ -750,7 +750,7 @@ func TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures(t *testing.T) 
 	}
 	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err == nil {
 		t.Fatal("expected restoreFiles to return an error when the circuit breaker trips")
 	}
@@ -807,7 +807,7 @@ func TestRestoreFiles_CircuitBreakerNotTrippedByAlternatingFailures(t *testing.T
 	}
 	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if provider.calls != totalFiles {
 		t.Fatalf("provider.Download call count = %d, want %d (breaker must not trip on alternating failures)", provider.calls, totalFiles)
 	}
@@ -854,7 +854,7 @@ func TestRestoreFiles_CancelledContextBeforeLoopReturnsCtxErr(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	filesRestored, bytesRestored, _, failedFiles, err := restoreFiles(ctx, manifest, RecoveryConfig{}, provider)
+	filesRestored, bytesRestored, _, failedFiles, err := restoreFilesPlanned(ctx, manifest, RecoveryConfig{}, provider)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled (ctx.Err() itself)", err)
 	}
@@ -901,7 +901,7 @@ func TestRestoreFiles_ReappliesModeAndModTime(t *testing.T) {
 		Size: int64(len(content)),
 	}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -971,7 +971,7 @@ func TestRestoreFiles_ReplacesReadOnlyDestination(t *testing.T) {
 		Size:  int64(len(content)),
 	}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -1031,7 +1031,7 @@ func TestRestoreFiles_ReadOnlySourceModeReappliedOverReadOnlyDestination(t *test
 		Size:  int64(len(content)),
 	}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -1097,7 +1097,7 @@ func TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles(t *testin
 	chmodFile = func(string, os.FileMode) error { return errors.New("injected chmod failure") }
 	defer func() { chmodFile = origChmod }()
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings head: %v)", err, warnings[:min(5, len(warnings))])
 	}
@@ -1157,7 +1157,7 @@ func TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped(t *testing.T) {
 	chtimesFile = func(string, time.Time, time.Time) error { return errors.New("injected chtimes failure") }
 	defer func() { chtimesFile = origChtimes }()
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -1204,7 +1204,7 @@ func TestRestoreFiles_RecreatesSymlinkWithoutDownload(t *testing.T) {
 		Size: int64(len(content)),
 	}
 
-	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, warnings, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -1272,7 +1272,7 @@ func TestRestoreFiles_ResumedRunDoesNotWriteThroughRestoredSymlink(t *testing.T)
 		},
 	}
 
-	filesRestored, _, warnings, failedFiles, _ := restoreFiles(context.Background(), manifest, cfg, provider)
+	filesRestored, _, warnings, failedFiles, _ := restoreFilesPlanned(context.Background(), manifest, cfg, provider)
 
 	if _, statErr := os.Stat(filepath.Join(outside, "pwned")); statErr == nil {
 		t.Fatal("restoreFiles wrote through the symlink into the outside directory")

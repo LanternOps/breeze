@@ -397,7 +397,7 @@
     "selective": "Sélectif",
     "expiresInHours": "Expire dans quelques heures",
     "optionalTargetConfigJson": "Configuration optionnelle de la cible JSON",
-    "targetpathsNotesOptional": "{\"targetPaths » :[...],\"notes » :\"optionnels\"}",
+    "targetpathsNotesOptional": "{\"targetPaths\":{\"/home\":\"/restore/home\",\"C:\\\\Users\":\"D:\\\\Restored\\\\Users\"},\"notes\":\"facultatif\"}",
     "storedOnTheTokenForTheRecoveryAgent": "Stocké sur le jeton pour l’agent de récupération. Laissez le vide si vous n’avez pas besoin de dérogations.",
     "createToken": "Créer un jeton",
     "thePlaintextTokenIsOnlyReturnedOnceSo": "Le jeton en clair n’est retourné qu’une seule fois, donc copiez la commande immédiatement après la création.",

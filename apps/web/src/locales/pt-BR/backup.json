@@ -397,7 +397,7 @@
     "selective": "Seletiva",
     "expiresInHours": "Expira em horas",
     "optionalTargetConfigJson": "JSON opcional de configuração do destino",
-    "targetpathsNotesOptional": "{\"targetPaths\":[...],\"notes\":\"optional\"}",
+    "targetpathsNotesOptional": "{\"targetPaths\":{\"/home\":\"/restore/home\",\"C:\\\\Users\":\"D:\\\\Restored\\\\Users\"},\"notes\":\"opcional\"}",
     "storedOnTheTokenForTheRecoveryAgent": "Armazenado no token para o agente de recuperação. Deixe em branco se não precisar de substituições.",
     "createToken": "Criar token",
     "thePlaintextTokenIsOnlyReturnedOnceSo": "O token em texto claro é retornado apenas uma vez, então copie o comando imediatamente após a criação.",

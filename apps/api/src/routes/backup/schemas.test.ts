@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bmrCompleteSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields, configSchema, jobListSchema, validateS3Details } from './schemas';
+import { bmrCompleteSchema, bmrCreateTokenSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields, configSchema, jobListSchema, validateS3Details } from './schemas';
 
 // D14: a bare-metal recovery completion report was answering "Request body
 // too large" for a payload carrying ~9,900 unbounded `warnings` strings (the
@@ -251,5 +251,37 @@ describe('validateS3Details key prefix', () => {
   it('does not validate a local destination prefix', () => {
     const parsed = configSchema.safeParse({ name: 'x', provider: 'local', details: { path: '/backups', prefix: 'a//b' } });
     expect(parsed.success).toBe(true);
+  });
+});
+
+// #12650: the recovery helper reads targetConfig.targetPaths only as an
+// object (original path → target). Older helpers silently ignored a list and
+// restored everything in place, so the API refuses any other shape.
+describe('bmrCreateTokenSchema targetConfig.targetPaths shape (#12650)', () => {
+  const base = { snapshotId: '00000000-0000-4000-8000-000000000001', restoreType: 'bare_metal' as const };
+  const parse = (targetConfig: unknown) => bmrCreateTokenSchema.safeParse({ ...base, targetConfig });
+
+  it.each([
+    ['no targetConfig', undefined],
+    ['no targetPaths', { notes: 'x' }],
+    ['null targetPaths', { targetPaths: null }],
+    ['empty object', { targetPaths: {} }],
+    ['folder and file mappings', { targetPaths: { '/home': '/restore/home', 'C:\\Users\\a\\f.txt': 'D:\\f.txt' } }],
+    ['nested under providerConfig', { providerConfig: { targetPaths: { '/a': '/b' } } }],
+  ])('accepts %s', (_name, targetConfig) => {
+    expect(parse(targetConfig).success).toBe(true);
+  });
+
+  it.each([
+    ['a list (the old placeholder shape)', { targetPaths: ['/mnt/recovery'] }],
+    ['a string', { targetPaths: '/mnt/recovery' }],
+    ['a non-string target', { targetPaths: { '/a': 1 } }],
+    ['an empty target', { targetPaths: { '/a': '  ' } }],
+    ['an empty source', { targetPaths: { '': '/b' } }],
+    ['a nested list', { providerConfig: { targetPaths: ['/x'] } }],
+  ])('refuses %s', (_name, targetConfig) => {
+    const parsed = parse(targetConfig);
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('must');
   });
 });

@@ -81,7 +81,7 @@ func newBMRRecoverCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&token, "token", "", "BMR recovery token")
 	cmd.Flags().StringVar(&server, "server", "", "Breeze server URL")
-	cmd.Flags().StringArrayVar(&targetPathFlags, "target-path", nil, "Target path override in the form source=target; may be repeated")
+	cmd.Flags().StringArrayVar(&targetPathFlags, "target-path", nil, "Restore the file or folder source to target instead of its original path (source=target; may be repeated). A folder mapping covers everything below it; a mapping that matches nothing in the snapshot refuses the recovery")
 	_ = cmd.MarkFlagRequired("token")
 	_ = cmd.MarkFlagRequired("server")
 	return cmd
@@ -102,7 +102,11 @@ func parseTargetPathOverrides(values []string) (map[string]string, error) {
 		if !ok || strings.TrimSpace(source) == "" || strings.TrimSpace(target) == "" {
 			return nil, fmt.Errorf("invalid --target-path value %q, expected source=target", raw)
 		}
-		overrides[strings.TrimSpace(source)] = strings.TrimSpace(target)
+		source, target = strings.TrimSpace(source), strings.TrimSpace(target)
+		if prev, dup := overrides[source]; dup && prev != target {
+			return nil, fmt.Errorf("--target-path %q is given twice with different targets (%q, %q)", source, prev, target)
+		}
+		overrides[source] = target
 	}
 
 	if len(overrides) == 0 {

@@ -400,6 +400,27 @@ export const extendedPolicyUpdateSchema = policyUpdateSchema.extend({
 
 // ── BMR / Recovery Token schemas ────────────────────────────────────
 
+// The recovery helper reads `targetPaths` (top level, or under
+// `providerConfig`) as an object mapping an original path — a file, or a
+// folder covering everything below it — to its target on the recovery
+// machine. Older helpers silently ignored any other shape and restored in
+// place, so anything else is refused here (#12650). Absent or null = none.
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export function targetPathsShapeIssue(value: unknown, where: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (!isPlainObject(value)) {
+    return `${where} must be an object mapping original paths to target paths, e.g. {"/home": "/restore/home"}`;
+  }
+  for (const [source, target] of Object.entries(value)) {
+    if (!source.trim() || typeof target !== 'string' || !target.trim()) {
+      return `${where} entry "${source}" must map a non-empty original path to a non-empty target path string`;
+    }
+  }
+  return null;
+}
+
 export const bmrCreateTokenSchema = z.object({
   ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().guid(),
@@ -408,6 +429,17 @@ export const bmrCreateTokenSchema = z.object({
     .record(z.string(), z.any())
     .refine((val) => JSON.stringify(val).length <= 65536, {
       message: 'targetConfig too large (max 64KB)',
+    })
+    .superRefine((val, ctx) => {
+      const top = targetPathsShapeIssue(val.targetPaths, 'targetConfig.targetPaths');
+      if (top) ctx.addIssue({ code: 'custom', path: ['targetPaths'], message: top });
+      if (isPlainObject(val.providerConfig)) {
+        const nested = targetPathsShapeIssue(
+          val.providerConfig.targetPaths,
+          'targetConfig.providerConfig.targetPaths',
+        );
+        if (nested) ctx.addIssue({ code: 'custom', path: ['providerConfig', 'targetPaths'], message: nested });
+      }
     })
     .optional(),
   expiresInHours: z.number().int().min(1).max(168).default(24),

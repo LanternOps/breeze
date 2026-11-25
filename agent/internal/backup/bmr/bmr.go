@@ -188,6 +188,16 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 		"snapshotSize", manifest.Size,
 	)
 
+	// Resolve every entry's destination before the first write — the
+	// system-state phase below already writes to the live system. A
+	// mapping that matches nothing, or one that cannot be honoured as
+	// given, refuses the whole recovery here (#12650).
+	targetPlan, planErr := planTargetPaths(manifest, cfg.TargetPaths)
+	if planErr != nil {
+		result.Error = planErr.Error()
+		return result, planErr
+	}
+
 	// 2. Download and apply system state.
 	if checkCancelled() {
 		return result, ctx.Err()
@@ -228,7 +238,7 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	filesRestored, bytesRestored, fileWarnings, failedFiles, filesErr := restoreFiles(ctx, manifest, cfg, provider)
+	filesRestored, bytesRestored, fileWarnings, failedFiles, filesErr := restoreFiles(ctx, manifest, targetPlan, cfg, provider)
 	result.FilesRestored = filesRestored
 	result.BytesRestored = bytesRestored
 	result.FailedFiles = failedFiles
@@ -1043,9 +1053,12 @@ func subtractStrings(a, b []string) []string {
 	return out
 }
 
+// restoreFiles restores every manifest entry to the destination plan gives
+// it (see target_paths.go); a nil plan restores each to its original path.
 func restoreFiles(
 	ctx context.Context,
 	manifest *snapshotManifest,
+	plan *targetPathPlan,
 	cfg RecoveryConfig,
 	provider providers.BackupProvider,
 ) (filesRestored int, bytesRestored int64, warnings []string, failedFiles int, err error) {
@@ -1102,14 +1115,21 @@ func restoreFiles(
 		// RecoveryConfig.TargetPaths's doc comment: "original -> target
 		// path overrides") — under VSS, file.SourcePath is a per-run
 		// shadow-copy device path a caller would never know to key an
-		// override by (D8).
+		// override by (D8). An exact source wins; otherwise the longest
+		// folder source above the entry places it under that folder's
+		// target (#12650, target_paths.go).
 		origPath := restoreSourcePath(file)
-		targetPath := origPath
-		overridden := false
-		if override, ok := cfg.TargetPaths[origPath]; ok {
-			targetPath = override
-			overridden = true
+		dest, resolveErr := plan.resolve(origPath)
+		if resolveErr != nil {
+			addFailure("restore refused for %s: %s", origPath, resolveErr.Error())
+			if consecutiveFailures >= maxConsecutiveDownloadFailures {
+				breakerTripped = true
+				break
+			}
+			continue
 		}
+		targetPath := dest.path
+		overridden := dest.mapped
 
 		// On Windows a component carrying a stream separator or ending in a
 		// dot or space is not the file it names (an alternate data stream,
@@ -1137,14 +1157,46 @@ func restoreFiles(
 		// to do with this restore (e.g. /var -> private/var on macOS,
 		// /var/run -> /run on many Linux distros) — walking those from "/"
 		// would refuse every single in-place restore on such a system.
+		//
+		// A folder mapping (#12650) names the trusted root itself: the
+		// mapping's target directory, whatever its shape — so the guard
+		// walks from there rather than from symlinkAncestorBase, which
+		// derives a root only when the target ends in the original's own
+		// relative path. On top of that, a mapped entry is refused when it
+		// would land at or below a symlink entry this same manifest maps
+		// (one this run, or an interrupted earlier run, recreates), and a
+		// folder-mapped entry that is not itself a link is never written
+		// through a link already at its destination.
 		if overridden {
-			if err := ensureNoSymlinkAncestor(symlinkAncestorBase(origPath, targetPath), targetPath); err != nil {
+			base := symlinkAncestorBase(origPath, targetPath)
+			if dest.folderRoot != "" {
+				base = dest.folderRoot
+			}
+			if err := ensureNoSymlinkAncestor(base, targetPath); err != nil {
 				addFailure("%s", err.Error())
 				if consecutiveFailures >= maxConsecutiveDownloadFailures {
 					breakerTripped = true
 					break
 				}
 				continue
+			}
+			if link, through := plan.throughPlannedLink(targetPath, file.Kind == "symlink"); through {
+				addFailure("refusing to write %s: %s is a symlink restored by this recovery", targetPath, link)
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+			if dest.folderRoot != "" && file.Kind != "symlink" {
+				if info, lerr := os.Lstat(targetPath); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+					addFailure("refusing to write %s: it is a symlink", targetPath)
+					if consecutiveFailures >= maxConsecutiveDownloadFailures {
+						breakerTripped = true
+						break
+					}
+					continue
+				}
 			}
 		}
 

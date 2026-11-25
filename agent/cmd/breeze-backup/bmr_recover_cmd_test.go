@@ -129,3 +129,13 @@ func TestBMRRecoverCommand_InterruptedContextSurfacesClearError(t *testing.T) {
 		t.Fatalf("err = %q, want it to mention 'recovery interrupted by signal'", err.Error())
 	}
 }
+
+func TestParseTargetPathOverridesRefusesConflictingDuplicates(t *testing.T) {
+	if _, err := parseTargetPathOverrides([]string{"/home=/a", "/home=/b"}); err == nil || !strings.Contains(err.Error(), "/home") {
+		t.Fatalf("err = %v, want a refusal naming /home", err)
+	}
+	got, err := parseTargetPathOverrides([]string{"/home=/a", " /home = /a "})
+	if err != nil || len(got) != 1 || got["/home"] != "/a" {
+		t.Fatalf("got %v, %v; a repeated identical mapping is one mapping", got, err)
+	}
+}

@@ -45,7 +45,7 @@ func TestRestoreFiles_WindowsHostRefusesStreamAndAliasNames(t *testing.T) {
 		{SourcePath: `C:\data\host.txt:extra`, BackupPath: path.Join("snapshots", "snap-w", "files", "a"), Size: 1},
 		{SourcePath: `C:\data\trailing.`, BackupPath: path.Join("snapshots", "snap-w", "files", "b"), Size: 1},
 	}}
-	_, _, warnings, failed, _ := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	_, _, warnings, failed, _ := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if failed != 2 || downloads != 0 {
 		t.Fatalf("failed=%d downloads=%d, want 2 refused before any download", failed, downloads)
 	}

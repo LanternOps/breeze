@@ -123,7 +123,7 @@ Use this mode on Windows and macOS, on Linux machines whose layout is not bare-m
    - **Snapshot** — the single backup to recover from (one snapshot per token)
    - **Token lifetime** — how long the token remains valid, 1–168 hours
    - **Restore type** — Full, Selective, or Bare Metal
-   - **Target configuration** — optional `source=target` path remappings applied on the recovery machine
+   - **Target configuration** — optional JSON stored on the token. Its `targetPaths` object maps an original file or folder to a location on the recovery machine, for example `{"targetPaths": {"/home": "/restore/home"}}` — see [Path mappings](#path-mappings). Any other shape (such as a list) is refused when the token is created.
 4. Click **Generate Token**.
 5. The token is displayed **once**. Copy it immediately — it's stored as a SHA-256 hash and cannot be retrieved later.
 </Steps>
@@ -158,12 +158,27 @@ To build bundles that run, set `RECOVERY_SIGNING_PRIVATE_KEY` and `RECOVERY_SIGN
    ```
    breeze-backup bmr-recover --token <recovery-token> --server <breeze-server-url>
    ```
-   Add `--target-path <source>=<target>` (repeatable) to remap individual file paths from the snapshot onto different locations on the recovery machine; anything not remapped restores to its original path. `Ctrl+C` (SIGINT/SIGTERM) stops the run cleanly and reports `recovery interrupted by signal`.
+   Add `--target-path <source>=<target>` (repeatable) to restore a file or a whole folder from the snapshot somewhere other than its original path — see [Path mappings](#path-mappings); anything not mapped restores to its original path. `Ctrl+C` (SIGINT/SIGTERM) stops the run cleanly and reports `recovery interrupted by signal`.
 3. The recovery agent authenticates with the token and downloads the snapshot manifest.
 4. For a `system_image` snapshot, the recovery binary downloads the system-state manifest and each artifact into a temporary staging directory, verifies every artifact's size and checksum, and then applies them — see [What a `system_image` recovery applies](#what-a-system_image-recovery-applies). Any artifact that fails verification is discarded and reported as a warning, and the run's `stateApplied` result is `false`.
-5. For a `file` snapshot, files are downloaded and written to their original paths (or their `--target-path` remapping). Files, symbolic links, empty directories, ownership and permission bits are restored when the snapshot recorded them (see [File backup fidelity](/backup/policies/#file-backup)); ownership and setuid/setgid/sticky bits are applied only when the recovery runs as root, otherwise one summary warning is printed.
+5. For a `file` snapshot, files are downloaded and written to their original paths (or where a [path mapping](#path-mappings) puts them). Files, symbolic links, empty directories, ownership and permission bits are restored when the snapshot recorded them (see [File backup fidelity](/backup/policies/#file-backup)); ownership and setuid/setgid/sticky bits are applied only when the recovery runs as root, otherwise one summary warning is printed.
 6. A post-restore validation probe checks network reachability, presence of critical files, and service status, and reports the result — it does not repair or retry anything it finds wrong.
 </Steps>
+
+#### Path mappings
+
+A path mapping (`--target-path <source>=<target>`, or the token's `targetPaths` object) restores part of the snapshot somewhere other than its original location, so a recovery does not have to overwrite live data.
+
+- **Folders and files.** A source can name a file or a folder. A folder mapping covers everything below it and keeps each entry's path under the target: `--target-path /home=/restore/home` restores `/home/alice/doc.txt` to `/restore/home/alice/doc.txt`, and `--target-path 'C:\Users=D:\Restored\Users'` restores `C:\Users\Alice\doc.txt` to `D:\Restored\Users\Alice\doc.txt`.
+- **Matching.** Sources match whole path components: `/home` covers `/home/alice` but not `/homework`. Trailing and doubled separators are ignored. For a Windows snapshot, case is ignored and `\` and `/` are interchangeable; for a Linux or macOS snapshot, case matters. This follows the snapshot, not the machine you recover on, so a Linux recovery environment matches a Windows snapshot's paths the Windows way.
+- **Precedence.** A source that is exactly a file's original path wins. Otherwise the longest matching folder source wins, so `--target-path /home=/r1 --target-path /home/alice=/r2` sends `/home/alice/...` to `/r2` and the rest of `/home` to `/r1`.
+- **Command line or token, not both.** `--target-path` mappings replace the token's `targetPaths`; when both are present the result carries a warning that the token's were not used.
+- **Refused before anything is written.** The recovery stops, before any system state or file is written, when a mapping matches nothing in the snapshot (the error names it — check the spelling and the drive letter), when two spellings of one source give different targets, when a folder mapping's target is not an absolute path on the recovery machine, or when folder mappings would put two different files at the same destination. The token stays usable for another attempt after a refused run.
+- **Safety checks.** A folder-mapped entry is never written through a symbolic link under the target folder, through a link the same recovery restores, or over a link already at its destination; such an entry is reported as a failed file. When folder mappings are given, an entry whose path contains a `.` or `..` component is refused (reported as a failed file) rather than restored in place.
+
+<Aside type="caution" title="Older recovery helpers match exact file paths only">
+  A recovery helper built before folder mappings were supported compares each source with each file's full original path and ignores anything else: a folder mapping, or a `targetPaths` list, matches nothing and every file restores to its original path, overwriting what is there. Download a fresh recovery bundle before relying on a folder mapping.
+</Aside>
 
 #### Reading the result
 
