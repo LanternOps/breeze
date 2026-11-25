@@ -970,6 +970,11 @@ describe('RestoreWizard', () => {
       expect(restoreRequests[0]).toMatchObject({ targetPath: 'C:\\', allowOverwriteOriginals: true });
     });
 
+    it('caps the alternate path input at the longest real path (#12654)', async () => {
+      await chooseDestination('D:\\Restored');
+      expect((screen.getByLabelText('Alternate path') as HTMLInputElement).maxLength).toBe(32767);
+    });
+
     it('a folder destination needs no confirmation and sends no flag', async () => {
       await chooseDestination('D:\\Restored');
       expect(screen.queryByTestId('restore-root-target-warning')).toBeNull();

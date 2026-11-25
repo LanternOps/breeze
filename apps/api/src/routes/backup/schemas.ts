@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EXTERNAL_BACKUP_STATUSES, coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
+import { EXTERNAL_BACKUP_STATUSES, RESTORE_TARGET_PATH_MAX_LENGTH, coerceS3EndpointUrl, deriveS3RegionFromEndpoint, optionalQueryBoolean } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
@@ -286,7 +286,7 @@ export const restoreSchema = z.object({
   ...restoreIntegrityConfirmationFields,
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
-  targetPath: z.string().optional(),
+  targetPath: z.string().max(RESTORE_TARGET_PATH_MAX_LENGTH).optional(),
   /**
    * #12638: the operator asked to write the files back over their originals.
    * A target that is a volume root (`C:\`, `/`, a share root) needs it; see

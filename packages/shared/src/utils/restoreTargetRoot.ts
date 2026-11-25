@@ -15,6 +15,14 @@
 /** RestoreResult.Code / API error code for a restore refused because it would overwrite the originals. */
 export const RESTORE_WOULD_OVERWRITE_ORIGINALS = 'restore_would_overwrite_originals';
 
+/**
+ * Longest restore target accepted anywhere. Windows extended-length paths top
+ * out at 32,767 UTF-16 units, the longest real path this product restores to;
+ * no legitimate target is longer. Bounding the input keeps every per-character
+ * check on it cheap whatever its implementation.
+ */
+export const RESTORE_TARGET_PATH_MAX_LENGTH = 32_767;
+
 const DRIVE = /^[A-Za-z]:/;
 const SEPARATOR = /[\\/]/;
 
@@ -86,10 +94,25 @@ function splitShare(path: string): string | null {
   return tail.join('/');
 }
 
+/**
+ * Win32 drops trailing dots and spaces. A right-to-left scan: an end-anchored
+ * regex retries at every start offset and is quadratic on a long run of dots
+ * or spaces followed by another character (Strix, #12654).
+ */
+function trimTrailingDotsAndSpaces(segment: string): string {
+  let end = segment.length;
+  while (end > 0) {
+    const c = segment.charCodeAt(end - 1);
+    if (c !== 0x2e && c !== 0x20) break;
+    end--;
+  }
+  return end === segment.length ? segment : segment.slice(0, end);
+}
+
 function resolveParts(raw: string[], win32: boolean): string[] {
   const parts: string[] = [];
   for (const segment of raw) {
-    const part = win32 && segment !== '.' && segment !== '..' ? segment.replace(/[. ]+$/, '') : segment;
+    const part = win32 && segment !== '.' && segment !== '..' ? trimTrailingDotsAndSpaces(segment) : segment;
     if (part === '' || part === '.') continue;
     if (part === '..') {
       parts.pop();

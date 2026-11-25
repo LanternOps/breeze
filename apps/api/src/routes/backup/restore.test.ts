@@ -541,6 +541,18 @@ describe('restore routes', () => {
       expect(payload).not.toHaveProperty('allowOverwriteOriginals');
     });
 
+    it('rejects an over-long targetPath with a 400 before the guard or any lookup (#12654)', async () => {
+      const ok = await post({ targetPath: `D:\\${'a'.repeat(32_767 - 3)}`, allowOverwriteOriginals: false });
+      // exactly at the limit passes validation (it then proceeds past the guard)
+      expect(ok.status).not.toBe(400);
+      vi.clearAllMocks();
+      const res = await post({ targetPath: `C:\\${' '.repeat(32_767)}x` });
+      expect(res.status).toBe(400);
+      expect(selectMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
     it('refuses the flag without a target: the staging folder never overwrites anything', async () => {
       const res = await post({ allowOverwriteOriginals: true });
       expect(res.status).toBe(400);

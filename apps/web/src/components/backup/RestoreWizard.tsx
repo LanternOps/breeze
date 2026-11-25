@@ -14,7 +14,7 @@ import {
   Server,
   XCircle
 } from 'lucide-react';
-import { isVolumeRootRestoreTarget } from '@breeze/shared';
+import { isVolumeRootRestoreTarget, RESTORE_TARGET_PATH_MAX_LENGTH } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
@@ -825,6 +825,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm"
                     placeholder={t('restoreWizard.alternatePathPlaceholder')}
                     value={alternatePath}
+                    maxLength={RESTORE_TARGET_PATH_MAX_LENGTH}
                     onChange={(event) => {
                       setAlternatePath(event.target.value);
                       setOverwriteOriginals(false);

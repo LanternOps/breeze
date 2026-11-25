@@ -16,4 +16,10 @@ describe('restore_snapshot targetPath (#12638)', () => {
   it.each([undefined, 'D:\\Restored', '/var/restore'])('accepts %j', (targetPath) => {
     expect(schema.safeParse({ ...base, ...(targetPath ? { targetPath } : {}) }).success).toBe(true);
   });
+
+  it('bounds targetPath at the schema (#12654)', () => {
+    expect(schema.safeParse({ ...base, targetPath: `D:\\${'a'.repeat(4096 - 3)}` }).success).toBe(true);
+    expect(schema.safeParse({ ...base, targetPath: `D:\\${'a'.repeat(4096)}` }).success).toBe(false);
+    expect(schema.safeParse({ ...base, targetPath: `C:\\${' '.repeat(200_000)}x` }).success).toBe(false);
+  });
 });
