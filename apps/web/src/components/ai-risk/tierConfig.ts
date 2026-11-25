@@ -753,6 +753,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_deployments', tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
   { toolName: 'manage_patches', tier: 1, permission: 'devices.read', category: 'Fleet Operations' },
   { toolName: 'manage_groups', tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
+  { toolName: 'get_fleet_device_stats', tier: 1, permission: 'devices.read', category: 'Devices & Hardware' },
   { toolName: 'manage_maintenance_windows', tier: 1, permission: 'devices.write', category: 'Fleet Operations' },
   { toolName: 'manage_automations', tier: 1, permission: 'automations.write', category: 'Fleet Operations' },
   { toolName: 'manage_alert_rules', tier: 1, permission: 'alerts.write', category: 'Alerts & Notifications' },

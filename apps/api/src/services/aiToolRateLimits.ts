@@ -80,6 +80,13 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
   manage_groups: { limit: 20, windowSeconds: 300 },
+  // #12655 (Strix): a read, but its typed filter and group-by evaluate
+  // model-supplied filter-engine SQL over the whole scoped fleet (up to three
+  // statements per call). Per tool, so the cheap unfiltered count shares the
+  // bucket; 30 per 5 min matches the other fleet-wide reads (search_logs,
+  // get_cis_compliance). Each statement is also bounded by the filter engine's
+  // statement_timeout.
+  get_fleet_device_stats: { limit: 30, windowSeconds: 300 },
   manage_maintenance_windows: { limit: 15, windowSeconds: 300 },
   manage_automations: { limit: 10, windowSeconds: 600 },
   manage_alert_rules: { limit: 15, windowSeconds: 300 },

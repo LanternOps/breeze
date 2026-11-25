@@ -64,6 +64,7 @@ import { aiRunContextInputShape } from './scriptRunRequest';
 import { findUnknownInputKeys, formatUnknownKeyFinding, unknownKeysCovered } from './aiToolUnknownKeys';
 import { SPECIALIST_KINDS, type SpecialistKind } from './wisp/specialistPolicy';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
+import { fleetFilterZodShape } from './fleetFilter';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { localDestinationTargetError } from './localStoreTargets';
@@ -1736,7 +1737,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     confirmation_phrase: z.string().min(1).max(500),
   }),
 
-  get_fleet_device_stats: z.object({ orgId: uuid.optional() }),
+  get_fleet_device_stats: z.object({ orgId: uuid.optional(), ...fleetFilterZodShape(), ...pageZodShape(10, 100) }),
 
   get_fleet_health: z.object({
     orgId: uuid.optional(),

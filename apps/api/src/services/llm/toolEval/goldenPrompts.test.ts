@@ -45,8 +45,9 @@ describe('GOLDEN_CASES', () => {
     // g133-g135 (full-control W18, #6789 PR B): portal settings update, the four-eyes sensitive access, a recipient add.
     // g136-g137 (full-control W16, #6786 PR A): run the patch agent, delegate a service recovery, from ordinary chat.
     // g138-g142 (full-control W16, #6786 PR B): schedule writes and Fleet Designs.
-    expect(GOLDEN_CASES).toHaveLength(142);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(142);
+    // g143 (#12418 W01): filtered fleet count with a breakdown.
+    expect(GOLDEN_CASES).toHaveLength(143);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(143);
     expect(GOLDEN_CASES.find((c) => c.id === 'g136')?.expect[0]).toEqual({ tool: 'run_patch_plan' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g137')?.expect[0]).toEqual({ tool: 'create_operator_task' });
     for (const id of ['g136', 'g137']) {

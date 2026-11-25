@@ -188,4 +188,5 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g140', prompt: 'Run a Fleet Design for Contoso.', expect: [{ tool: 'manage_fleet_designs', action: 'run' }] },
   { id: 'g141', prompt: "Apply the functions and monitoring from Contoso's latest Fleet Design.", expect: [{ tool: 'list_fleet_designs' }, { tool: 'manage_fleet_designs', action: 'preview' }, { tool: 'manage_fleet_designs', action: 'apply' }] },
   { id: 'g142', prompt: 'Undo the Fleet Design we applied at Contoso last week.', expect: [{ tool: 'manage_fleet_designs', action: 'applied' }, { tool: 'manage_fleet_designs', action: 'rollback' }] },
+  { id: 'g143', prompt: 'How many Windows devices at Contoso still have pending patches, broken down by site?', expect: [{ tool: 'get_fleet_device_stats' }] },
 ];
