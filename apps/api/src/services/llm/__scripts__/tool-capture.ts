@@ -16,11 +16,15 @@
  *     [--tenant-tools none|a|b]      chat only: synthetic BYO MCP tools via buildTenantSdkTools (default none)
  *     [--tenant-count N]             tools in that set (default: the set's 12 named tools)
  *     [--out apps/api/tool-capture.jsonl]
+ *     [--raw-out apps/api/tool-capture.raw.jsonl]  #12421: every SDK message, one JSON line each (gitignored; fixtures are
+ *                                    written by hand from the SHAPE, never from the content)
  *     [--profile minimal|standard|full]  #11395: capture as a gateway offering on that tool profile
  *                                    (exposure, compact prompt and descriptions, no tool search);
  *                                    rows carry advertisedPrefixTokens (what PROFILE_PREFIX_TOKENS pins)
  */
 import { appendFile } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { closeDb } from '../../../db';
 import { resolveDefaultModel } from '../../aiModel';
 import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
@@ -31,11 +35,11 @@ import { advertisedRequest, type MeasuredProfile } from '../toolCapture/advertis
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 import { CAPTURE_TENANT_SET_IDS, MAX_CAPTURE_TENANT_TOOLS, captureTenantDescriptors, type CaptureTenantSetId } from '../toolCapture/tenantFixtures';
 
-class UsageError extends Error {}
+export class UsageError extends Error {}
 
-function parseArgs(args: string[]) {
+export function parseArgs(args: string[]) {
   const values = new Map<string, string>();
-  const valueFlags = new Set(['--surface', '--tool-search', '--turns', '--prompt', '--model', '--base-url', '--auth-token', '--api-key', '--out', '--tenant-tools', '--tenant-count', '--profile']);
+  const valueFlags = new Set(['--surface', '--tool-search', '--turns', '--prompt', '--model', '--base-url', '--auth-token', '--api-key', '--out', '--tenant-tools', '--tenant-count', '--profile', '--raw-out']);
   let proxy = false;
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!;
@@ -86,6 +90,7 @@ function parseArgs(args: string[]) {
   return {
     values, surface, toolSearch, turns: Number(turns), proxy, baseUrl, tenantSet: tenantSet as CaptureTenantSetId, tenantCount,
     profile: profile as MeasuredProfile | undefined,
+    rawOut: values.get('--raw-out'),
   };
 }
 
@@ -128,6 +133,7 @@ async function main(): Promise<void> {
         const result = await runSurfaceCapture({
           surface, model, env, resume, toolSearchOverride, tenantTools,
           ...(args.profile ? { profile: args.profile } : {}),
+          ...(args.rawOut ? { onRawMessage: (m: unknown) => appendFileSync(args.rawOut!, JSON.stringify(m) + '\n') } : {}),
           prompt: turn === 1
             ? args.values.get('--prompt') ?? 'Which Windows devices in the fleet are offline right now?'
             : 'Thanks. And how many of those are servers?',
@@ -191,7 +197,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().then(() => process.exit(0)).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : 'Tool capture failed');
-  process.exit(error instanceof UsageError ? 2 : 1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(() => process.exit(0)).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : 'Tool capture failed');
+    process.exit(error instanceof UsageError ? 2 : 1);
+  });
+}
