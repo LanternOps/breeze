@@ -4,7 +4,9 @@ import { escapeLike } from '../utils/sql';
 
 /**
  * The staff ticket search box (routes/tickets/tickets.ts): a substring of the
- * subject or the Breeze number, or — #8313 (spec §5) — the WHOLE source
+ * subject, the Breeze number (`internal_number`, T-2026-0001) or the
+ * customer-facing `ticket_number` (#12678; the 10-character code in the
+ * acknowledgement email and the portal), or — #8313 (spec §5) — the WHOLE source
  * number an import recorded on `ticket_external_refs.external_number`
  * (Zammad's "#41023"), case-insensitively. The source number is matched
  * exactly, through the (org_id, lower(external_number)) index: a substring
@@ -27,5 +29,5 @@ export function ticketSearchCondition(search: string, visibleOrgIds: readonly st
       sql`lower(${ticketExternalRefs.externalNumber}) = lower(${whole})`,
     )})`
     : undefined;
-  return or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term), bySourceNumber)!;
+  return or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term), ilike(tickets.ticketNumber, term), bySourceNumber)!;
 }
