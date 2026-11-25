@@ -7,7 +7,7 @@ export interface EvalReport {
   generatedAt: string;
   model: string;
   /** `chat` = the golden chat set on one surface; `agent` = the agent golden set, each task on its own surface; `lazy-index` = the W19 page-context set on chat. */
-  suite: 'chat' | 'agent' | 'lazy-index';
+  suite: 'chat' | 'agent' | 'lazy-index' | 'tuning';
   /** W19: `AI_TOOL_INDEX` for the run (chat prompt index text). */
   toolIndexMode?: 'lazy' | 'full';
   toolSearch: string;
@@ -69,6 +69,8 @@ export function renderMarkdownReport(input: EvalReport): string {
     lines.push(`| ${[miss.id, golden?.prompt ?? agentTask?.title ?? '', expected.map((e) =>
       `${e.tool}${e.action === undefined ? '' : `.${e.action}`}`).join(', '), observed].map(cell).join(' | ')} |`);
   }
+  lines.push('', summary.schemaValidRate === null ? 'Schema-valid calls: n/a (no call checked).'
+    : `Schema-valid calls: ${summary.schemaValidCalls}/${summary.schemaCheckedCalls} = ${(summary.schemaValidRate * 100).toFixed(1)}%.`);
   lines.push('', `Mean first-call input tokens: ${input.meanFirstCallInputTokens}; mean context tokens through the first real tool call: ${input.meanContextTokensToFirstTool}; at it: ${input.meanContextTokensAtFirstTool}; API calls to it: ${input.meanApiCallsToFirstTool}; cost to it: ${input.meanCostCentsToFirstTool} cents; system prompt bytes: ${input.systemPromptBytes}.`, '');
   return lines.join('\n');
 }

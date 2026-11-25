@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scoreFirstCall, summarize } from './score';
+import { scoreFirstCall, scoreSchemaValidity, summarize } from './score';
 import { renderMarkdownReport } from './report';
 
 const c = { id: 'x', prompt: 'p', expect: [{ tool: 'manage_alerts', action: 'list' }, { tool: 'query_monitors' }] };
@@ -34,7 +34,7 @@ it('skips ToolSearch and normalizes script-builder names', () => {
 });
 
 it('summarizes an empty run without NaN', () => {
-  expect(summarize([])).toEqual({ total: 0, hits: 0, accuracy: 0, misses: [] });
+  expect(summarize([])).toEqual({ total: 0, hits: 0, accuracy: 0, misses: [], schemaValidRate: null, schemaCheckedCalls: 0, schemaValidCalls: 0 });
 });
 
 describe('scoreFirstCall with allowedTools', () => {
@@ -95,4 +95,71 @@ it('renders the observed cell as "<tool> (not exposed)" when unavailableTool is 
     summary: summarize([score]),
   });
   expect(markdown).toContain('manage_tickets (not exposed)');
+});
+
+describe('scoreSchemaValidity', () => {
+  const valid = { name: 'mcp__breeze__query_devices', input: {} };
+  const malformed = { name: 'mcp__breeze__manage_services', input: { deviceId: '00000000-0000-4000-8000-000000000001' } };
+
+  it('two valid calls: schemaValid true, nothing invalid', () => {
+    const r = scoreSchemaValidity({ toolUses: [valid, valid] });
+    expect(r).toMatchObject({ schemaValid: true, schemaCheckedCalls: 2, schemaValidCalls: 2, schemaInvalidCalls: [] });
+  });
+
+  it('a later malformed call fails with that one entry; the control without it is valid', () => {
+    const bad = scoreSchemaValidity({ toolUses: [valid, malformed] });
+    expect(bad.schemaValid).toBe(false);
+    expect(bad.schemaInvalidCalls).toHaveLength(1);
+    expect(bad.schemaInvalidCalls[0]!.name).toBe('manage_services');
+    expect(bad.schemaCheckedCalls).toBe(2);
+    expect(bad.schemaValidCalls).toBe(1);
+    expect(scoreSchemaValidity({ toolUses: [valid] }).schemaValid).toBe(true);
+  });
+
+  it('ignores ToolSearch uses', () => {
+    const r = scoreSchemaValidity({ toolUses: [{ name: 'ToolSearch', input: { query: 'x' } }, valid] });
+    expect(r.schemaCheckedCalls).toBe(1);
+  });
+
+  it('two valid plus one invalid: checked 3, valid 2', () => {
+    const r = scoreSchemaValidity({ toolUses: [valid, malformed, valid] });
+    expect(r).toMatchObject({ schemaCheckedCalls: 3, schemaValidCalls: 2 });
+  });
+
+  it('a call with no tool calls is vacuously valid with zero checked', () => {
+    expect(scoreSchemaValidity({ toolUses: [] })).toMatchObject({ schemaValid: true, schemaCheckedCalls: 0 });
+  });
+
+  it('uses the injected validator and strips the surface prefix', () => {
+    const seen: string[] = [];
+    scoreSchemaValidity({ toolUses: [{ name: 'mcp__script_builder__foo', input: {} }] },
+      (n) => { seen.push(n); return { success: true }; });
+    expect(seen).toEqual(['foo']);
+  });
+});
+
+describe('summarize schemaValidRate', () => {
+  const base = { observedTool: null, observedAction: null, answeredWithoutTool: false, unavailableTool: false };
+  it('is Σvalid/Σchecked over cases (2/3 and 1/1 → 3/4)', () => {
+    const s = summarize([
+      { id: 'a', hit: true, ...base, schemaValid: false, schemaCheckedCalls: 3, schemaValidCalls: 2, schemaInvalidCalls: [] },
+      { id: 'b', hit: true, ...base, schemaValid: true, schemaCheckedCalls: 1, schemaValidCalls: 1, schemaInvalidCalls: [] },
+    ]);
+    expect(s.schemaValidRate).toBe(0.75);
+  });
+  it('is null when no case checked a call', () => {
+    expect(summarize([{ id: 'a', hit: true, ...base }]).schemaValidRate).toBeNull();
+    expect(summarize([]).schemaValidRate).toBeNull();
+  });
+});
+
+describe('renderMarkdownReport schema validity', () => {
+  it('renders the schema-valid rate', () => {
+    const summary = summarize([{ id: 'a', hit: true, observedTool: 'x', observedAction: null, answeredWithoutTool: false, unavailableTool: false,
+      schemaValid: true, schemaCheckedCalls: 4, schemaValidCalls: 3, schemaInvalidCalls: [] }]);
+    const md = renderMarkdownReport({ generatedAt: 't', model: 'm', suite: 'chat', toolSearch: 'on', surfaceSearch: 'production',
+      toolSearchEnabled: true, surface: 'chat', systemPromptBytes: 1, promptVariant: null, cases: [], summary,
+      meanFirstCallInputTokens: 0, meanContextTokensToFirstTool: 0, meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 0, meanCostCentsToFirstTool: 0 });
+    expect(md).toContain('Schema-valid calls: 3/4 = 75.0%');
+  });
 });

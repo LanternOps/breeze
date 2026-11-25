@@ -335,3 +335,18 @@ describe('exposure-aware capture: --profile (#11395)', () => {
     expect(result.registeredToolNames.length).toBeGreaterThan(100);
   });
 });
+
+describe('runSurfaceCapture onRawMessage', () => {
+  it('is called once per SDK message, in order, beside the observer', async () => {
+    const stream = [
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'user', message: { content: [] } },
+      { type: 'result', subtype: 'success', num_turns: 1 },
+    ];
+    queryMock.mockReturnValueOnce(messages(stream));
+    const seen: unknown[] = [];
+    const result = await runSurfaceCapture({ ...baseOpts, onRawMessage: (m) => seen.push(m) });
+    expect(seen).toEqual(stream);
+    expect(result.observation.result).not.toBeNull();
+  });
+});

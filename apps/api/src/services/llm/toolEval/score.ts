@@ -1,5 +1,6 @@
 import type { StreamObservation } from '../toolCapture/streamObserver';
 import type { GoldenCase } from './goldenPrompts';
+import { validateToolInput } from '../../aiToolSchemas';
 
 export interface CaseScore {
   id: string;
@@ -12,6 +13,35 @@ export interface CaseScore {
    *  even if it happens to match the case's expected tool name (which can
    *  only happen if the golden case itself expects an unexposed tool). */
   unavailableTool: boolean;
+  /** #12421: every non-ToolSearch call's input run through `validateToolInput`; see `scoreSchemaValidity`. Optional so an errored run (no calls) needs no fabricated values. */
+  schemaValid?: boolean;
+  schemaCheckedCalls?: number;
+  schemaValidCalls?: number;
+  schemaInvalidCalls?: Array<{ name: string; error: string }>;
+}
+
+export type SchemaScore = Required<Pick<CaseScore, 'schemaValid' | 'schemaCheckedCalls' | 'schemaValidCalls' | 'schemaInvalidCalls'>>;
+
+/**
+ * Whether the model's tool inputs would pass the production input validator.
+ * Unlike `scoreFirstCall` this looks at EVERY call in the observation (a first
+ * call can be right while a later one is malformed). ToolSearch is not a
+ * registry tool and is skipped.
+ */
+export function scoreSchemaValidity(
+  observation: Pick<StreamObservation, 'toolUses'>,
+  validate: (name: string, input: Record<string, unknown>) => { success: true } | { success: false; error: string } = validateToolInput,
+): SchemaScore {
+  const invalid: SchemaScore['schemaInvalidCalls'] = [];
+  let checked = 0;
+  for (const use of observation.toolUses) {
+    if (use.name === 'ToolSearch') continue;
+    checked++;
+    const name = use.name.replace(/^mcp__(?:breeze|script_builder)__/, '');
+    const result = validate(name, use.input ?? {});
+    if (!result.success) invalid.push({ name, error: result.error });
+  }
+  return { schemaValid: invalid.length === 0, schemaCheckedCalls: checked, schemaValidCalls: checked - invalid.length, schemaInvalidCalls: invalid };
 }
 
 /**
@@ -42,9 +72,20 @@ export function scoreFirstCall(
   };
 }
 
-export function summarize(scores: CaseScore[]): { total: number; hits: number; accuracy: number; misses: CaseScore[] } {
+export function summarize(scores: CaseScore[]): {
+  total: number; hits: number; accuracy: number; misses: CaseScore[];
+  /** Σ valid / Σ checked calls; null when no case checked a call. */
+  schemaValidRate: number | null;
+  schemaCheckedCalls: number;
+  schemaValidCalls: number;
+} {
   const hits = scores.filter((score) => score.hit).length;
+  const checked = scores.reduce((sum, s) => sum + (s.schemaCheckedCalls ?? 0), 0);
+  const valid = scores.reduce((sum, s) => sum + (s.schemaValidCalls ?? 0), 0);
   return {
+    schemaValidRate: checked === 0 ? null : valid / checked,
+    schemaCheckedCalls: checked,
+    schemaValidCalls: valid,
     total: scores.length,
     hits,
     accuracy: scores.length === 0 ? 0 : hits / scores.length,
