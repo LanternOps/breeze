@@ -31,7 +31,6 @@ import {
   devicePatches,
   patchJobs,
   patchJobResults,
-  patchRollbacks,
 } from '../db/schema/patches';
 import {
   deviceGroups,
@@ -114,6 +113,7 @@ import { assertReportExecutionPreflight } from './reportGenerationService';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import { validateManualMembershipDevices } from './groupMembership';
 import { aiQueueCommandForExecution } from './aiDispatch';
+import { queuePatchRollbacks } from './patchRollback';
 import { CommandTypes } from './commandTypes';
 import { captureException } from './sentry';
 import { splitByOrg, type SplitByOrg } from './aiToolSplitByOrg';
@@ -1719,19 +1719,42 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!Array.isArray(input.deviceIds) || input.deviceIds.length === 0) return JSON.stringify({ error: 'deviceIds is required for rollback' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
-        // Validate the device is accessible; its own org is authoritative (#7827).
-        const device = await resolveDeviceOrg(auth, (input.deviceIds as string[])[0]!);
-        if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-
-        const [rollback] = await db.insert(patchRollbacks).values({
-          deviceId: device.id,
+        // #12492: the same rollback as POST /patches/:id/rollback, for every
+        // listed device. Each device's own org is authoritative (#7827), and
+        // the site axis is app-layer only (RLS does NOT enforce it).
+        const rollback = await queuePatchRollbacks({
           patchId: input.patchId as string,
+          deviceIds: input.deviceIds as string[],
           reason: (input.notes as string) ?? 'Initiated via AI assistant',
-          status: 'pending',
           initiatedBy: auth.user.id,
-        }).returning();
-
-        return JSON.stringify({ success: true, rollbackId: rollback?.id, message: 'Rollback initiated' });
+          canAccess: (d) => auth.canAccessOrg(d.orgId) && !deviceSiteDenied(auth, d.siteId, d.id),
+          queue: (d, type, payload) =>
+            aiQueueCommandForExecution(auth, 'manage_patches', d.id, type, payload, { userId: auth.user.id, expectedOrgId: d.orgId }),
+        });
+        if (!rollback) return JSON.stringify({ error: 'Patch not found' });
+        const { queued, failed, skipped } = rollback;
+        if (rollback.accessibleDevices.length === 0) {
+          return JSON.stringify({
+            error: 'No rollback was queued: each device was not found or access denied, or does not have this patch installed (see skipped).',
+            skipped,
+          });
+        }
+        if (queued.length === 0) {
+          return JSON.stringify({
+            success: false,
+            error: `No rollback was queued: all ${failed.length} device(s) refused it (see failed[]).`,
+            queued,
+            failed,
+            skipped,
+          });
+        }
+        return JSON.stringify({
+          success: failed.length === 0,
+          message: `Rollback queued for ${queued.length} device(s)` + (failed.length > 0 ? `; ${failed.length} refused it (see failed[])` : '') + '.',
+          queued,
+          failed,
+          skipped,
+        });
       }
 
       if (action === 'device_history') {

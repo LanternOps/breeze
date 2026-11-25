@@ -65,6 +65,7 @@ vi.mock('../../db', () => ({
   // decide whether a patch_approvals read can run on the request's own
   // connection (#7663). Default: no ambient context → the system escape.
   getCurrentDbAccessContext: vi.fn(() => undefined),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

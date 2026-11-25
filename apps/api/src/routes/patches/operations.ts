@@ -5,12 +5,11 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { db } from '../../db';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { queuePatchRollbacks } from '../../services/patchRollback';
 import {
   patches,
-  devicePatches,
   patchJobs,
   patchJobResults,
-  patchRollbacks,
   devices,
   users
 } from '../../db/schema';
@@ -364,153 +363,34 @@ operationsRoutes.post(
       return c.json({ error: 'Scheduled rollback is not supported yet' }, 400);
     }
 
-    const [patch] = await db
-      .select({
-        id: patches.id,
-        source: patches.source,
-        externalId: patches.externalId,
-        title: patches.title
-      })
-      .from(patches)
-      .where(eq(patches.id, id))
-      .limit(1);
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const rollback = await queuePatchRollbacks({
+      patchId: id,
+      deviceIds: data.deviceIds,
+      reason: data.reason ?? null,
+      initiatedBy: auth.user.id,
+      canAccess: (device) => auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions),
+      queue: (device, type, payload) =>
+        queueCommandForExecution(device.id, type, payload, { userId: auth.user.id, preferHeartbeat: false })
+    });
 
-    if (!patch) {
+    if (!rollback) {
       return c.json({ error: 'Patch not found' }, 404);
     }
 
-    const permissions = c.get('permissions') as UserPermissions | undefined;
-    const isAccessibleDevice = (device: { orgId: string; siteId: string | null }) =>
-      auth.canAccessOrg(device.orgId) && canAccessDeviceSite(device, permissions);
-
-    let candidateDevices: Array<{ id: string; orgId: string; siteId: string | null }> = [];
-    let missingDeviceIds: string[] = [];
-    let notInstalledDeviceIds: string[] = [];
-
-    if (data.deviceIds && data.deviceIds.length > 0) {
-      // Bind each rollback target to the device's own `installed` observation
-      // (#5565), mirroring how install binds to `pending`. A device
-      // that exists but never reported this patch as installed is skipped
-      // rather than sent a rollback for a catalog row it has no relation to.
-      const requestedDevices = await db
-        .select({
-          id: devices.id,
-          orgId: devices.orgId,
-          siteId: devices.siteId,
-          observationId: devicePatches.id
-        })
-        .from(devices)
-        .leftJoin(devicePatches, and(
-          eq(devicePatches.deviceId, devices.id),
-          eq(devicePatches.patchId, id),
-          eq(devicePatches.status, 'installed')
-        ))
-        .where(inArray(devices.id, data.deviceIds));
-
-      const foundIds = new Set(requestedDevices.map((device) => device.id));
-      missingDeviceIds = data.deviceIds.filter((deviceId) => !foundIds.has(deviceId));
-      // Access is decided before install state is revealed: a device the
-      // caller cannot reach is reported as inaccessible whether or not it has
-      // the patch, so the response never discloses per-device install status
-      // for devices outside the caller's scope.
-      notInstalledDeviceIds = requestedDevices
-        .filter((device) => device.observationId === null && isAccessibleDevice(device))
-        .map((device) => device.id);
-      candidateDevices = requestedDevices
-        .filter((device) => device.observationId !== null || !isAccessibleDevice(device))
-        .map(({ id: deviceId, orgId, siteId }) => ({ id: deviceId, orgId, siteId }));
-    } else {
-      candidateDevices = await db
-        .select({
-          id: devices.id,
-          orgId: devices.orgId,
-          siteId: devices.siteId
-        })
-        .from(devicePatches)
-        .innerJoin(devices, eq(devicePatches.deviceId, devices.id))
-        .where(
-          and(
-            eq(devicePatches.patchId, id),
-            eq(devicePatches.status, 'installed')
-          )
-        );
-    }
-
-    const accessibleDevices = candidateDevices.filter(isAccessibleDevice);
-    const inaccessibleDeviceIds = candidateDevices
-      .filter((device) => !isAccessibleDevice(device))
-      .map((device) => device.id);
-
+    const { patch, accessibleDevices, queued, failed, skipped } = rollback;
     if (accessibleDevices.length === 0) {
-      return c.json({
-        error: 'No accessible devices found for rollback',
-        skipped: {
-          missingDeviceIds,
-          notInstalledDeviceIds,
-          inaccessibleDeviceIds
-        }
-      }, 404);
+      return c.json({ error: 'No accessible devices found for rollback', skipped }, 404);
     }
 
-    const queueResults = await Promise.all(
-      accessibleDevices.map(async (device) => {
-        try {
-          const queued = await queueCommandForExecution(
-            device.id,
-            'rollback_patches',
-            {
-              patchIds: [id],
-              patches: [patch],
-              reason: data.reason ?? null
-            },
-            {
-              userId: auth.user.id,
-              preferHeartbeat: false
-            }
-          );
-
-          if (!queued.command) {
-            return { ok: false as const, deviceId: device.id };
-          }
-
-          return {
-            ok: true as const,
-            deviceId: device.id,
-            commandId: queued.command.id,
-            commandStatus: queued.command.status
-          };
-        } catch {
-          return { ok: false as const, deviceId: device.id };
-        }
-      })
-    );
-
-    const queued = queueResults
-      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok);
     const queuedCommandIds = queued.map((entry) => entry.commandId);
-    const dispatchedCommandIds = queueResults
-      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok && result.commandStatus === 'sent')
-      .map((result) => result.commandId);
-    const pendingCommandIds = queueResults
-      .filter((result): result is { ok: true; deviceId: string; commandId: string; commandStatus: string } => result.ok && result.commandStatus !== 'sent')
-      .map((result) => result.commandId);
-    const failedDeviceIds = queueResults
-      .filter((result): result is { ok: false; deviceId: string } => !result.ok)
-      .map((result) => result.deviceId);
-
-    if (queued.length > 0) {
-      await db
-        .insert(patchRollbacks)
-        .values(
-          queued.map((entry) => ({
-            deviceId: entry.deviceId,
-            patchId: id,
-            reason: data.reason ?? null,
-            status: 'pending' as const,
-            initiatedBy: auth.user.id
-          }))
-        );
-    }
+    const dispatchedCommandIds = queued
+      .filter((entry) => entry.commandStatus === 'sent')
+      .map((entry) => entry.commandId);
+    const pendingCommandIds = queued
+      .filter((entry) => entry.commandStatus !== 'sent')
+      .map((entry) => entry.commandId);
+    const failedDeviceIds = failed.map((entry) => entry.deviceId);
 
     writePatchAuditForOrgIds(
       c,
@@ -540,11 +420,7 @@ operationsRoutes.post(
       pendingCommandIds,
       deviceCount: accessibleDevices.length,
       failedDeviceIds,
-      skipped: {
-        missingDeviceIds,
-        notInstalledDeviceIds,
-        inaccessibleDeviceIds
-      }
+      skipped
     });
   }
 );

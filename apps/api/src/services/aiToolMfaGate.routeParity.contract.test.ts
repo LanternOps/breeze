@@ -99,6 +99,7 @@ const TIER3_APPROVAL_ONLY: Row[] = [
   { route: 'routes/backup/vault.ts', method: 'post', path: '/:id/sync', tool: 'trigger_vault_sync', actions: [undefined] },
   { route: 'routes/c2c/jobs.ts', method: 'post', path: '/configs/:id/run', tool: 'trigger_c2c_sync', actions: [undefined] },
   { route: 'routes/dr.ts', method: 'delete', path: '/plans/:id/groups/:gid', tool: 'manage_dr_plan', actions: ['delete_group'] },
+  { route: 'routes/patches/operations.ts', method: 'post', path: '/:id/rollback', tool: 'manage_patches', actions: ['rollback'] },
 ];
 
 /** The middleware chain of `<x>Routes.<method>('<path>', ...mw, async (c) =>`. */

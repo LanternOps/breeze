@@ -164,6 +164,8 @@ export default defineConfig({
       // Real PostgreSQL proof for restart-safe rollback observation ingestion,
       // append-only dedupe, and terminal projection truth.
       'src/services/agentRollbackResult.integration.test.ts',
+      // #12492: AI and REST patch rollback leave the same rows.
+      'src/services/patchRollback.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
