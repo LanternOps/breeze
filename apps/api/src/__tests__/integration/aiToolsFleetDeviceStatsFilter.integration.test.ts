@@ -410,6 +410,8 @@ describe('get_fleet_device_stats statement bound against real Postgres (#12655 S
   runDb('the unfiltered, ungrouped count never reads the locked tables and is unchanged', async () => {
     const r = await callWhileLocked(f.auth.org, 'sites', {});
     expect(r.body).toMatchObject({ total: 3, online: 2, offline: 1 });
+    // Did not wait on the lock (it releases only after 4 s).
+    expect(r.elapsedMs).toBeLessThan(3_000);
     expect(r.after).toBe(r.before);
   });
 
