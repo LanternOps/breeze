@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import {
   softwareInstallMethodRoutes,
@@ -437,6 +437,170 @@ describe('softwareInstallMethodRoutes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+    });
+  });
+
+  // Install-method writes apply the same ownership check as the package routes
+  // (authorizeCatalogItemWrite, #12675): a partner-owned package is changed
+  // only by a full-partner caller of its own partner.
+  describe('install-method writes on a partner-owned package', () => {
+    const PARTNER_ID = '33333333-3333-4333-8333-333333333333';
+    const ORG_A = '44444444-4444-4444-8444-444444444444';
+    const ORG_B = '55555555-5555-4555-8555-555555555555';
+
+    const setAuth = (auth: Record<string, unknown>) => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          canAccessOrg: (orgId: string) => [ORG_A, ORG_B].includes(orgId),
+          ...auth,
+        });
+        return next();
+      });
+    };
+    const setPartnerAuth = (partnerOrgAccess: 'all' | 'selected') =>
+      setAuth({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_ID,
+        partnerOrgAccess,
+        accessibleOrgIds: [ORG_A, ORG_B],
+      });
+
+    const partnerOwned = () =>
+      ownedCatalogItem({ orgId: null, partnerId: PARTNER_ID, builtinPackageKey: null });
+    const orgOwned = () => ownedCatalogItem({ orgId: ORG_A, partnerId: null, builtinPackageKey: null });
+
+    // Every write is primed to succeed, so only the ownership check can refuse.
+    const mockLookups = (item: Record<string, unknown>, withMethod: boolean) => {
+      const select = vi.mocked(db.select).mockReturnValueOnce(chainMock([item]) as any);
+      if (withMethod) select.mockReturnValueOnce(chainMock([installedMethod()]) as any);
+      vi.mocked(db.insert).mockReturnValueOnce(chainMock([installedMethod()]) as any);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([installedMethod({ packageId: 'Other.App' })]) as any);
+      vi.mocked(db.delete).mockReturnValueOnce(chainMock(undefined) as any);
+    };
+
+    const createMethod = () =>
+      app.request(`/software/catalog/${CATALOG_ID}/install-methods?orgId=${ORG_A}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ platform: 'macos', kind: 'homebrew_cask', packageId: 'some-app' }),
+      });
+    const patchMethod = () =>
+      app.request(`/software/catalog/${CATALOG_ID}/install-methods/${METHOD_ID}?orgId=${ORG_A}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ packageId: 'Other.App' }),
+      });
+    const deleteMethod = () =>
+      app.request(`/software/catalog/${CATALOG_ID}/install-methods/${METHOD_ID}?orgId=${ORG_A}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+    // A refused request leaves the queued method lookup unconsumed; drop it so
+    // it cannot leak into the next test.
+    afterEach(() => {
+      vi.mocked(db.select).mockReset().mockImplementation(() => chainMock([]));
+      vi.mocked(db.insert).mockReset().mockImplementation(() => chainMock([]));
+      vi.mocked(db.update).mockReset().mockImplementation(() => chainMock([]));
+      vi.mocked(db.delete).mockReset().mockImplementation(() => chainMock(undefined));
+    });
+
+    const expectNoWrite = () => {
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    };
+
+    it('POST refuses a partner caller with orgAccess selected', async () => {
+      setPartnerAuth('selected');
+      mockLookups(partnerOwned(), false);
+
+      const res = await createMethod();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/full partner org access/);
+      expectNoWrite();
+    });
+
+    it('PATCH refuses a partner caller with orgAccess selected, before the method is looked up', async () => {
+      setPartnerAuth('selected');
+      mockLookups(partnerOwned(), true);
+
+      const res = await patchMethod();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/full partner org access/);
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expectNoWrite();
+    });
+
+    it('DELETE refuses a partner caller with orgAccess selected, before the method is looked up', async () => {
+      setPartnerAuth('selected');
+      mockLookups(partnerOwned(), true);
+
+      const res = await deleteMethod();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/full partner org access/);
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expectNoWrite();
+    });
+
+    it.each([
+      ['POST', createMethod, false],
+      ['PATCH', patchMethod, true],
+      ['DELETE', deleteMethod, true],
+    ] as const)('%s refuses an organization-scoped token that carries the partnerId', async (_m, send, withMethod) => {
+      setAuth({ scope: 'organization', orgId: ORG_A, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_A] });
+      mockLookups(partnerOwned(), withMethod);
+
+      const res = await send();
+
+      expect(res.status).toBe(404);
+      expectNoWrite();
+    });
+
+    it.each([
+      ['partner-owned package, full-partner caller', 'all', partnerOwned],
+      ['org-owned package, partner caller with orgAccess selected', 'selected', orgOwned],
+    ] as const)('POST still creates the method: %s', async (_label, access, item) => {
+      setPartnerAuth(access);
+      mockLookups(item(), false);
+
+      const res = await createMethod();
+
+      expect(res.status).toBe(201);
+      expect(db.insert).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['partner-owned package, full-partner caller', 'all', partnerOwned],
+      ['org-owned package, partner caller with orgAccess selected', 'selected', orgOwned],
+    ] as const)('PATCH still updates the method: %s', async (_label, access, item) => {
+      setPartnerAuth(access);
+      mockLookups(item(), true);
+
+      const res = await patchMethod();
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['partner-owned package, full-partner caller', 'all', partnerOwned],
+      ['org-owned package, partner caller with orgAccess selected', 'selected', orgOwned],
+    ] as const)('DELETE still deletes the method: %s', async (_label, access, item) => {
+      setPartnerAuth(access);
+      mockLookups(item(), true);
+
+      const res = await deleteMethod();
+
+      expect(res.status).toBe(200);
+      expect(db.delete).toHaveBeenCalled();
     });
   });
 

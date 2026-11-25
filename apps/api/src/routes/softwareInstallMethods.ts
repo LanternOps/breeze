@@ -5,7 +5,10 @@
  * `softwareInstallMethods` has no org_id column (parent-FK join tenancy —
  * see db/schema/software.ts) so ownership is enforced by loading the parent
  * software_catalog row and checking org_id, mirroring the deploy handlers'
- * inline guard in software.ts (loadOwnedCatalogItem below).
+ * inline guard in software.ts (loadOwnedCatalogItem below). Every write also
+ * applies the package routes' ownership check (`authorizeCatalogItemWrite`):
+ * a partner-owned package's methods are changed only by a full-partner caller
+ * of its own partner (canManagePartnerWidePolicies, #2135).
  */
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
@@ -18,7 +21,11 @@ import { PERMISSIONS } from '../services/permissions';
 import { resolveScopedOrgId, type AuthScopeContext } from '../services/softwareVersionShared';
 import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
-import { importCatalogPackage, type CatalogPackageOwner } from '../services/softwareCatalogOps';
+import {
+  authorizeCatalogItemWrite,
+  importCatalogPackage,
+  type CatalogPackageOwner,
+} from '../services/softwareCatalogOps';
 import {
   importPackageSchema,
   installMethodBodySchema,
@@ -80,11 +87,14 @@ softwareInstallMethodRoutes.post(
   requireMfa(),
   zValidator('json', installMethodBodySchema),
   async (c) => {
-    const auth = c.get('auth') as AuthScopeContext;
+    const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const item = await loadOwnedCatalogItem(c.req.param('id'), orgResult.orgId);
     if (!item) return c.json({ error: 'Catalog item not found or access denied' }, 404);
+    // Same ownership check as PATCH/DELETE /catalog/:id.
+    const denied = authorizeCatalogItemWrite(auth, item, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
     // Integration rows and Breeze built-in packages (#6958) alike: the package
     // definition is not the caller's to extend.
     if (item.integrationProvider !== null || item.builtinPackageKey != null) {
@@ -130,11 +140,16 @@ softwareInstallMethodRoutes.patch(
   requireMfa(),
   zValidator('json', installMethodPatchSchema),
   async (c) => {
-    const auth = c.get('auth') as AuthScopeContext;
+    const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const item = await loadOwnedCatalogItem(c.req.param('id'), orgResult.orgId);
     if (!item) return c.json({ error: 'Catalog item not found or access denied' }, 404);
+    // Same ownership check as PATCH/DELETE /catalog/:id. A method never moves
+    // to another package: `packageId` is the winget/Homebrew identifier, and
+    // the update below is pinned to this catalog row.
+    const denied = authorizeCatalogItemWrite(auth, item, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
     const existing = await loadInstallMethod(item.id, c.req.param('methodId'));
     if (!existing) return c.json({ error: 'Install method not found' }, 404);
 
@@ -225,11 +240,14 @@ softwareInstallMethodRoutes.delete(
   requireInstallMethodWrite,
   requireMfa(),
   async (c) => {
-    const auth = c.get('auth') as AuthScopeContext;
+    const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const item = await loadOwnedCatalogItem(c.req.param('id')!, orgResult.orgId);
     if (!item) return c.json({ error: 'Catalog item not found or access denied' }, 404);
+    // Same ownership check as PATCH/DELETE /catalog/:id.
+    const denied = authorizeCatalogItemWrite(auth, item, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
     const existing = await loadInstallMethod(item.id, c.req.param('methodId')!);
     if (!existing) return c.json({ error: 'Install method not found' }, 404);
 

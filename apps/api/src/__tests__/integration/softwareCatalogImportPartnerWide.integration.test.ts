@@ -32,6 +32,7 @@ import { db, withDbAccessContext } from '../../db';
 import {
   deploymentResults,
   deviceCommands,
+  partnerUsers,
   softwareCatalog,
   softwareDeployments,
   softwareInstallMethods,
@@ -214,6 +215,96 @@ describe('partner-wide package-manager import (#12675)', () => {
       ).toEqual([]);
     }
   }, 60_000);
+
+  runDb('install-method writes on a partner-wide package take the same ownership check as the package routes', async () => {
+    const call = await buildClient();
+    const a = await partnerEnv();
+    const { catalogId, methodIds } = await importPartnerWide(call, a.token);
+    const [wingetId] = methodIds;
+
+    // A same-partner member limited to ONE selected organization (it can reach
+    // ?orgId= for that org), with every permission and MFA.
+    const partnerRole = await createRole({ scope: 'partner', partnerId: a.partner.id });
+    await grantRolePermissions(partnerRole.id, [{ resource: '*', action: '*' }]);
+    const limited = await createUser({ partnerId: a.partner.id, orgId: null });
+    await assignUserToPartner(limited.id, a.partner.id, partnerRole.id, 'selected');
+    await getTestDb()
+      .update(partnerUsers)
+      .set({ orgIds: [a.organization.id] })
+      .where(eq(partnerUsers.userId, limited.id));
+    const limitedToken = await tokenFor({
+      user: limited,
+      roleId: partnerRole.id,
+      scope: 'partner',
+      partnerId: a.partner.id,
+      orgId: null,
+    });
+    const inOrgA = `?orgId=${a.organization.id}`;
+
+    // CONTROL: the limited caller does reach the package itself in its org.
+    expect((await call(limitedToken, 'GET', `/catalog/${catalogId}/install-methods${inOrgA}`)).status).toBe(200);
+
+    const methodsOf = (id: string) =>
+      getTestDb().select().from(softwareInstallMethods).where(eq(softwareInstallMethods.catalogId, id)).orderBy(softwareInstallMethods.id);
+    const before = await methodsOf(catalogId);
+
+    const refused = [
+      await call(limitedToken, 'POST', `/catalog/${catalogId}/install-methods${inOrgA}`, {
+        platform: 'macos', kind: 'homebrew_formula', packageId: 'synthetic-limited',
+      }),
+      await call(limitedToken, 'PATCH', `/catalog/${catalogId}/install-methods/${wingetId}${inOrgA}`, {
+        packageId: 'Synthetic.Limited',
+      }),
+      await call(limitedToken, 'DELETE', `/catalog/${catalogId}/install-methods/${wingetId}${inOrgA}`),
+    ];
+    for (const res of refused) {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toMatch(/full partner org access/);
+    }
+    // Nothing changed: same rows, same package identifiers.
+    expect(await methodsOf(catalogId)).toEqual(before);
+    expect(writeRouteAudit).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: expect.stringMatching(/^software\.install_method\./) }),
+    );
+
+    // A full-partner caller still manages the same package's methods.
+    const created = await call(a.token, 'POST', `/catalog/${catalogId}/install-methods${inOrgA}`, {
+      platform: 'macos', kind: 'homebrew_formula', packageId: 'synthetic-full',
+    });
+    expect(created.status).toBe(201);
+    const patched = await call(a.token, 'PATCH', `/catalog/${catalogId}/install-methods/${wingetId}${inOrgA}`, {
+      packageId: 'Synthetic.Full',
+    });
+    expect(patched.status).toBe(200);
+    expect(((await patched.json()) as { data: { packageId: string } }).data.packageId).toBe('Synthetic.Full');
+    const createdId = ((await created.json()) as { data: { id: string } }).data.id;
+    expect((await call(a.token, 'DELETE', `/catalog/${catalogId}/install-methods/${createdId}${inOrgA}`)).status).toBe(200);
+
+    // An organization-owned package in the limited caller's own org is unchanged:
+    // that caller still creates, edits and deletes its methods.
+    const orgRes = await call(a.token, 'POST', `/catalog/import-package${inOrgA}`, {
+      name: `Synthetic org ${randomUUID()}`,
+      methods: [METHODS[0]],
+      ownerScope: 'organization',
+    });
+    expect(orgRes.status).toBe(201);
+    const orgPkg = ((await orgRes.json()) as { data: { catalogItem: { id: string; orgId: string } } }).data.catalogItem;
+    expect(orgPkg.orgId).toBe(a.organization.id);
+    const orgCreated = await call(limitedToken, 'POST', `/catalog/${orgPkg.id}/install-methods${inOrgA}`, {
+      platform: 'macos', kind: 'homebrew_cask', packageId: 'synthetic-org',
+    });
+    expect(orgCreated.status).toBe(201);
+    const orgMethodId = ((await orgCreated.json()) as { data: { id: string } }).data.id;
+    expect(
+      (await call(limitedToken, 'PATCH', `/catalog/${orgPkg.id}/install-methods/${orgMethodId}${inOrgA}`, {
+        packageId: 'synthetic-org-2',
+      })).status,
+    ).toBe(200);
+    expect(
+      (await call(limitedToken, 'DELETE', `/catalog/${orgPkg.id}/install-methods/${orgMethodId}${inOrgA}`)).status,
+    ).toBe(200);
+  }, 120_000);
 
   runDb('is listed, readable and deployable in every organization of the owning partner', async () => {
     const call = await buildClient();
