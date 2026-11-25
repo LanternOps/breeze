@@ -40,6 +40,7 @@ export interface S1Site {
   siteId: string;
   siteName: string | null;
   registrationToken: string | null;
+  agentsCount: number | null;
 }
 
 export interface S1Threat {
@@ -216,18 +217,34 @@ export class SentinelOneClient {
   }
 
   async listSites(): Promise<S1Site[]> {
-    const payload = await this.requestJson<Record<string, unknown>>(
-      '/web/api/v2.1/sites',
-      'GET',
-      undefined,
-      { limit: '100' }
-    );
-
-    const data = asRecord(payload.data);
-    const sites = asArray(data?.sites);
-    return sites
-      .map((row) => this.normalizeSite(row))
-      .filter((row): row is S1Site => Boolean(row));
+    const sites: Record<string, unknown>[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < this.maxPages; page += 1) {
+      const query: Record<string, string> = { limit: '100' };
+      if (cursor) query.cursor = cursor;
+      const payload = await this.requestJson<Record<string, unknown>>(
+        '/web/api/v2.1/sites', 'GET', undefined, query
+      );
+      const data = asRecord(payload.data);
+      if (!Array.isArray(data?.sites)) {
+        throw new Error('SentinelOne site listing returned an invalid sites payload');
+      }
+      sites.push(...asArray(data.sites));
+      const pagination = asRecord(payload.pagination);
+      const nextCursor = str(payload.nextCursor) ?? str(pagination?.nextCursor) ?? str(pagination?.next);
+      if (!nextCursor) {
+        return sites
+          .map((row) => this.normalizeSite(row))
+          .filter((row): row is S1Site => Boolean(row));
+      }
+      if (nextCursor === cursor) {
+        throw new Error('SentinelOne site listing returned a repeated pagination cursor');
+      }
+      cursor = nextCursor;
+    }
+    // Do not present an incomplete inventory as a successful site refresh.
+    // The sync worker falls back to agent-derived discovery and preserves tokens.
+    throw new Error('SentinelOne site listing exceeded the pagination limit');
   }
 
   async listThreats(updatedSince?: Date): Promise<PagedResult<S1Threat>> {
@@ -347,6 +364,9 @@ export class SentinelOneClient {
       siteId: id,
       siteName: row.name == null ? null : String(row.name),
       registrationToken: row.registrationToken == null ? null : String(row.registrationToken),
+      agentsCount: typeof row.activeLicenses === 'number'
+        && Number.isSafeInteger(row.activeLicenses) && row.activeLicenses >= 0
+        ? row.activeLicenses : null,
     };
   }
 

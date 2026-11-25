@@ -269,7 +269,7 @@ describe('SentinelOneClient site listing', () => {
       ok: true,
       json: async () => ({
         data: {
-          sites: [{ id: 's1', name: 'Acme', registrationToken: 'eyJ...' }]
+          sites: [{ id: 's1', name: 'Acme', registrationToken: 'eyJ...', activeLicenses: 0, totalLicenses: 10 }]
         }
       })
     });
@@ -281,7 +281,7 @@ describe('SentinelOneClient site listing', () => {
     const sites = await client.listSites();
 
     expect(sites).toEqual([
-      { siteId: 's1', siteName: 'Acme', registrationToken: 'eyJ...' }
+      { siteId: 's1', siteName: 'Acme', registrationToken: 'eyJ...', agentsCount: 0 }
     ]);
     expect(safeFetchMock).toHaveBeenCalledWith(
       'https://example.sentinelone.net/web/api/v2.1/sites?limit=100',
@@ -291,6 +291,80 @@ describe('SentinelOneClient site listing', () => {
         timeoutMs: expect.any(Number),
       })
     );
+  });
+
+  it('follows site inventory cursors and includes sites beyond the first 100', async () => {
+    safeFetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: { sites: Array.from({ length: 100 }, (_, index) => ({ id: `site-${index}`, activeLicenses: 2 })) },
+          pagination: { nextCursor: 'page-2' },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: { sites: [{ id: 'site-new', name: 'New Customer', activeLicenses: 0 }] },
+          pagination: { nextCursor: null },
+        }),
+      });
+    const client = new SentinelOneClient({ managementUrl: 'https://example.sentinelone.net', apiToken: 'token' });
+
+    const sites = await client.listSites();
+
+    expect(sites).toHaveLength(101);
+    expect(sites[100]).toEqual({ siteId: 'site-new', siteName: 'New Customer', registrationToken: null, agentsCount: 0 });
+    expect(safeFetchMock.mock.calls[1]![0]).toBe('https://example.sentinelone.net/web/api/v2.1/sites?limit=100&cursor=page-2');
+  });
+
+  it('returns an empty inventory without requesting another page', async () => {
+    safeFetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: { sites: [] } }) });
+    const client = new SentinelOneClient({ managementUrl: 'https://example.sentinelone.net', apiToken: 'token' });
+
+    expect(await client.listSites()).toEqual([]);
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an incomplete site inventory when the page limit is reached', async () => {
+    safeFetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: { sites: [{ id: 'site-1' }] }, pagination: { nextCursor: 'page-2' } }),
+    });
+    const client = new SentinelOneClient({
+      managementUrl: 'https://example.sentinelone.net', apiToken: 'token', maxPages: 1,
+    });
+
+    await expect(client.listSites()).rejects.toThrow('pagination limit');
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a repeated cursor instead of repeatedly requesting the same page', async () => {
+    safeFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { sites: [{ id: 'site-1' }] }, pagination: { nextCursor: 'page-2' } }),
+    });
+    const client = new SentinelOneClient({ managementUrl: 'https://example.sentinelone.net', apiToken: 'token' });
+
+    await expect(client.listSites()).rejects.toThrow('repeated pagination cursor');
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects malformed site responses so the worker can fall back to agents', async () => {
+    safeFetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [] }) });
+    const client = new SentinelOneClient({ managementUrl: 'https://example.sentinelone.net', apiToken: 'token' });
+
+    await expect(client.listSites()).rejects.toThrow('invalid sites payload');
+  });
+
+  it.each([undefined, null, -1, 1.5, '3'])('leaves invalid or missing activeLicenses (%s) unknown', async (activeLicenses) => {
+    safeFetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ data: { sites: [{ id: 'site-1', activeLicenses }] } }),
+    });
+    const client = new SentinelOneClient({ managementUrl: 'https://example.sentinelone.net', apiToken: 'token' });
+
+    expect((await client.listSites())[0]!.agentsCount).toBeNull();
   });
 });
 
