@@ -1,7 +1,7 @@
 ---
 title: UniFi Wi-Fi monitoring (AP radios and device statistics)
 issue: LanternOps/breeze discussion #7690
-status: W1 (#9293) and W2 (#10166) merged; W3 read model and UI in progress
+status: W1 (#9293), W2 (#10166), W3 (#10269) and W4 (#11060) merged; W3 follow-ups in 2026-11-11-unifi-wifi-w3-followups-design.md
 related:
   - LanternOps/breeze#3208
   - LanternOps/breeze#7271
@@ -9,7 +9,7 @@ related:
 
 # UniFi Wi-Fi monitoring: AP radios and device statistics
 
-Status: original design approved and merged in PR #8875; W1 contract/API merged in PR #9293. This amendment records the maintainer's 2026-10-20 W2 requirements and the 2026-10-20 local-controller evidence. The W2 Agent implementation is a separate PR, after this amendment is reviewed.
+Status: original design approved and merged in PR #8875; W1 contract/API merged in PR #9293; W2 agent collection merged in PR #10166; W3 read model and UI merged in PR #10269; W4 verification and rollout tests merged in PR #11060. Two non-blocking W3 review items are specified in 2026-11-11-unifi-wifi-w3-followups-design.md. This amendment records the maintainer's 2026-10-20 W2 requirements and the 2026-10-20 local-controller evidence. The W2 Agent implementation is a separate PR, after this amendment is reviewed.
 
 ## 1. Problem and goal
 
