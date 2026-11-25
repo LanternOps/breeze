@@ -11,7 +11,9 @@
 // Pairing rules:
 // - A search is opened by an assistant `tool_use` named `ToolSearch` (keyed by
 //   its `id`) and closed by the user block carrying the same `tool_use_id`;
-//   the `tool_reference` names nested in that block are its results.
+//   the `tool_reference` names nested in that block are its results; the
+//   deferred-tool total is the message's `tool_use_result.total_deferred_tools`
+//   (captured shape) or a block's `total_deferred_tools` (API-native form).
 // - A result block whose `tool_use_id` matches no search opened by this
 //   process (a resumed session replaying an earlier process's history) only
 //   seeds the session-sticky loaded set and emits nothing.
@@ -171,7 +173,7 @@ export function createToolDiscoveryObserver(opts: {
     });
   }
 
-  function onUser(body: Record<string, unknown> | undefined): void {
+  function onUser(body: Record<string, unknown> | undefined, messageTotalDeferred: number | null): void {
     // The nearest ancestor-or-self block carrying a `tool_use_id`, per depth
     // (pre-order walk, so a sibling at the same depth overwrites its slot).
     const owner: Array<string | null> = [];
@@ -196,6 +198,15 @@ export function createToolDiscoveryObserver(opts: {
         }
       },
     });
+    // The captured stream (SDK 0.3.323) carries the deferred-tool total on the
+    // MESSAGE (`tool_use_result.total_deferred_tools`), not on a block. It
+    // belongs to the one result the message carries; with several results in
+    // one message it cannot be attributed, so it is dropped (a block-level
+    // total, the API-native form, still wins).
+    if (messageTotalDeferred !== null) {
+      const keyed = [...containers.entries()].filter(([key]) => key !== null);
+      if (keyed.length === 1 && keyed[0]![1].totalDeferred === null) keyed[0]![1].totalDeferred = messageTotalDeferred;
+    }
     for (const [key, container] of containers) {
       const search = key === null ? undefined : searches.get(key);
       if (search && !search.closed) {
@@ -215,7 +226,7 @@ export function createToolDiscoveryObserver(opts: {
       const envelope = asRecord(message);
       if (!envelope) return;
       if (envelope.type === 'assistant') onAssistant(asRecord(envelope.message));
-      else if (envelope.type === 'user') onUser(asRecord(envelope.message));
+      else if (envelope.type === 'user') onUser(asRecord(envelope.message), asFiniteNumber(asRecord(envelope.tool_use_result)?.total_deferred_tools));
     },
 
     discoveryOf,

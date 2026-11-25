@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AI_TOOL_DISCOVERY } from '../db/schema/ai';
+import { isMcpInputValidationErrorText } from './aiSessionAutoFlag';
 import { newRoundTripTally, noteAssistantRoundTrip, type RoundTripTally } from './aiToolSearchPolicy';
 import {
   boundQuery,
@@ -9,6 +10,8 @@ import {
   type ToolDiscoveryObserver,
 } from './aiToolDiscoveryObserver';
 import {
+  CAPTURED_SHAPE_TURNS,
+  observedToolSearchFields,
   assistantText,
   assistantToolCall,
   assistantToolSearch,
@@ -270,5 +273,86 @@ describe('TOOL_DISCOVERY_VALUES', () => {
     for (const name of ['query_devices', 'manage_services', 'nope', '']) {
       expect(TOOL_DISCOVERY_VALUES).toContain(o.discoveryOf(name));
     }
+  });
+});
+
+describe('captured-shape fixtures (W02, SDK 0.3.323 stream)', () => {
+  const run = (key: keyof typeof CAPTURED_SHAPE_TURNS) => {
+    const o = observer();
+    const tally = newRoundTripTally();
+    feed(o, tally, CAPTURED_SHAPE_TURNS[key]);
+    return o.endTurn({ aborted: false, tally });
+  };
+
+  it("the hit fixture's ToolSearch tool_use carries exactly the keys ['max_results','query'] and its result nests tool_reference directly under tool_result.content", () => {
+    const [call, result] = CAPTURED_SHAPE_TURNS.hit as Array<{ message: { content: Array<Record<string, any>> } }>;
+    expect(Object.keys(call!.message.content[0]!.input).sort()).toEqual(['max_results', 'query']);
+    expect(result!.message.content[0]!.type).toBe('tool_result');
+    expect(result!.message.content[0]!.content[0]).toEqual({ type: 'tool_reference', tool_name: 'mcp__breeze__manage_services' });
+  });
+
+  it('observedToolSearchFields(hit) equals the pinned list: totals ride on tool_use_result, no wrapper block, no pending_mcp_servers', () => {
+    expect(observedToolSearchFields(CAPTURED_SHAPE_TURNS.hit)).toEqual({
+      totalDeferredAt: 'tool_use_result.total_deferred_tools',
+      hasToolUseResult: true,
+      hasPendingMcpServers: false,
+      hasSearchResultWrapperBlock: false,
+    });
+    expect(observedToolSearchFields(CAPTURED_SHAPE_TURNS.hitNoTotals).totalDeferredAt).toBeNull();
+  });
+
+  it('yields totalDeferred 300 for the hit fixture and null when the fixture omits the field (both kept)', () => {
+    expect(run('hit').events[0]).toMatchObject({ query: 'restart a windows service', resultToolNames: ['manage_services'], totalDeferred: 300, empty: false, calledToolNames: ['manage_services'] });
+    expect(run('hitNoTotals').events[0]).toMatchObject({ resultToolNames: ['manage_services'], totalDeferred: null, empty: false });
+  });
+
+  it('an empty search (string content, matches: []) is empty with a total', () => {
+    expect(run('empty').events[0]).toMatchObject({ resultToolNames: [], totalDeferred: 300, empty: true });
+  });
+
+  it('select: sets selectMode and resolves the named tool', () => {
+    expect(run('select').events[0]).toMatchObject({ selectMode: true, resultToolNames: ['manage_services'], empty: false });
+  });
+
+  it('the -32602 turn records no search and the call attributes to an unsearched tool (manage_alerts is always loaded)', () => {
+    const { events, discoveryByToolUseId } = run('invalidInputDrop');
+    expect(events).toEqual([]);
+    expect(discoveryByToolUseId.get('toolu_drop')).toBe('always_loaded');
+  });
+
+  it('a replayed result from an earlier process emits no event and the later call is loaded_earlier', () => {
+    const { events, discoveryByToolUseId } = run('resumed');
+    expect(events).toEqual([]);
+    expect(discoveryByToolUseId.get('toolu_res_call')).toBe('loaded_earlier');
+  });
+
+  it('the captured -32602 text is recognised by the drop classifier (shape pin)', () => {
+    const msg = CAPTURED_SHAPE_TURNS.invalidInputDrop[1] as { message: { content: Array<{ content: string }> } };
+    expect(isMcpInputValidationErrorText(msg.message.content[0]!.content)).toBe(true);
+  });
+
+  it('a message with two results does not take the message-level total (unattributable); a block-level total wins over it', () => {
+    const two = (): unknown => ({
+      type: 'user',
+      message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'toolu_a', content: [{ type: 'tool_reference', tool_name: 'mcp__breeze__manage_services' }] },
+        { type: 'tool_result', tool_use_id: 'toolu_b', content: [{ type: 'tool_reference', tool_name: 'mcp__breeze__manage_processes' }] },
+      ] },
+      tool_use_result: { matches: [], query: 'q', total_deferred_tools: 300 },
+    });
+    const o = observer(); const tally = newRoundTripTally();
+    feed(o, tally, [
+      assistantToolSearch({ messageId: 'm1', toolUseId: 'toolu_a', query: 'a' }),
+      assistantToolSearch({ messageId: 'm1', toolUseId: 'toolu_b', query: 'b' }),
+      two(),
+    ]);
+    expect(o.endTurn({ aborted: false, tally }).events.map((e) => e.totalDeferred)).toEqual([null, null]);
+
+    const o2 = observer(); const tally2 = newRoundTripTally();
+    feed(o2, tally2, [
+      assistantToolSearch({ messageId: 'm1', toolUseId: 'toolu_a', query: 'a' }),
+      { ...(userToolSearchResult({ toolUseId: 'toolu_a', toolNames: ['manage_services'], totalDeferred: 7 }) as object), tool_use_result: { total_deferred_tools: 300 } },
+    ]);
+    expect(o2.endTurn({ aborted: false, tally: tally2 }).events[0]!.totalDeferred).toBe(7);
   });
 });

@@ -19,6 +19,7 @@ import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolDomain, getToolSearchHint, compactDescriptionFor, type ExecuteToolOptions } from './aiTools';
 import type { ToolExposure } from './aiModels/toolExposure';
+import type { ToolExamplesMode } from './aiToolExamples';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -6193,6 +6194,11 @@ export function breezeServerTools(
      * none, changes nothing.
      */
     toolExposure?: Pick<ToolExposure, 'names' | 'promptMode'> & Partial<Pick<ToolExposure, 'extraToolNames'>>;
+    /**
+     * #12421: input-example bridge mode. Accepted and ignored until W03 gives
+     * it behaviour; descriptions stay byte-identical for every value.
+     */
+    toolExamples?: ToolExamplesMode;
   },
 ) {
   // #11004: the static declarations come from the per-process template; only

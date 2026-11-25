@@ -19,6 +19,7 @@
  * Offline and deterministic (no SDK child, no network): handlers are never
  * bound to anything that can run.
  */
+import type { ToolExamplesMode } from '../../aiToolExamples';
 import type { AiAgentRunProfile } from '@breeze/shared';
 import { breezeServerTools, chatToolDomain, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { applyRunToolProfile } from '../../aiAgents/runToolProfile';
@@ -92,7 +93,7 @@ function finish(surface: CaptureSurface, exposure: ToolExposure, system: string,
 export function advertisedRequest(
   surface: CaptureSurface,
   profile: MeasuredProfile,
-  opts: { tenantTools?: readonly TenantToolDescriptor[] } = {},
+  opts: { tenantTools?: readonly TenantToolDescriptor[]; toolExamples?: ToolExamplesMode } = {},
 ): AdvertisedRequest {
   return advertisedRequestForFacts(surface, gatewayFacts(profile), opts);
 }
@@ -106,7 +107,7 @@ export function advertisedRequest(
 export function advertisedRequestForFacts(
   surface: CaptureSurface,
   facts: ToolProfileFacts,
-  opts: { tenantTools?: readonly TenantToolDescriptor[]; strict?: boolean } = {},
+  opts: { tenantTools?: readonly TenantToolDescriptor[]; strict?: boolean; toolExamples?: ToolExamplesMode } = {},
 ): AdvertisedRequest {
   const kind = profiledSurfaceOf(surface);
 
@@ -162,6 +163,7 @@ export function advertisedRequestForFacts(
   const tools = breezeServerTools(deny, denyPreToolUse, undefined, undefined, tenantTools, {
     ...(onlyTools ? { onlyTools } : {}),
     ...(constrained ? { toolExposure: exposure } : {}),
+    ...(opts.toolExamples ? { toolExamples: opts.toolExamples } : {}),
   });
   const system = kind === 'chat'
     ? (constrained ? composeConstrainedSystemPrompt(exposure.names!) : composeStaticSystemPrompt(listChatSurfaceToolNames()))
