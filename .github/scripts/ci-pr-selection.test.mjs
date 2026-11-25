@@ -159,7 +159,7 @@ test('reader map: every row names an existing test and matches tracked docs-clas
     for (const path of matches) {
       const out = cachedClassify(path);
       // The Go pin check reads code paths too (#12687); its rows are asserted by the pin-check test below.
-      if (row.test === 'scripts/security/check-security-guards.test.mjs' && out.docs !== 'true') continue;
+      if (row.test === 'scripts/security/check-security-guards.test.mjs' && !row.pattern.startsWith('apps/docs/')) continue;
       assert.equal(out.docs, 'true', path);
       if (path !== 'apps/docs/package.json') assert.equal(out.code, 'false', path);
     }
