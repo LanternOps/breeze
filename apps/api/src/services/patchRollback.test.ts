@@ -1,14 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSelect, mockInsertValues } = vi.hoisted(() => ({
+const { mockSelect, mockInsertValues, tx } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
-  mockInsertValues: vi.fn(() => Promise.resolve(undefined)),
+  mockInsertValues: vi.fn((_rows: unknown) => Promise.resolve(undefined)),
+  // Postgres in miniature: a statement that fails outside a savepoint aborts the
+  // transaction, and every later statement on it fails (25P02).
+  tx: { depth: 0, aborted: false },
 }));
 
 vi.mock('../db', () => ({
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    tx.depth++;
+    try { return await fn(); } finally { tx.depth--; }
+  },
   db: {
     select: mockSelect,
-    insert: vi.fn(() => ({ values: mockInsertValues })),
+    insert: vi.fn(() => ({
+      values: (rows: unknown) => (tx.aborted ? Promise.reject(new Error('current transaction is aborted')) : mockInsertValues(rows)),
+    })),
   },
 }));
 
@@ -34,6 +43,8 @@ const input = (queue: ReturnType<typeof vi.fn>) => ({
 beforeEach(() => {
   mockSelect.mockReset();
   mockInsertValues.mockClear();
+  tx.depth = 0;
+  tx.aborted = false;
 });
 
 describe('queuePatchRollbacks (#12492)', () => {
@@ -119,5 +130,28 @@ describe('queuePatchRollbacks (#12492)', () => {
 
     expect(maxInFlight).toBe(1);
     expect(result!.queued.map((entry) => entry.deviceId)).toEqual(['dev-a', 'dev-b', 'dev-c']);
+  });
+
+  it('a queue call that throws on the third of five devices loses only that device; the other four are queued and recorded', async () => {
+    const ids = ['dev-1', 'dev-2', 'dev-3', 'dev-4', 'dev-5'];
+    patchLookup([PATCH_ROW]);
+    mockSelect.mockReturnValueOnce({
+      from: () => ({ leftJoin: () => ({ where: () => Promise.resolve(ids.map((id) => ({ ...device(id), observationId: `dp-${id}` }))) }) }),
+    });
+    const queue = vi.fn(async (d: { id: string }) => {
+      if (d.id === 'dev-3') {
+        if (tx.depth === 0) tx.aborted = true;
+        throw new Error('insert into "device_commands" failed');
+      }
+      return { command: { id: `cmd-${d.id}`, status: 'sent' } };
+    });
+
+    const result = await queuePatchRollbacks({ ...input(queue), deviceIds: ids });
+
+    expect(result!.queued.map((entry) => entry.deviceId)).toEqual(['dev-1', 'dev-2', 'dev-4', 'dev-5']);
+    expect(result!.failed).toEqual([{ deviceId: 'dev-3', error: 'Rollback command was not queued' }]);
+    expect(mockInsertValues).toHaveBeenCalledWith(['dev-1', 'dev-2', 'dev-4', 'dev-5'].map((deviceId) => (
+      { deviceId, patchId: PATCH_ID, reason: 'Bad update', status: 'pending', initiatedBy: 'user-1' }
+    )));
   });
 });

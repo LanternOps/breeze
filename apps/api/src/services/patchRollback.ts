@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { devicePatches, devices, patches, patchRollbacks } from '../db/schema';
 import type { CommandPayload, QueueCommandForExecutionResult } from './commandQueue';
 import { CommandTypes } from './commandTypes';
@@ -99,16 +99,14 @@ export async function queuePatchRollbacks(input: {
   const payload = { patchIds: [id], patches: [patch], reason };
   const queued: Array<{ deviceId: string; commandId: string; commandStatus: string }> = [];
   const failed: Array<{ deviceId: string; error: string }> = [];
-  // One device at a time: every queue call shares the caller's transaction,
-  // and a failed push opens a savepoint that must not run beside a sibling's
-  // statements (docs/agents/tenancy-rls.md).
+  // One device at a time, each in its own savepoint, which must never run
+  // beside a sibling's statements (docs/agents/tenancy-rls.md). A thrown
+  // database error rolls back only that device; the others still get rows.
   for (const device of accessibleDevices) {
     let result: QueueCommandForExecutionResult;
     try {
-      result = await queue(device, CommandTypes.ROLLBACK_PATCHES, payload);
+      result = await withDbTransaction(() => queue(device, CommandTypes.ROLLBACK_PATCHES, payload));
     } catch {
-      // A thrown database error aborts the caller's transaction, so the
-      // insert below then throws too and nothing is reported as queued.
       result = {};
     }
     // A cancelled command carries both a row and an error: it will never run, so it is a failure.
