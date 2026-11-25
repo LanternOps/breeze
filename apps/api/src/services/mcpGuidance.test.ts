@@ -107,3 +107,58 @@ describe('MCP prompts', () => {
     for (const p of MCP_PROMPTS) expect(p.referencedTools.length).toBeGreaterThan(0);
   });
 });
+
+describe('#12427 progressive instructions (buildProgressiveMcpInstructions)', async () => {
+  const { AI_TOOL_DOMAINS } = await import('@breeze/shared');
+  const { aiTools } = await import('./aiTools');
+  const { buildProgressiveMcpInstructions, MCP_PROGRESSIVE_RECIPE } = await import('./mcpGuidance');
+  const { UNTRUSTED_TOOL_OUTPUT_RULE } = await import('./aiAgentSystemPrompt');
+  const META = ['search_tools', 'get_tool_details', 'call_tool'];
+  const INTRINSICS = ['whoami', 'get_action_status', 'cancel_action'];
+  const everything = new Set([...aiTools.keys(), ...INTRINSICS, ...META]);
+  const worstCase = { domains: [...AI_TOOL_DOMAINS], listableNames: everything };
+  const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+  const TOKEN = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
+
+  it('undefined guidance is today\'s text byte for byte', () => {
+    expect(buildMcpServerInstructions(false, undefined)).toBe(MCP_SERVER_INSTRUCTIONS);
+    expect(buildMcpServerInstructions(true, undefined)).toBe(buildMcpServerInstructions(true));
+  });
+
+  it('progressive guidance selects the compact body: recipe, untrusted-output rule verbatim, no tool count', () => {
+    const text = buildMcpServerInstructions(true, worstCase);
+    expect(text).toBe(buildProgressiveMcpInstructions(true, worstCase));
+    expect(text).toContain(MCP_PROGRESSIVE_RECIPE);
+    expect(text).toContain(UNTRUSTED_TOOL_OUTPUT_RULE);
+    expect(text).not.toMatch(/~\d+ tools/);
+  });
+
+  it.each([true, false])('worst case (every domain, every tool listable, intents %s) is ≤ 4096 UTF-8 bytes', (intents) => {
+    expect(bytes(buildProgressiveMcpInstructions(intents, worstCase))).toBeLessThanOrEqual(4096);
+  });
+
+  it('the intents-on and intents-off bodies differ only in the approval rule', () => {
+    const strip = (text: string) => text.split('\n').filter((line) => !line.startsWith('2. ')).join('\n');
+    const on = buildProgressiveMcpInstructions(true, worstCase);
+    const off = buildProgressiveMcpInstructions(false, worstCase);
+    expect(on).not.toBe(off);
+    expect(strip(on)).toBe(strip(off));
+  });
+
+  it('names no tool outside listableNames: read_artifact, get_action_status and cancel_action only when listed', () => {
+    const minimal = { domains: ['core'] as const, listableNames: new Set(['query_devices', 'whoami', ...META]) };
+    for (const intents of [true, false]) {
+      const text = buildProgressiveMcpInstructions(intents, minimal);
+      const named = (text.match(TOKEN) ?? []).filter((t) => everything.has(t));
+      expect(named.filter((t) => !minimal.listableNames.has(t))).toEqual([]);
+    }
+    const listed = { domains: ['core'] as const, listableNames: new Set([...minimal.listableNames, 'read_artifact', ...INTRINSICS]) };
+    const text = buildProgressiveMcpInstructions(true, listed);
+    for (const name of ['read_artifact', 'get_action_status', 'cancel_action']) expect(text).toContain(name);
+  });
+
+  it('no domain index section when the caller has no listable registry domain', () => {
+    const text = buildProgressiveMcpInstructions(false, { domains: [], listableNames: new Set(META) });
+    expect(text).not.toContain('## Tool domains');
+  });
+});

@@ -8,7 +8,7 @@ import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import {
   composeStaticSystemPrompt, DOMAIN_NOTES, DOMAIN_VOCABULARY, listToolIndex, MAX_INLINE_ACTIONS, pageContextToolDomains,
-  renderAlwaysOnIndex, renderDomainBlock, renderPageContextToolBlocks, renderToolIndexByDomain, resolveToolIndexMode,
+  renderAlwaysOnIndex, renderDomainBlock, renderDomainNote, renderMcpDomainIndex, renderPageContextToolBlocks, renderToolIndexByDomain, resolveToolIndexMode,
 } from './aiToolIndex';
 
 const PAGE_FIXTURES = {
@@ -545,5 +545,44 @@ describe('W19 lazy chat tool index (#10065)', () => {
     [undefined, 'lazy'], ['', 'lazy'], ['lazy', 'lazy'], ['full', 'full'], [' FULL ', 'full'], ['off', 'lazy'],
   ] as const)('AI_TOOL_INDEX=%j resolves to %s', (value, mode) => {
     expect(resolveToolIndexMode(value === undefined ? {} : { AI_TOOL_INDEX: value })).toBe(mode);
+  });
+});
+
+// #12427: the external MCP server's progressive-mode index shares the
+// vocabulary and notes but has its own bound (the chat index is pinned above).
+describe('renderMcpDomainIndex (#12427)', () => {
+  const everything = new Set(getAllRegisteredToolNames());
+  const MCP_INDEX_BUDGET_BYTES = 2560;
+
+  it('one label + vocabulary line per requested domain, in domain order, no tool lists and no ToolSearch guidance', () => {
+    const text = renderMcpDomainIndex(['devices', 'core'], everything);
+    const lines = text.split('\n').filter((l) => l.startsWith('- **'));
+    expect(lines).toEqual([
+      `- **${AI_TOOL_DOMAIN_LABELS.core}**: ${DOMAIN_VOCABULARY.core}`,
+      `- **${AI_TOOL_DOMAIN_LABELS.devices}**: ${DOMAIN_VOCABULARY.devices}`,
+    ]);
+    expect(text).not.toMatch(/ToolSearch|## /);
+  });
+
+  it('bound: every domain, every tool listable, every flag on → ≤ 2560 bytes', () => {
+    stubAllFlagsOn();
+    try {
+      expect(bytes(renderMcpDomainIndex([...AI_TOOL_DOMAINS], new Set(getAllRegisteredToolNames())))).toBeLessThanOrEqual(MCP_INDEX_BUDGET_BYTES);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('B1-MCP: a tool joining a domain the caller already has changes the index by 0 bytes', () => {
+    const before = renderMcpDomainIndex(['patching', 'scripts'], everything);
+    expect(renderMcpDomainIndex(['patching', 'scripts'], new Set([...everything, 'manage_fixture_widgets']))).toBe(before);
+  });
+
+  it('a note sentence naming an unlistable tool is dropped, through the shared renderDomainNote', () => {
+    const only = new Set(['manage_patches']);
+    const text = renderMcpDomainIndex(['patching'], only);
+    expect(text).toContain(renderDomainNote('patching', only));
+    expect(text).not.toMatch(/get_security_posture|manage_update_rings|manage_policy_feature_link/);
+    expect(renderMcpDomainIndex(['patching'], everything)).toContain('manage_update_rings');
   });
 });

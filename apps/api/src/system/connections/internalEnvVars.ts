@@ -66,6 +66,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TRANSCRIPT_SWEEPER_ENABLED: 'job toggle',
   AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: 'transcript sweep grace window',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
+  AI_TOOL_EXAMPLES: 'AI tool input-examples bridge (auto/off); accepted, no effect until W03',
   AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
   ALERT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
@@ -370,6 +371,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_TASK_POLL_INTERVAL_MS: 'timing knob',
   MCP_TASK_TTL_GRACE_MS: 'timing knob',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
+  MCP_TOOL_LIST_DEFAULT: 'tool list presentation default',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*
   METRICS_ACTIVE_DEVICE_WINDOW_SECONDS: 'timing knob',

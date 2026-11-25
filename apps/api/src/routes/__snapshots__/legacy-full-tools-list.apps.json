@@ -1,0 +1,197 @@
+{
+  "tools": [
+    {
+      "title": "Acknowledge alert",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "app.breeze/domain": "monitoring"
+      },
+      "name": "acknowledge_alert",
+      "description": "acknowledge_alert description.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "title": "Cancel action",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "app.breeze/domain": "core"
+      },
+      "name": "cancel_action",
+      "description": "Cancels an action that is still waiting for approval or approved but not yet running. Returns cancelled, or not_cancellable with the current status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The actionId returned by a pending_approval result."
+          }
+        },
+        "required": [
+          "actionId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "title": "Get action status",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "app.breeze/domain": "core"
+      },
+      "name": "get_action_status",
+      "description": "Returns the current status of an action that was filed for human approval in the Breeze mobile or web app (the actionId from a pending_approval result). Poll this instead of re-issuing the original call; only status completed means it happened.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The actionId returned by a pending_approval result."
+          }
+        },
+        "required": [
+          "actionId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "title": "Get alert summary",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "app.breeze/domain": "monitoring"
+      },
+      "name": "get_alert_summary",
+      "description": "get_alert_summary description.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "title": "Get fleet health",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "app.breeze/domain": "devices",
+        "ui": {
+          "resourceUri": "ui://breeze/fleet-health/v1",
+          "visibility": [
+            "model"
+          ]
+        }
+      },
+      "name": "get_fleet_health",
+      "description": "get_fleet_health description.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "title": "Get invite funnel",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "app.breeze/domain": "admin"
+      },
+      "name": "get_invite_funnel",
+      "description": "get_invite_funnel description.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "title": "Whoami",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "app.breeze/domain": "core"
+      },
+      "name": "whoami",
+      "description": "Describe this connection's Breeze access: who it acts as, tenant scope, granted scopes and tool domains, and which actions need the Breeze web app. Call it before assuming a tool is missing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "title": "Acme  lookup widget",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "app.breeze/domain": "integrations"
+      },
+      "name": "acme__lookup_widget",
+      "description": "Look up a widget.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "title": "Flow  weekly report",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "app.breeze/domain": "unknown"
+      },
+      "name": "flow__weekly_report",
+      "description": "Run the weekly report flow.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
