@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { decimalJsLightAlias } from '../../decimalJsLightAlias.mjs';
+import { decimalJsLightAlias } from './decimalJsLightAlias.mjs';
 
 // vitest runs from apps/web (same convention as src/middleware.test.ts).
 const webRoot = process.cwd();

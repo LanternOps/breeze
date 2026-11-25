@@ -6,7 +6,7 @@ import sentry from '@sentry/astro';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { zodJitlessAlias } from '../../packages/shared/zodJitlessAlias.mjs';
-import { decimalJsLightAlias } from './decimalJsLightAlias.mjs';
+import { decimalJsLightAlias } from './src/lib/decimalJsLightAlias.mjs';
 
 // monaco-editor >=0.56's package.json `exports` map only publishes
 // `"./*.js"` / `"./*"` -> `esm/vs/*.js` — it no longer exposes the AMD
@@ -129,7 +129,7 @@ export default defineConfig({
         // Bare `zod` -> jitless shim so no browser entry probes `new Function` (#9972).
         zodJitlessAlias,
         // recharts' decimal.js-light -> ESM build, so Monaco's global AMD
-        // `define` can't hijack its UMD export (see decimalJsLightAlias.mjs).
+        // `define` can't hijack its UMD export (see src/lib/decimalJsLightAlias.mjs).
         decimalJsLightAlias
       ]
     },
