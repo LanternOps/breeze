@@ -58,6 +58,7 @@ const lookbackStart = (now: Date) => new Date(now.getTime() - DESTINATION_LOOKBA
 /** What the destination answered, in words an admin can act on. Never the raw store text. */
 const CAUSE_ADVICE: Readonly<Record<string, string>> = {
   storage_access_denied: "The destination refused the request: check the access key, the bucket policy and the storage account's standing, then run Test connection.",
+  storage_cap_exceeded: "The storage provider refused the request because an account cap or quota was reached: raise the cap or free space at the provider, or wait for a daily cap to reset.",
   storage_not_found: 'The destination says the bucket or its backup data is missing: check that the bucket still exists and that no lifecycle rule deletes backup data, then run Test connection.',
   storage_clock_skew: 'The destination rejected the time on the requests: check the date and time on the failing devices.',
   storage_operation_failed: "The destination did not complete storage operations: check the storage provider's status, then run Test connection.",

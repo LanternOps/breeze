@@ -31,6 +31,7 @@ export type BackupFailureCategory = (typeof BACKUP_FAILURE_CATEGORIES)[number];
 // with no matching cause keeps its category alone.
 export const BACKUP_FAILURE_CAUSES = [
   'storage_access_denied',
+  'storage_cap_exceeded',
   'storage_not_found',
   'storage_clock_skew',
   'storage_operation_failed',
@@ -117,9 +118,16 @@ const STORE_CODE_CAUSES: ReadonlyArray<{ cause: BackupFailureCause; pattern: Reg
   { cause: 'storage_clock_skew', pattern: /\bRequestTimeTooSkewed\b/ },
 ];
 
+// #12623: the agent saw the store name an account cap or quota and added its
+// fixed token (storagesession/store_refusal.go) after the code, if any. A store
+// may say so under AccessDenied, so this outranks both the code and the status.
+// Anchored to the store's answer: a file path in the same line cannot match.
+const STORE_CAP_EXCEEDED = /\bstorage answered status \d{3} \((?:[A-Za-z0-9]{1,64}, )?provider_cap_exceeded\)/;
+
 const STORE_STATUS = /\bstorage answered status (\d{3})\b/i;
 
 function storeRefusalCause(text: string): BackupFailureCause | null {
+  if (STORE_CAP_EXCEEDED.test(text)) return 'storage_cap_exceeded';
   const byCode = STORE_CODE_CAUSES.find((rule) => rule.pattern.test(text));
   if (byCode) return byCode.cause;
   const status = Number(STORE_STATUS.exec(text)?.[1]);

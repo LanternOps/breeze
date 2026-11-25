@@ -1271,6 +1271,9 @@
     "storage_access_denied": {
       "hint": "Das Sicherungsziel hat die Anfrage abgelehnt. Prüfen Sie, ob der Zugriffsschlüssel gültig ist und Schreibrechte hat, außerdem die Bucket-Richtlinie und den Status des Speicherkontos, und führen Sie dann „Verbindung testen“ aus."
     },
+    "storage_cap_exceeded": {
+      "hint": "Der Speicheranbieter hat die Anfrage abgelehnt, weil ein Limit oder Kontingent des Kontos erreicht wurde. Erhöhen Sie das Limit beim Anbieter oder geben Sie dort Speicherplatz frei. Tageslimits werden automatisch zurückgesetzt."
+    },
     "storage_not_found": {
       "hint": "Das Sicherungsziel meldet, dass der Bucket oder seine Objekte fehlen. Prüfen Sie, ob der Bucket noch existiert und keine Lifecycle-Regel Sicherungsdaten löscht."
     },
