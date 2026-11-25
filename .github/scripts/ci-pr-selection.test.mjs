@@ -158,6 +158,8 @@ test('reader map: every row names an existing test and matches tracked docs-clas
     assert.ok(matches.length, `dead map row: ${row.test} ${row.pattern}`);
     for (const path of matches) {
       const out = cachedClassify(path);
+      // The Go pin check reads code paths too (#12687); its rows are asserted by the pin-check test below.
+      if (row.test === 'scripts/security/check-security-guards.test.mjs' && !row.pattern.startsWith('apps/docs/')) continue;
       assert.equal(out.docs, 'true', path);
       if (path !== 'apps/docs/package.json') assert.equal(out.code, 'false', path);
     }
@@ -393,4 +395,26 @@ test('scanner: Go reads outside agent/ are covered', () => {
     }
   }
   assert.ok(targets.size >= 4, 'Go reference scan must not be vacuous');
+});
+
+// #12687: the Go toolchain pin guard reads code paths (go.mod, Dockerfiles,
+// workflows), not only docs. A bump to any of them must run the guards test,
+// or the pin check only fires on the next scheduled run on main.
+test('reader map: every path the Go pin check reads maps to the guards test and sets path_readers', () => {
+  const guards = 'scripts/security/check-security-guards.test.mjs';
+  const src = readFileSync(join(REPO_ROOT, guards), 'utf8');
+  const block = src.match(/const PIN_FILES = \[([\s\S]*?)\n\];/u);
+  assert.ok(block, 'PIN_FILES block not found in the guards test');
+  const body = block[1].split('\n').filter((l) => !/^\s*\/\//u.test(l)).join('\n');
+  const reads = [...body.matchAll(/'([^']+)'|PIN_SCRIPT/gu)].map((m) => m[1] ?? 'scripts/security/check-go-version-pins.sh');
+  assert.ok(reads.length >= 8, 'vacuous PIN_FILES parse');
+  // A directory entry (.github/workflows) is read through its descendants.
+  const targets = reads.flatMap((p) => (p === '.github/workflows' ? ['.github/workflows/ci.yml', '.github/workflows/security.yml'] : [p]));
+  const rows = readerMap().filter((r) => r.test === guards);
+  for (const path of targets) {
+    assert.ok(rows.some((r) => bashMatches(r.pattern, [path]).length), `guards test reads ${path} but the reader map does not cover it`);
+    const out = classify([path]);
+    assert.equal(out.path_readers, 'true', path);
+    assert.match(out.reader_tests, /scripts\/security\/check-security-guards\.test\.mjs/u, path);
+  }
 });

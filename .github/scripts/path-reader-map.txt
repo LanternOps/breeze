@@ -10,6 +10,14 @@ scripts/agents/build-agents-md.test.mjs CLAUDE.md
 scripts/agents/build-agents-md.test.mjs AGENTS.md
 scripts/security/check-security-guards.test.mjs apps/docs/src/content/docs/agents/building.mdx
 scripts/security/check-security-guards.test.mjs apps/docs/src/content/docs/getting-started/prerequisites.mdx
+# Go toolchain pin check (#12687): code paths, not docs. Keep in step with PIN_FILES in the guards test.
+scripts/security/check-security-guards.test.mjs scripts/security/check-go-version-pins.sh
+scripts/security/check-security-guards.test.mjs agent/go.mod
+scripts/security/check-security-guards.test.mjs apps/api/Dockerfile
+scripts/security/check-security-guards.test.mjs docker/Dockerfile.api
+scripts/security/check-security-guards.test.mjs docker/Dockerfile.api.dev
+scripts/security/check-security-guards.test.mjs scripts/security/yara-pack/go.mod
+scripts/security/check-security-guards.test.mjs .github/workflows/*
 
 # Additional literal reads found by the repository-wide contract scan.
 apps/api/src/config/caddyLogRedaction.test.ts docs/operations/TLS_SETUP.md
