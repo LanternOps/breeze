@@ -44,12 +44,25 @@ export function isVolumeRootRestoreTarget(targetPath: string): boolean {
       if (unc === null) return false;
       rest = unc;
     } else {
-      // A volume GUID or other device path: its first component is the
-      // volume, or, for `GLOBALROOT\Device\<name>`, its first three.
-      const [volume, ...tail] = after.split(SEPARATOR);
+      // Any other device path. Resolve `.`/`..` the way the path will be
+      // read before classifying it (Win32 normalises the `\\.\` form only).
+      const parts = win32 ? resolveParts(after.split(SEPARATOR), true) : after.split(SEPARATOR).filter((p) => p !== '');
+      const [volume, ...tail] = parts;
       if (!volume) return false;
-      const deviceTail = /^GLOBALROOT$/i.test(volume) && /^Device$/i.test(tail[0] ?? '') && tail[1] ? tail.slice(2) : tail;
-      rest = deviceTail.join('/');
+      if (/^Volume\{[0-9a-f-]+\}$/i.test(volume)) {
+        rest = tail.join('/');
+      } else if (
+        /^GLOBALROOT$/i.test(volume)
+        && /^Device$/i.test(tail[0] ?? '')
+        && /^HarddiskVolume(?:ShadowCopy)?\d+$/i.test(tail[1] ?? '')
+      ) {
+        rest = tail.slice(2).join('/');
+      } else {
+        // Every other path through the object namespace (`GLOBALROOT\??\`,
+        // `Global\`, `Device\Mup`, redirectors, …) can name a drive or share
+        // root in ways this check does not model: always confirm.
+        return true;
+      }
     }
   } else if (DRIVE.test(path)) {
     rest = path.slice(2);
@@ -73,10 +86,10 @@ function splitShare(path: string): string | null {
   return tail.join('/');
 }
 
-function remainingComponents(rest: string, win32: boolean): number {
+function resolveParts(raw: string[], win32: boolean): string[] {
   const parts: string[] = [];
-  for (const raw of rest.split(SEPARATOR)) {
-    const part = win32 && raw !== '.' && raw !== '..' ? raw.replace(/[. ]+$/, '') : raw;
+  for (const segment of raw) {
+    const part = win32 && segment !== '.' && segment !== '..' ? segment.replace(/[. ]+$/, '') : segment;
     if (part === '' || part === '.') continue;
     if (part === '..') {
       parts.pop();
@@ -84,5 +97,9 @@ function remainingComponents(rest: string, win32: boolean): number {
     }
     parts.push(part);
   }
-  return parts.length;
+  return parts;
+}
+
+function remainingComponents(rest: string, win32: boolean): number {
+  return resolveParts(rest.split(SEPARATOR), win32).length;
 }

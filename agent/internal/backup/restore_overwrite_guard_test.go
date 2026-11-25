@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -255,11 +256,6 @@ func TestOverwritesOriginals_AliasedTarget(t *testing.T) {
 	if _, count, err := overwritesOriginals(nested, []string{original}); err != nil || count != 1 {
 		t.Fatalf("target whose %q is a link to /%s: count %d, %v; want 1", first, first, count, err)
 	}
-	// A directory entry sitting exactly at the alias: its own destination
-	// is the original directory.
-	if _, count, err := overwritesOriginals(nested, []string{"/" + first}); err != nil || count != 1 {
-		t.Fatalf("directory entry /%s under a target whose %q is a link to it: count %d, %v; want 1", first, first, count, err)
-	}
 
 	if _, count, err := overwritesOriginals(t.TempDir(), []string{original}); err != nil || count != 0 {
 		t.Fatalf("plain new folder: count %d, %v; want 0", count, err)
@@ -401,11 +397,11 @@ func TestDirIdentityCheck_CacheIsPerVolume(t *testing.T) {
 	}
 }
 
-// A destination that exists but cannot be examined, or an original that is
-// there but denied, fails the check closed. "Does not exist" or "not a
-// directory" lets it pass, and so does an original that cannot be reached
-// at all (a drive with no media, an unreachable share): the destination this
-// host just opened cannot be it.
+// A destination or original that cannot be examined fails the check closed,
+// except where the error itself shows there is nothing there: does not
+// exist, not a directory, a path too long to stat (past everything already
+// compared), or, on Windows, a volume or share that cannot be reached (see
+// restore_overwrite_unreachable_windows.go).
 func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
 	denied := fmt.Errorf("access denied: %w", fs.ErrPermission)
 	for name, stat := range map[string]func(string) (os.FileInfo, error){
@@ -431,15 +427,27 @@ func TestDirIdentityCheck_StatErrorsFailClosed(t *testing.T) {
 	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
 		t.Errorf("nothing exists: alias %v, %v; want not an overwrite", same, err)
 	}
-	notReady := errors.New("the device is not ready")
+	for _, err := range []error{fs.ErrNotExist, syscall.ENOTDIR, syscall.ENAMETOOLONG} {
+		c := newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
+			if strings.HasPrefix(p, "/target") {
+				return fakeDirInfo(p), nil
+			}
+			return nil, err
+		})
+		if same, gotErr := c.aliasesOriginal("/home/a/x"); gotErr != nil || same {
+			t.Errorf("original %v: alias %v, %v; want not an overwrite", err, same, gotErr)
+		}
+	}
+	// Any other error leaves the question open: refuse.
+	unknown := errors.New("input/output error")
 	c = newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
 		if strings.HasPrefix(p, "/target") {
 			return fakeDirInfo(p), nil
 		}
-		return nil, notReady
+		return nil, unknown
 	})
-	if same, err := c.aliasesOriginal("/home/a/x"); err != nil || same {
-		t.Errorf("original unreachable: alias %v, %v; want not an overwrite", same, err)
+	if _, err := c.aliasesOriginal("/home/a/x"); !errors.Is(err, unknown) {
+		t.Errorf("original %v: err %v, want it reported", unknown, err)
 	}
 }
 
@@ -456,7 +464,7 @@ func (d fakeDir) Sys() any           { return nil }
 func fakeDirInfo(path string) os.FileInfo { return fakeDir{id: path} }
 
 func newFakeIdentityCheck(target string, host pathStyle, stat func(string) (os.FileInfo, error)) *dirIdentityCheck {
-	return &dirIdentityCheck{targetBase: target, hostStyle: host, stat: stat, verdicts: map[string]dirVerdict{},
+	return &dirIdentityCheck{targetBase: target, hostStyle: host, stat: stat, lstat: stat, verdicts: map[string]dirVerdict{},
 		sameFile: func(a, b os.FileInfo) bool { return a.(fakeDir).id == b.(fakeDir).id }}
 }
 
@@ -564,5 +572,68 @@ func TestRestoreFromSnapshot_JunctionOriginalIsProtected(t *testing.T) {
 	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: t.TempDir(), SelectedPaths: []string{first}}, nil)
 	if err != nil || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
 		t.Fatalf("restore = %+v, %v; want refused", result, err)
+	}
+}
+
+// Running the same restore again into a folder that already holds its
+// restored absolute symlink is not an overwrite: the link resolves to the
+// same directory as the original link, but the restore replaces the link by
+// name and never writes through it.
+func TestRestoreFromSnapshot_RerunWithAbsoluteSymlinkCompletes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX symlink entry")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "home", "a", "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The live original link, as on the machine the backup came from.
+	if err := os.Symlink(data, filepath.Join(dir, "home", "a", "cur")); err != nil {
+		t.Fatal(err)
+	}
+	provider := privateTestLocalProvider(t, t.TempDir())
+	const snapshotID = "symlink-rerun"
+	prefix := filepath.Join("snapshots", snapshotID)
+	src := filepath.Join(t.TempDir(), "content")
+	if err := os.WriteFile(src, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.ToSlash(filepath.Join(prefix, "files", "f.gz"))
+	if err := provider.Upload(src, key); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	entries := []SnapshotFile{
+		{SourcePath: filepath.Join(data, "f.txt"), BackupPath: key, Size: 3, ModTime: now},
+		{SourcePath: filepath.Join(dir, "home", "a", "cur"), Kind: KindSymlink, LinkTarget: data, ModTime: now},
+	}
+	uploadTestManifest(t, provider, prefix, Snapshot{ID: snapshotID, Timestamp: now, Files: entries, Size: 3})
+
+	target := t.TempDir()
+	for run := 1; run <= 2; run++ {
+		result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: t.TempDir()}, nil)
+		if err != nil || result.Status != "completed" {
+			t.Fatalf("run %d = %+v, %v; want completed", run, result, err)
+		}
+	}
+}
+
+// A directory entry sitting exactly where an alias begins (a real directory
+// at the destination that is the original, e.g. a bind mount of it) is an
+// overwrite of the original directory's metadata.
+func TestDirIdentityCheck_DirectoryEntryAtAlias(t *testing.T) {
+	ids := map[string]string{"/target": "t", "/": "root", "/target/srv": "srv", "/srv": "srv"}
+	c := newFakeIdentityCheck("/target", stylePOSIX, func(p string) (os.FileInfo, error) {
+		if id, ok := ids[p]; ok {
+			return fakeDir{id: id}, nil
+		}
+		return nil, fs.ErrNotExist
+	})
+	if same, err := c.aliasesOriginal("/srv"); err != nil || !same {
+		t.Fatalf("directory entry /srv whose destination is /srv itself: alias %v, %v; want true", same, err)
 	}
 }

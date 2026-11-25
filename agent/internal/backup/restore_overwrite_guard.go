@@ -387,6 +387,7 @@ type dirIdentityCheck struct {
 	targetBase string
 	hostStyle  pathStyle
 	stat       func(string) (os.FileInfo, error)
+	lstat      func(string) (os.FileInfo, error)
 	sameFile   func(a, b os.FileInfo) bool
 	verdicts   map[string]dirVerdict
 }
@@ -404,7 +405,7 @@ func newDirIdentityCheck(targetBase string) *dirIdentityCheck {
 	if runtime.GOOS == "windows" {
 		host = styleWindows
 	}
-	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
+	return &dirIdentityCheck{targetBase: targetBase, hostStyle: host, stat: os.Stat, lstat: os.Lstat, sameFile: os.SameFile, verdicts: map[string]dirVerdict{}}
 }
 
 // aliasesOriginal reports whether the entry recorded at sourcePath restores
@@ -428,6 +429,16 @@ func (c *dirIdentityCheck) aliasesOriginal(sourcePath string) (bool, error) {
 	for depth := 0; depth <= len(dirs); depth++ {
 		if depth > 0 {
 			rel = filepath.Join(rel, dirs[depth-1])
+		}
+		if depth == len(dirs) && depth > 0 {
+			// The entry itself is compared only when a real directory is
+			// already there. A file, a link or a junction at the
+			// destination (an earlier run of this restore) is replaced by
+			// name, never written through, so following it would wrongly
+			// equate a restored absolute symlink with its original.
+			if info, lerr := c.lstat(filepath.Join(c.targetBase, rel)); lerr != nil || !info.IsDir() {
+				return false, nil
+			}
 		}
 		// Keyed by the original's volume too: `C:\x` and `D:\x` restore to
 		// the same destination directory but are different originals.
@@ -469,7 +480,9 @@ func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 	// original, whatever the original's state, so an unreadable original
 	// never refuses a restore whose destination is not there yet.
 	destInfo, err := c.stat(dest)
-	if notADirectory(err) {
+	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) {
+		// Nothing there to alias. A path too long to stat is equally past
+		// every directory already compared as distinct.
 		return dirAbsent, nil
 	}
 	if err != nil {
@@ -478,21 +491,21 @@ func (c *dirIdentityCheck) compare(dest, original string) (dirVerdict, error) {
 		return 0, &uncheckedPathError{what: "restore destination", path: dest, err: err}
 	}
 	originalInfo, err := c.stat(original)
-	if errors.Is(err, fs.ErrPermission) {
-		// It may well exist, so it may be what the destination is: fail
-		// closed. Nothing short of its own identity rules that out: the
+	if notADirectory(err) || errors.Is(err, syscall.ENAMETOOLONG) || unreachableVolume(err) {
+		// No original there to overwrite: gone since the backup, or on a
+		// volume or share this host cannot reach at all. The destination,
+		// which it just opened, cannot be it. The lexical check still
+		// applies.
+		return dirAbsent, nil
+	}
+	if err != nil {
+		// Denied, or unreadable for a reason that does not establish the
+		// original is gone: it may be what the destination is, so fail
+		// closed. Nothing short of its own identity rules that out; its
 		// parent's device does not (the original may be a mount point, or
 		// an APFS firmlink such as /Users, whose device differs from its
 		// parent's).
 		return 0, &uncheckedPathError{what: "original location", path: original, err: err}
-	}
-	if err != nil {
-		// No reachable original directory (gone since the backup, a share
-		// that cannot be reached, a drive with no media): the destination,
-		// which this host could open, cannot be it, and nothing at or
-		// beneath it can be overwritten through this directory. The
-		// lexical check still applies.
-		return dirAbsent, nil
 	}
 	if c.sameFile(destInfo, originalInfo) {
 		return dirAlias, nil
@@ -555,7 +568,11 @@ func overwriteCheckFailedRefusal(targetBase string, err error) string {
 		if pathErr, ok := errors.AsType[*fs.PathError](reason); ok {
 			reason = pathErr.Err // the path is named already
 		}
-		return fmt.Sprintf("%s, or give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again. First path that could not be checked (%s): %s (%v)", msg, unchecked.what, refusalPath(unchecked.path), reason)
+		next := "make the path below readable and try again"
+		if errors.Is(reason, fs.ErrPermission) {
+			next = "give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again"
+		}
+		return fmt.Sprintf("%s, or %s. First path that could not be checked (%s): %s (%v)", msg, next, unchecked.what, refusalPath(unchecked.path), reason)
 	}
 	return fmt.Sprintf("%s. (%v)", msg, err)
 }

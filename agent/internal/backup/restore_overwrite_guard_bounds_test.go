@@ -188,3 +188,13 @@ func TestOverwriteRefusals_CapQuotedPaths(t *testing.T) {
 		}
 	}
 }
+
+// The "grant access" advice is given only for a denial; another error that
+// leaves the original unchecked asks for the path to be made readable.
+func TestOverwriteCheckFailedRefusal_AdviceFitsTheError(t *testing.T) {
+	ioErr := &fs.PathError{Op: "stat", Path: "/data/x", Err: errors.New("input/output error")}
+	msg := overwriteCheckFailedRefusal("/target", &uncheckedPathError{what: "original location", path: "/data/x", err: ioErr})
+	if strings.Contains(msg, "Full Disk Access") || !strings.Contains(msg, "make the path below readable") || !strings.Contains(msg, "/data/x (input/output error)") {
+		t.Errorf("refusal for an I/O error: %q", msg)
+	}
+}
