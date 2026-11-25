@@ -58,7 +58,7 @@ async function seedGmailConnection(db: any, mailbox: string, customerEmail: stri
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
-    await db.insert(portalUsers).values({ orgId: org.id, email: customerEmail, name: 'Customer' });
+    await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: customerEmail, name: 'Customer' });
     const [connection] = await db.insert(ticketMailboxConnections).values({
       partnerId: partner.id,
       provider: 'gmail',

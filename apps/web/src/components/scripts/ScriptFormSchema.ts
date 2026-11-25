@@ -168,6 +168,15 @@ export function isSecretParameter(parameter: ScriptParameter): boolean {
   return parameterSource(parameter) === 'tenantSecret';
 }
 
+/**
+ * Is this secret parameter required? `true` unless the row explicitly says
+ * `false` (#12613) — the shared schema's default for the `tenantSecret` arm,
+ * so definitions saved before optional secrets existed stay required.
+ */
+export function secretParameterRequired(parameter: { required?: unknown } | null | undefined): boolean {
+  return typeof parameter?.required === 'boolean' ? parameter.required : true;
+}
+
 /** Does this parameter list contain at least one secret-backed parameter? */
 export function hasSecretParameters(parameters: readonly ScriptParameter[] | undefined): boolean {
   return (parameters ?? []).some(isSecretParameter);
@@ -204,8 +213,8 @@ export function secretsBlockedForRun(run: {
 }
 
 /**
- * Drop the fields a `tenantSecret` row may not carry, and force the two the
- * schema pins (#3409 PR4c-2).
+ * Drop the fields a `tenantSecret` row may not carry, pin `type`, and default
+ * `required` (#3409 PR4c-2, #12613).
  *
  * The authoring form seeds every new parameter row with `defaultValue: ''` and
  * `options: ''`, and RHF keeps a field's value when its input unmounts. An
@@ -216,6 +225,11 @@ export function secretsBlockedForRun(run: {
  * resolver fixes both halves at once: validation sees the real contract, and
  * the sanitized object is what `handleSubmit` hands the caller, so no empty
  * string reaches the API either.
+ *
+ * `required` is the author's choice since #12613 (an optional secret), so a
+ * boolean is kept as-is; anything else becomes `true`, the arm's default —
+ * the same rule the editor's checkbox displays, so what the author sees is
+ * what is saved.
  *
  * Deliberately not a schema `.transform()`: the same normalization has to apply
  * before the union picks an arm, and a transform runs after.
@@ -230,7 +244,7 @@ export function stripSecretParameterValueFields<T>(values: T): T {
     if (!row || row.source !== 'tenantSecret') return parameter;
     changed = true;
     const { defaultValue: _default, options: _options, ...rest } = row;
-    return { ...rest, type: 'string', required: true };
+    return { ...rest, type: 'string', required: secretParameterRequired(row) };
   });
   if (!changed) return values;
   return { ...(record as object), parameters: next } as T;

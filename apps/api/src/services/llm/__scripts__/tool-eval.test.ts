@@ -54,6 +54,11 @@ vi.mock('../../aiModels/promptVariants', async (orig) => ({
     { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'staged', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
   ],
 }));
+vi.mock('../toolEval/tuningPrompts', () => ({
+  TUNING_CASES: [
+    { id: 't01', prompt: 'restart the print spooler somewhere', expect: [{ tool: 'manage_services' }] },
+  ],
+}));
 vi.mock('../toolEval/lazyIndexCases', () => ({
   LAZY_INDEX_CASES: [
     { id: 'l01', page: 'device', kind: 'page-expanded', prompt: 'disk?', expect: [{ tool: 'query_devices' }] },
@@ -286,5 +291,40 @@ describe('--prompt-variant (W11)', () => {
   ])('exits 2 on %s', async (_n, args) => {
     expect(await runCli(args)).toBe(2);
     expect(runSurfaceCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('--examples and --suite tuning (W02)', () => {
+  it('--examples off|on parses and is forwarded as toolExamples; default is auto', async () => {
+    expect(await runCli(['--cases', 'g01', '--examples', 'off'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.at(-1)![0]).toMatchObject({ toolExamples: 'off' });
+    expect(await runCli(['--cases', 'g01', '--examples', 'on'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.at(-1)![0]).toMatchObject({ toolExamples: 'auto' });
+    expect(await runCli(['--cases', 'g01'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.at(-1)![0]).toMatchObject({ toolExamples: 'auto' });
+  });
+
+  it('--examples maybe exits 2', async () => {
+    expect(await runCli(['--cases', 'g01', '--examples', 'maybe'])).toBe(2);
+  });
+
+  it('--suite tuning runs TUNING_CASES; --cases accepts a tuning id there and rejects it under chat', async () => {
+    expect(await runCli(['--suite', 'tuning', '--cases', 't01'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.at(-1)![0]).toMatchObject({ prompt: 'restart the print spooler somewhere' });
+    const report = JSON.parse(String(vi.mocked(writeFile).mock.calls.at(-2)![1]));
+    expect(report.suite).toBe('tuning');
+    expect(await runCli(['--suite', 'chat', '--cases', 't01'])).toBe(2);
+  });
+
+  it('merges schema validity into each case and the summary', async () => {
+    vi.mocked(runSurfaceCapture).mockResolvedValue({
+      ...capture(),
+      observation: { ...capture().observation, toolUses: [{ name: 'mcp__breeze__query_devices', input: { bogusKey: 1 } }] },
+    });
+    expect(await runCli(['--cases', 'g01'])).toBe(0);
+    const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
+    expect(report.cases[0]).toMatchObject({ schemaCheckedCalls: 1, schemaValid: false });
+    expect(report.summary.schemaValidRate).toBe(0);
+    expect(report.cases[0].schemaInvalidCalls[0].name).toBe('query_devices');
   });
 });

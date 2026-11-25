@@ -10,14 +10,16 @@ describe('ticketSearchCondition (staff search box; #8313 spec §5)', () => {
     const { sql, params } = dialect.sqlToQuery(ticketSearchCondition('  ZM-41023 ', [ORG_A]));
     expect(sql).toContain('"tickets"."subject" ilike $1');
     expect(sql).toContain('"tickets"."internal_number" ilike $2');
-    expect(sql).toMatch(/"tickets"\."id" IN \(SELECT "ticket_external_refs"\."ticket_id" FROM "ticket_external_refs" WHERE \("ticket_external_refs"\."org_id" in \(\$3\) and "ticket_external_refs"\."external_number" is not null and lower\("ticket_external_refs"\."external_number"\) = lower\(\$4\)\)\)/);
+    expect(sql).toContain('"tickets"."ticket_number" ilike $3');
+    expect(sql).toMatch(/"tickets"\."id" IN \(SELECT "ticket_external_refs"\."ticket_id" FROM "ticket_external_refs" WHERE \("ticket_external_refs"\."org_id" in \(\$4\) and "ticket_external_refs"\."external_number" is not null and lower\("ticket_external_refs"\."external_number"\) = lower\(\$5\)\)\)/);
     // The substring term is ILIKE-escaped; the source number is matched whole and trimmed.
-    expect(params).toEqual(['%  ZM-41023 %', '%  ZM-41023 %', ORG_A, 'ZM-41023']);
+    expect(params).toEqual(['%  ZM-41023 %', '%  ZM-41023 %', '%  ZM-41023 %', ORG_A, 'ZM-41023']);
   });
 
   it('escapes ILIKE wildcards in the substring term', () => {
     const { params } = dialect.sqlToQuery(ticketSearchCondition('50%_off', [ORG_A]));
     expect(params[0]).toBe('%50\\%\\_off%');
+    expect(params.slice(0, 3)).toEqual(Array(3).fill('%50\\%\\_off%'));
   });
 
   it('matches no ref for a caller with no visible org, and does not bound a system-scope caller', () => {

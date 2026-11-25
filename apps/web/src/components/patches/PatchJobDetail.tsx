@@ -11,10 +11,22 @@ import { useStableT } from '@/lib/i18n/useStableT';
 import type { PatchJobStatus } from './PatchJobsList';
 
 /**
- * Skip reasons the API records when an update ring is deleted or disabled
- * under a queued job (#8909). Other skip codes are internal and stay unshown.
+ * Skip reasons that get a sentence on the device row: an update ring deleted or
+ * disabled under a queued job (#8909), nothing approved, everything left to a
+ * vendor lane, the two a job that names its updates (an AI-initiated install)
+ * records at dispatch, and the one it records when its queued install is
+ * cancelled at delivery (#12493). Other skip codes are internal and stay unshown.
  */
-const RING_SKIP_REASONS: ReadonlySet<string> = new Set(['ring_deleted', 'ring_disabled', 'ring_unavailable', 'all_managed_by_vendor_updates', 'no_approved_patches']);
+const RING_SKIP_REASONS: ReadonlySet<string> = new Set([
+  'ring_deleted',
+  'ring_disabled',
+  'ring_unavailable',
+  'all_managed_by_vendor_updates',
+  'no_approved_patches',
+  'requested_patches_not_eligible',
+  'invalid_patch_ids',
+  'requested_patches_no_longer_eligible',
+]);
 
 type PatchJobResultRow = {
   id: string;

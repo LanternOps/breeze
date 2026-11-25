@@ -13,13 +13,34 @@
  * The result is deduplicated, sorted and re-read in the run org (a device
  * moved or deleted between resolution and the read drops out). It is never
  * truncated: the caller refuses an over-cap set.
+ *
+ * A `fleetFilter` selector (#12418 W02) does not go through the legacy
+ * resolver: it reads the condition list `get_fleet_device_stats` counts
+ * (`fleetConditions`), so the set a flow freezes is the set the count named.
+ * A group in it is the exception: the group's definition is compiled into the
+ * statement (`fleetFilterGroupGate.ts`), while the count reads the members
+ * last evaluated and says so. A filter or a group that matches on a field a
+ * device reports about itself is refused here, whatever save allowed.
  */
-import { and, eq, inArray } from 'drizzle-orm';
-import type { DeploymentTargetConfig, LegacyCondition } from '@breeze/shared';
+import { and, asc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import type { DeploymentTargetConfig, FleetFilter, LegacyCondition } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { devices } from '../../../db/schema';
 import { resolveAutomationTargetsDetailed } from '../../automationRuntime';
+import { fleetConditions } from '../../deviceStats';
+import { FilterQueryTimeoutError, withFilterStatementTimeout } from '../../filterEngine';
+import { reportFilterPreviewTimeout } from '../../filterPreviewTimeout';
+import { fleetFilterExecutionRefusedFields, isEmptyFleetFilter } from '../../fleetFilter';
+import { pgErrorCode } from '../../../utils/pgErrors';
+import { notParkedDeviceCondition } from '../../unassignedPool/selectorPredicate';
 import { flowDbAccessContext } from '../flowAuthContext';
+import {
+  GROUP_CHECK_STEP_BUDGET_MS,
+  GroupCheckBudget,
+  judgeFleetFilterGroup,
+  loadGatedGroups,
+  type FleetFilterGroupVerdict,
+} from '../fleetFilterGroupGate';
 
 export interface FleetRunOrg {
   orgId: string;
@@ -62,8 +83,8 @@ async function loadRunOrgDevices(orgId: string, ids: readonly string[]): Promise
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-function inRunOrg<T>(run: FleetRunOrg, fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withDbAccessContext(flowDbAccessContext(run.orgId, run.partnerId), fn));
+function inRunOrg<T>(run: FleetRunOrg, fn: () => Promise<T>, options?: Parameters<typeof withDbAccessContext>[2]): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(flowDbAccessContext(run.orgId, run.partnerId), fn, options));
 }
 
 export async function resolveTargetsOnce(run: FleetRunOrg, selector: FleetSelector): Promise<FleetTargetResolution> {
@@ -85,4 +106,119 @@ export async function resolveTargetsOnce(run: FleetRunOrg, selector: FleetSelect
 /** An explicit device list (a `fromStep` set or `deviceIds`), kept to the run org's devices. */
 export async function resolveDeviceIdsInRunOrg(run: FleetRunOrg, ids: readonly string[]): Promise<FleetDevice[]> {
   return inRunOrg(run, () => loadRunOrgDevices(run.orgId, ids));
+}
+
+/**
+ * The devices of one org a `fleetFilter` matches, sorted by id, with the exact
+ * count. ONE statement: the window count is taken before LIMIT, so count and
+ * ids come from the same snapshot. Filter SQL may have come from a model, so
+ * it runs under the filter engine's statement bound; a cancellation throws
+ * `FilterQueryTimeoutError`, to be caught outside this call. Call inside a
+ * run-org context.
+ *
+ * `groupMembers` is what the gate compiled for `filter.groupId`; it replaces
+ * the engine's stored-membership test. A group filter without it throws.
+ */
+export async function listFleetFilterDeviceIds(p: { orgId: string; filter: FleetFilter; limit: number; groupMembers?: SQL }): Promise<{ total: number; ids: string[] }> {
+  const { groupId, ...filter } = p.filter;
+  if ((groupId !== undefined) !== (p.groupMembers !== undefined)) throw new Error('a fleetFilter group is selected only through its judged definition');
+  const rows = await withFilterStatementTimeout(async (tx) => {
+    // A group predicate is many small subplans over one org's devices. JIT
+    // would compile each of them (over a second at the bound, which the
+    // statement timeout cannot interrupt) to save milliseconds of work.
+    if (p.groupMembers) await tx.execute(sql`select set_config('jit', 'off', true)`);
+    return tx
+      .select({ id: devices.id, total: sql<string | number>`count(*) over ()` })
+      .from(devices)
+      // `fleetConditions` already leaves parked devices out; the explicit guard
+      // keeps this target selection covered whatever that list becomes.
+      .where(and(...fleetConditions(eq(devices.orgId, p.orgId), filter), p.groupMembers, notParkedDeviceCondition()))
+      .orderBy(asc(devices.id))
+      .limit(p.limit + 1);
+  });
+  return { total: Number(rows[0]?.total ?? 0), ids: rows.slice(0, p.limit).map((r) => r.id) };
+}
+
+export interface FleetFilterResolution {
+  /** Exact, even above the limit. */
+  count: number;
+  /** Every matching device, sorted; empty when `count` is above the limit (never a truncated set). */
+  deviceIds: string[];
+  /** Non-empty ⇒ nothing was resolved and nothing may run. */
+  problems: string[];
+}
+
+export const FLEET_FILTER_TIMEOUT_PROBLEM = 'The device filter took too long to evaluate. Narrow the filter or name the devices. Nothing was run.';
+
+const unresolvedFilter = (problem: string): FleetFilterResolution => ({ count: 0, deviceIds: [], problems: [problem] });
+
+export const FLEET_FILTER_EMPTY_PROBLEM = 'fleetFilter names no field, so it would select every device. Name at least one field. Nothing was run.';
+
+const GROUP_REFUSED_PROBLEM =
+  'The device group this filter names is defined by field(s) a device reports about itself, or by rules or members that cannot be checked; a script cannot be targeted by it.';
+
+export const GROUP_CHECK_TIMEOUT_PROBLEM = 'The device group this filter names could not be checked in time. Name the devices or another filter field. Nothing was run.';
+
+/** A comparison the types do not have, and a value the driver cannot bind (it never reaches Postgres). */
+const RULE_EVALUATION_CODES: ReadonlySet<string> = new Set(['42804', '42846', '42883', '42P18', 'ERR_INVALID_ARG_TYPE', 'UNDEFINED_VALUE', 'MAX_PARAMETERS_EXCEEDED']);
+
+/** Rules the gate could compile but that cannot be evaluated: the above, or a value its column cannot read (class 22). */
+function isRuleEvaluationError(error: unknown): boolean {
+  const code = pgErrorCode(error);
+  return typeof code === 'string' && (code.startsWith('22') || RULE_EVALUATION_CODES.has(code));
+}
+
+/**
+ * The devices the filter's group holds, when that group may select script
+ * targets in the run org. A group the run org does not hold (another org's, a
+ * partner-wide group, deleted) is refused, because its rules cannot be
+ * checked. Call inside a run-org context.
+ */
+async function fleetFilterGroupMembers(orgId: string, groupId: string): Promise<{ members: SQL } | { problem: string }> {
+  let judged: FleetFilterGroupVerdict;
+  try {
+    judged = await withFilterStatementTimeout((tx) => {
+      const budget = new GroupCheckBudget(GROUP_CHECK_STEP_BUDGET_MS);
+      return judgeFleetFilterGroup(orgId, groupId, { budget, load: (ids) => loadGatedGroups(tx, orgId, ids, budget) });
+    });
+  } catch (error) {
+    // Cancelled, or out of time, inside its own savepoint; the run-org transaction is still usable.
+    if (!(error instanceof FilterQueryTimeoutError)) throw error;
+    reportFilterPreviewTimeout(orgId);
+    return { problem: GROUP_CHECK_TIMEOUT_PROBLEM };
+  }
+  if (judged.verdict === 'ok') return { members: judged.members };
+  return { problem: judged.verdict === 'missing' ? 'The device group this filter names is not available to this flow run.' : GROUP_REFUSED_PROBLEM };
+}
+
+/**
+ * A typed `fleetFilter`, resolved once in the run org (#12418 W02, Decisions 4,
+ * 10 and 11). REPEATABLE READ: the group rows that are judged, the predicate
+ * compiled from them and the device statement all read one snapshot.
+ */
+export async function resolveFleetFilterOnce(run: FleetRunOrg, filter: FleetFilter, limit: number): Promise<FleetFilterResolution> {
+  if (isEmptyFleetFilter(filter)) return unresolvedFilter(FLEET_FILTER_EMPTY_PROBLEM);
+  const refused = fleetFilterExecutionRefusedFields(filter);
+  if (refused.length > 0) {
+    return unresolvedFilter(`fleetFilter matches on field(s) a device reports about itself (${refused.join(', ')}); a script cannot be targeted by them.`);
+  }
+  try {
+    return await inRunOrg(run, async () => {
+      let groupMembers: SQL | undefined;
+      if (filter.groupId !== undefined) {
+        const group = await fleetFilterGroupMembers(run.orgId, filter.groupId);
+        if ('problem' in group) return unresolvedFilter(group.problem);
+        groupMembers = group.members;
+      }
+      const { total, ids } = await listFleetFilterDeviceIds({ orgId: run.orgId, filter, limit, groupMembers });
+      return { count: total, deviceIds: total <= limit ? ids : [], problems: [] };
+    }, { isolationLevel: 'repeatable read' });
+  } catch (error) {
+    // Outside the bounded transaction AND the run-org one: both are over. A
+    // cancelled filter is a refusal, never an empty or partial set.
+    if (filter.groupId !== undefined && isRuleEvaluationError(error)) return unresolvedFilter(GROUP_REFUSED_PROBLEM);
+    if (!(error instanceof FilterQueryTimeoutError)) throw error;
+    reportFilterPreviewTimeout(run.orgId);
+    return unresolvedFilter(FLEET_FILTER_TIMEOUT_PROBLEM);
+  }
 }

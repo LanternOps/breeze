@@ -26,6 +26,7 @@ export default defineConfig({
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
+      'src/services/scriptProposals/mcpUnattendedCeilingLock.integration.test.ts',
       'src/__tests__/integration/**',
       // Real bearer + PostgreSQL integration connection authority checks.
       'src/routes/integrationConnectionScope.integration.test.ts',
@@ -198,6 +199,7 @@ export default defineConfig({
       'src/services/peripheralPolicyState.integration.test.ts',
       'src/services/agentRollback.integration.test.ts',
       'src/services/agentRollbackResult.integration.test.ts',
+      'src/services/patchRollback.integration.test.ts',
       // Enrollment-key cleanup sweep real-DB test (#2775 live-bootstrap-token
       // exemption): imports `__tests__/integration/setup` (real postgres pool
       // + autoMigrate) and lives in src/jobs/ outside the

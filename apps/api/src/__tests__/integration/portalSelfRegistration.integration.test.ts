@@ -490,7 +490,7 @@ describe('portal self-registration (real DB, real routes, worker run directly)',
       const [activated] = await loginsFor(email);
       expect(activated).toMatchObject({
         id: account!.id, status: 'active', browserAccess: 'granted', authMethod: 'password', passwordHash: null,
-        authEpoch: account!.authEpoch + 1, entraTenantId: tid, entraOid: oid,
+        authEpoch: account!.authEpoch + 1,
       });
       const identities = await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, account!.id));
       expect(identities).toEqual([expect.objectContaining({ subject: oid, linkedVia: 'invite' })]);

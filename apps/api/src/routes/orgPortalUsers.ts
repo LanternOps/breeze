@@ -249,6 +249,8 @@ export async function issueAndSendInvite(c: any, orgId: string, user: { id: stri
       message,
       partnerId,
       partnerName,
+      // Internal (#12249): staff invite, or a staff-approved access request.
+      trigger: 'internal',
       custom,
     });
     return true;

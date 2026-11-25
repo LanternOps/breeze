@@ -721,6 +721,8 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
           to: user.email,
           resetUrl,
           purpose: 'portal.password_reset',
+          // External (#12249): anyone can ask for a reset of any address.
+          trigger: 'external',
           partnerId: user.partnerId ?? null,
           partnerName: user.partnerName ?? null,
         });

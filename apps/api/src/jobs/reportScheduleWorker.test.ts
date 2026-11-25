@@ -1605,6 +1605,35 @@ describe('processRunScheduledReport', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(smtpDown);
   });
 
+  // #12249: a held send is a deliberate drop with one structured log line, not
+  // an error-tracking event per hold.
+  it('logs a held send as dropped and does not report it to error tracking', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
+    );
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
+    selectMock.mockReturnValueOnce(
+      selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]),
+    );
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    const updates = [updateChain(), updateChain()];
+    updateMock.mockReturnValueOnce(updates[0]).mockReturnValueOnce(updates[1]);
+    generateReportMock.mockResolvedValueOnce({ rows: [{ hostname: 'PC-1' }], rowCount: 1 });
+    sendEmailMock.mockRejectedValueOnce(Object.assign(new Error('held'), {
+      name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'p1', purpose: 'report.delivery', retryAt: new Date(Date.now() + 3_600_000),
+    }));
+    captureExceptionMock.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
+      expect(warn).toHaveBeenCalledWith('[email] held send dropped', expect.objectContaining({ site: 'reportScheduleWorker', reason: 'over_cap' }));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(updates[1]!.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
   it('warns when an attachment exceeds 5MB and sends link-only', async () => {
     const bigHostname = 'x'.repeat(6 * 1024 * 1024);
     selectMock.mockReturnValueOnce(

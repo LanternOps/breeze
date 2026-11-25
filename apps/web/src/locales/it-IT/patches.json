@@ -491,7 +491,10 @@
       "ring_deleted": "Annullato prima dell’invio: l’anello di aggiornamento è stato eliminato.",
       "ring_disabled": "Annullato prima dell’invio: l’anello di aggiornamento è stato disattivato.",
       "ring_unavailable": "Saltato: l’anello di aggiornamento è stato eliminato o disattivato prima dell’invio a questo dispositivo.",
-      "all_managed_by_vendor_updates": "Saltato: tutti gli aggiornamenti in sospeso su questo dispositivo sono gestiti dagli aggiornamenti del produttore, quindi non serve alcuna approvazione."
+      "all_managed_by_vendor_updates": "Saltato: tutti gli aggiornamenti in sospeso su questo dispositivo sono gestiti dagli aggiornamenti del produttore, quindi non serve alcuna approvazione.",
+      "requested_patches_not_eligible": "Saltato: nessuno degli aggiornamenti selezionati per questo job può essere installato su questo dispositivo con il criterio di aggiornamento attuale.",
+      "invalid_patch_ids": "Saltato: l'elenco degli aggiornamenti selezionati per questo job non era valido, quindi non è stato installato nulla.",
+      "requested_patches_no_longer_eligible": "Annullato prima della consegna: almeno uno degli aggiornamenti selezionati per questo job non è più idoneo su questo dispositivo. Esegui di nuovo l’installazione per installare quelli ancora idonei."
     },
     "errors": {
       "load": "Impossibile caricare il job di patch"

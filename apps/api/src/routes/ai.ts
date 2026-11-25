@@ -60,7 +60,7 @@ import {
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db, withDbTransaction } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
-import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql, type SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, inArray, lte, count, avg, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -2105,14 +2105,15 @@ aiRoutes.get(
     // it directly.
     const reviewerDisagreements = await loadScriptProposalReviewerDisagreements(orgId, since, until);
 
-    // 3. Unattended runs in the window (W04, #5612)
+    // 3. Unattended runs in the window (W04, #5612): the reviewer lane's and
+    // those an unattended MCP principal ran under its partner's ceiling.
     const [unattendedCountRow] = await db
       .select({ count: drizzleSql<number>`COUNT(*)::int` })
       .from(scriptExecutions)
       .where(
         and(
           eq(scriptExecutions.orgId, orgId),
-          eq(scriptExecutions.approvalMethod, 'unattended_reviewer_gated'),
+          inArray(scriptExecutions.approvalMethod, ['unattended_reviewer_gated', 'unattended_mcp_principal']),
           gte(scriptExecutions.createdAt, since),
           lte(scriptExecutions.createdAt, until),
         ),

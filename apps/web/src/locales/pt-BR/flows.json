@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "O orçamento de IA da organização acabou.",
       "ai_output_invalid": "O resultado da IA não correspondeu ao formato esperado.",
       "ai_token_cap_reached": "A execução atingiu o limite de tokens de IA.",
-      "targets_over_cap": "A etapa visou mais dispositivos do que uma etapa de fluxo pode executar (500).",
+      "targets_over_cap": "A etapa visou mais dispositivos do que esta execução pode usar.",
       "targets_unresolvable": "Não foi possível resolver o destino de dispositivos da etapa.",
       "alert_create_failed": "Não foi possível criar o alerta.",
       "script_dispatch_failed": "Não foi possível enviar o script para um ou mais dispositivos."

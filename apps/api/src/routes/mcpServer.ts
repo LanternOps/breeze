@@ -27,11 +27,13 @@ import { isPartnerServicePrincipalKeyFormat } from '../services/partnerServicePr
 import { conversionSummarySql } from '../services/flows/conversion/ledger';
 import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
-import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
+import { getToolDefinitions, executeTool, getToolTier, getToolDomain, getToolSearchHint, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { unattendedNoteWriteContext } from '../services/deviceNoteBounds';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
+import { loadProposalGuardrailContextForCaller, mcpUnattendedProposalDecision } from '../services/scriptProposals';
+import type { ToolExecutionContext } from '../services/toolExecutionContext';
+import { type GuardrailContext, checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from '../middleware/mcpTenantToolSelfManagedContext';
@@ -52,7 +54,16 @@ import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { callerRefusal } from '../services/callerVerification/refusal';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
-import { buildMcpServerInstructions, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
+import { buildMcpServerInstructions, listMcpPrompts, getMcpPrompt, hasMcpPrompt, type McpProgressiveGuidance } from '../services/mcpGuidance';
+import {
+  MCP_TOOL_LIST_HEADER,
+  MCP_TOOL_LIST_META_KEY,
+  mcpToolListDefault,
+  parseStoredMcpToolListMode,
+  readRequestedToolListMode,
+  resolveMcpToolListMode,
+  type ResolvedMcpToolListMode,
+} from '../services/mcpToolListMode';
 import { API_VERSION } from '../version';
 import { buildMcpToolPresentation } from '../services/mcpToolPresentation';
 import {
@@ -66,8 +77,9 @@ import {
   parseStoredMcpDomains,
   type McpDomainGrant,
 } from '../services/mcpDomains';
-import type { AiToolDomain } from '@breeze/shared';
-import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { AI_TOOL_DOMAINS, isAiToolDomain, type AiToolDomain } from '@breeze/shared';
+import { isAlwaysLoadedToolName, MCP_GET_TOOL_DETAILS_TOOL_NAME, MCP_META_TOOL_NAMES, MCP_SEARCH_TOOLS_TOOL_NAME, MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { handleGetToolDetails, handleSearchTools, MCP_META_TOOL_LIST_ENTRIES, unwrapCallToolRequest, type McpCatalogSource, type McpToolListEntry } from '../services/mcpMetaTools';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { isFlowToolName } from '../services/flows/toolNames';
 import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
@@ -266,15 +278,24 @@ async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
     if (parsed.tooLarge || parsed.parseError || !parsed.body || typeof parsed.body !== 'object') {
       return false;
     }
-    const body = parsed.body as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
+    const body = parsed.body as { method?: unknown; params?: unknown };
     if (body.method !== 'tools/call') return false;
-    const name = body.params?.name;
+    const outer = body.params !== null && typeof body.params === 'object' && !Array.isArray(body.params)
+      ? body.params as Record<string, unknown>
+      : undefined;
+    // #12427: call_tool is unwrapped here exactly as handleJsonRpc unwraps it,
+    // so a wrapped tenant or self-managed call leaves the ambient transaction
+    // the same way a direct one does. A malformed wrapper is a safe false.
+    const unwrapped = unwrapCallToolRequest(outer);
+    if ('invalid' in unwrapped) return false;
+    const params = unwrapped.params;
+    const name = params?.name;
     if (typeof name !== 'string') return false;
     // Also true for a flow tool (`flow__<slug>` has the tenant shape), on
     // purpose: handleFlowToolCall's reads and the run insert open their own
     // system contexts, exactly like the tenant path (W5 PR C, #5220).
     if (isTenantToolName(name)) return true;
-    const input = body.params?.arguments;
+    const input = params?.arguments;
     if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
     return toolManagesDbContext(aiTools.get(resolveDeprecatedToolAlias(name)), input as Record<string, unknown>);
   } catch {
@@ -728,13 +749,16 @@ async function buildCheckedAuthFromApiKey(
  * canonical tool (after alias resolution) or the resource URI — and its
  * domain, so "who keeps hitting a domain they were not granted" is a query.
  */
-function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcResponse): Record<string, unknown> {
+function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcResponse, auditExtras: McpAuditExtras): Record<string, unknown> {
   const data = response.error?.data as { reason?: unknown; domain?: unknown } | undefined;
   if (data?.reason !== 'domain_not_granted') return {};
   const params = body.params ?? {};
+  // #12427: a call_tool denial names the inner tool (already canonical and bounded).
   const target = body.method === 'resources/read'
     ? { resourceUri: typeof params.uri === 'string' ? boundDeniedName(params.uri) : null }
-    : { canonicalTool: typeof params.name === 'string' ? boundDeniedName(resolveDeprecatedToolAlias(params.name)) : null };
+    : auditExtras.metaTool === 'call_tool' && auditExtras.toolName !== undefined
+      ? { canonicalTool: auditExtras.toolName }
+      : { canonicalTool: typeof params.name === 'string' ? boundDeniedName(resolveDeprecatedToolAlias(params.name)) : null };
   return { ...target, domain: data.domain, deniedReason: 'domain_not_granted' };
 }
 
@@ -766,11 +790,27 @@ type McpDispatchContext = {
 };
 
 /**
- * B-W05 (#6159, D-B44): bounded, server-chosen audit additions (never caller text).
+ * B-W05 (#6159, D-B44): bounded, server-chosen audit additions. #12427's
+ * `toolName` / `requestedToolName` are the one exception: caller-supplied tool
+ * names, bounded by boundDeniedName before they are stored.
  * B-W06 (#6160, D-B53): `taskId` only when it is a UUID; `taskResult` on a
  * tools/call that returned a CreateTaskResult.
  */
-type McpAuditExtras = { mcpApp?: string; taskId?: string; taskResult?: true };
+type McpAuditExtras = {
+  mcpApp?: string;
+  taskId?: string;
+  taskResult?: true;
+  /**
+   * #12427: a tools/call that arrived through call_tool, the canonical inner
+   * tool and (when an alias was used) the inner name as sent; both bounded.
+   * `toolIsError` marks any tools/call result with isError: true, direct or
+   * wrapped (a tool failure is not a JSON-RPC error, so `result` cannot).
+   */
+  metaTool?: 'call_tool';
+  toolName?: string;
+  requestedToolName?: string;
+  toolIsError?: true;
+};
 
 /** Legacy-era methods that may read the negotiated-extension side key (D-B42). */
 const MCP_SIDE_KEY_METHODS: ReadonlySet<string> = new Set(['tools/list', 'resources/read', 'tools/call']);
@@ -827,13 +867,18 @@ async function dispatchAndAudit(
       ...(apiKey.partnerServicePrincipalId
         ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
         : {}),
-      ...domainDenialAuditDetails(body, response),
+      ...domainDenialAuditDetails(body, response, ctx.auditExtras),
       // B-W05 (#6159, D-B44): both keys absent unless set, so pre-W05 rows and
       // queries are unchanged. `mcpApp` is a registry key, never caller text.
       ...(clientExtensions.ui ? { uiExtension: true } : {}),
       ...(ctx.auditExtras.mcpApp ? { mcpApp: ctx.auditExtras.mcpApp } : {}),
       ...(ctx.auditExtras.taskId ? { taskId: ctx.auditExtras.taskId } : {}),
       ...(ctx.auditExtras.taskResult ? { taskResult: true } : {}),
+      // #12427: absent unless set, so a direct call's row is unchanged.
+      ...(ctx.auditExtras.metaTool ? { metaTool: ctx.auditExtras.metaTool } : {}),
+      ...(ctx.auditExtras.toolName !== undefined ? { toolName: ctx.auditExtras.toolName } : {}),
+      ...(ctx.auditExtras.requestedToolName !== undefined ? { requestedToolName: ctx.auditExtras.requestedToolName } : {}),
+      ...(ctx.auditExtras.toolIsError ? { toolIsError: true } : {}),
       ...correlationAuditDetails(ctx.correlation),
     },
     result: response.error ? 'failure' : 'success',
@@ -1354,7 +1399,10 @@ mcpServerRoutes.delete('/sse', (c) => {
  * transport. HTTP+SSE `/message` shares this builder and never gets Apps, so
  * the default is false and existing one-argument callers are unchanged.
  */
-export function buildInitializeResult(requestedProtocolVersion?: unknown, opts: { advertiseApps?: boolean } = {}) {
+export function buildInitializeResult(
+  requestedProtocolVersion?: unknown,
+  opts: { advertiseApps?: boolean; toolListMode?: ResolvedMcpToolListMode; progressive?: McpProgressiveGuidance } = {},
+) {
   const extensions = opts.advertiseApps ? mcpAppsServerExtensions() : undefined;
   return {
     protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
@@ -1370,8 +1418,25 @@ export function buildInitializeResult(requestedProtocolVersion?: unknown, opts: 
       version: API_VERSION,
     },
     // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
-    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled(), opts.progressive),
+    // #12427 (plan Decision 2): reported only in progressive, so a `full`
+    // result stays byte-identical to what it was before modes existed.
+    ...(opts.toolListMode?.mode === 'progressive' ? { toolListMode: { ...opts.toolListMode } } : {}),
   };
+}
+
+/**
+ * #12427: the request's own tool-list override. `_meta` is read only in the
+ * stateless era (the legacy envelope has no per-request `_meta` contract);
+ * the header is read on both.
+ */
+function readToolListModeOverride(req: JsonRpcRequest, c: Context | undefined, era: McpDispatchContext['era']) {
+  const meta = req.params?._meta;
+  const metaValue = era === 'modern' && meta !== null && typeof meta === 'object' && !Array.isArray(meta)
+    && Object.hasOwn(meta, MCP_TOOL_LIST_META_KEY)
+    ? (meta as Record<string, unknown>)[MCP_TOOL_LIST_META_KEY]
+    : undefined;
+  return readRequestedToolListMode({ header: c?.req.header(MCP_TOOL_LIST_HEADER), meta: metaValue });
 }
 
 async function handleJsonRpc(
@@ -1383,6 +1448,31 @@ async function handleJsonRpc(
   ctx: McpDispatchContext,
 ): Promise<JsonRpcResponse> {
   try {
+    // #12427: one tool list mode per request, resolved from the ORIGINAL
+    // envelope before anything is dispatched, so initialize, server/discover,
+    // tools/list and tools/call all read the same value. A contradictory or
+    // misspelt override is refused (and audited by the caller), never guessed.
+    const requestedMode = readToolListModeOverride(req, c, ctx.era);
+    if (!requestedMode.ok) return jsonRpcError(req.id, -32602, 'Invalid params', { reason: requestedMode.reason });
+    const toolListMode = resolveMcpToolListMode({
+      requestOverride: requestedMode.mode,
+      // The authenticated principal's own row, read by its auth middleware
+      // (#12429). A partner service principal key stores no mode.
+      credential: apiKey
+        ? apiKey.partnerServicePrincipalId
+          ? { mcpToolListMode: null, partnerServicePrincipal: true }
+          : { mcpToolListMode: parseStoredMcpToolListMode(apiKey.mcpToolListMode), partnerServicePrincipal: false }
+        : null,
+      deploymentDefault: mcpToolListDefault(),
+    });
+    // The progressive instructions' inputs, from the caller's own catalog
+    // (registry + intrinsics; tenant and flow tools are never named there).
+    const progressiveGuidance = async (): Promise<McpProgressiveGuidance | undefined> => (toolListMode.mode === 'progressive'
+      ? progressiveGuidanceFor((await buildToolsListEntries({
+        scopes, auth, apiKey, clientExtensions: NO_MCP_CLIENT_EXTENSIONS, dynamicTools: false,
+      })).entries)
+      : undefined);
+
     // B-W03 (#6157, D-B17): lifecycle methods are per era. In the stateless
     // era `initialize` / `notifications/initialized` do not exist and
     // `server/discover` replaces them; each falls through to -32601 in the
@@ -1390,7 +1480,7 @@ async function handleJsonRpc(
     if (ctx.era === 'legacy' && req.method === 'initialize') {
       return jsonRpcResult(req.id, buildInitializeResult(
         (req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion,
-        { advertiseApps: ctx.transport === 'streamable' },
+        { advertiseApps: ctx.transport === 'streamable', toolListMode, progressive: await progressiveGuidance() },
       ));
     }
     if (ctx.era === 'legacy' && req.method === 'notifications/initialized') {
@@ -1398,19 +1488,38 @@ async function handleJsonRpc(
       return jsonRpcResult(req.id, {});
     }
     if (ctx.era === 'modern' && req.method === 'server/discover') {
-      return jsonRpcResult(req.id, buildDiscoverResult());
+      return jsonRpcResult(req.id, buildDiscoverResult({ toolListMode, progressive: await progressiveGuidance() }));
     }
 
     switch (req.method) {
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions());
+        return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions(), toolListMode);
 
       case 'tools/call': {
-        noteMcpAppToolCall(req.params, ctx.auditExtras);
+        // #12427: call_tool is unwrapped ONCE, here (and in the pre-auth
+        // classifier), so every reader below — the Apps counter, every gate in
+        // handleToolsCall, the rate limit, the ledger and the audit — sees the
+        // inner name. Mode and protocol classification already ran on the
+        // original envelope.
+        const unwrapped = unwrapCallToolRequest(req.params);
+        if (unwrapped.wrapped) ctx.auditExtras.metaTool = 'call_tool';
+        if ('invalid' in unwrapped) return jsonRpcError(req.id, -32602, 'Invalid params', { reason: unwrapped.invalid });
+        const params = unwrapped.params ?? {};
+        if (unwrapped.wrapped) {
+          const canonical = resolveDeprecatedToolAlias(unwrapped.params.name);
+          ctx.auditExtras.toolName = boundDeniedName(canonical);
+          if (canonical !== unwrapped.params.name) ctx.auditExtras.requestedToolName = boundDeniedName(unwrapped.params.name);
+        }
+        noteMcpAppToolCall(params, ctx.auditExtras);
         // B-W06 (#6160, D-B47): Tasks are modern-only and declared per request.
         const tasksDeclared = ctx.era === 'modern' && (await ctx.resolveClientExtensions()).tasks;
-        const response = await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared);
+        const response = await handleToolsCall(req.id, params, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared, {
+          surface: unwrapped.wrapped ? 'call_tool' : 'direct',
+          toolListMode,
+          clientExtensions: await ctx.resolveClientExtensions(),
+        });
         if (tasksDeclared && isCreateTaskResponse(response)) ctx.auditExtras.taskResult = true;
+        if ((response.result as { isError?: unknown } | undefined)?.isError === true) ctx.auditExtras.toolIsError = true;
         return response;
       }
 
@@ -1515,6 +1624,26 @@ async function liveMcpIntentCreation(): Promise<typeof McpIntentCreation> {
 }
 
 /** True when this credential can own an `mcp_api` intent (human API key or OAuth grant). */
+/**
+ * The reviewed risk and the MCP ceiling in force when a reviewed proposal may
+ * run without approval for a principal on MCP_UNATTENDED_TIER3_PRINCIPALS
+ * (`mcpUnattendedProposalDecision`: the reviewer lane's rules plus the
+ * partner's MCP ceiling), for the audit row. Null for anything unresolved or
+ * refused, which leaves the call on the approval gate.
+ */
+async function proposalRunsUnattended(
+  context: GuardrailContext | undefined,
+  proposalId: unknown,
+  proposalOrgId: string | null,
+  deviceIds: readonly string[],
+): Promise<{ riskTier: string; ceiling: string } | null> {
+  const riskTier = context?.proposal?.riskTier;
+  if (!riskTier || !proposalOrgId || typeof proposalId !== 'string') return null;
+  const decision = await mcpUnattendedProposalDecision(proposalId, proposalOrgId, deviceIds);
+  if (decision.refusal !== null || decision.ceiling === null) return null;
+  return { riskTier, ceiling: decision.ceiling };
+}
+
 function canOwnMcpIntents(auth: AuthContext, apiKey: McpApiKeyContext | undefined): boolean {
   return mcpOriginRef(auth.principal) !== null
     && (apiKey as { principalType?: string } | undefined)?.principalType !== 'service'
@@ -1895,14 +2024,34 @@ function noteMcpAppToolCall(params: Record<string, unknown> | undefined, auditEx
   if (app) auditExtras.mcpApp = app.key;
 }
 
-async function handleToolsList(
-  id: string | number,
-  scopes: string[],
-  auth: AuthContext,
-  params?: Record<string, unknown>,
-  apiKey?: McpApiKeyContext,
-  clientExtensions: McpClientExtensions = NO_MCP_CLIENT_EXTENSIONS,
-): Promise<JsonRpcResponse> {
+/**
+ * #12427: the caller's `full` catalog — exactly what tools/list has always
+ * listed, in the same order: registry tools and intrinsics, then tenant, then
+ * flow tools, each block sorted by name. The one catalog every surface reads:
+ * the `full` and `progressive` lists, search_tools, get_tool_details and the
+ * progressive instructions, so discovery can never name a tool this caller
+ * could not list.
+ *
+ * `approvalNotes` maps a registry tool to the parenthetical sentences the list
+ * appended to its description (approval, MFA), for search_tools rows.
+ * `dynamicTools: false` skips tenant and flow resolution (both read the
+ * database): the instructions and the measurement script name neither.
+ */
+export async function buildToolsListEntries(input: {
+  scopes: string[];
+  auth: AuthContext;
+  apiKey?: McpApiKeyContext;
+  clientExtensions: McpClientExtensions;
+  dynamicTools?: boolean;
+}): Promise<{
+  entries: McpToolListEntry[];
+  listing: McpListingContext;
+  approvalNotes: ReadonlyMap<string, string>;
+  /** Dynamic sources that failed to resolve (the catalog degrades to without them). */
+  incomplete: McpCatalogSource[];
+}> {
+  const { scopes, auth, apiKey, clientExtensions } = input;
+  const dynamicTools = input.dynamicTools ?? true;
   const listing = buildMcpListingContext(scopes, auth, apiKey);
   const { domainGrant, hasWrite, callerFailsMfaGate, ownsIntents, canRunTier3Unattended, canFileTier3Intent } = listing;
   const allTools = getToolDefinitions();
@@ -1922,6 +2071,8 @@ async function handleToolsList(
     }
   }
 
+  const approvalNotes = new Map<string, string>();
+  const incomplete: McpCatalogSource[] = [];
   const result = scopedTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
     // listed — its ungated actions (typically reads/drafts) still work —
@@ -1955,6 +2106,8 @@ async function handleToolsList(
     if (mfaGatedActions.length > 0) {
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
     }
+    const note = description.slice((tool.description ?? '').length).trim();
+    if (note) approvalNotes.set(tool.name, note);
     const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
     // B-W05: merged, so `app.breeze/domain` survives and `_meta` keeps its position.
     const appMeta = appToolMeta.get(tool.name);
@@ -1994,7 +2147,7 @@ async function handleToolsList(
   // resolution failure (DB hiccup, etc.) degrades to no tenant tools rather
   // than failing tools/list for the entire core registry.
   let tenantResult: Array<Omit<(typeof result)[number], 'inputSchema'> & { inputSchema: Record<string, unknown> }> = [];
-  try {
+  if (dynamicTools) try {
     // #6046: the same access-checked default org tools/call falls back to when
     // the caller supplies no `orgId` (no tool input exists at list time), so
     // every org-owned tool listed here resolves on a bare tools/call.
@@ -2019,7 +2172,9 @@ async function handleToolsList(
         inputSchema: d.definition.input_schema,
       }));
   } catch (err) {
-    console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
+    console.error('[MCP] Failed to resolve tenant tools for the tool catalog:', err);
+    captureException(err);
+    incomplete.push('tenant');
   }
 
   // W5 PR C (#5220): flow tools (`flow__<slug>`), listed only when callable
@@ -2027,7 +2182,7 @@ async function handleToolsList(
   // the flow tools live in. Same degrade-to-none rule as tenant tools.
   // listMcpFlowTools answers [] with FLOWS_ENABLED off before any read.
   let flowResult: typeof tenantResult = [];
-  try {
+  if (dynamicTools) try {
     const flowDomain = mcpToolDomain('list_flows');
     if (isDomainGranted(domainGrant, flowDomain)) {
       const flowTools = await listMcpFlowTools(auth, resolveMcpExecutionOrgId(apiKey, auth, {}), { hasWrite });
@@ -2039,12 +2194,73 @@ async function handleToolsList(
       }));
     }
   } catch (err) {
-    console.error('[MCP] Failed to resolve flow tools for tools/list:', err);
+    console.error('[MCP] Failed to resolve flow tools for the tool catalog:', err);
+    captureException(err);
+    incomplete.push('flow');
     flowResult = [];
   }
 
-  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
-  const all = [...result.sort(byName), ...tenantResult.sort(byName), ...flowResult.sort(byName)];
+  const entries: McpToolListEntry[] = [...result.sort(byToolName), ...tenantResult.sort(byToolName), ...flowResult.sort(byToolName)];
+  return { entries, listing, approvalNotes, incomplete };
+}
+
+const byToolName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
+
+/** #12427: the intrinsics tools/list already lists (each under its own condition). */
+const MCP_LISTED_INTRINSICS: ReadonlySet<string> = new Set([
+  MCP_WHOAMI_TOOL_NAME, MCP_GET_ACTION_STATUS_TOOL_NAME, MCP_CANCEL_ACTION_TOOL_NAME,
+]);
+
+/**
+ * #12427: the `progressive` list — the caller's `full` entries for the
+ * registry's alwaysLoad tools and the intrinsics (each exactly as `full`
+ * emits it), plus the three meta-tools, in name order. Registry entries gain
+ * the Agent SDK hint keys (OD-7); `full` never carries them.
+ */
+export function presentProgressiveList(entries: readonly McpToolListEntry[]): McpToolListEntry[] {
+  const core = entries.flatMap((entry): McpToolListEntry[] => {
+    if (MCP_LISTED_INTRINSICS.has(entry.name)) return [entry];
+    if (isTenantToolName(entry.name) || !isAlwaysLoadedToolName(entry.name)) return [];
+    const hint = getToolSearchHint(entry.name);
+    return [{
+      ...entry,
+      _meta: { ...entry._meta, ...(hint ? { 'anthropic/searchHint': hint } : {}), 'anthropic/alwaysLoad': true },
+    }];
+  });
+  const meta = MCP_META_TOOL_LIST_ENTRIES.map((entry) => ({ ...entry, _meta: { ...entry._meta } }));
+  return [...core, ...meta].sort(byToolName);
+}
+
+/**
+ * #12427: what the progressive instructions may name — the domains of the
+ * caller's listable registry tools (intrinsics, tenant and flow tools have no
+ * index line) and every name in the caller's `full` catalog plus the
+ * meta-tools.
+ */
+export function progressiveGuidanceFor(entries: readonly McpToolListEntry[]): McpProgressiveGuidance {
+  const present = new Set<AiToolDomain>();
+  for (const entry of entries) {
+    if (MCP_LISTED_INTRINSICS.has(entry.name) || isTenantToolName(entry.name)) continue;
+    const domain = entry._meta['app.breeze/domain'];
+    if (isAiToolDomain(domain)) present.add(domain);
+  }
+  return {
+    domains: AI_TOOL_DOMAINS.filter((domain) => present.has(domain)),
+    listableNames: new Set([...entries.map((entry) => entry.name), ...MCP_META_TOOL_NAMES]),
+  };
+}
+
+async function handleToolsList(
+  id: string | number,
+  scopes: string[],
+  auth: AuthContext,
+  params: Record<string, unknown> | undefined,
+  apiKey: McpApiKeyContext | undefined,
+  clientExtensions: McpClientExtensions,
+  toolListMode: ResolvedMcpToolListMode,
+): Promise<JsonRpcResponse> {
+  const { entries } = await buildToolsListEntries({ scopes, auth, apiKey, clientExtensions });
+  const all = toolListMode.mode === 'progressive' ? presentProgressiveList(entries) : entries;
   const pageSize = mcpToolsListPageSize();
   if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
 
@@ -2155,6 +2371,16 @@ function structuredFromSafeText(safeText: string): Record<string, unknown> | und
 // B-W02 (#6156, D-B7): ONLY the two tier-scope denials carry this reason —
 // the one thing a client can fix by re-authorizing with a wider mcp scope.
 // ai:execute_admin, approval, MFA, RBAC, allowlist and domain denials never do.
+/**
+ * #12427: per-call options. `surface` is how the call arrived: `direct` is a
+ * plain tools/call, `call_tool` is the inner call of the call_tool meta-tool.
+ */
+type McpCallOptions = {
+  surface: 'direct' | 'call_tool';
+  toolListMode: ResolvedMcpToolListMode;
+  clientExtensions: McpClientExtensions;
+};
+
 const INSUFFICIENT_SCOPE_EXECUTE = { reason: 'insufficient_scope', requiredScope: 'ai:execute' } as const;
 const INSUFFICIENT_SCOPE_WRITE = { reason: 'insufficient_scope', requiredScope: 'ai:write' } as const;
 
@@ -2166,9 +2392,11 @@ async function handleToolsCall(
   apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
   correlation: McpRequestCorrelation,
-  clientCapabilities: Record<string, unknown> | null = null,
+  clientCapabilities: Record<string, unknown> | null,
   /** B-W06 (#6160): this modern request declared the Tasks extension (and Tasks are effective). */
-  tasksDeclared = false,
+  tasksDeclared: boolean,
+  /** #12427: how this call arrived and the request's resolved tool list mode. No defaults: every caller says. */
+  options: McpCallOptions,
 ): Promise<JsonRpcResponse> {
   const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -2177,12 +2405,21 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
   }
 
+  // #12427: call_tool never targets a meta-tool (no recursion, no wrapped
+  // discovery), checked on the CANONICAL name and before the continuation
+  // branch, so neither an alias nor a requestState can slip one through.
+  // Direct search_tools / get_tool_details calls stay callable.
+  if (options.surface === 'call_tool' && typeof requestedToolName === 'string'
+    && MCP_META_TOOL_NAMES.has(resolveDeprecatedToolAlias(requestedToolName))) {
+    return jsonRpcError(id, -32602, 'Invalid params', { reason: 'meta_tool_target' });
+  }
+
   // B-W04 (#6158, D-B32): a 2026-07-28 MRTR retry of an approval elicitation.
   // It never files or executes anything; the only gates it needs are the
   // ai:read preflight (already passed) and the always-granted core domain —
   // `decline` additionally needs ai:write, checked inside.
   if (correlation.era === 'modern' && params.requestState !== undefined) {
-    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName), tasksDeclared);
+    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName), tasksDeclared, options.surface);
   }
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
@@ -2225,7 +2462,7 @@ async function handleToolsCall(
   // (any principal that got past the ai:read preflight may call it). Pure:
   // it reports what the gates below would decide, it does not bypass them.
   if (toolName === MCP_WHOAMI_TOOL_NAME) {
-    return handleWhoamiCall(id, auth, scopes, domainGrant, apiKey);
+    return handleWhoamiCall(id, auth, scopes, domainGrant, options.toolListMode, apiKey);
   }
   // B-W04 (#6158, D-B31): core, server-intrinsic; ownership-checked inside.
   if (toolName === MCP_GET_ACTION_STATUS_TOOL_NAME) {
@@ -2233,6 +2470,18 @@ async function handleToolsCall(
   }
   if (toolName === MCP_CANCEL_ACTION_TOOL_NAME) {
     return handleCancelActionCall(id, auth, scopes, apiKey, toolInput);
+  }
+  // #12427: core, server-intrinsic, read-only, callable in either mode. The
+  // catalog is this caller's own `full` list (whatever the mode), so neither
+  // can rank, describe or name a tool the caller could not list.
+  if (toolName === MCP_SEARCH_TOOLS_TOOL_NAME || toolName === MCP_GET_TOOL_DETAILS_TOOL_NAME) {
+    const { entries, approvalNotes, incomplete } = await buildToolsListEntries({ scopes, auth, apiKey, clientExtensions: options.clientExtensions });
+    const outcome = toolName === MCP_SEARCH_TOOLS_TOOL_NAME
+      ? handleSearchTools(entries, toolInput, approvalNotes, incomplete)
+      : handleGetToolDetails(entries, toolInput, incomplete);
+    return 'error' in outcome
+      ? jsonRpcError(id, outcome.error.code, outcome.error.message, outcome.error.data)
+      : jsonRpcResult(id, outcome.result);
   }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
@@ -2323,7 +2572,18 @@ async function handleToolsCall(
   // no auth-context or DB side effects), so reordering is safe. Without this,
   // a destructive sub-action on a low-base-tier tool would sail past the gates
   // on an ai:read-only key.
-  const guardrailCheck = checkGuardrails(toolName, toolInput);
+  // A proposal-backed run_script is tiered from the proposal's reviewed risk,
+  // so the guardrail needs that context; without it every such call is denied
+  // as proposal_context_missing. Looked up within the caller's org reach
+  // (propose_script files the proposal under the target device's org), the
+  // same lookup the chat gate uses. The handler still re-checks the proposal
+  // and every device under this auth.
+  const isProposalRun = toolName === 'run_script' && typeof toolInput.proposalId === 'string' && toolInput.proposalId.length > 0;
+  const proposalLookup = isProposalRun
+    ? await loadProposalGuardrailContextForCaller(toolInput, auth)
+    : null;
+  const guardrailContext = proposalLookup?.context;
+  const guardrailCheck = checkGuardrails(toolName, toolInput, guardrailContext);
   if (!guardrailCheck.allowed) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify({ error: guardrailCheck.reason }) }],
@@ -2361,7 +2621,27 @@ async function handleToolsCall(
   // distinctly). executeTool is never reached for a gated tool/action.
   // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
   // this too); checking it here keeps the intent readable at the call site.
-  const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
+  //
+  // A reviewed AI proposal is lifted only up to the risk ceiling the operator
+  // set for the proposal's partner (`mcp_unattended_proposal_max_risk`,
+  // default 'none'). Above it, the listed principal gets the normal approval
+  // gate like any other caller.
+  // A group target resolves only through an approved intent
+  // (aiToolsScripts `loadFrozenGroupTargetArguments`), so an unattended
+  // proposal run must name its devices; a groupId call keeps the gate.
+  const unattendedProposal = tier === 3 && isProposalRun && isUnattendedTier3PrincipalOverMcp(apiKey)
+    && Array.isArray(toolInput.deviceIds) && toolInput.deviceIds.length > 0
+    && (toolInput.groupId === undefined || toolInput.groupId === null)
+    ? await proposalRunsUnattended(
+      guardrailContext,
+      toolInput.proposalId,
+      proposalLookup?.proposalOrgId ?? null,
+      (toolInput.deviceIds as unknown[]).filter((v): v is string => typeof v === 'string'),
+    )
+    : null;
+  const unattendedPrincipal = tier === 3
+    && isUnattendedTier3PrincipalOverMcp(apiKey)
+    && (!isProposalRun || unattendedProposal !== null);
   // #10027: with MCP_TIER3_INTENTS_ENABLED on, a READ-ONLY call whose own
   // classification (checkGuardrails, floored for approval extras) is below
   // Tier 3 is not filed for approval: createActionIntent refuses a read below
@@ -2495,7 +2775,9 @@ async function handleToolsCall(
   // BEFORE any ledger or audit mutation. Non-device tools keep prior behavior.
   let executionOrgId: string | null;
   try {
-    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({ auth, apiKey: apiKey ?? null, toolName, toolInput }));
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth, apiKey: apiKey ?? null, toolName, toolInput, proposalOrgId: proposalLookup?.proposalOrgId ?? null,
+    }));
   } catch (err) {
     if (err instanceof McpExecutionOrgError) {
       const refusal = mcpExecutionOrgRpcError(err);
@@ -2508,7 +2790,7 @@ async function handleToolsCall(
     if (!executionOrgId || !apiKey) {
       return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
     }
-    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities }, tasksDeclared);
+    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities, surface: options.surface }, tasksDeclared);
   }
   // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
   // complete + uniform audit. The callback owns executeTool + the MCP response
@@ -2542,10 +2824,26 @@ async function handleToolsCall(
       // takes the unattended-note bounds (deviceNoteBounds.ts). Name-gated the
       // same way.
       const noteContext = unattendedNoteWriteContext(toolName);
+      // An unattended proposal run has no intent: it claims the proposal with
+      // this ledger's id and records approval_method 'unattended_mcp_principal'.
+      // No ledger means nothing to attribute the run to, so it is refused.
+      let unattendedProposalRun: ToolExecutionContext['unattendedMcpProposalRun'];
+      if (isProposalRun && unattendedPrincipal) {
+        if (!ledger?.executionId || !approvalBypassPrincipal) {
+          return {
+            status: 'failure',
+            error: new Error('unattended proposal run has no execution ledger'),
+            response: jsonRpcError(id, -32000, 'Unable to record the unattended proposal run'),
+          };
+        }
+        unattendedProposalRun = { claimId: ledger.executionId, principalRef: approvalBypassPrincipal };
+      }
       const result = rewritePartnerWideRefusalForMcp(isTopologyAiToolName(toolName)
         ? await executeTool(toolName, toolInput, toolAuth, { topologyBinding: { kind: 'mcp_site_key' } })
-        : noteContext
-          ? await executeTool(toolName, toolInput, toolAuth, { context: noteContext })
+        : unattendedProposalRun
+          ? await executeTool(toolName, toolInput, toolAuth, { context: { unattendedMcpProposalRun: unattendedProposalRun } })
+          : noteContext
+            ? await executeTool(toolName, toolInput, toolAuth, { context: noteContext })
           : await executeTool(toolName, toolInput, toolAuth), auth);
       const safeResult = compactToolResultForChat(toolName, result);
 
@@ -2633,6 +2931,7 @@ async function handleToolsCall(
       tier,
       toolInput,
       approvalBypassPrincipal,
+      unattendedProposal,
     },
     execute,
     tier3LifecycleResponses(id),
@@ -2653,6 +2952,8 @@ async function fileMcpActionIntent(
     executionOrgId: string;
     correlation: McpRequestCorrelation;
     clientCapabilities?: Record<string, unknown> | null;
+    /** #12427: sealed into the state, which is then valid on this surface only. */
+    surface: McpCallOptions['surface'];
   },
   /** B-W06 (#6160, D-B47): a live intent is answered with a CreateTaskResult. */
   tasksDeclared = false,
@@ -2697,6 +2998,7 @@ async function fileMcpActionIntent(
         m: 'tools/call',
         t: args.toolName,
         d: computeArgumentDigest(canonicalizeArguments(args.toolInput)),
+        w: args.surface === 'call_tool' ? 1 : 0,
       }, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
       return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
     } catch (err) {
@@ -2793,7 +3095,9 @@ async function handleToolsCallContinuation(
   c: Context | undefined,
   toolName: string,
   /** B-W06 (#6160, D-B51): a still-live outcome is answered with a CreateTaskResult. */
-  tasksDeclared = false,
+  tasksDeclared: boolean,
+  /** #12427: how this retry arrived; a state opens only on the surface that issued it. */
+  surface: McpCallOptions['surface'],
 ): Promise<JsonRpcResponse> {
   const callerRef = canOwnMcpIntents(auth, apiKey) ? mcpOriginRef(auth.principal) : null;
   const invalid = () => jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_request_state' });
@@ -2803,11 +3107,13 @@ async function handleToolsCallContinuation(
   if (!opened.ok && opened.reason === 'invalid_request_state') return invalid();
   const { payload } = opened;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
-  // Every binding (credential, method, tool, arguments) is checked before
-  // the payload's action id is ever exposed — an expired state reveals it
-  // only to the same credential, for the same call.
+  // Every binding (credential, method, tool, arguments, surface) is checked
+  // before the payload's action id is ever exposed — an expired state reveals
+  // it only to the same credential, for the same call, on the same surface. A
+  // state sealed before the surface byte existed is a direct one (#12427).
   if (payload.p !== callerRef || payload.m !== 'tools/call' || payload.t !== toolName
-    || payload.d !== computeArgumentDigest(canonicalizeArguments(toolInput))) {
+    || payload.d !== computeArgumentDigest(canonicalizeArguments(toolInput))
+    || (payload.w ?? 0) !== (surface === 'call_tool' ? 1 : 0)) {
     return invalid();
   }
   if (!opened.ok) {
@@ -3021,6 +3327,7 @@ function handleWhoamiCall(
   auth: AuthContext,
   scopes: string[],
   domainGrant: McpDomainGrant,
+  toolListMode: ResolvedMcpToolListMode,
   apiKey?: McpApiKeyContext,
 ): JsonRpcResponse {
   const name = (apiKey as { name?: unknown } | undefined)?.name;
@@ -3048,6 +3355,7 @@ function handleWhoamiCall(
       return { tier3, tier3RequiresWebApp: tier3 === 'web_app_only', unattendedPrincipal };
     })(),
     mfaGatedActionsUnavailable: mfaGateRefusesCaller(auth),
+    toolListMode,
   });
   return jsonRpcResult(id, {
     content: [{ type: 'text', text: JSON.stringify(result) }],

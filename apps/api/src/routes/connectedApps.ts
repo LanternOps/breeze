@@ -10,6 +10,7 @@ import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { MCP_OAUTH_ENABLED } from '../config/env';
 import { PERMISSIONS } from '../services/permissions';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { getPartnerClientToolListModes } from '../services/mcpConnectionToolListMode';
 
 export const connectedAppsRoutes = new Hono();
 
@@ -59,6 +60,10 @@ if (MCP_OAUTH_ENABLED) {
       )
       .where(eq(oauthClientPartnerGrants.partnerId, partnerId));
 
+    // #12429: read-only here. Connections belong to the people who made them;
+    // each edits their own under Account → Connected apps.
+    const toolListModeOf = await getPartnerClientToolListModes(partnerId);
+
     return c.json({
       clients: rows
         .filter((r) => !r.disabledAt)
@@ -67,6 +72,7 @@ if (MCP_OAUTH_ENABLED) {
           client_name: ((r.metadata as { client_name?: string } | null)?.client_name) ?? r.clientId,
           created_at: r.createdAt,
           last_used_at: r.lastUsedAt,
+          mcp_tool_list_mode: toolListModeOf(r.clientId),
         })),
     });
   });

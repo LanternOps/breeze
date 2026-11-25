@@ -179,6 +179,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- integrations / connections owned by the partner but gated elsewhere ---
   'routes/accounting/index.ts': 'QBO/Xero connection lifecycle is gated by its own admin permission set',
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
+  'services/mcpConnectionToolListMode.ts': 'the one write sets the display mode of the caller\'s OWN OAuth grants: account_id = the signed-in user is in the UPDATE itself (routes/lifecycle.ts PATCH /me/oauth-clients/:clientId/mcp-tool-list-mode, interactive session required); other users\' grants untouched is pinned in mcpToolListModeRoutes.integration.test.ts. The partner surface of this module is read-only',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read

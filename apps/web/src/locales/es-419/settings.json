@@ -5580,7 +5580,12 @@
     "networkError": "error de red",
     "networkErrorDuringRevoke": "Error de red durante la revocación",
     "revoking": "Revocando…",
-    "revoke": "Revocar"
+    "revoke": "Revocar",
+    "toolListFull": "Lista de herramientas: Completa",
+    "toolListProgressive": "Lista de herramientas: Progresiva",
+    "toolListDefault": "Lista de herramientas: predeterminado de la implementación",
+    "toolListMixed": "Lista de herramientas: varía según la conexión",
+    "toolListHint": "Cada persona lo define para su propia conexión en Cuenta → Aplicaciones conectadas."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Guarde estos códigos en un lugar seguro. Cada código se puede usar una sola vez. No se pueden volver a mostrar.",
@@ -8094,7 +8099,18 @@
     "saved": "Configuración de creación de scripts guardada.",
     "saveFailed": "No se pudieron guardar esos ajustes.",
     "loading": "Cargando…",
-    "loadFailed": "No se pudo cargar la configuración de creación de scripts."
+    "loadFailed": "No se pudo cargar la configuración de creación de scripts.",
+    "mcpCeiling": {
+      "title": "Ejecuciones de scripts MCP sin supervisión",
+      "description": "El riesgo revisado más alto con el que un principal de MCP incluido en MCP_UNATTENDED_TIER3_PRINCIPALS puede ejecutar un script propuesto por la IA sin aprobación humana, hasta Medio. La ejecución también debe cumplir las reglas del carril de scripts desatendidos para la organización del dispositivo: su activación, las clases de impacto permitidas, los recursos protegidos, el interruptor de seguridad y el límite por hora. Por encima del límite, toda ejecución requiere aprobación.",
+      "label": "Ejecutar sin aprobación hasta",
+      "options": {
+        "none": "Nunca (siempre requerir aprobación)",
+        "low": "Bajo",
+        "medium": "Medio"
+      },
+      "stepUpBody": "Subir este límite requiere una nueva verificación de seguridad. Confirma y luego selecciona Guardar otra vez."
+    }
   },
   "ticketingHubPage": {
     "heading": "Configuración de tickets",

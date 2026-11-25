@@ -176,6 +176,11 @@ vi.mock('drizzle-orm', () => ({
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', text: strings.join('?'), values })),
 }));
 
+const patchNamesState = vi.hoisted(() => ({
+  resolveApprovalPatchNames: vi.fn(async (): Promise<string[] | null> => ['KB5034441']),
+}));
+vi.mock('./approvalPatchNames', () => ({ resolveApprovalPatchNames: patchNamesState.resolveApprovalPatchNames }));
+
 import { createActionIntent, type CreateActionIntentInput } from './intentService';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
@@ -329,6 +334,24 @@ describe('createActionIntent — source flow (#5219)', () => {
     const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ requestingClientLabel: string; actionLabel: string }>;
     expect(rows[0]!.requestingClientLabel).toBe('Flow Disk cleanup');
     expect(rows[0]!.actionLabel).toBe('Step cleanup: run_script');
+  });
+
+  it('a flow step patch install reads no patch names; its label is the step label', async () => {
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+    guardrailState.checkGuardrails.mockReturnValue({
+      tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'Install 1 patch on 2 devices',
+    });
+
+    await createActionIntent(flowAuth(), flowInput({
+      toolName: 'manage_patches',
+      input: { action: 'install', patchIds: [SCRIPT_ID], deviceIds: [DEVICE_ID, STEP_ROW_ID] },
+    }));
+
+    expect(patchNamesState.resolveApprovalPatchNames).not.toHaveBeenCalled();
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }>;
+    expect(rows[0]!.actionLabel).toBe('Step cleanup: manage_patches');
   });
 
   it('flow intent expires after FLOW_APPROVAL_TTL_HOURS (both scopes)', async () => {
@@ -506,6 +529,38 @@ describe('createActionIntent — built-in flow steps (#5220)', () => {
       await createActionIntent(flowAuth(), fleetInput());
       expect(guardrailState.checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] });
       expect(dbState.insertedActionIntentValues[0]).toMatchObject({ actionName: 'run_script_on_targets', approvalScope: 'four_eyes', riskTier: 3 });
+    });
+
+    // #12418 W02: the note is the durable `reason` and the end of what the approver reads.
+    it('a flow-source intent stores reason and its approval rows\' riskSummary ends with the approverNote', async () => {
+      const NOTE = 'Fleet step resolved 3 devices via fleetFilter (ids sha256 abcdef012345); later membership changes do not change this run.';
+      const create = async (over: Partial<CreateActionIntentInput>) => {
+        flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'a'.repeat(64) } as never);
+        guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'x' } as never);
+        intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent());
+        dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+        await createActionIntent(flowAuth(), { ...fleetInput(), ...over });
+        return { intent: dbState.insertedActionIntentValues.at(-1)!, rows: dbState.insertedApprovalRequestsValues.at(-1) as Array<Record<string, unknown>> };
+      };
+      const without = await create({});
+      expect(without.intent.reason).toBeNull();
+      const withNote = await create({ reason: NOTE, approverNote: NOTE });
+      expect(withNote.intent.reason).toBe(NOTE);
+      // The base summary is kept; the note is appended once.
+      expect(withNote.intent.impactSummary).toBe(`${String(without.intent.impactSummary)} ${NOTE}`);
+      expect(withNote.rows[0]!.riskSummary).toBe(withNote.intent.impactSummary);
+      // Display text only: neither digest nor the stored arguments move.
+      expect(withNote.intent.argumentDigest).toBe(without.intent.argumentDigest);
+      expect(withNote.intent.arguments).toEqual(without.intent.arguments);
+      expect(withNote.rows[0]!.actionLabel).toBe(without.rows[0]!.actionLabel);
+    });
+
+    it('approverNote on a non-flow source is refused (no silent drop, no caller-written approval text)', async () => {
+      await expect(createActionIntent(userAuth(), { toolName: 'run_script', input: { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] }, source: 'chat', orgId: ORG_ID, approverNote: 'Approved by IT.' }))
+        .rejects.toMatchObject({ code: 'flow_source_mismatch' });
+      expect(dbState.insertedActionIntentValues).toHaveLength(0);
     });
 
     it('missing digest refuses intent creation', async () => {

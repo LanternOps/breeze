@@ -15,13 +15,16 @@ import {
   partnerUsers,
 } from '../db/schema';
 import { approvalRequests } from '../db/schema/approvals';
-import { authMiddleware, requirePermission, withAuthDbAccessContext } from '../middleware/auth';
+import { mcpToolListModeInputSchema } from '@breeze/shared';
+import { authMiddleware, requireInteractiveSession, requirePermission, withAuthDbAccessContext } from '../middleware/auth';
 import { rateLimiter, getRedis, publishFamilyRevocationSentinel } from '../services';
 import { revokeMobileDeviceRefreshFamilies } from '../services/authLifecycle';
 import { writeRouteAudit } from '../services/auditEvents';
 import { revokeClientFamilies } from '../oauth/revocationService';
 import { resolveUserAuditOrgId } from './auth/helpers';
 import { PERMISSIONS } from '../services/permissions';
+import { getUserConnectionToolListModes, setUserConnectionToolListMode } from '../services/mcpConnectionToolListMode';
+import { mcpToolListDefault } from '../services/mcpToolListMode';
 
 /**
  * Device + OAuth client lifecycle management.
@@ -30,6 +33,7 @@ import { PERMISSIONS } from '../services/permissions';
  *   - POST   /me/mobile-devices/:id/block            self-revoke a paired phone
  *   - GET    /me/oauth-clients                       list calling user's authorized OAuth clients
  *   - POST   /me/oauth-clients/:clientId/revoke      self-revoke an OAuth client
+ *   - PATCH  /me/oauth-clients/:clientId/mcp-tool-list-mode   set the tool list mode of own connections
  *   - GET    /admin/users/:userId/mobile-devices                       list a target user's devices
  *   - POST   /admin/users/:userId/mobile-devices/:id/block             admin block on behalf of user
  *   - GET    /admin/orgs/:orgId/oauth-clients                          list connected apps in scope
@@ -317,7 +321,12 @@ lifecycleRoutes.get('/me/oauth-clients', async (c) => {
     }
   }
 
+  // #12429: derived from ACTIVE grants only (unrevoked and unexpired), which
+  // is what the PATCH below writes. The list itself also shows ended ones.
+  const toolListModeOf = await getUserConnectionToolListModes(userId);
+
   return c.json({
+    mcpToolListDefault: mcpToolListDefault(),
     clients: Array.from(byClient.values()).map((c2) => ({
       clientId: c2.clientId,
       displayName: c2.displayName,
@@ -325,9 +334,49 @@ lifecycleRoutes.get('/me/oauth-clients', async (c) => {
       lastUsedAt: c2.lastUsedAt?.toISOString() ?? null,
       lastApprovalDecidedAt: approvalByClient.get(c2.clientId)?.toISOString() ?? null,
       revokedAt: c2.revokedAt?.toISOString() ?? null,
+      toolListMode: toolListModeOf(c2.clientId),
     })),
   });
 });
+
+// The key is required: a body without it is a 400, never "clear them all".
+const connectionToolListModeSchema = z.object({
+  mcp_tool_list_mode: mcpToolListModeInputSchema,
+});
+
+// The owner's edit of their own connections. No MFA, like the self-revoke
+// below and for a lesser change: the mode decides which tools are LISTED, never
+// what a call may do. But a person must be doing it: a machine principal's
+// `user` is a borrowed identity, and a credential never edits credentials.
+lifecycleRoutes.patch(
+  '/me/oauth-clients/:clientId/mcp-tool-list-mode',
+  requireInteractiveSession(),
+  zValidator('json', connectionToolListModeSchema),
+  async (c) => {
+    const userId = c.get('auth').user.id;
+    const clientId = c.req.param('clientId');
+    const mode = c.req.valid('json').mcp_tool_list_mode;
+
+    const limit = await rateCheck(c, 'self-oauth-tool-list-mode', userId);
+    if (limit) return limit;
+
+    const updated = await setUserConnectionToolListMode({ userId, clientId, mode });
+    if (updated === 0) {
+      return c.json({ error: 'No active connection to this OAuth client' }, 404);
+    }
+
+    const auditOrgId = await resolveUserAuditOrgId(userId);
+    writeRouteAudit(c, {
+      orgId: auditOrgId ?? undefined,
+      action: 'oauth.client.mcp_tool_list_mode_update',
+      resourceType: 'oauth_client',
+      resourceId: clientId,
+      details: { mcpToolListMode: mode, grantCount: updated },
+    });
+
+    return c.json({ updated });
+  }
+);
 
 export async function revokeUserOauthClient(
   userId: string,

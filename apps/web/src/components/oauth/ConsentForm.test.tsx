@@ -294,7 +294,7 @@ describe('ConsentForm', () => {
         '/oauth/interaction/uid-1/consent',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ partner_id: 'p1', approve: true, mcp_domains: null }),
+          body: JSON.stringify({ partner_id: 'p1', approve: true, mcp_domains: null, mcp_tool_list_mode: null }),
         }),
       );
     });
@@ -314,7 +314,7 @@ describe('ConsentForm', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const body = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
-    expect(body).toEqual({ partner_id: 'p1', approve: true, mcp_domains: null });
+    expect(body).toEqual({ partner_id: 'p1', approve: true, mcp_domains: null, mcp_tool_list_mode: null });
   });
 
   it('posts the selected list', async () => {
@@ -331,7 +331,7 @@ describe('ConsentForm', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const body = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
-    expect(body).toEqual({ partner_id: 'p1', approve: true, mcp_domains: ['devices', 'tickets'] });
+    expect(body).toEqual({ partner_id: 'p1', approve: true, mcp_domains: ['devices', 'tickets'], mcp_tool_list_mode: null });
   });
 
   it('posts approve=false on Deny', async () => {
@@ -345,7 +345,7 @@ describe('ConsentForm', () => {
       expect(fetchMock).toHaveBeenLastCalledWith(
         '/oauth/interaction/uid-1/consent',
         expect.objectContaining({
-          body: JSON.stringify({ partner_id: 'p1', approve: false, mcp_domains: null }),
+          body: JSON.stringify({ partner_id: 'p1', approve: false, mcp_domains: null, mcp_tool_list_mode: null }),
         }),
       );
     });
@@ -463,5 +463,66 @@ describe('ConsentForm', () => {
         });
       }
     });
+  });
+});
+
+describe('ConsentForm — MCP tool list mode (#12429)', () => {
+  const effective = (mode: 'full' | 'progressive', source: 'credential' | 'deployment_default' = 'credential') => ({ mode, source });
+  const partner = (partnerId: string, prior: 'full' | 'progressive' | null, eff: ReturnType<typeof effective>) => ({
+    partnerId, partnerName: `Partner ${partnerId}`, prior_mcp_tool_list_mode: prior, effective_mcp_tool_list_mode: eff,
+  });
+  const select = () => screen.getByTestId('mcp-tool-list-mode') as HTMLSelectElement;
+  const line = () => screen.getByTestId('mcp-tool-list-effective').textContent;
+
+  async function open(partners: ReturnType<typeof partner>[], mcp_tool_list_default = 'full') {
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...interactionFixture({ partners }), mcp_tool_list_default }));
+    fetchMock.mockResolvedValue(jsonResponse({ redirectTo: 'http://localhost/done' }));
+    render(<ConsentForm uid="uid-1" />);
+    await screen.findByTestId('mcp-tool-list-mode');
+  }
+  async function submitted(button: RegExp) {
+    fireEvent.click(screen.getByRole('button', { name: button }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    return JSON.parse(String(fetchMock.mock.calls[1]![1]!.body));
+  }
+
+  it("starts from the selected partner's prior mode and shows its effective value", async () => {
+    await open([partner('p1', 'full', effective('full'))], 'progressive');
+    expect(select().value).toBe('full');
+    expect(line()).toContain('Full — set on this connection');
+    expect(await submitted(/Approve/)).toMatchObject({ approve: true, mcp_tool_list_mode: 'full' });
+  });
+
+  it('resets to the other partner\'s prior mode on a partner change (full in A, progressive in B)', async () => {
+    await open([partner('A', 'full', effective('full')), partner('B', 'progressive', effective('progressive'))]);
+    expect(select().value).toBe('full');
+    fireEvent.change(screen.getByLabelText(/Connect to which tenant/), { target: { value: 'B' } });
+    expect(select().value).toBe('progressive');
+    expect(await submitted(/Approve/)).toMatchObject({ partner_id: 'B', mcp_tool_list_mode: 'progressive' });
+  });
+
+  it('a choice made for one partner is not carried to another', async () => {
+    await open([partner('A', null, effective('full', 'deployment_default')), partner('B', null, effective('full', 'deployment_default'))]);
+    fireEvent.change(select(), { target: { value: 'progressive' } });
+    fireEvent.change(screen.getByLabelText(/Connect to which tenant/), { target: { value: 'B' } });
+    expect(select().value).toBe('inherit');
+    expect(await submitted(/Approve/)).toMatchObject({ partner_id: 'B', mcp_tool_list_mode: null });
+  });
+
+  it('no prior connection: inherits, naming the deployment default; denying posts null', async () => {
+    await open([partner('p1', null, effective('progressive', 'deployment_default'))], 'progressive');
+    expect(select().value).toBe('inherit');
+    expect(line()).toContain('Progressive — deployment default');
+    fireEvent.change(select(), { target: { value: 'full' } });
+    expect(await submitted(/Deny/)).toMatchObject({ approve: false, mcp_tool_list_mode: null });
+  });
+
+  it('an older API that sends neither field still renders, inheriting', async () => {
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture()));
+    render(<ConsentForm uid="uid-1" />);
+    await screen.findByTestId('mcp-tool-list-mode');
+    expect(select().value).toBe('inherit');
   });
 });

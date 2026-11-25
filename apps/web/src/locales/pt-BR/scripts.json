@@ -1223,6 +1223,7 @@
       "notSecret": "\"{{key}}\" não é secreta. Escolha uma variável secreta ou mude a origem para \"De uma variável\".",
       "notSecretRow": "Não é secreta — use \"De uma variável\"",
       "secretHint": "Entregue apenas como a variável de ambiente {{env}} — nunca escrita no script. Exige execução no contexto do sistema e um agente compatível com a entrega segura de segredos.",
+      "secretRequiredHelp": "Desmarcado: se esta variável secreta não estiver definida para a organização do dispositivo, o script é executado mesmo assim e {{env}} não é definida. Uma variável secreta que existe mas não pode ser lida ainda faz a execução falhar.",
       "hint": "Resolvido para cada dispositivo de destino quando o script é executado — ninguém precisa informar."
     },
     "securityReview": {

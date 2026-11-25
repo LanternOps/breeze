@@ -588,6 +588,52 @@ describe('decideIntentApprovalBatch', () => {
     });
   });
 
+  describe('cross_org scope', () => {
+    it('approve: sends scope to BOTH the challenge and the decide body', async () => {
+      respond({ results: [{ id: 'ap-1', httpStatus: 200, body: {} }] });
+
+      await decideIntentApprovalBatch(IDS, 'approve', undefined, 'cross_org');
+
+      expect(getBatchApprovalAssertion).toHaveBeenCalledWith(
+        '/mobile/approvals',
+        IDS,
+        'approved',
+        'cross_org',
+      );
+      expect(JSON.parse(batchPosts()[0][1].body as string)).toEqual({
+        approvalRequestIds: IDS,
+        decision: 'approved',
+        scope: 'cross_org',
+        proof: PROOF,
+      });
+    });
+
+    it('deny: no challenge, but the scope still reaches the decide body with the reason', async () => {
+      respond({ results: [{ id: 'ap-1', httpStatus: 200, body: {} }] });
+
+      await decideIntentApprovalBatch(IDS, 'deny', 'Not this week', 'cross_org');
+
+      expect(getBatchApprovalAssertion).not.toHaveBeenCalled();
+      expect(JSON.parse(batchPosts()[0][1].body as string)).toEqual({
+        approvalRequestIds: IDS,
+        decision: 'denied',
+        scope: 'cross_org',
+        reason: 'Not this week',
+      });
+    });
+
+    it('same_org: the challenge call and decide body are exactly what they were before scopes', async () => {
+      respond({ results: [{ id: 'ap-1', httpStatus: 200, body: {} }] });
+
+      await decideIntentApprovalBatch(IDS, 'approve', undefined, 'same_org');
+
+      expect(getBatchApprovalAssertion.mock.calls[0]).toEqual(['/mobile/approvals', IDS, 'approved']);
+      expect(batchPosts()[0][1].body).toBe(
+        JSON.stringify({ approvalRequestIds: IDS, decision: 'approved', proof: PROOF }),
+      );
+    });
+  });
+
   it('returns needs_device with NO POST when no approver device is registered', async () => {
     const err = new Error('No registered approver device');
     err.name = 'NoApproverDeviceError';
@@ -656,6 +702,17 @@ describe('decideIntentApprovalBatch', () => {
       expect(fetchWithAuth).not.toHaveBeenCalled();
     });
 
+    it('maps a 403 batch_scope_not_permitted to its own outcome — not a ceremony failure, not needs_device', async () => {
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('batch_scope_not_permitted', 403, 'batch_scope_not_permitted'),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve', undefined, 'cross_org');
+
+      expect(outcome).toEqual({ outcome: 'batch_scope_not_permitted' });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
     it('still throws CeremonyError for any OTHER challenge failure', async () => {
       // The two branches above must be narrow: a 500 is a real outage and has
       // to stay a ceremony failure, not be laundered into a tidy outcome.
@@ -714,6 +771,16 @@ describe('decideIntentApprovalBatch', () => {
 
       expect(outcome).toEqual({ outcome: 'batch_too_large' });
       expect(toastMessages()[0].message).toMatch(/too many/i);
+    });
+
+    it('maps a 403 batch_scope_not_permitted to its own outcome', async () => {
+      respond({ error: 'batch_scope_not_permitted' }, 403);
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'deny', undefined, 'cross_org');
+
+      expect(outcome).toEqual({ outcome: 'batch_scope_not_permitted' });
+      // Translated copy, never the bare machine token.
+      expect(toastMessages()[0].message).not.toBe('batch_scope_not_permitted');
     });
 
     it('rethrows a 401 assertion_failed — a real proof rejection is not a step-up', async () => {

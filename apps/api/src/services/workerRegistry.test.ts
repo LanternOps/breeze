@@ -103,8 +103,8 @@ const EXPECTED_WORKER_NAMES = [
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper',
-  // Portal registration W3 — daily portal identity drift report.
-  'portalIdentityReconcile',
+  // Retired BullMQ queue cleanup (portal registration W10 retired the W3 drift report).
+  'retiredQueueCleanup',
   // Portal registration W8 — directory deprovisioning.
   'portalDirectoryWorker',
   'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',

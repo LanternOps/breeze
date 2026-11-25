@@ -22,6 +22,9 @@ export const SCRIPT_APPROVAL_METHODS = [
   'unattended_reviewer_gated',
   'direct_ui',
   'automation',
+  /** A reviewed proposal run over MCP by a principal on MCP_UNATTENDED_TIER3_PRINCIPALS,
+   *  within the partner's MCP unattended proposal ceiling. No human decided it. */
+  'unattended_mcp_principal',
 ] as const;
 export type ScriptApprovalMethod = (typeof SCRIPT_APPROVAL_METHODS)[number];
 
@@ -229,6 +232,8 @@ export interface ScriptPolicyDto {
   maxUnattendedPerHour: number;
   protectedResources: { services: string[]; paths: string[]; registryKeys: string[]; deviceTags: string[] };
   unattendedEnabledAt: string | null;
+  /** Partner rows only: the MCP unattended proposal ceiling (at most medium). */
+  mcpUnattendedProposalMaxRisk?: 'none' | 'low' | 'medium';
 }
 
 export interface ScriptLaneStateDto {

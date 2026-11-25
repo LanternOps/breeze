@@ -596,18 +596,21 @@ describe('restorePortalIdentity (D9)', () => {
 describe('removeDisabledPortalIdentity (OD3)', () => {
   const removeInput = { orgId: ORG, portalUserId: PU, identityId: IDENT, actorUserId: ACTOR };
 
-  it('deletes one identity disabled by a directory blocker, clears the legacy Entra columns and audits', async () => {
+  it('deletes one identity disabled by a directory blocker and audits; W10: the legacy entra_* columns are no longer touched', async () => {
     h.results.push(
       [owner()], [], [account({ status: 'disabled', disabledBy: 'directory' })],
       [identity({ disabledAt: NOW, disabledReason: 'absent', disabledBlockers: ['entra_directory'] })],
-      [], [], [],
+      [], [],
     );
     const out = await removeDisabledPortalIdentity(removeInput);
     expect(out).toEqual({ identityId: IDENT, provider: 'entra', blockers: ['entra_directory'] });
     const del = h.calls.filter((c) => c.op === 'delete');
     expect(del).toHaveLength(1);
     expect(del[0]!.args[0]).toBe(portalUserIdentities);
-    expect(firstArg(updatesOf(portalUsers)[0], 'set')).toMatchObject({ entraTenantId: null, entraOid: null });
+    for (const u of updatesOf(portalUsers)) {
+      expect(firstArg(u, 'set')).not.toHaveProperty('entraTenantId');
+      expect(firstArg(u, 'set')).not.toHaveProperty('entraOid');
+    }
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       action: 'organization.portal_user.identity.remove',
       actorType: 'user', actorId: ACTOR, resourceType: 'portal_user', resourceId: PU,
@@ -620,7 +623,7 @@ describe('removeDisabledPortalIdentity (OD3)', () => {
     h.results.push(
       [owner()], [], [account({ status: 'disabled', disabledBy: 'directory', passwordHash: 'stray' })],
       [identity({ disabledAt: NOW, disabledReason: 'absent', disabledBlockers: ['entra_directory'] })],
-      [], [], [{ n: 0 }], [], [],
+      [], [{ n: 0 }], [], [],
     );
     await removeDisabledPortalIdentity(removeInput);
     const reset = updatesOf(portalUsers).map((u) => firstArg(u, 'set') as Record<string, unknown>).find((v) => 'authMethod' in v);

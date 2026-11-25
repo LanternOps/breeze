@@ -57,6 +57,8 @@ export const scriptProposals = pgTable('script_proposals', {
   decidedAt: timestamp('decided_at', { withTimezone: true }),
   decisionNote: text('decision_note'),
   intentId: uuid('intent_id'),
+  /** MCP tool-execution ledger id of the unattended MCP run that consumed this proposal. */
+  mcpUnattendedClaimId: uuid('mcp_unattended_claim_id'),
   verifiedAt: timestamp('verified_at', { withTimezone: true }),
   verificationResult: jsonb('verification_result'),
   promotedScriptId: uuid('promoted_script_id'),

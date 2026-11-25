@@ -17,7 +17,7 @@ async function seedPortalUser() {
   const org = await createOrganization({ partnerId: partner.id });
   const [user] = await getTestDb()
     .insert(portalUsers)
-    .values({ orgId: org.id, email: `${randomUUID()}@epoch.test`, status: 'active' })
+    .values({ browserAccess: 'granted', orgId: org.id, email: `${randomUUID()}@epoch.test`, status: 'active' })
     .returning({ id: portalUsers.id, orgId: portalUsers.orgId, authEpoch: portalUsers.authEpoch });
   return user!;
 }

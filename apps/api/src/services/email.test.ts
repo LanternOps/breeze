@@ -689,7 +689,13 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     getEmailDomainsConfig: () => ({ dailySendCap: 0, partnerAllowlist: [] }),
   }));
   vi.doMock('./emailDomains/partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: lookup }));
-  vi.doMock('./emailDomains/sendCap', () => ({ tryCountPartnerLaneSend: cap }));
+  vi.doMock('./emailDomains/sendCap', () => ({
+    countPartnerLaneSend: cap,
+    nextCapWindowStart: (now: number) => {
+      const d = new Date(now);
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
+    },
+  }));
   vi.doMock('./emailDomains/providerRegistry', () => ({
     getEmailDomainProvider: () => ({ id: 'resend', verifiesByDns: true, send: laneSend }),
   }));
@@ -713,7 +719,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     resendSendMock.mockResolvedValue({ id: 'resend-1' });
     laneSend.mockResolvedValue({ providerMessageId: 'partner-1' });
     lookup.mockResolvedValue(IDENTITY);
-    cap.mockResolvedValue(true);
+    cap.mockResolvedValue('allowed');
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -730,7 +736,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
   } as const;
 
   it('sends a partner-lane purpose through the provider, not the platform transport', async () => {
-    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER, partnerName: 'Acme MSP' });
     expect(laneSend).toHaveBeenCalledTimes(1);
     expect(resendSendMock).not.toHaveBeenCalled();
     expect(laneSend.mock.calls[0]![0].from).toBe('"Acme Support" <support@mail.acme.test>');
@@ -738,16 +744,16 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
 
   it('applies the Reply-To precedence: call site, then identity, then none', async () => {
     const svc = await service();
-    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, replyTo: 'accounts@acmemsp.example' });
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER, replyTo: 'accounts@acmemsp.example' });
     expect(laneSend.mock.calls[0]![0].replyTo).toBe('accounts@acmemsp.example');
 
     laneSend.mockClear();
-    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER });
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER });
     expect(laneSend.mock.calls[0]![0].replyTo).toBe('help@acme.test');
 
     laneSend.mockClear();
     lookup.mockResolvedValue({ ...IDENTITY, replyTo: null });
-    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER });
+    await svc.sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER });
     expect(laneSend.mock.calls[0]![0].replyTo).toBeUndefined();
   });
 
@@ -765,7 +771,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
     laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind }));
     await (await service()).sendEmail({
-      ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP',
+      ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER, partnerName: 'Acme MSP',
       headers: { 'Message-ID': '<m@x>' },
     });
     expect(resendSendMock).toHaveBeenCalledTimes(1);
@@ -781,7 +787,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
   it('the fallback uses the CALL SITE Reply-To, not the identity default', async () => {
     const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
     laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind: 'domain_unusable' }));
-    await (await service()).sendEmail({ ...BASE, purpose: 'ticket.customer_notification', partnerId: PARTNER });
+    await (await service()).sendEmail({ ...BASE, purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: PARTNER });
     // help@acme.test is on the domain that just refused us; routing replies
     // there would compound the failure.
     expect(resendSendMock.mock.calls[0]![0].replyTo).toBeUndefined();
@@ -790,28 +796,90 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
   it.each(['message_rejected', 'ambiguous'] as const)('rethrows %s and NEVER touches the second lane', async (kind) => {
     const { PartnerLaneSendFailure } = await import('./emailDomains/provider');
     laneSend.mockRejectedValue(new PartnerLaneSendFailure({ kind, detail: 'd' }));
-    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER }))
+    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER }))
       .rejects.toBeInstanceOf(PartnerLaneSendFailure);
     expect(resendSendMock).not.toHaveBeenCalled();
   });
 
   it('rethrows an unknown exception from the adapter and never falls back', async () => {
     laneSend.mockRejectedValue(new TypeError('adapter blew up'));
-    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER }))
+    await expect((await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER }))
       .rejects.toThrow('adapter blew up');
     expect(resendSendMock).not.toHaveBeenCalled();
   });
 
   it('a partner-lane purpose with partnerId: null is a plain platform send', async () => {
-    await (await service()).sendEmail({ ...BASE, purpose: 'report.delivery', partnerId: null });
+    await (await service()).sendEmail({ ...BASE, purpose: 'report.delivery', trigger: 'internal', partnerId: null });
     expect(laneSend).not.toHaveBeenCalled();
     expect(lookup).not.toHaveBeenCalled();
     expect(resendSendMock.mock.calls[0]![0].from).toBe('no-reply@2breeze.app');
   });
 
-  it('an over-cap send goes out on the platform lane, exactly once', async () => {
-    cap.mockResolvedValue(false);
-    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
+  it('an over-cap send is held: nothing goes out on either lane, and the error says why', async () => {
+    cap.mockResolvedValue('over_cap');
+    const { EmailSendHeldError } = await import('./email');
+    const err = await (await service())
+      .sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER, partnerName: 'Acme MSP' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EmailSendHeldError);
+    expect(err).toMatchObject({ reason: 'over_cap', partnerId: PARTNER, purpose: 'invoice.sent' });
+    expect((err as Error).message).toMatch(/daily partner-lane send cap/);
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  // #12249: the held error tells every caller when trying again can succeed,
+  // so queue senders reschedule and sync routes can set Retry-After.
+  it('the over-cap held error carries retryAt = the next 00:00 UTC', async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 10, 19, 15, 30, 0), toFake: ['Date'] });
+    try {
+      cap.mockResolvedValue('over_cap');
+      const err = await (await service())
+        .sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ reason: 'over_cap', retryAt: new Date('2026-11-20T00:00:00.000Z') });
+      expect(cap).toHaveBeenCalledWith(PARTNER, 'internal');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an external send over its own bucket goes out once on the platform lane, never held', async () => {
+    cap.mockResolvedValue('over_cap');
+    await (await service()).sendEmail({ ...BASE, purpose: 'portal.password_reset', trigger: 'external', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    expect(cap).toHaveBeenCalledWith(PARTNER, 'external');
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
+    expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP" <no-reply@2breeze.app>');
+  });
+
+  it('an administrator-suspended domain holds the send, with a suspension message and a re-check time', async () => {
+    lookup.mockResolvedValue({ ok: false, reason: 'domain_suspended' });
+    const { EmailSendHeldError } = await import('./email');
+    const before = Date.now();
+    const err = await (await service())
+      .sendEmail({ ...BASE, purpose: 'quote.sent', trigger: 'external', partnerId: PARTNER })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EmailSendHeldError);
+    expect(err).toMatchObject({ reason: 'domain_suspended', partnerId: PARTNER, purpose: 'quote.sent' });
+    expect((err as Error).message).toMatch(/suspended/);
+    expect((err as Error).message).not.toMatch(/cap/);
+    expect((err as { retryAt: Date }).retryAt.getTime()).toBeGreaterThan(before);
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  // An AUTOMATIC suspension reaches resolveSender as domain_not_sendable and
+  // keeps the platform-lane fallback (partnerLaneLookup.ts).
+  it('an automatically suspended domain still sends on the platform lane', async () => {
+    lookup.mockResolvedValue({ ok: false, reason: 'domain_not_sendable' });
+    await (await service()).sendEmail({ ...BASE, purpose: 'quote.sent', trigger: 'internal', partnerId: PARTNER, partnerName: 'Acme MSP' });
+    expect(resendSendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cap check that cannot answer (Redis down) still sends on the platform lane, exactly once', async () => {
+    cap.mockResolvedValue('unavailable');
+    await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER, partnerName: 'Acme MSP' });
     expect(laneSend).not.toHaveBeenCalled();
     expect(resendSendMock).toHaveBeenCalledTimes(1);
     expect(resendSendMock.mock.calls[0]![0].from).toBe('"Acme MSP" <no-reply@2breeze.app>');

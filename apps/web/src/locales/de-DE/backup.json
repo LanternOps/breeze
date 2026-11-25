@@ -538,10 +538,14 @@
     "destination": "Ziel",
     "restoreToAStagingFolderOrProvideAn": "Stellen Sie in einen Staging-Ordner auf dem Gerät oder in einen Pfad Ihrer Wahl wieder her.",
     "stagingFolder": "Staging-Ordner auf dem Gerät",
-    "stagingFolderHint": "Dateien werden im temporären Verzeichnis des Geräts (breeze-restore) abgelegt; Originale werden nie überschrieben.",
+    "stagingFolderHint": "Dateien werden in einem Staging-Ordner im Datenverzeichnis des Breeze-Agenten abgelegt; Originale werden nie überschrieben.",
     "alternatePath": "Alternativer Pfad",
     "alternatePathPlaceholder": "z. B. D:\\Restored oder /var/restore",
     "alternatePathRequired": "Geben Sie einen Zielpfad ein, um fortzufahren.",
+    "alternatePathLayoutHint": "Jede Datei behält ihren vollständigen ursprünglichen Pfad unter diesem Ordner. Beispiel: C:\\Users\\a\\report.docx, wiederhergestellt nach D:\\Restored, landet unter D:\\Restored\\Users\\a\\report.docx.",
+    "rootTargetWarning": "{{path}} ist das Stammverzeichnis eines Laufwerks oder einer Freigabe. Jede Datei behält ihren vollständigen Pfad unter dem Ziel. Stammen die Dateien von diesem Laufwerk, überschreibt eine Wiederherstellung hierhin daher jede Originaldatei. Um die Originale zu behalten, wählen Sie stattdessen einen neuen, leeren Ordner.",
+    "rootTargetConfirm": "Originaldateien überschreiben",
+    "reviewOverwritesOriginals": "Überschreibt die Originaldateien an ihren ursprünglichen Pfaden.",
     "restoreToANewFolder": "In einem neuen Ordner wiederherstellen.",
     "reviewConfirm": "Überprüfen und bestätigen",
     "confirmTheRestoreSummaryBeforeStarting": "Bestätigen Sie die Wiederherstellungszusammenfassung, bevor Sie beginnen.",
@@ -1270,6 +1274,9 @@
   "failureCause": {
     "storage_access_denied": {
       "hint": "Das Sicherungsziel hat die Anfrage abgelehnt. Prüfen Sie, ob der Zugriffsschlüssel gültig ist und Schreibrechte hat, außerdem die Bucket-Richtlinie und den Status des Speicherkontos, und führen Sie dann „Verbindung testen“ aus."
+    },
+    "storage_cap_exceeded": {
+      "hint": "Der Speicheranbieter hat die Anfrage abgelehnt, weil ein Limit oder Kontingent des Kontos erreicht wurde. Erhöhen Sie das Limit beim Anbieter oder geben Sie dort Speicherplatz frei. Tageslimits werden automatisch zurückgesetzt."
     },
     "storage_not_found": {
       "hint": "Das Sicherungsziel meldet, dass der Bucket oder seine Objekte fehlen. Prüfen Sie, ob der Bucket noch existiert und keine Lifecycle-Regel Sicherungsdaten löscht."

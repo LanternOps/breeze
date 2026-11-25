@@ -1,3 +1,4 @@
+import type { McpToolListMode } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
 import {
   pgTable,
@@ -149,6 +150,10 @@ export const oauthGrants = pgTable('oauth_grants', {
   // unrestricted. A real column, not `payload`: oidc-provider owns the payload
   // and drops unknown keys. Read per request by assertLiveOAuthUser.
   mcpDomains: text('mcp_domains').array().$type<string[] | null>(),
+  // #12429: the tool list this connection's MCP client is shown. NULL = follow
+  // the deployment default. Set at consent, edited by the grant's owner. A
+  // real column for the same reason as mcp_domains.
+  mcpToolListMode: text('mcp_tool_list_mode').$type<McpToolListMode | null>(),
 }, (table) => ({
   accountIdx: index('oauth_grants_account_idx').on(table.accountId),
   clientIdx: index('oauth_grants_client_idx').on(table.clientId),

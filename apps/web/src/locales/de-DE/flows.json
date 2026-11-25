@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "Das KI-Budget der Organisation ist aufgebraucht.",
       "ai_output_invalid": "Das KI-Ergebnis entsprach nicht dem erwarteten Format.",
       "ai_token_cap_reached": "Die Ausführung hat ihr KI-Token-Limit erreicht.",
-      "targets_over_cap": "Der Schritt zielte auf mehr Geräte, als ein Flow-Schritt ausführen darf (500).",
+      "targets_over_cap": "Der Schritt zielte auf mehr Geräte, als diese Ausführung verwenden darf.",
       "targets_unresolvable": "Das Geräteziel des Schritts konnte nicht aufgelöst werden.",
       "alert_create_failed": "Die Warnung konnte nicht erstellt werden.",
       "script_dispatch_failed": "Das Skript konnte an ein oder mehrere Geräte nicht gesendet werden."

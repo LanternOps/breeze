@@ -404,11 +404,11 @@ export async function resolveAndMintClientSession(
         //
         // The external identity (portal_user_identities) is written in the
         // SAME savepoint: a 23505 from either insert rolls back both, so there
-        // is never a login without its identity or vice versa. The legacy
-        // entra_* columns are still written too (plan D4 writer fence): a
-        // rolling-deploy release-A instance reads them, and the login's own
-        // unique index on them is what refuses a second login for a (tid, oid)
-        // whose identity row has gone missing.
+        // is never a login without its identity or vice versa. The identity's
+        // (issuer, subject) key is the only thing that refuses a second login
+        // for this (tid, oid): the legacy portal_users.entra_* columns are no
+        // longer written (portal registration W10, identities release C), and
+        // the W10 final backfill gave every legacy pair its identity row.
         const inserted = await db.transaction(async (tx) => {
           const rows = await tx
             .insert(portalUsers)
@@ -417,8 +417,6 @@ export async function resolveAndMintClientSession(
               email,
               name: claims.name,
               passwordHash: null,
-              entraOid: claims.oid,
-              entraTenantId: claims.tid,
               authMethod: 'entra',
               // active + browser_access none: an add-in login never grants the
               // browser portal (spec §6 invariant 9).
@@ -449,12 +447,13 @@ export async function resolveAndMintClientSession(
         const winner = await selectLoginByEntraIdentity(claims);
         user = winner?.user;
         if (!user) {
-          // Not a race (a race leaves the winner findable): drift. Either the
-          // login's own unique index refused a second login for a (tid, oid)
-          // whose identity row is missing, or the identity insert collided
-          // with an identity the lookup could not see. The savepoint rolled
-          // back both inserts and the exchange fails closed as
-          // provisioning_failed below; report it so the denial is explainable.
+          // Not a race (a race leaves the winner findable): drift. The identity
+          // insert collided on its (issuer, subject) key with an identity the
+          // lookup could not see. The legacy portal_users.entra_* columns are
+          // no longer written, so their unique index cannot be the cause. The
+          // savepoint rolled back both inserts and the exchange fails closed
+          // as provisioning_failed below; report it so the denial is
+          // explainable.
           console.error('[client-ai] portal identity drift: JIT refused and no login holds this Entra identity', {
             orgId: mapping.orgId,
             constraint: constraintName,

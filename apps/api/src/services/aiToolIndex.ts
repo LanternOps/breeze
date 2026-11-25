@@ -106,7 +106,7 @@ function renderDomainLine(domain: AiToolDomain, inDomain: readonly ToolIndexEntr
 }
 
 /** The domain's note minus any sentence naming a tool outside `available`; '' when none is left. */
-function renderDomainNote(domain: AiToolDomain, available: ReadonlySet<string>): string {
+export function renderDomainNote(domain: AiToolDomain, available: ReadonlySet<string>): string {
   const note = DOMAIN_NOTES[domain]?.split(/(?<=[.!?])\s+/)
     .filter((sentence) => {
       const tokens = sentence.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
@@ -162,6 +162,25 @@ export function renderAlwaysOnIndex(names: Iterable<string>): string {
     if (!present.has(domain)) continue;
     lines.push(`- **${AI_TOOL_DOMAIN_LABELS[domain]}**: ${DOMAIN_VOCABULARY[domain]}`);
     const note = renderDomainNote(domain, available);
+    if (note) lines.push(note);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * #12427: the external MCP server's progressive-mode domain index — one line
+ * per domain in `domains` (label + static vocabulary, so a tool joining a
+ * domain the caller already has changes it by 0 bytes) and that domain's note,
+ * minus any sentence naming a tool outside `listableNames`. No tool lists, no
+ * heading, no ToolSearch guidance: an MCP client has no ToolSearch.
+ */
+export function renderMcpDomainIndex(domains: readonly AiToolDomain[], listableNames: ReadonlySet<string>): string {
+  const wanted = new Set(domains);
+  const lines: string[] = [];
+  for (const domain of AI_TOOL_DOMAINS) {
+    if (!wanted.has(domain)) continue;
+    lines.push(`- **${AI_TOOL_DOMAIN_LABELS[domain]}**: ${DOMAIN_VOCABULARY[domain]}`);
+    const note = renderDomainNote(domain, listableNames);
     if (note) lines.push(note);
   }
   return lines.join('\n');

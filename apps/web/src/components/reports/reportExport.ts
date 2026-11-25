@@ -70,6 +70,9 @@ export async function exportReport(
     previous?: { generatedAt?: string | null; summary?: unknown };
     /** Pre-resolved partner branding; loaded automatically for PDFs when omitted. */
     branding?: ReportBranding;
+    /** Branding the API resolved for the run's org; used only when the
+     *  partner branding cannot be loaded here (org-scoped users). */
+    serverBranding?: ReportBranding;
   }
 ): Promise<void> {
   const { format, reportType, timezone, summary, previous } = opts;
@@ -110,7 +113,15 @@ export async function exportReport(
   // renderer prints the generation instant in the partner's date format with
   // its timezone, the same on every report path (#12048).
   const generatedAt = new Date();
-  const branding = opts.branding ?? (await loadPartnerBranding());
+  // Org-scoped staff cannot read /orgs/partners/me, so the partner load comes
+  // back unbranded for them; the server-resolved branding that rode along with
+  // the run download fills in (#12048). Partner-scoped staff keep the richer
+  // browser path (it re-encodes non-PNG logos the server cannot embed).
+  let branding = opts.branding;
+  if (!branding) {
+    branding = await loadPartnerBranding();
+    if (!branding.name && opts.serverBranding) branding = opts.serverBranding;
+  }
   const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, previous, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
 }

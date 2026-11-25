@@ -205,7 +205,7 @@ describe('ticket_email_links claim', () => {
     const janeEmail = `jane-${suffix}@known.test`;
     const [jane] = await admin()
       .insert(portalUsers)
-      .values({ orgId: fx.orgId, email: janeEmail, name: 'Jane Known' })
+      .values({ browserAccess: 'granted', orgId: fx.orgId, email: janeEmail, name: 'Jane Known' })
       .returning({ id: portalUsers.id });
 
     const threadKey = `<thread-${suffix}@known.test>`;
@@ -283,7 +283,7 @@ describe('ticket_email_links claim', () => {
     const janeEmail = `jane-${suffix}@known.test`;
     const [jane] = await admin()
       .insert(portalUsers)
-      .values({ orgId: fx.orgId, email: janeEmail, name: 'Jane Known' })
+      .values({ browserAccess: 'granted', orgId: fx.orgId, email: janeEmail, name: 'Jane Known' })
       .returning({ id: portalUsers.id });
     // Jane is the requester, so the sender binding passes; the ticket carries
     // no thread key or Message-ID the reply could match, so the link row is
@@ -387,7 +387,7 @@ describe('add-in create vs. inbound poller (Task 16)', () => {
       .values({ partnerId: fx.partnerId, domain, provider: 'mailgun', verificationStatus: 'verified' });
 
     const senderEmail = `sender-${suffix}@known.test`;
-    await admin().insert(portalUsers).values({ orgId: fx.orgId, email: senderEmail, name: 'Known Sender' });
+    await admin().insert(portalUsers).values({ browserAccess: 'granted', orgId: fx.orgId, email: senderEmail, name: 'Known Sender' });
 
     const tech = await createUser({ partnerId: fx.partnerId, email: `tech-${suffix}@partner.test` });
     addinAuthRef.current = { userId: tech.id, partnerId: fx.partnerId, orgIds: [fx.orgId] };

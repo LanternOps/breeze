@@ -538,10 +538,14 @@
     "destination": "Destino",
     "restoreToAStagingFolderOrProvideAn": "Restaure en una carpeta de preparación del dispositivo o en una ruta que usted elija.",
     "stagingFolder": "Carpeta de preparación en el dispositivo",
-    "stagingFolderHint": "Los archivos se guardan en el directorio temporal del dispositivo (breeze-restore); los originales nunca se sobrescriben.",
+    "stagingFolderHint": "Los archivos se guardan en una carpeta de preparación del directorio de datos del agente de Breeze; los originales nunca se sobrescriben.",
     "alternatePath": "Camino alternativo",
     "alternatePathPlaceholder": "p. ej. D:\\Restored o /var/restore",
     "alternatePathRequired": "Ingrese una ruta de destino para continuar.",
+    "alternatePathLayoutHint": "Cada archivo conserva su ruta original completa dentro de esta carpeta. Por ejemplo, C:\\Users\\a\\report.docx, restaurado en D:\\Restored, queda en D:\\Restored\\Users\\a\\report.docx.",
+    "rootTargetWarning": "{{path}} es la raíz de una unidad o un recurso compartido. Cada archivo conserva su ruta completa dentro del destino, así que si los archivos provienen de esta unidad, restaurar aquí sobrescribe cada original. Para conservar los originales, elija una carpeta nueva y vacía.",
+    "rootTargetConfirm": "Sobrescribir los archivos originales",
+    "reviewOverwritesOriginals": "Sobrescribe los archivos originales en sus rutas originales.",
     "restoreToANewFolder": "Restaurar en una nueva carpeta.",
     "reviewConfirm": "Revisar y confirmar",
     "confirmTheRestoreSummaryBeforeStarting": "Confirme el resumen de restauración antes de comenzar.",
@@ -1270,6 +1274,9 @@
   "failureCause": {
     "storage_access_denied": {
       "hint": "El destino de la copia de seguridad rechazó la solicitud. Verifique que la clave de acceso sea válida y tenga permiso de escritura, la política del bucket y el estado de la cuenta de almacenamiento, y luego ejecute Probar conexión."
+    },
+    "storage_cap_exceeded": {
+      "hint": "El proveedor de almacenamiento rechazó la solicitud porque se alcanzó un límite o una cuota de la cuenta. Aumente el límite o libere espacio en el proveedor. Los límites diarios se restablecen automáticamente."
     },
     "storage_not_found": {
       "hint": "El destino de la copia de seguridad indica que el bucket o sus objetos no existen. Verifique que el bucket siga existiendo y que ninguna regla de ciclo de vida elimine los datos de la copia."

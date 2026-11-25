@@ -17,7 +17,8 @@
  * was given, written only once the turn is dispatched
  * (`markSpecialistResultsDelivered`), so a refused turn leaves them for the
  * next one. The key is (run, status): a run that later settles differently
- * (waiting for approval → cancelled) is given again, once.
+ * (waiting for approval → cancelled, or → completed once its steps are final,
+ * #11965) is given again, once.
  *
  * #11845: `analysis` runs a Wisp chat launched are delivered the same way
  * (when the workspace is on), with their `submit_analysis` outcome parsed and
@@ -41,6 +42,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { aiRunArtifacts } from '../../db/schema/aiWorkspace';
+import { formatStepTally } from '../aiAgents/runApprovalSteps';
 import { getRedis } from '../redis';
 import { captureException } from '../sentry';
 import type { PendingRunResult } from '../workspace/chatRunBridge';
@@ -152,7 +154,9 @@ async function readSettledRuns(input: { grantId: string; sessionId: string; orgI
 async function readResults(chosen: RunRow[], orgIds: string[]): Promise<SpecialistResultsTurn> {
   const ids = chosen.map((r) => r.id);
   const waitingIds = chosen.filter((r) => r.status === 'awaiting_approval').map((r) => r.id);
-  const { artifacts, pending } = await runOutsideDbContext(() =>
+  // #11965: a troubleshooting run that settled after its steps were decided.
+  const settledIds = chosen.filter((r) => r.status === 'completed' && r.profile === TROUBLESHOOTING_PROFILE).map((r) => r.id);
+  const { artifacts, pending, steps } = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => ({
       artifacts: await db
         .select({
@@ -174,6 +178,14 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
           eq(actionIntents.status, 'pending_approval'),
         ))
         .groupBy(actionIntents.requestingAgentRunId),
+      steps: settledIds.length === 0 ? [] : await db
+        .select({ runId: actionIntents.requestingAgentRunId, status: actionIntents.status, n: count() })
+        .from(actionIntents)
+        .where(and(
+          inArray(actionIntents.requestingAgentRunId, settledIds),
+          inArray(actionIntents.orgId, orgIds),
+        ))
+        .groupBy(actionIntents.requestingAgentRunId, actionIntents.status),
     })),
   );
 
@@ -194,6 +206,10 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
     }
     if (status === 'awaiting_approval') {
       result.pendingIntentCount = Number(pending.find((p) => p.runId === run.id)?.n ?? 0);
+    }
+    if (settledIds.includes(run.id)) {
+      const tally = formatStepTally(steps.filter((s) => s.runId === run.id).map((s) => ({ status: s.status, count: s.n })));
+      if (tally) result.stepTally = tally;
     }
     return result;
   });

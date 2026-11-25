@@ -5580,7 +5580,12 @@
     "networkError": "Ağ hatası",
     "networkErrorDuringRevoke": "İptal sırasında ağ hatası",
     "revoking": "İptal ediliyor…",
-    "revoke": "İptal Et"
+    "revoke": "İptal Et",
+    "toolListFull": "Araç listesi: Tam",
+    "toolListProgressive": "Araç listesi: Aşamalı",
+    "toolListDefault": "Araç listesi: dağıtım varsayılanı",
+    "toolListMixed": "Araç listesi: bağlantıya göre değişir",
+    "toolListHint": "Bunu her kişi kendi bağlantısı için Hesap → Bağlı uygulamalar altında ayarlar."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Bu kodları güvenli bir yerde saklayın. Her kod bir kez kullanılabilir. Kodlar tekrar gösterilemez.",
@@ -8094,7 +8099,18 @@
     "saved": "Betik yazımı ayarları kaydedildi.",
     "saveFailed": "Bu ayarlar kaydedilemedi.",
     "loading": "Yükleniyor…",
-    "loadFailed": "Betik yazımı ayarları yüklenemedi."
+    "loadFailed": "Betik yazımı ayarları yüklenemedi.",
+    "mcpCeiling": {
+      "title": "Gözetimsiz MCP betik çalıştırmaları",
+      "description": "MCP_UNATTENDED_TIER3_PRINCIPALS listesindeki bir MCP sorumlusunun, yapay zekâ tarafından önerilen bir betiği insan onayı olmadan çalıştırabileceği en yüksek incelenmiş risk; en fazla Orta. Çalıştırma ayrıca cihazın kuruluşu için gözetimsiz betik hattının kurallarını karşılamalıdır: katılım, izin verilen etki sınıfları, korunan kaynaklar, devre kesici ve saatlik sınır. Sınırın üzerinde her çalıştırma onay gerektirir.",
+      "label": "Şu düzeye kadar onaysız çalıştır",
+      "options": {
+        "none": "Asla (her zaman onay iste)",
+        "low": "Düşük",
+        "medium": "Orta"
+      },
+      "stepUpBody": "Bu sınırı yükseltmek yeni bir güvenlik denetimi gerektirir. Onaylayın, ardından yeniden Kaydet'i seçin."
+    }
   },
   "ticketingHubPage": {
     "heading": "Bilet Ayarları",

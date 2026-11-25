@@ -330,6 +330,12 @@ const siteScopeMock = vi.hoisted(() => ({
   deviceInSiteScope: vi.fn(async (_auth: unknown, _deviceId: string): Promise<boolean> => true),
 }));
 vi.mock('../../routes/tickets/siteScope', () => ({ deviceInSiteScope: siteScopeMock.deviceInSiteScope }));
+// The patch-name read has its own org-pin, reach and title-hygiene suite
+// (approvalPatchNames.test.ts); here it is a spy.
+const patchNamesMock = vi.hoisted(() => ({
+  resolveApprovalPatchNames: vi.fn(async (_patchIds: unknown, _deviceIds: unknown, _orgId: string, _reach: unknown): Promise<string[] | null> => null),
+}));
+vi.mock('./approvalPatchNames', () => ({ resolveApprovalPatchNames: patchNamesMock.resolveApprovalPatchNames }));
 vi.mock('./approvalTicketNumber', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./approvalTicketNumber')>();
   return { ...actual, resolveApprovalTicketNumber: ticketNumberMock.resolveApprovalTicketNumber };
@@ -2146,6 +2152,91 @@ describe('createActionIntent — approval headline ticket number (#11674)', () =
 });
 
 // ---------------------------------------------------------------------------
+// A supervised patch install read "Install 1 patch(es) on 1 device(s)" and
+// "CVEs: get_vulnerability_report.": the approver could not see which patch
+// they were signing for. The stored label names the patches.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline patch names', () => {
+  const PATCH_A = 'aaaaaaaa-1111-4222-8333-444455556666';
+  const PATCH_B = 'bbbbbbbb-1111-4222-8333-444455556666';
+  const PATCH_C = 'cccccccc-1111-4222-8333-444455556666';
+  const DEVICE_A = '6eae0f70-1111-4222-8333-444455556666';
+  const DEVICE_B = '7eae0f70-1111-4222-8333-444455556666';
+  const INSTALL = { action: 'install', patchIds: [PATCH_A, PATCH_B, PATCH_C], deviceIds: [DEVICE_A, DEVICE_B] };
+
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  function guardrailSays(description: string) {
+    guardrailMock.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, description });
+  }
+
+  beforeEach(() => {
+    patchNamesMock.resolveApprovalPatchNames.mockReset();
+    patchNamesMock.resolveApprovalPatchNames.mockResolvedValue(null);
+  });
+
+  it('resolves the install\'s patches in the intent org, cut to the filing caller\'s reach, and stores their names', async () => {
+    guardrailSays('Install 3 patches on 2 devices');
+    patchNamesMock.resolveApprovalPatchNames.mockResolvedValueOnce(['KB5034441', '"Google Chrome 120"']);
+    queueFanout('intent-patch-named');
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, baseInput({ toolName: 'manage_patches', input: INSTALL }));
+
+    expect(patchNamesMock.resolveApprovalPatchNames).toHaveBeenCalledWith(INSTALL.patchIds, INSTALL.deviceIds, ORG_ID, auth);
+    expect(persistedApprovalLabels()).toEqual(['Install KB5034441, "Google Chrome 120" +1 more on 2 devices']);
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary)
+      .toBe('Installs 3 patches on 2 devices. Devices may restart to finish installing.');
+  });
+
+  it('keeps the counted headline when no name resolves', async () => {
+    guardrailSays('Install 3 patches on 2 devices');
+    queueFanout('intent-patch-unnamed');
+
+    await createActionIntent(makeAuth(), baseInput({ toolName: 'manage_patches', input: INSTALL }));
+
+    expect(persistedApprovalLabels()).toEqual(['Install 3 patches on 2 devices']);
+  });
+
+  it('reads nothing for a patch action that is not an install', async () => {
+    guardrailSays('Rollback patch aaaaaaaa...');
+    queueFanout('intent-patch-rollback');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_patches',
+      input: { action: 'rollback', patchId: PATCH_A, deviceIds: [DEVICE_A] },
+    }));
+
+    expect(patchNamesMock.resolveApprovalPatchNames).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual(['Rollback patch aaaaaaaa...']);
+  });
+
+  it('reads nothing when the label does not carry this install\'s headline', async () => {
+    guardrailSays('Install 3 patches on 2 devices');
+    queueFanout('intent-patch-custom-label');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_patches',
+      input: INSTALL,
+      actionLabel: 'Patch the accounting laptops',
+    }));
+
+    expect(patchNamesMock.resolveApprovalPatchNames).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual(['Patch the accounting laptops']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tier3 supervised/four_eyes split — scope-aware creation, fan-out, deadlines
 // (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md)
 // ---------------------------------------------------------------------------
@@ -3345,6 +3436,126 @@ describe('buildImpactSummary (#5106)', () => {
       input: {},
       guardrailDescription: 'x',
       expected: 'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
+    },
+    {
+      name: 'manage_patches install counts patches and devices and warns of a restart',
+      toolName: 'manage_patches',
+      input: { action: 'install', patchIds: ['p1', 'p2', 'p3'], deviceIds: ['d1', 'd2'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report. Install requires BOTH patchIds and deviceIds.',
+      expected: 'Installs 3 patches on 2 devices. Devices may restart to finish installing.',
+    },
+    {
+      name: 'manage_patches install, one patch on one device',
+      toolName: 'manage_patches',
+      input: { action: 'install', patchIds: ['p1'], deviceIds: ['d1'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Installs 1 patch on 1 device. The device may restart to finish installing.',
+    },
+    {
+      name: 'manage_patches install without lists still never shows the model-facing description',
+      toolName: 'manage_patches',
+      input: { action: 'install' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Installs the selected patches on the selected devices. Devices may restart to finish installing.',
+    },
+    {
+      name: 'manage_patches scan installs nothing',
+      toolName: 'manage_patches',
+      input: { action: 'scan', deviceIds: ['d1', 'd2'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Scans 2 devices for missing patches. Nothing is installed.',
+    },
+    {
+      // The handler queues rollback_patches on each listed device that has the
+      // patch installed (#12492): an uninstall that may restart the device.
+      name: 'manage_patches rollback on one device says it uninstalls and may restart',
+      toolName: 'manage_patches',
+      input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Uninstalls the patch from 1 device. Devices that do not have it installed are skipped. The device may restart to finish uninstalling.',
+    },
+    {
+      name: 'manage_patches rollback on several devices counts every listed device',
+      toolName: 'manage_patches',
+      input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1', 'd2'] },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Uninstalls the patch from 2 devices. Devices that do not have it installed are skipped. Devices may restart to finish uninstalling.',
+    },
+    {
+      // Approvals are partner-wide unless a ringId names one update ring
+      // (upsertPatchApproval with ringId null, aiToolsFleet.ts).
+      name: 'manage_patches approve without a ring names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'approve', patchId: 'p1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves the patch for every organization under the partner. Nothing installs now; patch runs can install it later.',
+    },
+    {
+      name: 'manage_patches approve in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'approve', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves the patch in one update ring. Nothing installs now; patch runs can install it later.',
+    },
+    {
+      // bulk_approve always writes ringId null.
+      name: 'manage_patches bulk_approve counts the patches and names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'bulk_approve', patchIds: ['p1', 'p2'], ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves 2 patches for every organization under the partner. Nothing installs now; patch runs can install them later.',
+    },
+    {
+      name: 'manage_patches decline without a ring names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch for every organization under the partner. Nothing is installed or removed now.',
+    },
+    {
+      name: 'manage_patches decline in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch in one update ring. Nothing is installed or removed now.',
+    },
+    {
+      // allRings wins over ringId in the handler, and also clears the partner-wide row.
+      name: 'manage_patches decline allRings covers the partner and every update ring',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1', allRings: true, ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch for every organization under the partner and in every update ring. Nothing is installed or removed now.',
+    },
+    {
+      name: 'manage_patches defer without a ring names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'defer', patchId: 'p1', deferUntil: '2026-12-01' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Defers the patch for every organization under the partner. Nothing installs now.',
+    },
+    {
+      name: 'manage_patches defer in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'defer', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Defers the patch in one update ring. Nothing installs now.',
+    },
+    {
+      // The handler refuses setup_auto_approval unconditionally, so there is
+      // no effect to describe: no call-specific summary.
+      name: 'manage_patches setup_auto_approval has no call-specific summary (the handler refuses it)',
+      toolName: 'manage_patches',
+      input: { action: 'setup_auto_approval' },
+      guardrailDescription: 'Catalog text.',
+      expected: 'Catalog text.',
+    },
+    {
+      name: 'manage_patches list (a read) keeps the catalog fallback',
+      toolName: 'manage_patches',
+      input: { action: 'list' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'CVEs: get_vulnerability_report.',
     },
     {
       name: 'an unrecognized tool falls back to the guardrail description',

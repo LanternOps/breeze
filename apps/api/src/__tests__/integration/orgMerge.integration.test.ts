@@ -624,10 +624,10 @@ async function seedFixture(): Promise<Fixture> {
 
     // --- duplicate-warning fodder: portal logins + external links -----------
     await db.execute(sql`
-      INSERT INTO portal_users (id, org_id, email) VALUES
-        (${f.portalDupL}::uuid,  ${f.loser}::uuid,    ${f.dupPortalEmail}),
-        (${f.portalOnlyL}::uuid, ${f.loser}::uuid,    ${`solo-${suffix}@x.test`}),
-        (${randomUUID()}::uuid,  ${f.survivor}::uuid, ${f.dupPortalEmail})`);
+      INSERT INTO portal_users (id, org_id, email, browser_access) VALUES
+        (${f.portalDupL}::uuid,  ${f.loser}::uuid,    ${f.dupPortalEmail}, 'granted'),
+        (${f.portalOnlyL}::uuid, ${f.loser}::uuid,    ${`solo-${suffix}@x.test`}, 'granted'),
+        (${randomUUID()}::uuid,  ${f.survivor}::uuid, ${f.dupPortalEmail}, 'granted')`);
     await db.execute(sql`
       INSERT INTO organization_external_links (id, org_id, partner_id, system, external_id) VALUES
         (${f.extLinkL}::uuid,   ${f.loser}::uuid,    ${f.partner}::uuid, 'psa', ${`ext-l-${suffix}`}),

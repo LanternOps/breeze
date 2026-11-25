@@ -139,7 +139,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/connectionHealth/sources/backupDestination.ts': 'read model: the backup_destination health verdict (#11772) counts the job outcomes of devices on one backup config; reads backup_jobs.device_id only to group them, selects no device targets and runs nothing',
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
-  'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
+  'services/deviceStats.ts': 'read model: fleet device counts by status, the typed-filter count, group-by and device page (GET /devices/stats and get_fleet_device_stats) over one shared condition list (fleetConditions); excludes parked devices',
   'services/wisp/standingLoop.ts': 'read model (#11677): the Wisp standing state counts and names offline devices through deviceListReachConditions (query_devices\' own reach, parked and Quick Support devices out) for the per-turn prompt; selects no targets and runs nothing',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
@@ -166,7 +166,6 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/securityScanSweeps.ts': 'read model: IOC sweep progress (#6263 W05); joins devices only to apply the caller site ceiling to the aggregates. Sweep targets come from services/securityScanSweepTargets.ts, a FANOUT_MODULES entry',
   'services/scriptLastRun.ts': 'read model: Script Library LAST RUN column (#9563); a max(created_at) over existing script_executions, joining devices only to apply the caller site restriction; selects no targets and dispatches nothing',
   'services/flows/ownedReferences.ts': 'validation: checks that device ids named literally in a flow draft belong to the flow owner org (#5218); selects no targets and dispatches nothing',
-  'services/flows/builtins/fleetTargets.ts': "org-pinned (#5221 W06): target selection goes through automationRuntime's resolveAutomationTargetsDetailed (a FANOUT_MODULES entry) with the run org as the only owner org; its own query only re-reads those ids, or an explicit/earlier-step list, inside the RUN org — a flow run never runs in the holding org (partnerFanoutOrgs), so a parked device never matches",
   'services/flows/conversion/context.ts': "conversion preview (#5221 W06): counts a Job's CURRENT target set and its OS types through automationRuntime's resolveAutomationTargetsDetailed (a FANOUT_MODULES entry, parked/holding-org guarded); reads only the OS of those ids and dispatches nothing",
   'services/flows/builtins/createAlert.ts': "org-pinned (#5221 W06): one existence check (id, org_id = run org) for the device a create_alert step names; selects no targets, and a flow run never runs in the holding org",
   'services/scriptFleetDispatchStore.ts': "org-pinned (#5221 W06): locks ONE device of the already-checked fleet set by (id, org_id = run org) before dispatch; selects no targets, and dispatchScriptToDevice refuses a parked device (device_pending_assignment)",
@@ -319,6 +318,7 @@ const EXEMPT: Record<string, string> = {
   // Full-control W18 (#6789): lifted verbatim from their routes; request-path aggregates over the ONE org (or the
   // accepted org list) the caller named, after the route's / tool's own access check.
   'services/orgAccountReadinessResponse.ts': 'org administration (holding org already guarded): the default org set uses notHiddenOrgType(), the same filter as resolveAcceptedOrgs',
+  'services/patchRollback.ts': 'request path (#12492, lifted from routes/patches/operations.ts): POST /patches/:id/rollback and the AI manage_patches rollback, under the caller\'s RLS and its own org/site check; reads the devices the caller named, or with none named (the route only) the devices reporting this patch installed. Not a background selector; both paths queue through queueCommandForExecution (the AI path via aiQueueCommandForExecution), whose dispatchDeviceCommand step refuses a parked device (device_pending_assignment)',
   'services/orgSummary.ts': 'request path: counts the devices of the ONE org the caller named and may access (decommissioned excluded, as the record page); selects no targets and dispatches no work',
   'services/roleDirectory.ts': 'role administration: isHiddenOrgType() keeps the holding org out of a focused-org role read; reads no devices',
   'services/orgArchive.ts': 'org administration (holding org already guarded)',

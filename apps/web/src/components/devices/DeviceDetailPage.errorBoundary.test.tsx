@@ -37,7 +37,6 @@ vi.mock('./DeviceDetails', () => ({
     throw new Error('overview card exploded');
   },
 }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));

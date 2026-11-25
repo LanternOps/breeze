@@ -26,6 +26,7 @@ import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelp
 import { isRestoreHelperUpdateRequiredError } from '../../services/backupRestoreGate';
 import { randomUUID } from 'node:crypto';
 import { checkRestoreIntegrityRequest, recordRequestAuthorization, restoreIntegrityResponse } from './restoreIntegrityGate';
+import { isVolumeRootRestoreTarget, RESTORE_WOULD_OVERWRITE_ORIGINALS } from '@breeze/shared';
 
 export const restoreRoutes = new Hono();
 
@@ -219,6 +220,20 @@ restoreRoutes.post(
 
     const payload = c.req.valid('json');
 
+    // #12638: a volume-root target writes every file from that volume back
+    // over its original (the helper keeps each file's full path beneath the
+    // target). This server cannot tell which volume the files came from, so
+    // any root is refused here, before anything is created, unless the
+    // request confirms it: helpers that predate allowOverwriteOriginals
+    // would overwrite without asking.
+    if (payload.targetPath && isVolumeRootRestoreTarget(payload.targetPath) && !payload.allowOverwriteOriginals) {
+      return c.json({
+        error: `${payload.targetPath.trim()} is the root of a drive or share. If the files came from it, restoring there writes each one back over its original. `
+          + 'Choose a new, empty folder instead, or set allowOverwriteOriginals to confirm overwriting the originals.',
+        code: RESTORE_WOULD_OVERWRITE_ORIGINALS,
+      }, 400);
+    }
+
     const authorization = await authorizeRouteResilienceResources(c, orgId, [
       { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
       payload.deviceId
@@ -376,6 +391,9 @@ restoreRoutes.post(
             snapshotId: snapshot.snapshotId,
             targetPath: row.targetPath ?? '',
             selectedPaths,
+            // Sent only when set: an absent flag is what every older server
+            // sends, and the helper then refuses to overwrite originals.
+            ...(payload.allowOverwriteOriginals ? { allowOverwriteOriginals: true } : {}),
             // A reference only: the destination is resolved when the command
             // is delivered, so it is never written to the command row.
             ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
@@ -473,6 +491,7 @@ restoreRoutes.post(
         snapshotId: snapshot.id,
         deviceId: row.deviceId,
         restoreType: row.restoreType,
+        ...(payload.allowOverwriteOriginals ? { allowOverwriteOriginals: true } : {}),
       },
     });
 

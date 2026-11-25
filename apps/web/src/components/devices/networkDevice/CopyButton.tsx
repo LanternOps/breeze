@@ -17,11 +17,18 @@ export function CopyButton({
   label,
   testId,
   onCopied,
+  compact = false,
 }: {
   value: string;
   label: string;
   testId: string;
   onCopied?: (message: string) => void;
+  /**
+   * Confirm with the icon alone at a fixed 24px size, and announce through a
+   * status region: in a dense one-line row (the device header facts) the
+   * "Copied" word would shove every later item sideways under the cursor.
+   */
+  compact?: boolean;
 }) {
   const { t } = useTranslation('common');
   const [copied, setCopied] = useState(false);
@@ -45,6 +52,25 @@ export function CopyButton({
     timerRef.current = setTimeout(() => setCopied(false), CONFIRMATION_MS);
   };
 
+  const icon = copied ? <Check aria-hidden="true" className="h-3.5 w-3.5" /> : <Copy aria-hidden="true" className="h-3.5 w-3.5" />;
+
+  if (compact) {
+    return (
+      <>
+        <button
+          type="button"
+          data-testid={testId}
+          aria-label={`${t('actions.copy')} ${label}`}
+          onClick={() => void handleCopy()}
+          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${copied ? 'text-success' : 'text-muted-foreground'}`}
+        >
+          {icon}
+        </button>
+        <span role="status" className="sr-only">{copied ? t('states.copied') : ''}</span>
+      </>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -53,7 +79,7 @@ export function CopyButton({
       onClick={() => void handleCopy()}
       className="inline-flex shrink-0 items-center gap-1 rounded-sm px-1 py-0.5 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {copied ? <Check aria-hidden="true" className="h-3.5 w-3.5" /> : <Copy aria-hidden="true" className="h-3.5 w-3.5" />}
+      {icon}
       {copied && <span>{t('states.copied')}</span>}
     </button>
   );

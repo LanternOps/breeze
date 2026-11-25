@@ -132,6 +132,7 @@ export async function notifyCustomerOfOnBehalfAcceptance(res: {
       await emailService.sendEmail({
         to,
         purpose: 'quote.acceptance_recorded',
+        trigger: 'internal',
         partnerId: res.quote.partnerId,
         partnerName: partner.name ?? null,
         replyTo: partner.billingEmail?.trim() || undefined,

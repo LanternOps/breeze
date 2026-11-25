@@ -309,6 +309,18 @@ const CAUSE_CORPUS: CauseRow[] = [
   ['backup destination refused every request: storage answered status 403 (AccessDenied)', 'storage', 'storage_access_denied'],
   ['backup destination refused every request: storage answered status 404 (NoSuchBucket)', 'storage', 'storage_not_found'],
   ['backup destination refused every request: storage answered status 403', 'storage', 'storage_access_denied'],
+  // #12623: the agent's fixed cap token outranks the code and status beside it.
+  ['storage session: storage answered status 403 (AccessDenied, provider_cap_exceeded)', 'storage', 'storage_cap_exceeded'],
+  ['storage session: storage answered status 403 (provider_cap_exceeded)', 'storage', 'storage_cap_exceeded'],
+  ['backup destination refused every request: storage answered status 403 (AccessDenied, provider_cap_exceeded)', 'storage', 'storage_cap_exceeded'],
+  ['storage session: storage answered status 403 (QuotaExceeded, provider_cap_exceeded)', 'storage', 'storage_cap_exceeded'],
+  ['3 of 9 files failed to upload: storage session: storage answered status 403 (AccessDenied, provider_cap_exceeded); VSS warning: x', 'storage', 'storage_cap_exceeded'],
+  // An agent that sends no token classifies as it always did.
+  ['storage session: storage answered status 403 (QuotaExceeded)', 'storage', 'storage_access_denied'],
+  // A reason token this API does not know reads as the code beside it.
+  ['storage session: storage answered status 403 (AccessDenied, some_future_reason)', 'storage', 'storage_access_denied'],
+  // The words count only inside the store's answer, never in a file name.
+  ['failed to upload file to C:\\x\\provider_cap_exceeded.txt: storage session: storage answered status 403 (AccessDenied)', 'storage', 'storage_access_denied'],
   // Breeze API refusals are not the customer's bucket: no destination cause.
   ['storage session: mint refused with status 403', 'storage', null],
   ['storage session: renew refused with status 404', 'storage', null],

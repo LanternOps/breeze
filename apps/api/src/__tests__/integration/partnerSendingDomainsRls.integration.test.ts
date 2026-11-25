@@ -705,14 +705,14 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
 
   it('resolves the partner lane from a SYSTEM context', async () => {
     const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved).toMatchObject({ lane: 'partner', from: `"Acme Support" <support@${domainName}>`, domain: domainName });
   });
 
   it('resolves the partner lane from the partner OWN context', async () => {
     const resolved = await withDbAccessContext(partnerContext(f.partnerA, [f.orgA]), () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved.lane).toBe('partner');
   });
@@ -720,7 +720,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
   // The quote / invoice / portal-invite send sites run here.
   it('resolves the partner lane from an ORG-SCOPED context, through the partner-axis escape', async () => {
     const resolved = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved).toMatchObject({ lane: 'partner', domain: domainName });
   });
@@ -729,7 +729,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
   // all by the time the email is sent.
   it('resolves the partner lane with NO ambient context (the portal reset path)', async () => {
     const resolved = await resolveSender({
-      purpose: 'portal.password_reset', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>',
+      purpose: 'portal.password_reset', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>',
     });
     // `portal.password_reset` is the `support` stream, so the same identity
     // serves it (spec §3.2).
@@ -740,7 +740,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
   // NOT escalate. If it did, this would return partner A's identity.
   it('NEVER returns another partner identity to a different partner context', async () => {
     const resolved = await withDbAccessContext(partnerContext(f.partnerB, [f.orgB]), () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved).toEqual({ lane: 'platform', from: 'Breeze <no-reply@2breeze.app>', reason: 'partner_ineligible' });
   });
@@ -748,14 +748,14 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
   it('returns the platform lane for a stream with no identity', async () => {
     const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
       // Bare EMAIL_FROM: the partner name becomes the display name (§8.3).
-      resolveSender({ purpose: 'invoice.sent', partnerId: f.partnerA, partnerName: 'Acme MSP', defaultFrom: 'no-reply@2breeze.app' }),
+      resolveSender({ purpose: 'invoice.sent', trigger: 'internal', partnerId: f.partnerA, partnerName: 'Acme MSP', defaultFrom: 'no-reply@2breeze.app' }),
     );
     expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'no_identity' });
   });
 
   it('keeps an operator-named EMAIL_FROM unchanged on the platform lane', async () => {
     const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
-      resolveSender({ purpose: 'invoice.sent', partnerId: f.partnerA, partnerName: 'Acme MSP', defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'invoice.sent', trigger: 'internal', partnerId: f.partnerA, partnerName: 'Acme MSP', defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved).toEqual({ lane: 'platform', from: 'Breeze <no-reply@2breeze.app>', reason: 'no_identity' });
   });
@@ -766,7 +766,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
         .where(eq(partnerSendingDomains.partnerId, f.partnerA)),
     );
     const resolved = await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     // Spec §9.1: suspension takes effect on the NEXT send, because resolution
     // reads the row. There is no cache to invalidate — that is the whole
@@ -779,7 +779,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
       db.update(partners).set({ status: 'suspended' }).where(eq(partners.id, f.partnerA)),
     );
     const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved).toMatchObject({ lane: 'platform', reason: 'partner_ineligible' });
   });
@@ -787,7 +787,7 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
   it('stays on the platform lane with the provider unset — the dark state', async () => {
     delete process.env.EMAIL_DOMAINS_PROVIDER;
     const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
-      resolveSender({ purpose: 'ticket.customer_notification', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
+      resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: f.partnerA, defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
     expect(resolved).toEqual({ lane: 'platform', from: 'Breeze <no-reply@2breeze.app>', reason: 'lane_unconfigured' });
   });

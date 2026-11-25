@@ -177,6 +177,14 @@ export const aiMessages = pgTable('ai_messages', {
   roleIdx: index('ai_messages_role_idx').on(table.role)
 }));
 
+/**
+ * How a called tool reached the model (#12421 W01). The migration's
+ * ai_tool_executions_discovery_chk lists exactly these values, in this order
+ * (aiToolSearchEvents.contract.test.ts).
+ */
+export const AI_TOOL_DISCOVERY = ['always_loaded', 'searched_this_turn', 'loaded_earlier', 'unknown'] as const;
+export type AiToolDiscovery = (typeof AI_TOOL_DISCOVERY)[number];
+
 // ============================================
 // AI Tool Executions (audit trail)
 // ============================================
@@ -204,11 +212,61 @@ export const aiToolExecutions = pgTable('ai_tool_executions', {
   // report a self-approval success for them (whole-branch review CRITICAL-3).
   intentId: uuid('intent_id').references(() => actionIntents.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  completedAt: timestamp('completed_at')
+  completedAt: timestamp('completed_at'),
+  // How the called tool reached the model this turn (#12421 W01): stamped
+  // provisionally by the pre/post hooks from the session's discovery
+  // observer, reconciled by tool_use_id at the turn flush
+  // (services/aiToolDiscoveryLedger.ts). NULL on rows written before W01.
+  discovery: text('discovery').$type<AiToolDiscovery>(),
+  // The SDK's tool-use id for this call (PreToolUseCallback.toolUseId); the
+  // reconcile key. NULL when the SDK sent none. No index: the reconcile
+  // filters by session_id first.
+  toolUseId: varchar('tool_use_id', { length: 100 })
 }, (table) => ({
   sessionIdIdx: index('ai_tool_executions_session_id_idx').on(table.sessionId),
   statusIdx: index('ai_tool_executions_status_idx').on(table.status),
-  createdAtIdx: index('ai_tool_executions_created_at_idx').on(table.createdAt)
+  createdAtIdx: index('ai_tool_executions_created_at_idx').on(table.createdAt),
+  discoveryChk: check('ai_tool_executions_discovery_chk', sql`${table.discovery} IS NULL OR ${table.discovery} IN (${sql.raw(AI_TOOL_DISCOVERY.map((v) => `'${v}'`).join(', '))})`)
+}));
+
+// ============================================
+// AI Tool Search Events (tool-discovery telemetry, #12421 W01)
+// ============================================
+//
+// One `search` row per ToolSearch in a chat turn and one `turn` row per turn.
+// Session-keyed FK child of ai_sessions with no org_id (parent-FK-join RLS,
+// registered in PARENT_FK_JOIN_POLICY_TABLES); deliberately absent from the
+// org cascade / merge / export registries, like ai_tool_executions. Migration:
+// 2027-01-30-140000-ai-tool-search-events.sql.
+
+export const aiToolSearchEvents = pgTable('ai_tool_search_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sessionId: uuid('session_id').notNull().references(() => aiSessions.id, { onDelete: 'cascade' }),
+  turnMessageId: uuid('turn_message_id').references(() => aiMessages.id, { onDelete: 'set null' }),
+  kind: text('kind').$type<'search' | 'turn'>().notNull(),
+  toolUseId: varchar('tool_use_id', { length: 100 }),
+  roundTripId: varchar('round_trip_id', { length: 100 }),
+  surface: text('surface').notNull(),
+  surfaceFingerprint: text('surface_fingerprint').notNull(),
+  query: text('query'),
+  maxResults: integer('max_results'),
+  selectMode: boolean('select_mode'),
+  resultToolNames: text('result_tool_names').array().notNull().default(sql`'{}'::text[]`),
+  calledToolNames: text('called_tool_names').array().notNull().default(sql`'{}'::text[]`),
+  totalDeferred: integer('total_deferred'),
+  empty: boolean('empty'),
+  searches: integer('searches'),
+  searchOnlyRoundTrips: integer('search_only_round_trips'),
+  workRoundTrips: integer('work_round_trips'),
+  firstCallAfterSearches: integer('first_call_after_searches'),
+  aborted: boolean('aborted'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  sessionIdIdx: index('ai_tool_search_events_session_id_idx').on(table.sessionId),
+  createdAtIdx: index('ai_tool_search_events_created_at_idx').on(table.createdAt),
+  resultToolNamesIdx: index('ai_tool_search_events_result_tool_names_gin_idx').using('gin', table.resultToolNames),
+  kindChk: check('ai_tool_search_events_kind_chk', sql`${table.kind} IN ('search', 'turn')`),
+  queryLenChk: check('ai_tool_search_events_query_len_chk', sql`${table.query} IS NULL OR octet_length(${table.query}) <= 1024`)
 }));
 
 // ============================================

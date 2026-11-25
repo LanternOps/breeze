@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "Se agotó el presupuesto de IA de la organización.",
       "ai_output_invalid": "El resultado de la IA no coincide con el formato esperado.",
       "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA.",
-      "targets_over_cap": "El paso apuntó a más dispositivos de los que un paso de flujo puede usar (500).",
+      "targets_over_cap": "El paso apuntó a más dispositivos de los que esta ejecución puede usar.",
       "targets_unresolvable": "No se pudo resolver el destino de dispositivos del paso.",
       "alert_create_failed": "No se pudo crear la alerta.",
       "script_dispatch_failed": "No se pudo enviar el script a uno o más dispositivos."

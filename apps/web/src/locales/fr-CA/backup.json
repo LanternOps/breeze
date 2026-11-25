@@ -538,10 +538,14 @@
     "destination": "Destination",
     "restoreToAStagingFolderOrProvideAn": "Restaurez dans un dossier de préparation sur l’appareil ou dans un chemin de votre choix.",
     "stagingFolder": "Dossier de préparation sur l’appareil",
-    "stagingFolderHint": "Les fichiers sont placés dans le répertoire temporaire de l’appareil (breeze-restore); les originaux ne sont jamais écrasés.",
+    "stagingFolderHint": "Les fichiers sont placés dans un dossier intermédiaire du répertoire de données de l’agent Breeze; les originaux ne sont jamais écrasés.",
     "alternatePath": "Chemin alternatif",
     "alternatePathPlaceholder": "p. ex. D:\\Restored ou /var/restore",
     "alternatePathRequired": "Saisissez un chemin de destination pour continuer.",
+    "alternatePathLayoutHint": "Chaque fichier conserve son chemin d'origine complet sous ce dossier. Par exemple, C:\\Users\\a\\report.docx, restauré vers D:\\Restored, se retrouve sous D:\\Restored\\Users\\a\\report.docx.",
+    "rootTargetWarning": "{{path}} est la racine d'un lecteur ou d'un partage. Chaque fichier conserve son chemin complet sous la destination : si les fichiers proviennent de ce lecteur, une restauration ici écrase chaque original. Pour conserver les originaux, choisissez plutôt un nouveau dossier vide.",
+    "rootTargetConfirm": "Écraser les fichiers d'origine",
+    "reviewOverwritesOriginals": "Écrase les fichiers d'origine à leur emplacement d'origine.",
     "restoreToANewFolder": "Restaurez les fichiers dans un nouveau dossier.",
     "reviewConfirm": "Vérifiez et confirmez",
     "confirmTheRestoreSummaryBeforeStarting": "Confirmez le résumé de la restauration avant de commencer.",
@@ -1270,6 +1274,9 @@
   "failureCause": {
     "storage_access_denied": {
       "hint": "La destination de sauvegarde a refusé la requête. Vérifiez que la clé d’accès est valide et permet l’écriture, la politique du compartiment et l’état du compte de stockage, puis lancez « Tester la connexion »."
+    },
+    "storage_cap_exceeded": {
+      "hint": "Le fournisseur de stockage a refusé la requête parce qu’un plafond ou un quota du compte a été atteint. Augmentez le plafond ou libérez de l’espace chez le fournisseur. Les plafonds quotidiens se réinitialisent automatiquement."
     },
     "storage_not_found": {
       "hint": "La destination de sauvegarde indique que le compartiment ou ses objets sont introuvables. Vérifiez que le compartiment existe toujours et qu’aucune règle de cycle de vie ne supprime les données de sauvegarde."

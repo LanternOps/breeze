@@ -95,7 +95,11 @@ suite ai sources apps/api/src/services/ticketChecklistTemplateService.ts
 suite ai sources apps/api/src/services/ticketService.ts
 suite ai sources apps/api/src/services/topology/templateApplicationTypes.ts
 suite ai sources apps/api/src/services/wisp/budget.ts
+suite ai sources apps/api/src/services/wisp/checkInTriggers.ts
+suite ai sources apps/api/src/services/wisp/coordinator.ts
 suite ai sources apps/api/src/services/wisp/memoryService.ts
+suite ai sources apps/api/src/services/wisp/specialistLaunchers.ts
+suite ai sources apps/api/src/services/wisp/specialistResult.ts
 
 # ── alert ──
 suite alert tests apps/api/src/__tests__/integration/alert[!a-z0-9]*
@@ -383,6 +387,7 @@ suite report sources apps/api/src/services/orgMergeRegistry.ts
 suite script tests apps/api/src/__tests__/integration/script[!a-z0-9]*
 suite script tests apps/api/src/jobs/scriptVerifyReconciliation.integration.test.ts
 suite script tests apps/api/src/services/scriptProposals/reviewConcurrency.integration.test.ts
+suite script tests apps/api/src/services/scriptProposals/mcpUnattendedCeilingLock.integration.test.ts
 suite script sources apps/api/src/services/script*
 suite script sources apps/api/src/routes/script*
 suite script sources apps/api/src/jobs/script*
@@ -391,6 +396,7 @@ suite script sources apps/api/src/routes/ai/scriptProposals.ts
 suite script sources apps/api/src/routes/devices/events.ts
 suite script sources apps/api/src/services/aiModels/connectionFactory.ts
 suite script sources apps/api/src/services/aiToolsScripts.ts
+suite script sources apps/api/src/services/automationRuntime.ts
 suite script sources apps/api/src/services/orgMerge.ts
 
 # ── software ──

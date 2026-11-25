@@ -11,14 +11,14 @@ import { loginPathWithNext } from '../../lib/authScope';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
-type PlacementFields = {
+export type PlacementFields = {
   room: string | null;
   rack: string | null;
   rackUnit: number | null;
   heightU: number | null;
 };
 
-type PlacementResponse = {
+export type PlacementResponse = {
   subject?: { kind: 'device' | 'discovered'; id: string };
   authority: { kind: 'device' | 'discovered'; id: string; linked: boolean };
   placement: PlacementFields | null;
@@ -29,6 +29,8 @@ type PhysicalPlacementCardProps = {
   id: string;
   /** Name of the managed device a linked discovered asset defers to (link label only). */
   linkedDeviceName?: string | null;
+  /** The placement was saved or removed (the device header shows it too). */
+  onSaved?: () => void;
 };
 
 type FormState = { room: string; rack: string; rackUnit: string; heightU: string };
@@ -37,7 +39,7 @@ type FormErrors = Partial<Record<keyof FormState, string>>;
 const DASH = '—';
 const UNIT_RE = /^\d+$/;
 
-function isPlacementResponse(v: unknown): v is PlacementResponse {
+export function isPlacementResponse(v: unknown): v is PlacementResponse {
   if (!v || typeof v !== 'object') return false;
   const { authority, placement } = v as Record<string, unknown>;
   if (!authority || typeof authority !== 'object') return false;
@@ -77,7 +79,7 @@ function validate(form: FormState, t: (key: string) => string): { errors: FormEr
   return { errors, body: { room: room || null, rack: rack || null, rackUnit, heightU } };
 }
 
-export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }: PhysicalPlacementCardProps) {
+export default function PhysicalPlacementCard({ subject, id, linkedDeviceName, onSaved }: PhysicalPlacementCardProps) {
   const { t } = useTranslation('devices');
   const { can } = usePermissions();
   const canWrite = can('devices', 'write');
@@ -161,6 +163,7 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
         setData(next);
         setEditing(false);
       }
+      onSaved?.();
     } catch (err) {
       handleActionError(err, t('physicalPlacementCard.toasts.saveFailed'));
       // Stale view (lost a race, or the asset was linked meanwhile): re-read the truth.

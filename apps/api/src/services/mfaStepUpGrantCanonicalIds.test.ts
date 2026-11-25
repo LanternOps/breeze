@@ -68,6 +68,10 @@ const FIXTURES = {
     { partnerId: LOWER.partner, unattendedAllowed: true },
     { partnerId: up(LOWER.partner), unattendedAllowed: true },
   ],
+  partnerMcpProposalCeilingResourceDigest: [
+    { partnerId: LOWER.partner, mcpUnattendedProposalMaxRisk: 'critical' },
+    { partnerId: up(LOWER.partner), mcpUnattendedProposalMaxRisk: 'critical' },
+  ],
   topologyArmResourceDigest: [
     { siteId: LOWER.site, action: 'arm_policy', subjectId: LOWER.device },
     { siteId: up(LOWER.site), action: 'arm_policy', subjectId: up(LOWER.device) },

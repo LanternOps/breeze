@@ -66,6 +66,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
 | `expiresAt` | `string (datetime)` | No | `null` (never) | ISO 8601 timestamp with a time and `Z` (e.g. `2099-12-31T23:59:59Z`); a bare date is rejected. Must be in the future. |
 | `rateLimit` | `integer` | No | `1000` | Maximum requests per hour (1-100,000). |
 | `mcpDomains` | `string[] \| null` | No | `null` (all tools) | Limit the key to MCP tool areas. See [MCP tool areas](#mcp-tool-areas-mcpdomains). |
+| `mcpToolListMode` | `"full" \| "progressive" \| null` | No | `null` (deployment default) | Which MCP tool list the key's clients are shown. See [MCP tool list](#mcp-tool-list-mcptoollistmode). |
 
 <Aside>
   MFA verification is required to create, update, rotate, or revoke API keys. The requesting session must have completed MFA.
@@ -110,6 +111,17 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
 - To change it, send `PATCH /api-keys/:id` with `{ "mcpDomains": ["tickets"] }`, or `{ "mcpDomains": null }` to allow all tools. Widening needs the same delegation rights as granting the key's scopes.
 - Rotating a key keeps its `mcpDomains`.
 - Partner service principal keys are always unrestricted in this release.
+
+### MCP tool list (`mcpToolListMode`)
+
+Which tool list a client using this key is shown by the [MCP server](/features/mcp-server/#tool-list-modes): `full` (every tool the key can call), `progressive` (a small core plus tool search), or `null` to follow the deployment default. It changes what is listed, never what the key may do, and it matters only for a key with an `ai:*` scope.
+
+- Values are exact. Anything else is rejected with a 400.
+- The create, update, rotate, `GET /api-keys` and `GET /api-keys/:id` responses include `mcpToolListMode` (the stored value) and `mcpToolListModeEffective` (`{ mode, source }`, where `source` is `credential` or `deployment_default`). The two `GET` responses also include `mcpToolListDefault`.
+- To change it, send `PATCH /api-keys/:id` with `{ "mcpToolListMode": "progressive" }`, or `{ "mcpToolListMode": null }` to follow the default again. The change is audited with the previous and the next value.
+- Rotating a key keeps it. Rotating an organization service principal's key copies it from the principal's most recent active key, or from its most recent key if none is active.
+- Keys created before this field existed are stored as `full`.
+- Partner service principal keys have no stored mode. They use `full` unless the request asks for another.
 
 ### Authentication Flow
 

@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 
-import { aiDataPolicies, aiMessages, aiRunArtifacts, aiSessions, aiToolExecutions } from '../../db/schema';
+import { aiDataPolicies, aiMessages, aiRunArtifacts, aiSessions, aiToolExecutions, aiToolSearchEvents } from '../../db/schema';
 import {
   runAiToolOutputRetention,
   scrubOrgToolOutputs,
@@ -26,7 +26,7 @@ import { getTestDb } from './setup';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = new Date();
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * DAY_MS);
-const OPTS = { batchSize: 100, maxBatches: 10, now: NOW };
+const OPTS = { batchSize: 100, maxBatches: 10, now: NOW, enforceDiscovery: true };
 
 async function insertSession(orgId: string, sdkSessionId: string | null, createdAt = daysAgo(60)): Promise<string> {
   const [row] = await getTestDb()
@@ -397,5 +397,136 @@ describe('aiToolOutputRetention (real Postgres, breeze_app pool)', () => {
       expect(summary.orgsFailed).toBe(0);
       expect(summary.orgsSkipped).toBe(0);
     });
+  });
+});
+
+// #12421 W01: tool-discovery telemetry rows are deleted at the org's
+// tool-output window (180-day ceiling, keep-forever orgs included, no
+// live-session deferral), and aged assistant rows lose their ToolSearch
+// tool_use input while every other block stays byte-identical.
+describe('aiToolOutputRetention: tool search events (#12421 W01)', () => {
+  let orgId: string;
+
+  beforeEach(async () => {
+    const partner = await createPartner();
+    orgId = (await createOrganization({ partnerId: partner.id, name: 'Search Retention Org' })).id;
+  });
+
+  async function insertSearchEvent(sessionId: string, createdAt: Date): Promise<string> {
+    const [row] = await getTestDb().insert(aiToolSearchEvents).values({
+      sessionId, kind: 'search', surface: 'chat', surfaceFingerprint: '0123456789abcdef',
+      query: 'restart a service', resultToolNames: ['manage_services'], empty: false, createdAt,
+    }).returning({ id: aiToolSearchEvents.id });
+    return row!.id;
+  }
+  async function searchEventIds(sessionId: string): Promise<string[]> {
+    const rows = await getTestDb().select({ id: aiToolSearchEvents.id }).from(aiToolSearchEvents).where(eq(aiToolSearchEvents.sessionId, sessionId));
+    return rows.map((r: { id: string }) => r.id).sort();
+  }
+  const BLOCKS = (query: string) => [
+    { type: 'text', text: 'Looking that up.' },
+    { type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query, max_results: 5 } },
+    { type: 'tool_use', id: 'toolu_c1', name: 'mcp__breeze__manage_services', input: { action: 'restart', serviceName: 'Spooler' } },
+  ];
+  async function insertAssistant(sessionId: string, createdAt: Date, blocks: unknown[]): Promise<string> {
+    const [row] = await getTestDb().insert(aiMessages).values({
+      sessionId, role: 'assistant', content: 'Looking that up.', contentBlocks: blocks as Record<string, unknown>[], createdAt,
+    }).returning({ id: aiMessages.id });
+    return row!.id;
+  }
+
+  it('an org at the default 30 days deletes a 31-day search row and keeps a 29-day one', async () => {
+    const sessionId = await insertSession(orgId, null);
+    const old = await insertSearchEvent(sessionId, daysAgo(31));
+    const kept = await insertSearchEvent(sessionId, daysAgo(29));
+    const summary = await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+    expect(await searchEventIds(sessionId)).toEqual([kept]);
+    expect(old).not.toBe(kept);
+    expect(summary.searchEventsDeleted).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a keep-forever org deletes rows older than 180 days and keeps a 179-day row', async () => {
+    const partner = await createPartner();
+    const foreverOrg = (await createOrganization({ partnerId: partner.id, name: 'Forever Org' })).id;
+    await getTestDb().insert(aiDataPolicies).values({ partnerId: partner.id, toolOutputRetentionDays: null });
+    const sessionId = await insertSession(foreverOrg, null, daysAgo(400));
+    await insertSearchEvent(sessionId, daysAgo(181));
+    const kept = await insertSearchEvent(sessionId, daysAgo(179));
+    const summary = await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+    expect(await searchEventIds(sessionId)).toEqual([kept]);
+    expect(summary.orgsKeptForever).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a row of a live session (a message minutes ago) is deleted anyway', async () => {
+    const sessionId = await insertSession(orgId, 'sdk-live');
+    await getTestDb().insert(aiMessages).values({ sessionId, role: 'user', content: 'still here', createdAt: new Date(NOW.getTime() - 5 * 60_000) });
+    await insertSearchEvent(sessionId, daysAgo(31));
+    await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+    expect(await searchEventIds(sessionId)).toEqual([]);
+  });
+
+  it("blanks an aged assistant row's ToolSearch input, keeps its other blocks byte-identical, leaves an unaged row alone, and is idempotent", async () => {
+    const sessionId = await insertSession(orgId, null);
+    const aged = await insertAssistant(sessionId, daysAgo(31), BLOCKS('find the print spooler on ws-01'));
+    const fresh = await insertAssistant(sessionId, daysAgo(10), BLOCKS('find the print spooler on ws-02'));
+
+    // As stored (jsonb normalises key order), before the run.
+    const before = (await message(aged)).contentBlocks as unknown[];
+    const first = await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+    const agedRow = await message(aged);
+    const after = agedRow.contentBlocks as unknown[];
+    const expected = BLOCKS('x');
+    expect(after).toEqual([expected[0], { ...expected[1], input: {} }, expected[2]]);
+    // The other blocks keep their position and their stored bytes.
+    expect(JSON.stringify(after[0])).toBe(JSON.stringify(before[0]));
+    expect(JSON.stringify(after[2])).toBe(JSON.stringify(before[2]));
+    expect((await message(fresh)).contentBlocks).toEqual(BLOCKS('find the print spooler on ws-02'));
+    expect(first.toolSearchInputsBlanked).toBe(1);
+
+    const second = await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+    expect(second.toolSearchInputsBlanked).toBe(0);
+    expect((await message(aged)).contentBlocks).toEqual(agedRow.contentBlocks);
+  });
+
+  it('odd content_blocks shapes never fail the pass; two ToolSearch blocks in one row are both blanked and the row counts once', async () => {
+    const sessionId = await insertSession(orgId, null);
+    const nullRow = await insertAssistant(sessionId, daysAgo(31), null as unknown as unknown[]);
+    const objectRow = await insertAssistant(sessionId, daysAgo(31), { type: 'text', text: 'not an array' } as unknown as unknown[]);
+    const emptyRow = await insertAssistant(sessionId, daysAgo(31), []);
+    const two = [
+      { type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query: 'first' } },
+      { type: 'text', text: 'between' },
+      { type: 'tool_use', id: 'toolu_s2', name: 'ToolSearch', input: { query: 'second' } },
+      { type: 'tool_use', id: 'toolu_c1', name: 'mcp__breeze__manage_services', input: { action: 'restart' } },
+    ];
+    const twoRow = await insertAssistant(sessionId, daysAgo(31), two);
+    const before = {
+      nullRow: (await message(nullRow)).contentBlocks,
+      objectRow: (await message(objectRow)).contentBlocks,
+      emptyRow: (await message(emptyRow)).contentBlocks,
+    };
+
+    const summary = await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+
+    expect(summary.orgsFailed).toBe(0);
+    expect(summary.toolSearchInputsBlanked).toBe(1);
+    expect((await message(twoRow)).contentBlocks).toEqual([
+      { ...two[0], input: {} }, two[1], { ...two[2], input: {} }, two[3],
+    ]);
+    expect((await message(nullRow)).contentBlocks).toEqual(before.nullRow);
+    expect((await message(objectRow)).contentBlocks).toEqual(before.objectRow);
+    expect((await message(emptyRow)).contentBlocks).toEqual(before.emptyRow);
+  });
+
+  it('never touches another org\'s rows', async () => {
+    const partner = await createPartner();
+    const otherOrg = (await createOrganization({ partnerId: partner.id, name: 'Other Org' })).id;
+    await getTestDb().insert(aiDataPolicies).values({ partnerId: partner.id, toolOutputRetentionDays: 120 });
+    const otherSession = await insertSession(otherOrg, null);
+    const kept = await insertSearchEvent(otherSession, daysAgo(31));
+    const keptMsg = await insertAssistant(otherSession, daysAgo(31), BLOCKS('q'));
+    await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+    expect(await searchEventIds(otherSession)).toEqual([kept]);
+    expect((await message(keptMsg)).contentBlocks).toEqual(BLOCKS('q'));
   });
 });

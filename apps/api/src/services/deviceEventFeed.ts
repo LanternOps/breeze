@@ -461,6 +461,10 @@ const actionLabels: Record<string, string> = {
   'device.reinstall.cancelled': 'Reattach cancelled',
   'device.reinstall.expired': 'Reattach request expired',
   'device.reinstall.reattached': 'Reinstalled machine reattached',
+  // #8318 wave T2: an operator's review of a held TPM key change
+  // (services/tpmBaseline). The agent's recorded/mismatch rows are agent-actor.
+  'device.tpm_baseline.mismatch_accepted': 'New TPM key accepted as the baseline',
+  'device.tpm_baseline.mismatch_dismissed': 'Held TPM key change dismissed',
   'device.agent_token.rotate': 'Agent token rotated',
   'device.patch.install.queue': 'Patch installation queued',
   'device.patch.rollback.queue': 'Patch rollback queued',

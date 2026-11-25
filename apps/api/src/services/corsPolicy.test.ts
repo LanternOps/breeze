@@ -18,6 +18,20 @@ describe('corsPolicy', () => {
     }
   });
 
+  it('allows the MCP tool-list mode header, in the list and on a real preflight (#12427)', async () => {
+    expect(CORS_ALLOW_HEADERS).toContain('Mcp-Tool-List');
+    const app = new Hono();
+    app.use('*', cors(CORS_MIDDLEWARE_OPTIONS));
+    const res = await app.request('/api/v1/mcp/sse', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:4321', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'mcp-tool-list',
+      },
+    });
+    const allowed = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase().split(/\s*,\s*/);
+    expect(allowed).toContain('mcp-tool-list');
+  });
+
   it('CORS_EXPOSE_HEADERS includes Mcp-Session-Id and WWW-Authenticate', () => {
     for (const h of ['Content-Length', 'X-Request-Id', 'Mcp-Session-Id', 'WWW-Authenticate']) {
       expect(CORS_EXPOSE_HEADERS).toContain(h);

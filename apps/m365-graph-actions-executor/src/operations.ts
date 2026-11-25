@@ -72,6 +72,8 @@ ExecutorFailureCode {
 const GRANT_RECONCILIATION_LOG_MESSAGE = '[m365-graph-actions-executor] grant reconciliation unavailable';
 const GRAPH_TOKEN_FALLBACK_LOG_MESSAGE =
   '[m365-graph-actions-executor] grant reconciliation used the Graph token roles claim';
+const MANIFEST_ROLE_IDS_LOG_MESSAGE =
+  '[m365-graph-actions-executor] grant reconciliation resolved Graph role ids from the manifest and the token roles claim';
 
 /**
  * The retest result carries only `grant_reconciliation_unavailable`; this line
@@ -79,11 +81,19 @@ const GRAPH_TOKEN_FALLBACK_LOG_MESSAGE =
  * tell a denied grant read from a timeout or an oversized response. Never logs
  * a token, provider body, or tenant identifier.
  */
-function logGrantReconciliationUnavailable(
+function logGrantReconciliationSource(
   observation: Awaited<ReturnType<MicrosoftGraphClient['probeTenant']>>,
   correlationId: string,
 ): void {
-  if (observation.observedGrants !== null) return;
+  if (observation.observedGrants !== null) {
+    // Not a failure: the resource lookup was denied (no Application.Read.All)
+    // and the role names came from the manifest's fixed Graph role ids,
+    // matched exactly against the token (#12085).
+    if (observation.resourceRolesFromManifest) {
+      console.info(MANIFEST_ROLE_IDS_LOG_MESSAGE, { operation: 'retest', correlationId });
+    }
+    return;
+  }
   if (observation.graphTokenRoles !== undefined) {
     // Not a failure: the inventory read was denied (no Application.Read.All)
     // and the token roles claim was used instead (#12085). Logged so an
@@ -209,7 +219,7 @@ async function proveApplication<T>(
       applicationId: dependencies.clientId,
     });
     if (proofError) return failed(proofError);
-    logGrantReconciliationUnavailable(observation, input.correlationId);
+    logGrantReconciliationSource(observation, input.correlationId);
     return finish(verifiedResult(observation));
   } catch (error) {
     return failed(mappedFailure(error, error instanceof MicrosoftTokenClientError ? 'application' : 'probe'));

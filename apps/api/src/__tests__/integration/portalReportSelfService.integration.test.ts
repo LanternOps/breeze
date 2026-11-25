@@ -51,7 +51,7 @@ describe('portal report self-service tenancy', () => {
       const orgA = await createOrganization({ partnerId: partner.id });
       const orgB = await createOrganization({ partnerId: partner.id });
 
-      const [portalUser] = await db.insert(portalUsers).values({
+      const [portalUser] = await db.insert(portalUsers).values({ browserAccess: 'granted',
         orgId: orgA.id,
         email: `portal-${crypto.randomUUID()}@example.test`,
         status: 'active',
@@ -291,7 +291,7 @@ describe('hardware_lifecycle visibility follows enable_lifecycle', () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
 
-      const [portalUser] = await db.insert(portalUsers).values({
+      const [portalUser] = await db.insert(portalUsers).values({ browserAccess: 'granted',
         orgId: org.id,
         email: `portal-${crypto.randomUUID()}@example.test`,
         status: 'active',
@@ -529,7 +529,7 @@ describe('listPortalRuns csvAvailable', () => {
     const fixture = await withSystemDbAccessContext(async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
-      const [portalUser] = await db.insert(portalUsers).values({
+      const [portalUser] = await db.insert(portalUsers).values({ browserAccess: 'granted',
         orgId: org.id,
         email: `portal-${crypto.randomUUID()}@example.test`,
         status: 'active',

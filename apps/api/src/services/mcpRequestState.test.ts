@@ -11,7 +11,9 @@ import {
 const ID = '11111111-1111-4111-8111-111111111111';
 const REF = 'api_key:22222222-2222-4222-8222-222222222222';
 const KEY = randomBytes(32);
-const base = { a: ID, p: REF, m: 'tools/call' as const, t: 'manage_quotes', d: 'abc123' };
+const baseNoW = { a: ID, p: REF, m: 'tools/call' as const, t: 'manage_quotes', d: 'abc123' };
+// #12427: every seal writes the surface byte; 1 (call_tool) is the longer form for the size cap.
+const base = { ...baseNoW, w: 1 as const };
 const flip = (s: string) => s.slice(0, 3) + (s[3] === 'A' ? 'B' : 'A') + s.slice(4);
 const signRaw = (text: string, key = KEY) => {
   const part = Buffer.from(text).toString('base64url');
@@ -106,5 +108,18 @@ describe('mcpRequestStateKey', () => {
     vi.stubEnv('SECRET_ENCRYPTION_KEY', '');
     vi.stubEnv('NODE_ENV', 'test');
     expect(mcpRequestStateKey().length).toBe(32);
+  });
+
+  // #12427 (spec §3.4, OD-8 A): the surface byte. 0 = direct, 1 = through call_tool.
+  it('seals w when given and opens a state sealed before w existed', () => {
+    expect(openMcpRequestState(sealMcpRequestState({ ...baseNoW, w: 1 }, KEY, 1000), KEY, 1001))
+      .toEqual({ ok: true, payload: { v: 1, ...baseNoW, w: 1, e: 1600 } });
+    expect(openMcpRequestState(sealMcpRequestState({ ...baseNoW, w: 0 }, KEY, 1000), KEY, 1001))
+      .toEqual({ ok: true, payload: { v: 1, ...baseNoW, w: 0, e: 1600 } });
+    expect(openMcpRequestState(forge({ v: 1, ...baseNoW, e: 1600 }), KEY, 1001)).toEqual({ ok: true, payload: { v: 1, ...baseNoW, e: 1600 } });
+  });
+
+  it.each([2, '1', null, true])('a state with w = %j is invalid', (w) => {
+    expect(openMcpRequestState(forge({ v: 1, ...baseNoW, w, e: 1600 }), KEY, 1001)).toEqual({ ok: false, reason: 'invalid_request_state' });
   });
 });

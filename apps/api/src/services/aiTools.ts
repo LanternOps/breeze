@@ -407,7 +407,7 @@ export { resolveWritableToolOrgId } from './aiToolWriteOrg';
 // file's header for why. Re-exported below for the many domain/consumer
 // modules that still import `aiTools/hasCoreAiToolName` from here.
 export { aiTools, hasCoreAiToolName } from './aiToolNames';
-import { aiTools, hasCoreAiToolName, registerReservedAiToolNamePredicate } from './aiToolNames';
+import { aiTools, hasCoreAiToolName, isAlwaysLoadedToolName, registerReservedAiToolNamePredicate } from './aiToolNames';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // Register all domain modules
@@ -726,10 +726,7 @@ export function shortenToolDescription(fullDescription: string): string {
 }
 
 export function getToolAlwaysLoad(toolName: string): boolean {
-  // Approval-mode prompts instruct the model to call this chat-only tool by
-  // name, so it is never deferred behind tool search (A-W04).
-  if (toolName === 'propose_action_plan') return true;
-  return aiTools.get(toolName)?.alwaysLoad === true;
+  return isAlwaysLoadedToolName(toolName);
 }
 
 /**

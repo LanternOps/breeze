@@ -151,6 +151,12 @@ container running your heaviest jobs is invisible.
 
 - Authentication is the same `METRICS_SCRAPE_TOKEN` bearer token the API uses,
   so the worker already has it.
+- From v0.130.0, the production Caddyfile (`docker/Caddyfile.prod`) also
+  exposes the worker's metrics at `https://<your-domain>/metrics/worker`,
+  behind the same token, so a Prometheus outside the Docker network can scrape
+  it. Without a running worker, that path returns `502`. If you take the new
+  Caddyfile and use `METRICS_SCRAPE_IP_ALLOWLIST` on the worker, the connecting
+  address is now Caddy's, so add Caddy's address to the allowlist.
 - If you use `METRICS_SCRAPE_IP_ALLOWLIST`, note that the worker matches the
   address that actually connects to it and ignores forwarding headers. Put a
   proxy's own address on the allowlist, not the scraper's.

@@ -284,7 +284,7 @@
       "ai_budget_exhausted": "Il budget IA dell'organizzazione è esaurito.",
       "ai_output_invalid": "Il risultato dell'IA non corrispondeva al formato previsto.",
       "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA.",
-      "targets_over_cap": "Il passaggio puntava a più dispositivi di quanti un passaggio di flusso ne possa gestire (500).",
+      "targets_over_cap": "Il passaggio puntava a più dispositivi di quanti questa esecuzione possa gestire.",
       "targets_unresolvable": "Non è stato possibile risolvere il target di dispositivi del passaggio.",
       "alert_create_failed": "Non è stato possibile creare l'avviso.",
       "script_dispatch_failed": "Non è stato possibile inviare lo script a uno o più dispositivi."

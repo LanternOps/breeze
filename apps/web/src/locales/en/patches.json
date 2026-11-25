@@ -491,7 +491,10 @@
       "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
       "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
       "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched.",
-      "all_managed_by_vendor_updates": "Skipped: every pending update on this device is managed by Vendor updates, so no approval is needed."
+      "all_managed_by_vendor_updates": "Skipped: every pending update on this device is managed by Vendor updates, so no approval is needed.",
+      "requested_patches_not_eligible": "Skipped: none of the updates selected for this job can be installed on this device under its current update policy.",
+      "invalid_patch_ids": "Skipped: the list of updates selected for this job was not valid, so nothing was installed.",
+      "requested_patches_no_longer_eligible": "Cancelled before delivery: at least one of the updates selected for this job is no longer eligible on this device. Run the install again to install the ones that still are."
     },
     "errors": {
       "load": "Failed to load patch job"

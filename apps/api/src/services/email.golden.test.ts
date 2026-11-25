@@ -83,31 +83,31 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'partner.portal_directory.held', params: { ...MESSAGE, purpose: 'partner.portal_directory.held' }, expectedFrom: DEFAULT_FROM },
   { name: 'deployment.invite', params: { ...MESSAGE, purpose: 'deployment.invite' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.staff_notification', params: { ...MESSAGE, purpose: 'ticket.staff_notification' }, expectedFrom: DEFAULT_FROM },
-  { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'ticket.customer_notification (no partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'portal.invite', params: { ...MESSAGE, purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'security.caller_verification_link', params: { ...MESSAGE, purpose: 'security.caller_verification_link', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'portal.access_request.approved', params: { ...MESSAGE, purpose: 'portal.access_request.approved', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'portal.access_request.declined', params: { ...MESSAGE, purpose: 'portal.access_request.declined', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'portal.self_registration.verify', params: { ...MESSAGE, purpose: 'portal.self_registration.verify', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'portal.self_registration.existing_account', params: { ...MESSAGE, purpose: 'portal.self_registration.existing_account', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'customer.connection_health_digest', params: { ...MESSAGE, purpose: 'customer.connection_health_digest', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'trust.access_verification', params: { ...MESSAGE, purpose: 'trust.access_verification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'trust.access_granted', params: { ...MESSAGE, purpose: 'trust.access_granted', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'trust.access_denied', params: { ...MESSAGE, purpose: 'trust.access_denied', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'quote.sent (partner named)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'quote.sent (no partner name)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'quote.acceptance_recorded (partner named)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'quote.acceptance_recorded (no partner name)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'agreement.sent (partner named)', params: { ...MESSAGE, purpose: 'agreement.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'agreement.sent (no partner name)', params: { ...MESSAGE, purpose: 'agreement.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'agreement.signed_copy (partner named)', params: { ...MESSAGE, purpose: 'agreement.signed_copy', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'agreement.signed_copy (no partner name)', params: { ...MESSAGE, purpose: 'agreement.signed_copy', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'invoice.sent (partner named)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
-  { name: 'invoice.sent (no partner name)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
-  { name: 'billing.notice', params: { ...MESSAGE, purpose: 'billing.notice', partnerId: PARTNER_ID }, expectedFrom: DEFAULT_FROM },
+  { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'ticket.customer_notification (no partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'portal.invite', params: { ...MESSAGE, purpose: 'portal.invite', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'security.caller_verification_link', params: { ...MESSAGE, purpose: 'security.caller_verification_link', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.access_request.approved', params: { ...MESSAGE, purpose: 'portal.access_request.approved', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.access_request.declined', params: { ...MESSAGE, purpose: 'portal.access_request.declined', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.self_registration.verify', params: { ...MESSAGE, purpose: 'portal.self_registration.verify', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.self_registration.existing_account', params: { ...MESSAGE, purpose: 'portal.self_registration.existing_account', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'customer.connection_health_digest', params: { ...MESSAGE, purpose: 'customer.connection_health_digest', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'trust.access_verification', params: { ...MESSAGE, purpose: 'trust.access_verification', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'trust.access_granted', params: { ...MESSAGE, purpose: 'trust.access_granted', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'trust.access_denied', params: { ...MESSAGE, purpose: 'trust.access_denied', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'quote.sent (partner named)', params: { ...MESSAGE, purpose: 'quote.sent', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'quote.sent (no partner name)', params: { ...MESSAGE, purpose: 'quote.sent', trigger: 'internal', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'quote.acceptance_recorded (partner named)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'quote.acceptance_recorded (no partner name)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', trigger: 'internal', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'agreement.sent (partner named)', params: { ...MESSAGE, purpose: 'agreement.sent', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'agreement.sent (no partner name)', params: { ...MESSAGE, purpose: 'agreement.sent', trigger: 'internal', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'agreement.signed_copy (partner named)', params: { ...MESSAGE, purpose: 'agreement.signed_copy', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'agreement.signed_copy (no partner name)', params: { ...MESSAGE, purpose: 'agreement.signed_copy', trigger: 'internal', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'invoice.sent (partner named)', params: { ...MESSAGE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'invoice.sent (no partner name)', params: { ...MESSAGE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'billing.notice', params: { ...MESSAGE, purpose: 'billing.notice', trigger: 'internal', partnerId: PARTNER_ID }, expectedFrom: DEFAULT_FROM },
 ];
 
 // GOLDEN is hand-written, so a purpose added to the registry with no matching
@@ -254,7 +254,7 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const spy = vi.spyOn(svc, 'sendEmail');
     await svc.sendPasswordReset({
       to: 'buyer@customer.test', resetUrl: 'https://portal.test/r',
-      purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      purpose: 'portal.password_reset', trigger: 'external', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     });
     expect(spy.mock.calls[0]![0]).toMatchObject({
       purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
@@ -273,7 +273,7 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const svc = await service();
     const spy = vi.spyOn(svc, 'sendEmail');
     await svc.sendPortalInvite({
-      to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
       passwordAllowed: true,
     });
     expect(spy.mock.calls[0]![0]).toMatchObject({
@@ -286,14 +286,14 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const svc = await service();
     const spy = vi.spyOn(svc, 'sendEmail');
     const invite = {
-      to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', orgName: 'Contoso', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', orgName: 'Contoso', trigger: 'internal' as const, partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     };
     await svc.sendPortalInvite({ ...invite, passwordAllowed: true });
     await svc.sendPortalInvite({
       ...invite, microsoftUrl: 'https://portal.test/i&method=microsoft', googleUrl: 'https://portal.test/i&method=google', passwordAllowed: false,
     });
     const [plain, google] = spy.mock.calls.map((call) => call[0] as { purpose: string; subject: string; html: string });
-    expect(google).toMatchObject({ purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP', subject: plain!.subject });
+    expect(google).toMatchObject({ purpose: 'portal.invite', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP', subject: plain!.subject });
     expect(google!.html).toContain('Sign in with Google');
     expect(resendSendMock.mock.calls.map((call) => call[0].from)).toEqual([BRANDED_FROM, BRANDED_FROM]);
   });
@@ -303,10 +303,10 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     const spy = vi.spyOn(svc, 'sendEmail');
     await svc.sendPortalAccessApproved({
       to: 'buyer@customer.test', loginUrl: 'https://portal.test/login', orgName: 'Contoso',
-      partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     });
     await svc.sendPortalAccessDeclined({
-      to: 'buyer@customer.test', orgName: 'Contoso', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+      to: 'buyer@customer.test', orgName: 'Contoso', trigger: 'internal', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     });
     expect(spy.mock.calls.map((c) => c[0])).toMatchObject([
       { purpose: 'portal.access_request.approved', partnerId: PARTNER_ID, partnerName: 'Acme MSP', to: 'buyer@customer.test' },

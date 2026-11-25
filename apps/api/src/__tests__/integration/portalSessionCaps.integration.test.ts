@@ -339,7 +339,6 @@ describe('the tenant changes hands: org A sessions after org B proves its tenant
     const oid = randomUUID();
     const [user] = await getTestDb().insert(portalUsers).values({
       orgId, email: `rf1-${randomUUID()}@acme.example`, authMethod: 'entra', status: 'active', browserAccess,
-      entraTenantId: tid, entraOid: oid,
     }).returning({ id: portalUsers.id, orgId: portalUsers.orgId, authEpoch: portalUsers.authEpoch });
     await getTestDb().insert(portalUserIdentities).values({
       orgId, portalUserId: user!.id, provider: 'entra', issuer: entraIssuer(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',

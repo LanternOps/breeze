@@ -98,7 +98,6 @@ async function seedAccount(orgId: string, seed: AccountSeed = {}) {
     browserAccess: seed.browserAccess ?? 'granted',
     passwordHash: seed.passwordHash ?? null,
     authEpoch: 5,
-    ...(seed.entra ? { entraTenantId: seed.entra.tid, entraOid: seed.entra.oid } : {}),
   }).returning();
   const identityIds: { entra?: string; google?: string } = {};
   if (seed.entra) {
@@ -439,7 +438,7 @@ describe('restore and remove (D9, OD3; Review Focus 4)', () => {
 
     expect(await readIdentity(identityIds.entra!)).toBeUndefined();
     expect(await admin().select().from(portalDirectoryActions).where(eq(portalDirectoryActions.id, actionId))).toEqual([]);
-    expect(await readAccount(account.id)).toMatchObject({ entraOid: null, entraTenantId: null, status: 'disabled' });
+    expect(await readAccount(account.id)).toMatchObject({ status: 'disabled' });
     // The applied disable stays in the audit log (D12).
     const actions = (await admin().select().from(auditLogs).where(eq(auditLogs.orgId, org.id))).map((a) => a.action);
     expect(actions).toEqual(expect.arrayContaining(['portal.directory.identity.disable', 'organization.portal_user.identity.remove']));

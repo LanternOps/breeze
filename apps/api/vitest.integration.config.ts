@@ -164,6 +164,8 @@ export default defineConfig({
       // Real PostgreSQL proof for restart-safe rollback observation ingestion,
       // append-only dedupe, and terminal projection truth.
       'src/services/agentRollbackResult.integration.test.ts',
+      // #12492: AI and REST patch rollback leave the same rows.
+      'src/services/patchRollback.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
@@ -301,6 +303,7 @@ export default defineConfig({
       // Real-Redis test of the per-org script-review concurrency slot Lua
       // scripts (#5637): cap, release, TTL self-heal, idempotent release.
       'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
+      'src/services/scriptProposals/mcpUnattendedCeilingLock.integration.test.ts',
       // Co-located real-DB integration test for the nightly enrollment-key
       // purge sweep: the #2775 live-bootstrap-token exemption (proving
       // Postgres itself evaluates the correlated NOT EXISTS subquery per row,

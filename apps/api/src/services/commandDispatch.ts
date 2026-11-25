@@ -32,6 +32,9 @@ import './topology/telemetryPollDelivery';
 import './scriptCommandRevalidation';
 // Side-effect import: registers the vendor update revalidation (#11065).
 import './oemUpdates/revalidation';
+// Side-effect import: registers the `install_patches` delivery eligibility
+// re-check for jobs that name their patches (#12493).
+import './installPatchesRevalidation';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 

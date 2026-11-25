@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { approvalBatchGroupKey } from '@breeze/shared';
 
 import {
+  buildCrossOrgGroups,
   buildOrgOptions,
   buildSections,
   clusterByOrg,
@@ -276,5 +277,82 @@ describe('isExpired', () => {
 
   it('is false for an unparseable timestamp rather than treating it as expired', () => {
     expect(isExpired('not-a-date', now)).toBe(false);
+  });
+});
+
+describe('buildCrossOrgGroups', () => {
+  /** An allowlisted (manage_patches:install) card in `orgId`. */
+  const patchCard = (orgId: string, overrides: Partial<PendingApproval> = {}) =>
+    makeApproval({
+      orgId,
+      orgName: `Org ${orgId}`,
+      actionToolName: 'manage_patches',
+      action: 'install',
+      actionArguments: { action: 'install' },
+      ...overrides,
+    });
+
+  it('collects allowlisted cards from two or more orgs into one group, members in row order', () => {
+    const a1 = patchCard('org-a');
+    const b1 = patchCard('org-b');
+    const a2 = patchCard('org-a');
+
+    const groups = buildCrossOrgGroups([a1, b1, a2], NO_DRIFT);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.id)).toEqual([a1.id, b1.id, a2.id]);
+    expect(groups[0].tool).toBe('manage_patches:install');
+    // Orgs in first-appearance order, each with its own members.
+    expect(groups[0].orgs).toEqual([
+      { orgId: 'org-a', orgName: 'Org org-a', members: [a1, a2] },
+      { orgId: 'org-b', orgName: 'Org org-b', members: [b1] },
+    ]);
+  });
+
+  it('emits nothing when every eligible card is in ONE org (the per-org group covers it)', () => {
+    expect(buildCrossOrgGroups([patchCard('org-a'), patchCard('org-a')], NO_DRIFT)).toEqual([]);
+  });
+
+  it('never includes a tool/action outside the cross-org allowlist', () => {
+    const rows = [
+      makeApproval({ orgId: 'org-a' }),
+      makeApproval({ orgId: 'org-b' }),
+      patchCard('org-a', { action: 'uninstall', actionArguments: { action: 'uninstall' } }),
+      patchCard('org-b', { action: 'uninstall', actionArguments: { action: 'uninstall' } }),
+    ];
+    expect(buildCrossOrgGroups(rows, NO_DRIFT)).toEqual([]);
+  });
+
+  it.each([
+    ['a human-originated card', { origin: 'human' as const }],
+    ['a four-eyes card', { approvalScope: 'four_eyes' }],
+    ['a critical card', { riskTier: 'critical' as const }],
+  ])('excludes %s (same groupability rule as the per-org batch)', (_label, overrides) => {
+    const rows = [patchCard('org-a'), patchCard('org-b', overrides)];
+    expect(buildCrossOrgGroups(rows, NO_DRIFT)).toEqual([]);
+  });
+
+  it('excludes drifted cards, so a group that drops to one org disappears', () => {
+    const a = patchCard('org-a');
+    const b = patchCard('org-b');
+    const c = patchCard('org-c');
+    expect(buildCrossOrgGroups([a, b, c], new Set([c.id]))[0].members).toEqual([a, b]);
+    expect(buildCrossOrgGroups([a, b], new Set([b.id]))).toEqual([]);
+  });
+
+  it('normalizes the action the same way the server does', () => {
+    const rows = [patchCard('org-a'), patchCard('org-b', { action: ' Install ' })];
+    expect(buildCrossOrgGroups(rows, NO_DRIFT)[0].members).toHaveLength(2);
+  });
+
+  it('has an identity that can never equal a same-org group identity, and a DOM-safe testKey', () => {
+    const rows = [patchCard('org-a'), patchCard('org-b')];
+    const [group] = buildCrossOrgGroups(rows, NO_DRIFT);
+
+    const sameOrgIdentities = rows.map(groupIdentity);
+    expect(sameOrgIdentities).not.toContain(group.identity);
+    // Even for an org whose id spells the prefix, the part count differs.
+    expect(groupIdentity(patchCard('xorg'))).not.toBe(group.identity);
+    expect(group.testKey).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 });

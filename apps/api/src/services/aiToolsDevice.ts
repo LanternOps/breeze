@@ -9,7 +9,7 @@
  * - resolve_device_context (Tier 2): Mark context entry as resolved
  * - manage_tags (Tier 2): List/add/remove device tags
  * - query_custom_fields (Tier 1): Get custom field definitions or device values
- * - get_fleet_device_stats (Tier 1): Exact fleet-wide device counts by status
+ * - get_fleet_device_stats (Tier 1): Exact fleet-wide device counts by status, typed filter, group-by, device sample
  */
 
 import {
@@ -19,7 +19,17 @@ import {
   TIME_SYNC_FINDING_CODES,
   TIME_SYNC_HEALTH,
 } from '@breeze/shared';
-import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { RUN_SCRIPT_AI_MAX_DEVICES } from './actionIntents/runScriptLimits';
+import { MAX_OFFSET, pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { FilterQueryTimeoutError, withFilterStatementTimeout } from './filterEngine';
+import { reportFilterPreviewTimeout } from './filterPreviewTimeout';
+import {
+  fleetFilterExecutionRefusedFields,
+  fleetFilterFieldsUsed,
+  fleetFilterParamSchema,
+  fleetFilterZodShape,
+  fleetGroupByParamSchema,
+} from './fleetFilter';
 import { orgNameOf, readReachSpansOrgs, splitOrgLegend } from './aiToolOrgLegend';
 import { db } from '../db';
 import {
@@ -34,6 +44,7 @@ import {
 } from '../db/schema';
 import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
+import { z } from 'zod';
 import { sqlTextArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
@@ -41,7 +52,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { deviceListReachConditions, resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
-import { queryDeviceStats } from './deviceStats';
+import { pageFleetDevices, queryDeviceStats, queryFleetDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
 import { getDeviceWorkloadsView } from './workloads/view';
@@ -129,6 +140,12 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
 // summary is computed from every slot first so free-slot counts stay exact.
 const MEMORY_MODULES_TOOL_LIMIT = 32;
 
+// get_fleet_device_stats (#12418 W01). Read only inside the handler: this
+// module and ./aiTools import each other, and registerDeviceTools can run
+// before this module's top-level bindings initialise, so the registration
+// itself must not read a module-level const.
+const fleetStatsArgsSchema = z.object(fleetFilterZodShape());
+
 type MemoryModuleRow = typeof deviceMemoryModules.$inferSelect;
 
 function projectMemoryModule(row: MemoryModuleRow) {
@@ -156,6 +173,19 @@ function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpm
     observedAt: hardware?.memoryObservedAt ?? null,
   };
 }
+
+/**
+ * `get_fleet_device_stats` result when the filter engine's statement bound
+ * cancelled the filtered or grouped query (#12655). Fixed copy: no SQL, no
+ * tenant values. Same `code` as the filter preview endpoints' 422 body.
+ */
+const FLEET_STATS_GROUP_NOTE =
+  'This count uses the group\'s last evaluated members. A flow step resolves the group from its current rules, so the devices it selects can differ; its approval names the exact count.';
+
+const FLEET_STATS_TIMEOUT_RESULT = {
+  error: 'This filter took too long to evaluate. Narrow the filter (for example add orgId, siteId or osType, or drop a software term) and try again; the same call will time out again.',
+  code: 'filter_query_timeout',
+} as const;
 
 export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -382,7 +412,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       ),
   });
 
-  // get_fleet_device_stats - Tier 1 (auto-execute). #6797
+  // get_fleet_device_stats - Tier 1 (auto-execute). #6797; typed filter,
+  // groupBy and a paged device sample #12418 W01.
   registerTool({
     tier: 1,
     domain: 'devices',
@@ -390,11 +421,14 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_fleet_device_stats',
       description:
-        'Exact live fleet device counts: total, online, offline, byStatus, migrationRequiredCount, logShippingFailingCount. Use for "how many devices" instead of paging query_devices. Excludes decommissioned, parked and Quick Support devices. Optional orgId narrows to one org.',
+        'Exact live fleet device counts (total, online, offline, byStatus, migration and log-shipping counts), optionally narrowed by a typed filter, grouped by one dimension, with a paged device sample. Use instead of paging query_devices to count. Excludes decommissioned, parked and Quick Support devices.',
       input_schema: {
         type: 'object' as const,
         properties: {
           orgId: { type: 'string', format: 'uuid', description: 'Narrow to one organization' },
+          filter: fleetFilterParamSchema(),
+          groupBy: fleetGroupByParamSchema(),
+          ...pageParamSchema(10, 100),
         },
       },
     },
@@ -412,7 +446,78 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         deviceScopeCondition(auth, devices.id),
         orgId ? eq(devices.orgId, orgId) : undefined,
       );
-      return JSON.stringify(await queryDeviceStats(scope));
+      if (input.filter === undefined && input.groupBy === undefined) {
+        // No filter or groupBy: the original path and response shape.
+        return JSON.stringify(await queryDeviceStats(scope));
+      }
+
+      // validateToolInput already applied this shape; parse again so a direct
+      // handler call can never hand the SQL builder an unchecked value.
+      const parsed = fleetStatsArgsSchema.safeParse({ filter: input.filter, groupBy: input.groupBy });
+      if (!parsed.success) {
+        return JSON.stringify({ error: `Invalid filter or groupBy: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}` });
+      }
+      const { filter, groupBy } = parsed.data;
+
+      // The filter and group-by SQL is model-supplied, so every statement on
+      // these paths runs serially inside ONE filter-engine statement bound
+      // (#12655); a cancellation becomes a bounded "narrow it" result, caught
+      // here, outside the bounded transaction. Not retried: the same query
+      // over the same fleet hits the same bound.
+      const timedOut = (error: unknown): string => {
+        if (!(error instanceof FilterQueryTimeoutError)) throw error;
+        reportFilterPreviewTimeout(orgId ?? auth.orgId ?? null);
+        return JSON.stringify(FLEET_STATS_TIMEOUT_RESULT);
+      };
+
+      if (!filter) {
+        // Paging belongs to the filtered device sample; refuse it here rather
+        // than ignore it (#12656).
+        if ([input.limit, input.offset, input.cursor].some((v) => v !== undefined && v !== null && v !== '')) {
+          return JSON.stringify({ error: 'limit, offset and cursor page the filtered device sample. Add a filter to use them, or drop them for groupBy counts.' });
+        }
+        try {
+          return JSON.stringify(await withFilterStatementTimeout((tx) => queryFleetDeviceStats(tx, { scope, groupBy })));
+        } catch (error) {
+          return timedOut(error);
+        }
+      }
+      const page = readPageArgs('get_fleet_device_stats', input, { defaultLimit: 10, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      const { limit, offset, fingerprint } = page;
+
+      let stats: Awaited<ReturnType<typeof queryFleetDeviceStats>>;
+      let rows: Awaited<ReturnType<typeof pageFleetDevices>>;
+      try {
+        ({ stats, rows } = await withFilterStatementTimeout(async (tx) => {
+          const counted = await queryFleetDeviceStats(tx, { scope, filter, groupBy });
+          const paged = await pageFleetDevices(tx, { scope, filter, limit, offset });
+          return { stats: counted, rows: paged };
+        }));
+      } catch (error) {
+        return timedOut(error);
+      }
+      return JSON.stringify({
+        ...stats,
+        filter: {
+          fieldsUsed: fleetFilterFieldsUsed(filter),
+          executionRefusedFields: fleetFilterExecutionRefusedFields(filter),
+          // #12418 W02: the one field this count and a flow step read differently.
+          ...(filter.groupId === undefined ? {} : { groupNote: FLEET_STATS_GROUP_NOTE }),
+        },
+        // #12418 W02: the most devices an AI-initiated action may cover; a larger set is refused, not truncated.
+        aiActionLimit: RUN_SCRIPT_AI_MAX_DEVICES,
+        ...pageEnvelope({
+          key: 'devices',
+          items: rows,
+          limit,
+          offset,
+          fingerprint,
+          total: stats.total,
+          totalMode: 'exact',
+          maxOffset: MAX_OFFSET,
+        }),
+      });
     },
   });
 

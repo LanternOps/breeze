@@ -361,6 +361,8 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 List tools return `hasMore` and `nextCursor` in their result; when `hasMore` is `true`, call the same tool again with `cursor` set to the previous `nextCursor` and the same filters to get the next page. A result whose payload was too large to return in full is stored as an artifact and comes back with an `artifact.handle` instead -- `read_artifact` pages through that stored copy by byte offset. `read_artifact` only reads an artifact captured by your own chat session or agent run, and capture itself only happens on hosted deployments with the AI workspace enabled or, since v0.117.0, on a self-hosted deployment that opts in with `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED` (see [Environment → AI](/deploy/environment/#ai)); otherwise an oversized result is truncated; an MCP `tools/call` has no session to anchor a capture to, so `read_artifact` over MCP usually returns `no_capture_anchor` today. It is listed for forward compatibility while MCP-side capture anchoring is designed.
 
+By default `tools/list` returns every tool the connection can call. A client with no tool search of its own can be given a much shorter list instead: see [Tool list modes](#tool-list-modes).
+
 ### Device tools
 
 | Tool | Tier | Description |
@@ -413,6 +415,14 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
   A tool whose *every* action is Tier 3 is not listed at all, because advertising a tool that can only ever answer with a refusal is worse than omitting it. The practical contract for an MCP client is therefore: `analyze_disk_usage`, `disk_cleanup` preview and `system_cleanup` list/status give you a complete read-only diagnosis, and you hand the destructive step to a technician in the Breeze web app AI assistant, where it goes through the approval workflow. A key with only `ai:read` gets the stored results; a fresh scan (`analyze_disk_usage` with `refresh: true`) and `system_cleanup` list ask the device live and need `ai:write`.
 
   **One operator-controlled exception:** principals named in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`api_key:<id>`, `oauth_client_user:<client_id>/<user id>` or `partner_sp:<partner service principal id>`) are exempt from this deny for core-registry Tier 3 tools, so the tools are listed and callable for them without the approval step. Everything else still applies to them: `ai:execute`, `ai:execute_admin` in production, the production allowlist, RBAC, rate limits, the Tier 3 execution ledger and the audit log. Tier 4, tenant (BYO MCP) and onboarding bootstrap tools stay approval-only for everyone. Every call that skipped approval this way is marked in its audit row (`approvalBypass: "unattended_principal"` plus the matched `approvalBypassPrincipal`), and the API logs the configured principals at startup. See [Environment variables](/deploy/environment/).
+
+  **AI-proposed scripts (`run_script` with a `proposalId`) need more than the allowlist.** For a listed principal such a call skips approval only when all of these hold; otherwise it gets `MCP_APPROVAL_REQUIRED` like any other caller (or, with `MCP_TIER3_INTENTS_ENABLED`, is filed for a human; the unattended script lane never approves an MCP-filed proposal run):
+  - the partner's MCP unattended proposal ceiling (Settings > Script Authoring; `none`, `low` or `medium`, default `none`) is at or above the proposal's reviewed risk;
+  - the proposal passes the unattended script lane's rules for its org: the org has opted in and the partner allows it; the proposal is reviewed, unexpired and unused, with no scanner hits; the latest model review is at or below the lane's risk ceiling, matches the goal, is reversible, judges the verification adequate and recommends approve; its touch classes are allowed and not hard-denied; it touches no protected service, path, registry key or device tag; its timeout is within the unattended cap; it has no `registry`, `services` or `files_system` class (those need a System Restore point first, which this route does not take);
+  - the call names exactly one device, the proposal's single target, and no `groupId`;
+  - the lane's circuit is closed and the org's hourly cap is not reached (lane runs and these runs share it).
+
+  The run claims the proposal once, records `approval_method` `unattended_mcp_principal`, and its audit row also carries `proposalRiskTier` and `mcpUnattendedCeiling`.
 
   **Configuration policy changes also need MFA.** Applying or removing a configuration policy assignment, every `manage_configuration_policy` action, and `manage_policy_feature_link` `add`/`update`/`remove` require a signed-in session that has completed multi-factor authentication, matching the web app's step-up. API keys and OAuth MCP connections never carry that claim, so while `ENABLE_2FA` is on (the default) `tools/list` omits the wholly gated tools and notes the gated actions on the rest — `(Actions "add", "update" require a multi-factor-authenticated session and are not available over MCP …)` — and a call to one returns `{"error": "MFA required: …", "code": "MFA_REQUIRED"}` with `isError: true`. `MCP_UNATTENDED_TIER3_PRINCIPALS` does not lift this gate. The read actions (`list_configuration_policies`, `get_configuration_policy`, `manage_policy_feature_link` `list`/`describe`) stay available.
 
@@ -633,6 +643,75 @@ These write tools follow the same per-action tiers as in-product chat. Every Tie
 </Aside>
 
 ---
+
+## Tool list modes
+
+`tools/list` has two modes. The mode decides which tools are **listed** and which server instructions are sent. It never changes what a call may do: the same scopes, roles, tool areas, approvals, limits and audit apply in both.
+
+| Mode | What `tools/list` returns |
+|---|---|
+| `full` | Every tool this connection can call. The default. |
+| `progressive` | A small core of tools plus three meta-tools, `search_tools`, `get_tool_details` and `call_tool`. The other tools are found and run through them. |
+
+Use `progressive` for a client that loads every listed tool into its context up front. A client that already defers tool definitions or searches them itself, as Claude Code does, gains little from it and may prefer `full`.
+
+### How the mode is chosen
+
+For each request, the first of these that is set wins:
+
+1. **The request.** The `Mcp-Tool-List` header, on every transport, or `params._meta["app.breeze/toolList"]`, for 2026-07-28 clients only (`_meta` is ignored for older protocol versions). It applies only to the request that carries it, so send it on `initialize` or `server/discover` as well to get matching instructions. If both are present and differ, the request is refused with `-32602` and `reason: "tool_list_mode_conflict"`. Any value other than `full` or `progressive`, exactly, is refused with `reason: "tool_list_mode_invalid"`.
+2. **The credential.** The mode stored on the API key or the OAuth connection (next section).
+3. **The deployment default**, `MCP_TOOL_LIST_DEFAULT` (`full` unless the operator changes it).
+
+Partner service principal keys store no mode. They use `full` unless the request itself asks for `progressive`.
+
+`whoami` reports the mode of the request and where it came from.
+
+### Setting it on a credential
+
+The mode is set per credential. Organizations cannot override it. Leave it on **Inherit** to follow the deployment default; the field always shows the mode in effect and where it comes from.
+
+| Credential | Where |
+|---|---|
+| API key | **Settings > API Keys**: the **MCP tool list** field when you create a key with an `ai:*` scope, and in the key's details afterwards. Over the API it is `mcpToolListMode`, see [API keys](/reference/api-keys/#mcp-tool-list-mcptoollistmode). Rotating a key keeps it. |
+| OAuth connection | On the consent screen when you connect, then under **Account > Connected apps**. Changing it there applies to all of your active connections to that app, across all partners, and takes effect on the next request. |
+
+An OAuth connection's mode belongs to that authorization. When you reconnect an app while a connection is still active, the consent screen starts from the mode of your latest active one for the selected partner; once it has expired or been revoked, the screen starts on **Inherit**. If your connections to one app store different values, the page shows **Multiple values** until you choose one. Partner administrators see each app's mode, read-only, under **Settings > Connected Apps**.
+
+API keys and OAuth connections that existed before this setting did are stored as `full`, so a later change to the deployment default does not change what they list for as long as they last. Ones created since start on **Inherit**, including a reconnection after the old one ended.
+
+### The three meta-tools
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `search_tools` | `query`, optional `domain` and `limit` (default 8, at most 20) | The best matching tools, from the tools this connection can list in `full` |
+| `get_tool_details` | `names` (at most 10) | Each tool's full definition, including its input schema |
+| `call_tool` | `name`, `arguments` | The result of calling that tool |
+
+```json
+{ "method": "tools/call", "params": { "name": "search_tools", "arguments": { "query": "low disk space" } } }
+```
+
+```json
+{ "method": "tools/call", "params": { "name": "get_tool_details", "arguments": { "names": ["analyze_disk_usage"] } } }
+```
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "call_tool",
+    "arguments": { "name": "analyze_disk_usage", "arguments": { "deviceId": "DEVICE_UUID" } }
+  }
+}
+```
+
+- `call_tool` runs the inner tool with the same checks, approvals, limits and audit as a direct call. A tool can also be called directly by name in `progressive`, without `call_tool`.
+- `call_tool` cannot target the three meta-tools, and it refuses unknown keys beside `name` and `arguments`.
+- The audit log carries the real tool name. The request's audit row also records `metaTool: call_tool`.
+- An approval retry works through `call_tool` too, but it must come back the way the call went out: wrapped, or direct.
+- `call_tool` is annotated as destructive and not read-only, because it can run any tool. A client that decides from annotations, or that keeps its own tool allowlist, sees one tool instead of the real ones. Use `full`, or direct calls, for those clients.
+- A name this connection cannot list is answered as an unknown tool.
 
 ## Available resources
 
@@ -930,6 +1009,7 @@ To change the areas later, call `PATCH /api/v1/api-keys/:id` with `{ "mcpDomains
 - the effective `ai:*` scopes and the resulting capability (`read`, `write` or `execute`)
 - `domains.granted`, the areas the connection can use, and `domains.available`, the areas you can ask for
 - `notes`, short plain-language hints, such as which actions need the Breeze web app
+- `toolListMode`, this request's tool list mode (`full` or `progressive`) and where it came from (`request`, `credential` or `deployment_default`)
 
 `domains.available` lists areas that exist, not permissions you hold. `whoami` never returns secrets: no key, token or hash.
 

@@ -519,7 +519,7 @@
     "sendAWakeOnLanPacket": "Enviar un paquete Wake-on-LAN a través de un agente par en línea en el LAN del dispositivo",
     "power": "Energía",
     "shutdown": "Apagar",
-    "deviceSettings": "Configuración del dispositivo",
+    "editDetails": "Editar detalles",
     "installHomebrew": "Instalar Homebrew",
     "restartAgent": "Reiniciar agente",
     "runVendorUpdates": "Ejecutar actualizaciones del fabricante",
@@ -719,7 +719,7 @@
     "remoteTerminal": "Terminal remota",
     "runScript": "Ejecutar secuencia de comandos",
     "reboot": "Reiniciar",
-    "settings": "Configuración",
+    "editDetails": "Editar detalles",
     "restore": "Restaurar",
     "decommission": "Quitar",
     "permanentlyDelete": "Eliminar permanentemente",
@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} se movió a {{orgName}}",
     "failedToFetchDevice": "No se pudo recuperar el dispositivo",
+    "refreshAfterEditFailed": "Se guardó, pero esta página no se pudo actualizar. Vuelve a cargarla para ver el cambio en todas partes.",
     "online": "en línea",
     "offline": "desconectado",
     "rebootToSafeMode": "Reiniciar en modo seguro",
@@ -1619,7 +1620,21 @@
     "customFields": "Campos personalizados",
     "text2": "*",
     "edit": "Editar",
-    "roleNotAssessed": "Rol aún no evaluado"
+    "roleNotAssessed": "Rol aún no evaluado",
+    "noTags": "Sin etiquetas",
+    "editTags": "Editar etiquetas",
+    "addTag": "Agregar una etiqueta",
+    "removeTag": "Quitar etiqueta {{tag}}",
+    "tagsSaved": "Etiquetas guardadas",
+    "tagsSaveFailed": "No se pudieron guardar las etiquetas",
+    "purchaseDate": "Fecha de compra",
+    "editPurchaseDate": "Editar fecha de compra",
+    "purchaseDateNotSet": "Sin definir",
+    "purchaseDateFromVendor": "Del fabricante",
+    "purchaseDateSaved": "Fecha de compra guardada",
+    "purchaseDateSaveFailed": "No se pudo guardar la fecha de compra",
+    "purchaseDateHelp": "La usa el informe de ciclo de vida del hardware para planificar reemplazos.",
+    "purchaseDateVendorHint": "Tomada de la fecha de envío del fabricante. Ingresa una fecha para reemplazarla."
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1845,7 +1860,7 @@
     "reboot": "Reiniciar",
     "sendAWakeOnLanPacket": "Enviar un paquete Wake-on-LAN a través de un agente par en línea en el LAN del dispositivo",
     "wake": "Despertar",
-    "settings": "Configuración",
+    "editDetails": "Editar detalles",
     "enterMaintenance": "Ingresar a Mantenimiento",
     "exitMaintenance": "Salir de mantenimiento",
     "restore": "Restaurar",
@@ -2500,31 +2515,6 @@
     "scanAlreadyRunning": "El análisis ya se está ejecutando en el dispositivo y no se puede cancelar.",
     "scanAlreadyQueued": "Ya hay un análisis en cola para este dispositivo."
   },
-  "deviceSettingsModal": {
-    "addTagPlaceholder": "Agregue una etiqueta...",
-    "dangerZone": "Zona de peligro",
-    "decommissionDevice": "Quitar dispositivo",
-    "decommissionWarning": "Quitar este dispositivo lo saca de su flota activa. El historial se conserva y puede restaurarlo más adelante.",
-    "decommissionedDescription": "Este dispositivo ha sido quitado. Puede restaurarlo o eliminarlo permanentemente.",
-    "decommissionedTitle": "Dispositivo quitado",
-    "displayName": "Nombre para mostrar",
-    "errors": {
-      "loadSites": "No se pudieron cargar los sitios",
-      "saveSettings": "No se pudo guardar la configuración",
-      "siteChanged": "Alguien más movió este dispositivo: recarga para ver su sitio actual"
-    },
-    "hostname": "Nombre de host: {{hostname}}",
-    "saved": "Configuración del dispositivo guardada",
-    "permanentlyDelete": "Eliminar permanentemente",
-    "restoreDevice": "Restaurar dispositivo",
-    "saveChanges": "Guardar cambios",
-    "site": "Sitio",
-    "tags": "Etiquetas",
-    "title": "Configuración del dispositivo",
-    "purchaseDate": "Fecha de compra",
-    "purchaseDateHelp": "La usa el informe de ciclo de vida del hardware para planificar el reemplazo.",
-    "purchaseDateVendorHint": "Tomada de la fecha de envío del fabricante. Ingresa una fecha para reemplazarla."
-  },
   "deviceSoftwareInventory": {
     "actions": {
       "uninstall": "Desinstalar",
@@ -2659,7 +2649,6 @@
     "compactTitle": "Garantía",
     "endDate": "Fecha de finalización",
     "error": "Error: {{error}}",
-    "expires": "Vence",
     "lastChecked": "Última comprobación: {{time}}",
     "loadFailed": "No se pudo cargar la garantía.",
     "lookupUnavailable": "La búsqueda de garantía no está disponible para este fabricante",
@@ -2700,7 +2689,11 @@
       "import": "Importado",
       "importVendorEarlier": "Importado (el fabricante informa una fecha de fin anterior)",
       "provider": "API del fabricante"
-    }
+    },
+    "sectionTitle": "Garantía y compra",
+    "coverage": "Cobertura",
+    "coverageStarts": "Inicio de cobertura",
+    "coverageEnds": "Fin de cobertura"
   },
   "devicesPage": {
     "accessDenied": "No tiene permiso para ver dispositivos.",
@@ -5154,7 +5147,8 @@
       "systemUuid": "UUID del sistema",
       "serial": "número de serie y fabricante",
       "hostname": "solo el nombre de host",
-      "other": "identificadores informados"
+      "other": "identificadores informados",
+      "tpmEk": "clave de aprobación del TPM"
     },
     "evidenceNoticeHint": "Identificadores de hardware informados por el dispositivo. No verificados.",
     "evidenceNoticeTpm": "Misma clave de aprobación del TPM cuya posesión demostró la instalación anterior. Esto demuestra la continuidad de la clave, no el mismo TPM físico; los TPM virtuales clonados comparten claves.",
@@ -5205,8 +5199,70 @@
       "confirm_target_name_required": "Escribe el nombre del dispositivo existente para confirmar.",
       "confirm_target_name_mismatch": "El nombre escrito no coincide con {{hostname}}.",
       "same_device": "Un dispositivo no se puede volver a vincular consigo mismo.",
-      "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo."
+      "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo.",
+      "evidence_changed": "La evidencia de la clave del TPM de {{hostname}} cambió desde que se mostró. La lista se volvió a cargar: confirma el nombre para continuar."
     },
-    "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación."
+    "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación.",
+    "evidenceGap": {
+      "sourceKeyChanged": "La clave del TPM no cuenta: la nueva instalación tiene un cambio de clave pendiente de revisión.",
+      "sourceKeyNotProvenByInstall": "La clave del TPM no cuenta: se demostró antes de que empezara esta instalación.",
+      "targetKeyChanged": "La clave del TPM no cuenta: el registro anterior tiene un cambio de clave pendiente de revisión.",
+      "keysDiffer": "Los dos registros tienen claves de TPM distintas.",
+      "keyShared": "La clave del TPM no cuenta: otro dispositivo de tu socio tiene la misma clave (por ejemplo, una máquina virtual clonada)."
+    }
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Datos del dispositivo",
+    "serial": "Número de serie",
+    "serialShort": "N/S",
+    "lanIp": "IP de LAN",
+    "warranty": {
+      "active": "Garantía hasta {{date}}",
+      "expiring": "La garantía vence el {{date}}",
+      "expired": "Garantía vencida el {{date}}"
+    },
+    "warrantyStatus": "Garantía: {{status}}",
+    "warrantyDetails": "Detalles de la garantía",
+    "manageContacts": "Administrar contactos",
+    "more": "{{count}} más",
+    "showLess": "Mostrar menos",
+    "call": "Llamar a {{name}}",
+    "loadFailed": "Algunos detalles no se cargaron"
+  },
+  "deviceAssetRecord": {
+    "title": "Registro del activo",
+    "description": "A quién contactar, dónde está y quién lo paga."
+  },
+  "tpmKeyPanel": {
+    "title": "Clave del TPM",
+    "loading": "Cargando el estado de la clave del TPM…",
+    "loadError": "No se pudo cargar el estado de la clave del TPM.",
+    "attested": "Clave de referencia registrada. Última demostración: {{time}}.",
+    "noTpm": "El dispositivo informa que no tiene TPM.",
+    "notAttested": "Todavía no hay una clave de referencia del TPM registrada.",
+    "explainer": "La primera clave de aprobación del TPM que demuestra el dispositivo pasa a ser su referencia. Una reinstalación que demuestre la misma clave se puede volver a vincular sin escribir el nombre. Esto muestra la continuidad de la clave, no un TPM genuino.",
+    "mismatch": "El dispositivo demostró una clave de TPM distinta el {{time}}. Está pendiente de revisión.",
+    "mismatchHelp": "Hasta que decidas, la clave del TPM de este dispositivo no cuenta como evidencia para volver a vincular. Acéptala si el TPM se reemplazó o restableció a propósito; si no, conserva la clave actual.",
+    "accept": "Aceptar la nueva clave",
+    "acceptStepUp": "Confirmar y aceptar",
+    "dismiss": "Conservar la clave actual",
+    "working": "Procesando…",
+    "stepUpCodeLabel": "Código del autenticador",
+    "stepUpPasskeyNote": "Confirma con tu llave de acceso para aceptar la nueva clave.",
+    "noStepUpFactor": "Para aceptar, tu cuenta necesita una llave de acceso o una app de autenticación.",
+    "stepUpRetry": "Esa verificación venció o ya no coincide. Inténtalo de nuevo.",
+    "genericError": "No se pudo revisar el cambio de clave del TPM. Inténtalo de nuevo.",
+    "acceptedToast": "Nueva clave del TPM aceptada",
+    "dismissedToast": "Cambio de clave del TPM descartado",
+    "refusals": {
+      "mismatch_changed": "El estado de la clave del TPM cambió desde que se mostró. Se volvió a cargar.",
+      "reattach_in_progress": "Este dispositivo está en una revinculación abierta. Termínala o cancélala primero.",
+      "org_draining": "La organización del dispositivo no está activa.",
+      "permission_denied": "Revisar un cambio de clave del TPM requiere permiso para editar y eliminar dispositivos.",
+      "org_access_denied": "No tienes acceso a la organización de este dispositivo.",
+      "MFA_REQUIRED": "Activa la autenticación de dos factores en tu cuenta para revisar un cambio de clave del TPM.",
+      "device_not_found": "No se encontró el dispositivo o no puedes revisar su clave del TPM."
+    },
+    "reviewNeedsAccess": "Un usuario del socio con permiso para editar y eliminar dispositivos puede revisarlo."
   }
 }

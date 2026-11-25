@@ -65,6 +65,16 @@ describe('buildSendingDomainStatusTemplate', () => {
     }
   });
 
+  // #12249: an administrator's suspension holds the domain's mail; only the
+  // automatic one falls back to the Breeze address. The notice must say which.
+  it('says mail is held for an administrator suspension and sent from Breeze for an automatic one', () => {
+    const admin = buildSendingDomainStatusTemplate({ partnerId: PARTNER_ID, domain: 'mail.acme.test', event: 'suspended', statusReason: 'platform_suspended' });
+    expect(admin.text).toContain('is not being sent');
+    expect(admin.text).not.toContain('sending from the Breeze address');
+    const auto = buildSendingDomainStatusTemplate({ partnerId: PARTNER_ID, domain: 'mail.acme.test', event: 'suspended', statusReason: 'abuse_auto' });
+    expect(auto.text).toContain('sending from the Breeze address');
+  });
+
   it('renders the machine status reason as human text and escapes the domain', () => {
     const tpl = buildSendingDomainStatusTemplate({
       partnerId: PARTNER_ID, domain: 'a<b>.test', event: 'failed', statusReason: 'dns_not_detected',

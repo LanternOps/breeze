@@ -164,7 +164,6 @@ async function seedAccount(orgId: string, seed: AccountSeed = {}) {
     browserAccess: seed.browserAccess ?? 'granted',
     passwordHash: seed.passwordHash === undefined ? 'argon2-hash' : seed.passwordHash,
     authEpoch: seed.authEpoch ?? 5,
-    ...(seed.entra ? { entraTenantId: seed.entra.tid, entraOid: seed.entra.oid } : {}),
   }).returning();
   if (seed.google) {
     await admin().insert(portalUserIdentities).values({
@@ -293,7 +292,7 @@ describe('portal Google account resolution (real DB, verified hd)', () => {
     const account = await readAccount((out as { portalUserId: string }).portalUserId);
     expect(account).toMatchObject({
       orgId: orgA.id, email, name: 'Pat A', status: 'active', browserAccess: 'granted', authMethod: 'google',
-      passwordHash: null, entraTenantId: null, entraOid: null,
+      passwordHash: null,
     });
     // The email is on the hd: a contact is linked (D3).
     expect(account.contactId).not.toBeNull();
@@ -380,7 +379,7 @@ describe('portal Google account resolution (real DB, verified hd)', () => {
       method: 'google', entraTenantId: null, googleHostedDomain: hd, via: 'invite',
     });
     expect(await readAccount(invited.id)).toMatchObject({
-      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8, entraTenantId: null, entraOid: null,
+      status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8,
     });
     expect(await identitiesOf(invited.id)).toEqual([expect.objectContaining({
       provider: 'google', issuer: PORTAL_GOOGLE_ISSUER, subject: sub, linkedVia: 'invite',
@@ -446,7 +445,7 @@ describe('portal Google account resolution (real DB, verified hd)', () => {
     ]);
     // Linking Google never touches the Entra legacy columns or the hash under allowed.
     expect(await readAccount(account.id)).toMatchObject({
-      entraTenantId: tid, entraOid: oid, passwordHash: 'kept-hash', authEpoch: 5, authMethod: 'password',
+      passwordHash: 'kept-hash', authEpoch: 5, authMethod: 'password',
     });
   });
 

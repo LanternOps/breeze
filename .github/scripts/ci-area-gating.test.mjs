@@ -138,6 +138,16 @@ test('classifier: packages/shared sets every area except rust', () => {
   }
 });
 
+// #12671: the restore-target cases are read by the Go guard tests too
+// (agent/internal/backup/restore_target_vectors_test.go), so a change to the
+// fixture alone must select the agent jobs, the Windows one included.
+test('classifier: the shared restore-target fixture selects the agent jobs', () => {
+  const out = classify(['packages/shared/src/fixtures/restore-target-root-vectors.json']);
+  assert.equal(out.code, 'true');
+  assert.equal(out.app, 'true');
+  assert.equal(out.agent_code, 'true');
+});
+
 test('classifier: a shared file the Rust build reads, alongside anything else, sets rust', () => {
   assert.deepEqual(areasOf(classify(['packages/shared/src/fixtures/prompt-host/show.notice.json'])), expectAreas('all'));
   assert.equal(classify(['packages/shared/src/types/device.ts', 'apps/helper/src-tauri/src/main.rs']).rust, 'true');

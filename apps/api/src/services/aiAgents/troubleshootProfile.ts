@@ -78,7 +78,8 @@ export const TROUBLESHOOT_MODE_PROMPT = '## Mode: device troubleshooting\n'
 // ---------------------------------------------------------------------------
 //
 // "Continue" is a fresh troubleshooting run seeded from a settled prior one
-// (no in-place resume: `awaiting_approval` is terminal for agent runs). The
+// (no in-place resume: a parked run only ever advances to `completed` once
+// every step is final, #11965 runApprovalSettlement.ts). The
 // launcher (services/wisp/troubleshootContinuation.ts) reads the prior run and
 // renders the seed with `renderContinuationSeed`; it is stored on the new
 // run's server-written `trigger_ref.continuation` and rendered into the task

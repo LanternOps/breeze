@@ -5580,7 +5580,12 @@
     "networkError": "Erreur réseau",
     "networkErrorDuringRevoke": "Erreur réseau lors de la révocation",
     "revoking": "Révoque...",
-    "revoke": "Révoquer"
+    "revoke": "Révoquer",
+    "toolListFull": "Liste d’outils : complète",
+    "toolListProgressive": "Liste d’outils : progressive",
+    "toolListDefault": "Liste d’outils : valeur par défaut du déploiement",
+    "toolListMixed": "Liste d’outils : varie selon la connexion",
+    "toolListHint": "Chaque personne la définit pour sa propre connexion sous Compte → Applications connectées."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Conservez ces codes en lieu sûr. Chaque code est utilisable une seule fois. Ils ne peuvent pas être affichés à nouveau.",
@@ -8094,7 +8099,18 @@
     "saved": "Paramètres de rédaction de scripts enregistrés.",
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
-    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés.",
+    "mcpCeiling": {
+      "title": "Exécutions de scripts MCP sans supervision",
+      "description": "Le risque évalué le plus élevé auquel un principal MCP listé dans MCP_UNATTENDED_TIER3_PRINCIPALS peut exécuter un script proposé par l'IA sans approbation humaine, jusqu'à Moyen. L'exécution doit aussi respecter les règles de la voie de scripts sans surveillance pour l'organisation de l'appareil : son activation, les classes d'impact autorisées, les ressources protégées, le disjoncteur et la limite horaire. Au-delà du plafond, chaque exécution doit être approuvée.",
+      "label": "Exécuter sans approbation jusqu’à",
+      "options": {
+        "none": "Jamais (toujours exiger une approbation)",
+        "low": "Faible",
+        "medium": "Moyen"
+      },
+      "stepUpBody": "Relever ce plafond nécessite une nouvelle vérification de sécurité. Confirmez, puis sélectionnez Enregistrer de nouveau."
+    }
   },
   "ticketingHubPage": {
     "heading": "Paramètres de tickets",

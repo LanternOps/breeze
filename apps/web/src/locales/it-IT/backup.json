@@ -538,10 +538,14 @@
     "destination": "Destinazione",
     "restoreToAStagingFolderOrProvideAn": "Ripristina in una cartella di staging sul dispositivo o in un percorso a tua scelta.",
     "stagingFolder": "Cartella di staging sul dispositivo",
-    "stagingFolderHint": "I file vengono salvati nella directory temporanea del dispositivo (breeze-restore); gli originali non vengono mai sovrascritti.",
+    "stagingFolderHint": "I file vengono salvati in una cartella di staging nella directory dei dati dell'agente Breeze; gli originali non vengono mai sovrascritti.",
     "alternatePath": "Percorso alternativo",
     "alternatePathPlaceholder": "ad es. D:\\Restored o /var/restore",
     "alternatePathRequired": "Inserisci un percorso di destinazione per continuare.",
+    "alternatePathLayoutHint": "Ogni file mantiene il percorso originale completo in questa cartella. Ad esempio, C:\\Users\\a\\report.docx, ripristinato in D:\\Restored, finisce in D:\\Restored\\Users\\a\\report.docx.",
+    "rootTargetWarning": "{{path}} è la radice di un'unità o di una condivisione. Ogni file mantiene il percorso completo sotto la destinazione, quindi se i file provengono da questa unità, un ripristino qui sovrascrive ogni originale. Per conservare gli originali, scegli invece una cartella nuova e vuota.",
+    "rootTargetConfirm": "Sovrascrivi i file originali",
+    "reviewOverwritesOriginals": "Sovrascrive i file originali nei loro percorsi originali.",
     "restoreToANewFolder": "Ripristina in una nuova cartella.",
     "reviewConfirm": "Rivedi e conferma",
     "confirmTheRestoreSummaryBeforeStarting": "Conferma il riepilogo del ripristino prima di iniziare.",
@@ -1270,6 +1274,9 @@
   "failureCause": {
     "storage_access_denied": {
       "hint": "La destinazione del backup ha rifiutato la richiesta. Verifica che la chiave di accesso sia valida e abbia permessi di scrittura, la policy del bucket e lo stato dell’account di archiviazione, quindi esegui Testa connessione."
+    },
+    "storage_cap_exceeded": {
+      "hint": "Il provider di archiviazione ha rifiutato la richiesta perché è stato raggiunto un limite o una quota dell’account. Aumenta il limite o libera spazio presso il provider. I limiti giornalieri si azzerano automaticamente."
     },
     "storage_not_found": {
       "hint": "La destinazione del backup segnala che il bucket o i suoi oggetti non esistono. Verifica che il bucket esista ancora e che nessuna regola di ciclo di vita elimini i dati di backup."

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { desc } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   db: {
@@ -18,6 +19,7 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     scopes: 'scopes',
     mcpDomains: 'mcpDomains',
+    mcpToolListMode: 'mcpToolListMode',
     createdAt: 'createdAt',
   },
 }));
@@ -219,6 +221,59 @@ describe('rotateServicePrincipalKey mcp_domains carry (#6156)', () => {
     await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
 
     expect(captured.values).toHaveProperty('mcpDomains', null);
+  });
+});
+
+describe('rotateServicePrincipalKey mcp_tool_list_mode carry (#12429)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  async function rotateWith(priorKeys: Array<Record<string, unknown>>) {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    const orderBy = vi.fn().mockResolvedValue(priorKeys);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ orderBy }) }),
+    } as any);
+    mockBareUpdateOnce();
+    let values: Record<string, unknown> | undefined;
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((v: Record<string, unknown>) => {
+        values = v;
+        return { returning: vi.fn().mockResolvedValue([{ id: 'key-new', keyPrefix: 'brz_abcdefgh' }]) };
+      }),
+    } as any);
+    await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
+    return { values: values!, orderBy, selected: vi.mocked(db.select).mock.calls[1]![0] as Record<string, unknown> };
+  }
+
+  // Rows as the query returns them: newest first.
+  it.each([
+    ["the active key's mode", [{ mcpDomains: null, mcpToolListMode: 'progressive', status: 'active' }], 'progressive'],
+    ['two active keys disagreeing: the newer wins', [
+      { mcpDomains: null, mcpToolListMode: 'full', status: 'active' },
+      { mcpDomains: null, mcpToolListMode: 'progressive', status: 'active' },
+    ], 'full'],
+    ['a newer revoked key never beats an active one', [
+      { mcpDomains: null, mcpToolListMode: 'full', status: 'revoked' },
+      { mcpDomains: null, mcpToolListMode: 'progressive', status: 'active' },
+    ], 'progressive'],
+    ["an active key's null is kept, not replaced by an older key's mode", [
+      { mcpDomains: null, mcpToolListMode: null, status: 'active' },
+      { mcpDomains: null, mcpToolListMode: 'progressive', status: 'active' },
+    ], null],
+    ["only revoked history: the most recent key's mode", [
+      { mcpDomains: null, mcpToolListMode: 'progressive', status: 'revoked' },
+      { mcpDomains: null, mcpToolListMode: 'full', status: 'revoked' },
+    ], 'progressive'],
+    ['no prior key: null', [], null],
+  ] as const)('%s', async (_name, priorKeys, expected) => {
+    const { values, selected } = await rotateWith([...priorKeys]);
+    expect(values).toHaveProperty('mcpToolListMode', expected);
+    expect(selected).toHaveProperty('mcpToolListMode');
+  });
+
+  it('orders the prior keys by creation time, then id', async () => {
+    const { orderBy } = await rotateWith([]);
+    expect(orderBy).toHaveBeenCalledWith(desc('createdAt' as never), desc('id' as never));
   });
 });
 

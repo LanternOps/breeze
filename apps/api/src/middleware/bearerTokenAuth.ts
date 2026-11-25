@@ -4,6 +4,7 @@ import { buildBearerChallenge } from '../services/mcpAuthChallenge';
 import * as Sentry from '@sentry/node';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
 import { and, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import type { McpToolListMode } from '@breeze/shared';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
 import {
   OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
@@ -36,6 +37,8 @@ interface OAuthApiKeyContext {
   // B-W02 (#6156): the Grant's mcp_domains, read in the live-user query.
   // Only ever set for a live grant; `undefined` would fail closed.
   mcpDomains: readonly string[] | null | undefined;
+  // #12429: the Grant's mcp_tool_list_mode, from the same live-user query.
+  mcpToolListMode: McpToolListMode | null | undefined;
   // #9758: the user's live auth_epoch this request was admitted at (equal to
   // the token's claim whenever it carries one). A Tier-3 intent filed by this
   // request records it; release refuses once the live epoch has moved.
@@ -65,6 +68,8 @@ export type LiveOAuthUserResult =
        * everything. The middleware 401s on a dead grant before using it.
        */
       grantMcpDomains: string[] | null | undefined;
+      /** #12429: the live Grant's `mcp_tool_list_mode`, same row and same rules. */
+      grantMcpToolListMode: McpToolListMode | null | undefined;
     }
   | {
       ok: false;
@@ -120,6 +125,7 @@ export async function assertLiveOAuthUser(
     authEpoch: number;
     grantActive: boolean;
     mcpDomains: string[] | null;
+    mcpToolListMode: McpToolListMode | null;
   } | undefined;
   try {
     [liveUser] = await runOutsideDbContext(() =>
@@ -131,6 +137,7 @@ export async function assertLiveOAuthUser(
             authEpoch: users.authEpoch,
             grantActive: sql<boolean>`${oauthGrants.id} IS NOT NULL`,
             mcpDomains: oauthGrants.mcpDomains,
+            mcpToolListMode: oauthGrants.mcpToolListMode,
           })
           .from(users)
           .leftJoin(
@@ -167,6 +174,7 @@ export async function assertLiveOAuthUser(
       legacyClaim: true,
       grantActive: grantId ? liveUser.grantActive : null,
       grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : undefined,
+      grantMcpToolListMode: grantId && liveUser.grantActive ? liveUser.mcpToolListMode : undefined,
     };
   }
 
@@ -185,6 +193,7 @@ export async function assertLiveOAuthUser(
     legacyClaim: false,
     grantActive: grantId ? liveUser.grantActive : null,
     grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : undefined,
+    grantMcpToolListMode: grantId && liveUser.grantActive ? liveUser.mcpToolListMode : undefined,
   };
 }
 
@@ -557,6 +566,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     // B-W02 (#6156): live per request, so a domain edit or revocation needs
     // no token re-mint. Reached only with grantActive === true (401 above).
     mcpDomains: liveUser.grantMcpDomains,
+    mcpToolListMode: liveUser.grantMcpToolListMode,
     oauthAuthEpoch: liveUser.authEpoch,
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);

@@ -46,3 +46,28 @@ export type McpGrantableDomain = Exclude<AiToolDomain, 'core'>;
 export const MCP_GRANTABLE_DOMAINS: readonly McpGrantableDomain[] = AI_TOOL_DOMAINS.filter(
   (d): d is McpGrantableDomain => d !== 'core',
 );
+
+/**
+ * Which tool list an external MCP client is shown (#12427). `full` is every
+ * tool the caller may call; `progressive` is a small core plus the discovery
+ * tools. Presentation only: the mode never changes what a call may do.
+ */
+export const MCP_TOOL_LIST_MODES = ['full', 'progressive'] as const;
+export type McpToolListMode = (typeof MCP_TOOL_LIST_MODES)[number];
+
+/** Where a resolved mode came from, most specific first. */
+export type McpToolListModeSource = 'request' | 'credential' | 'deployment_default';
+export type ResolvedMcpToolListMode = { mode: McpToolListMode; source: McpToolListModeSource };
+
+/**
+ * The mode of one user's active connections to one OAuth client. `mixed` when
+ * the STORED values differ (an explicit `full` and an inherited `full` are
+ * different settings); it is never collapsed into one of them.
+ */
+export type McpConnectionToolListMode =
+  | { kind: 'uniform'; stored: McpToolListMode | null; effective: ResolvedMcpToolListMode; grantCount: number }
+  | { kind: 'mixed'; grantCount: number }
+  | { kind: 'none'; grantCount: 0 };
+
+/** A partner's read-only summary of one OAuth client; `null` = no active connection. */
+export type McpPartnerClientToolListMode = McpToolListMode | 'default' | 'mixed' | null;

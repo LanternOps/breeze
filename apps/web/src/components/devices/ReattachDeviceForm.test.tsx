@@ -79,8 +79,9 @@ describe('ReattachDeviceForm', () => {
     expect(screen.getByTestId('reattach-evidence-notice').textContent)
       .toBe('Hardware identifiers reported by the device. Not verified.');
     expect(screen.getByTestId('reattach-evidence').textContent).toMatch(/system UUID/);
-    // The TPM sentence only for TPM evidence, which no request has until wave T2.
+    // The TPM sentence only for TPM evidence.
     expect(screen.queryByText(/endorsement key/i)).toBeNull();
+    expect(screen.queryByTestId('reattach-evidence-gap')).toBeNull();
     const consequences = screen.getByTestId('reattach-consequences').textContent ?? '';
     expect(consequences).toMatch(/rebuilds the inventory of LAPTOP-OLD/);
     expect(consequences).toMatch(/queued work, grants and sessions of the old install are cancelled/i);
@@ -155,6 +156,7 @@ describe('ReattachDeviceForm', () => {
       confirmTargetName: 'LAPTOP-OLD',
       restoreDecommissioned: false,
       acknowledgeOsChange: false,
+      expectedEvidenceLevel: 'hint',
     });
     expect(mintMock).not.toHaveBeenCalled();
     expect(onRequested).toHaveBeenCalledWith(requestedIntent);
@@ -377,24 +379,50 @@ describe('ReattachDeviceForm', () => {
     expect(screen.queryByTestId('reattach-stepup-held')).toBeNull();
   });
 
-  it('until wave T2 a TPM-read candidate is still requested as hint: name required, hint bound', async () => {
+  it('a TPM key candidate needs no typed name and binds tpm_continuity in the step-up and the body (#8318 wave T2)', async () => {
     const user = userEvent.setup();
     fetchMock
       .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
       .mockResolvedValueOnce(json(202, { intent: requestedIntent }));
-    renderForm({ candidate: reattachCandidate({ evidenceLevel: 'tpm_continuity' }) });
+    renderForm({ candidate: reattachCandidate({ evidence: 'tpm_ek', evidenceLevel: 'tpm_continuity' }) });
+    expect(screen.getByTestId('reattach-evidence').textContent).toMatch(/TPM endorsement key/);
     expect(screen.getByTestId('reattach-evidence-notice').textContent).toMatch(/endorsement key/);
+    // Key continuity, never a genuine TPM.
+    expect(screen.getByTestId('reattach-evidence-notice').textContent).not.toMatch(/genuine/i);
+    expect(screen.queryByTestId('reattach-confirm-name')).toBeNull();
     await user.click(screen.getByTestId('reattach-possession'));
-    expect(submitButton().disabled).toBe(true);
-    await user.type(screen.getByTestId('reattach-confirm-name'), 'LAPTOP-OLD');
+    expect(submitButton().disabled).toBe(false);
     await user.click(submitButton());
     await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
     await user.type(screen.getByTestId('reattach-stepup-code'), '123456');
     await user.click(submitButton());
     await waitFor(() => expect(screen.getByTestId('reattach-pending')).toBeTruthy());
     expect(mintMock).toHaveBeenCalledWith(expect.objectContaining({
-      resource: expect.objectContaining({ evidenceLevel: 'hint' }),
+      resource: expect.objectContaining({ evidenceLevel: 'tpm_continuity' }),
     }));
+    const body = JSON.parse(String(fetchMock.mock.calls.at(-1)![1]!.body));
+    expect(body).toMatchObject({ expectedEvidenceLevel: 'tpm_continuity' });
+  });
+
+  it('a hint candidate whose TPM key did not count says why and still asks for the name', () => {
+    renderForm({ candidate: reattachCandidate({ evidenceLevel: 'hint', evidenceGap: 'key_shared' }) });
+    expect(screen.getByTestId('reattach-evidence-gap').textContent).toMatch(/another device of your partner/);
+    expect(screen.getByTestId('reattach-confirm-name')).toBeTruthy();
+  });
+
+  it('no gap line when a device simply has no TPM key', () => {
+    renderForm({ candidate: reattachCandidate({ evidenceLevel: 'hint', evidenceGap: 'target_no_key' }) });
+    expect(screen.queryByTestId('reattach-evidence-gap')).toBeNull();
+  });
+
+  it('evidence_changed shows its own words and has the parent re-read the candidates', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValueOnce(json(409, { error: 'Evidence changed', code: 'evidence_changed' }));
+    const { onConflict } = renderForm({ candidate: reattachCandidate({ evidence: 'tpm_ek', evidenceLevel: 'tpm_continuity' }) });
+    await user.click(screen.getByTestId('reattach-possession'));
+    await user.click(submitButton());
+    await waitFor(() => expect(onConflict).toHaveBeenCalledWith('evidence_changed'));
+    expect(screen.getByText(/TPM key evidence for LAPTOP-OLD changed/)).toBeTruthy();
   });
 
   it('reports itself busy while submitting and in the step-up', async () => {

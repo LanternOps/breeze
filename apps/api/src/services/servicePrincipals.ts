@@ -137,14 +137,18 @@ export async function rotateServicePrincipalKey(
   // followed by a rotate must not come back unrestricted). Only a principal
   // that never had a key mints an unrestricted one.
   const priorKeys = await db
-    .select({ mcpDomains: apiKeys.mcpDomains, status: apiKeys.status })
+    .select({ mcpDomains: apiKeys.mcpDomains, mcpToolListMode: apiKeys.mcpToolListMode, status: apiKeys.status })
     .from(apiKeys)
     .where(eq(apiKeys.principalId, principalId))
-    .orderBy(desc(apiKeys.createdAt));
+    .orderBy(desc(apiKeys.createdAt), desc(apiKeys.id));
   const activePrior = priorKeys.filter((k) => k.status === 'active');
   const carriedMcpDomains = narrowestMcpDomains(
     (activePrior.length > 0 ? activePrior : priorKeys.slice(0, 1)).map((k) => k.mcpDomains ?? null),
   );
+  // #12429: the tool list mode is one value with nothing to intersect, so the
+  // most recent active key's is kept exactly (else the most recent key's); a
+  // principal that never had a key mints one that inherits.
+  const carriedMcpToolListMode = (activePrior[0] ?? priorKeys[0])?.mcpToolListMode ?? null;
 
   await db
     .update(apiKeys)
@@ -162,6 +166,7 @@ export async function rotateServicePrincipalKey(
       keyPrefix,
       scopes: principal.scopes,
       mcpDomains: carriedMcpDomains,
+      mcpToolListMode: carriedMcpToolListMode,
       createdBy: actorId,
       status: 'active',
       principalType: 'service',

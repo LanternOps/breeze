@@ -87,7 +87,7 @@ branch_pattern: feature/12421-ai-tool-telemetry/wave-<subissue#>
 
 | Map / file | Change | Wave |
 |---|---|---|
-| `migrations/2027-01-28-210000-ai-tool-search-events.sql` (slot rule) | table + 4 policies + indexes; `ai_tool_executions.discovery` + CHECK, `ai_tool_executions.tool_use_id` | W01 |
+| `migrations/2027-01-30-140000-ai-tool-search-events.sql` (slot rule) | table + 4 policies + indexes; `ai_tool_executions.discovery` + CHECK, `ai_tool_executions.tool_use_id` | W01 |
 | `db/schema/ai.ts` | `aiToolSearchEvents`, `aiToolExecutions.discovery`, `aiToolExecutions.toolUseId` | W01 |
 | `__tests__/integration/rls-coverage.integration.test.ts:1268` | `['ai_tool_search_events', ['ai_sessions']]` | W01 |
 | `services/llm/toolCapture/sdkMessageWalk.ts` (new), `streamObserver.ts:60-80` | shared `walkSdkMessageContent` | W01 |
@@ -119,7 +119,7 @@ Test commands: from `apps/api`, `npx vitest run <file>` (never `pnpm --filter <p
 
 ## W01 — telemetry, dark
 
-Migration slot: **`2027-01-28-210000-ai-tool-search-events.sql`**, after `2027-01-28-200000-agent-versions-min-os.sql` (newest committed 2026-11-21). Before committing: `git fetch origin main` and the README Rule 3 `git ls-tree … localeCompare` one-liner against `origin/main`; if overtaken, take the next free name that `localeCompare`-sorts after the newest.
+Migration slot: **`2027-01-30-140000-ai-tool-search-events.sql`**, after `2027-01-28-200000-agent-versions-min-os.sql` (newest committed 2026-11-21). Before committing: `git fetch origin main` and the README Rule 3 `git ls-tree … localeCompare` one-liner against `origin/main`; if overtaken, take the next free name that `localeCompare`-sorts after the newest.
 
 ### Task 1: table, column, Drizzle schema, RLS registration
 
@@ -285,7 +285,11 @@ Derivations: **schema-invalid** = executions with `status = 'refused' AND errorM
 
 ### Spike 0b finding
 
-_(filled by T8: which ToolSearch fields were observed in the raw stream, with the SDK version; totals nullable or not.)_
+Captured 2026-11-24 on the `chat` surface in deny mode (`ai:tool-capture --surface chat --tool-search on --raw-out`), `@anthropic-ai/claude-agent-sdk` 0.3.323 (CLI 2.1.323), synthetic prompts, 9 live invocations (hit, empty ×2, `select:`, `-32602` ×4, 2-turn resume). No wt-stack was needed: deny mode never touches the database or a handler.
+
+- **Observed.** ToolSearch is an assistant `tool_use` named `ToolSearch` with `input` keys exactly `query` and `max_results` (plus `caller: {type:'direct'}` on the block). Its result is a user `tool_result` whose `content` is `tool_reference {tool_name: 'mcp__breeze__<name>'}` blocks **directly** (no `tool_search_tool_result` wrapper, so `observation.toolSearchResultBlocks` stays 0 here); an empty search is the string `No matching deferred tools found`. **`total_deferred_tools` is present, but on the message, not a block:** `tool_use_result = { matches: string[], query, total_deferred_tools }` (so it is a number, not nullable, on this path). `pending_mcp_servers` was not observed. A `select:` query returns the one named tool. The `-32602` refusal is an error `tool_result` with string content `MCP error -32602: Input validation error: Invalid arguments for tool <name>: [...]` (raised before the deny hook; `isMcpInputValidationErrorText` matches it). A malformed-JSON call is a different, earlier refusal (`<tool_use_error>InputValidationError: ... could not be parsed as JSON`, input `{__unparsedToolInput}`), not a `-32602`.
+- **Defect found and fixed in W02.** The W01 observer read `total_deferred_tools` from a block only, so on the real stream `totalDeferred` was always `null`; it now also reads `tool_use_result.total_deferred_tools` for the single result a message carries.
+- **Synthesised, not captured:** the resumed-session replay fixture. The captured second turn reused the first session id (`--turns 2`) but replayed **no** earlier `tool_reference` into the stream (0 after the second `init`), so the "replayed tool_reference seeds `loaded`" path has no captured shape; its fixture is the W01 `userReplayedSearchResult` form. Also unobserved: a ToolSearch whose `tool_result` never arrives (covered by the W01 unit test).
 
 ---
 

@@ -14,11 +14,12 @@ import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
  * "active" means cannot land on some paths and miss others.
  */
 export function activeGrantCondition(grantId: string, now: Date): SQL {
-  return and(
-    eq(oauthGrants.id, grantId),
-    isNull(oauthGrants.revokedAt),
-    gte(oauthGrants.expiresAt, now),
-  ) as SQL;
+  return and(eq(oauthGrants.id, grantId), liveGrantCondition(now)) as SQL;
+}
+
+/** The same definition without a grant id, for reads over a user's or partner's grants. */
+export function liveGrantCondition(now: Date): SQL {
+  return and(isNull(oauthGrants.revokedAt), gte(oauthGrants.expiresAt, now)) as SQL;
 }
 
 export async function isOAuthGrantActiveInCurrentDbContext(

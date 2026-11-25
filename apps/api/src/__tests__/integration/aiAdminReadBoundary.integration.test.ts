@@ -87,8 +87,8 @@ describe('cross-user AI admin read boundary', () => {
     const [ownPortalUser, foreignPortalUser] = await admin
       .insert(portalUsers)
       .values([
-        { orgId: ownOrg.id, email: `own-${randomUUID()}@example.test`, authMethod: 'password' },
-        { orgId: foreignOrg.id, email: `foreign-${randomUUID()}@example.test`, authMethod: 'password' },
+        { browserAccess: 'granted', orgId: ownOrg.id, email: `own-${randomUUID()}@example.test`, authMethod: 'password' },
+        { browserAccess: 'granted', orgId: foreignOrg.id, email: `foreign-${randomUUID()}@example.test`, authMethod: 'password' },
       ])
       .returning({ id: portalUsers.id, orgId: portalUsers.orgId });
 

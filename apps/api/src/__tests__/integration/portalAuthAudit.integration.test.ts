@@ -14,7 +14,7 @@ describe.runIf(!!process.env.DATABASE_URL_APP)('portal authentication audit pers
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const password = 'Synthetic-Portal-Pass-156!';
-    const [user] = await db.insert(portalUsers).values({
+    const [user] = await db.insert(portalUsers).values({ browserAccess: 'granted',
       orgId: org.id,
       email: `portal-audit-${Date.now()}@example.test`,
       name: 'Portal Audit Fixture',

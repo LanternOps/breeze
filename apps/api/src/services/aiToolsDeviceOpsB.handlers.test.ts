@@ -143,6 +143,68 @@ describe('browse_device_event_log', () => {
   });
 });
 
+describe('browse_device_event_log — a chat read the gate pinned (#12453)', () => {
+  const pinnedRun = async (input: Record<string, unknown>, pin: Record<string, unknown>, auth: AuthContext = makeAuth()) =>
+    JSON.parse(await tools.get('browse_device_event_log')!.handler(input, auth, { pinnedDeviceEventLogRead: pin } as any)) as Record<string, any>;
+  const events = { status: 'completed', stdout: JSON.stringify({ events: [], total: 0 }) };
+
+  it('query dispatches the pinned channel and filters, never the raw input', async () => {
+    h.exec.mockResolvedValue(events);
+    const out = await pinnedRun(
+      { action: 'query', deviceId: DEV, logName: 'Security', source: 'other', limit: 5 },
+      Object.freeze({ action: 'query', logName: 'System', source: 'disk', level: 'error', page: 2 }),
+    );
+    expect(out.logName).toBe('System');
+    expect(h.exec).toHaveBeenCalledTimes(1);
+    expect(h.exec).toHaveBeenCalledWith(expect.anything(), 'browse_device_event_log', DEV, 'event_logs_query',
+      { logName: 'System', level: 'error', source: 'disk', eventId: 0, page: 2, limit: 25 }, expect.anything());
+  });
+
+  it('a padded raw channel is dispatched as the canonical name the gate pinned', async () => {
+    h.exec.mockResolvedValue(events);
+    await pinnedRun({ action: 'query', deviceId: DEV, logName: '  setup ' }, Object.freeze({ action: 'query', logName: 'Setup' }));
+    expect(h.exec).toHaveBeenCalledWith(expect.anything(), 'browse_device_event_log', DEV, 'event_logs_query',
+      expect.objectContaining({ logName: 'Setup' }), expect.anything());
+  });
+
+  it('get_event dispatches the pinned channel and record id', async () => {
+    h.exec.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ recordId: 42, level: 'Error', message: 'm' }) });
+    const out = await pinnedRun(
+      { action: 'get_event', deviceId: DEV, logName: 'Security', recordId: 7 },
+      Object.freeze({ action: 'get_event', logName: 'System', recordId: 42 }),
+    );
+    expect(out.logName).toBe('System');
+    expect(h.exec).toHaveBeenCalledWith(expect.anything(), 'browse_device_event_log', DEV, 'event_log_get',
+      { logName: 'System', recordId: 42 }, expect.anything());
+  });
+
+  it('a pin for another action is refused before anything is dispatched', async () => {
+    const out = await pinnedRun(
+      { action: 'get_event', deviceId: DEV, logName: 'System', recordId: 1 },
+      Object.freeze({ action: 'query', logName: 'System' }),
+    );
+    expect(out.code).toBe('PIN_MISMATCH');
+    expect(h.verify).not.toHaveBeenCalled();
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+
+  it('a pin naming any other channel is refused (defence in depth: only the classifier makes pins)', async () => {
+    const out = await pinnedRun({ action: 'query', deviceId: DEV, logName: 'Security' }, Object.freeze({ action: 'query', logName: 'Security' }));
+    expect(out.code).toBe('PIN_MISMATCH');
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+
+  it('device scoping and MFA still apply to a pinned read', async () => {
+    h.verify.mockResolvedValueOnce({ error: 'Device not found or access denied' });
+    expect((await pinnedRun({ action: 'query', deviceId: DEV, logName: 'System' }, Object.freeze({ action: 'query', logName: 'System' }))).code)
+      .toBe('NOT_FOUND');
+    expect(h.verify).toHaveBeenCalledWith(DEV, expect.anything(), true);
+    expect((await pinnedRun({ action: 'query', deviceId: DEV, logName: 'System' }, Object.freeze({ action: 'query', logName: 'System' }), noMfa())).code)
+      .toBe('MFA_REQUIRED');
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+});
+
 describe('manage_tenant_variables (W13-D7: never a secret value)', () => {
   it('list never returns a secret value, even if the service handed one back', async () => {
     h.listVars.mockResolvedValue([

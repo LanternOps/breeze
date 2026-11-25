@@ -42,6 +42,32 @@ const mocks = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// run_script { proposalId }: the reviewed-risk context and the partner's MCP
+// unattended proposal ceiling (their loaders have their own suites).
+const proposalMocks = vi.hoisted(() => ({
+  loadContextInReach: vi.fn(),
+  loadCeiling: vi.fn(),
+  verdict: { value: 'approve' as string },
+  refusal: vi.fn(),
+}));
+vi.mock('../services/scriptProposals', async () => {
+  const { riskWithinMcpUnattendedCeiling } = await import('@breeze/shared');
+  return {
+    loadProposalGuardrailContextForCaller: (...args: any[]) => proposalMocks.loadContextInReach(...args),
+    // The eligibility rules have their own suite (mcpUnattendedCeiling.test.ts);
+    // here the reviewed risk comes from the loaded context and the ceiling and
+    // verdict from the test.
+    mcpUnattendedProposalDecision: async (proposalId: string, orgId: string, deviceIds: readonly string[]) => {
+      proposalMocks.refusal(proposalId, orgId, deviceIds);
+      if (proposalMocks.verdict.value !== 'approve') return { refusal: 'verdict_not_approve', ceiling: null };
+      const ctx = (await proposalMocks.loadContextInReach.mock.results.at(-1)?.value)?.context;
+      // Read once, like the real gate: the audit records this value.
+      const ceiling = await proposalMocks.loadCeiling(orgId);
+      return { refusal: riskWithinMcpUnattendedCeiling(ctx.proposal.riskTier, ceiling) ? null : 'mcp_ceiling', ceiling };
+    },
+  };
+});
+
 // B-W04 (#6158): the MCP-side intent creation (its own suite covers it).
 const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
@@ -283,6 +309,10 @@ beforeEach(() => {
   mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
   mocks.writeAuditEvent.mockReset();
+  proposalMocks.loadContextInReach.mockReset().mockResolvedValue({ context: undefined, proposalOrgId: null });
+  proposalMocks.loadCeiling.mockReset().mockResolvedValue('none');
+  proposalMocks.refusal.mockReset();
+  proposalMocks.verdict.value = 'approve';
 });
 
 async function callTool(toolName: string, args: Record<string, unknown>, scopes?: string[]) {
@@ -1234,6 +1264,94 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       expect(mocks.executeTool).toHaveBeenCalledTimes(1);
       expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
       expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    });
+
+    describe('run_script { proposalId } under the partner MCP unattended proposal ceiling', () => {
+      const LEDGER = { executionId: 'exec-1', sessionId: 'sess-1', orgId: 'org-1', aiOrigin: { kind: 'ai_assistant' } };
+      const reviewed = (riskTier: string) => {
+        proposalMocks.loadContextInReach.mockResolvedValue({
+          context: { proposal: { riskTier, strictHits: [] } },
+          proposalOrgId: 'org-7',
+        });
+      };
+      const call = () => callTool('run_script', { proposalId: 'p-1', deviceIds: ['dev-1'] });
+      beforeEach(() => {
+        const base = mocks.getToolTier.getMockImplementation();
+        mocks.getToolTier.mockImplementation((name: string) => (name === 'run_script' ? 3 : base?.(name)));
+      });
+
+      it.each([
+        ['low', 'low'], ['low', 'medium'], ['medium', 'medium'],
+      ])('runs a %s-risk proposal unattended under a %s ceiling, claiming it with the ledger id', async (risk, ceiling) => {
+        reviewed(risk);
+        proposalMocks.loadCeiling.mockResolvedValue(ceiling);
+        mocks.ledgerBegin.mockResolvedValue(LEDGER);
+        const body = await (await call()).json();
+        expect(body.result.isError).toBeFalsy();
+        expect(proposalMocks.refusal).toHaveBeenCalledWith('p-1', 'org-7', ['dev-1']);
+        expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+        expect(mocks.executeTool.mock.calls[0]?.[3]).toEqual({
+          context: { unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'api_key:11111111-1111-4111-8111-111111111111' } },
+        });
+        const audit = mocks.writeAuditEvent.mock.calls
+          .map((args: any[]) => args[1])
+          .find((event: any) => event?.action === 'mcp.tool.run_script');
+        expect(audit.details).toMatchObject({
+          approvalBypass: 'unattended_principal', proposalRiskTier: risk, mcpUnattendedCeiling: ceiling,
+        });
+      });
+
+      it.each([
+        ['low', 'none'], ['medium', 'low'], ['high', 'medium'], ['critical', 'medium'],
+        // Above medium is not a ceiling value; a stray one keeps the gate.
+        ['low', 'high'], ['low', 'critical'],
+      ])('keeps a %s-risk proposal on the approval gate under a %s ceiling', async (risk, ceiling) => {
+        reviewed(risk);
+        proposalMocks.loadCeiling.mockResolvedValue(ceiling);
+        const payload = JSON.parse((await (await call()).json()).result.content[0].text);
+        expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['the ledger cannot be created', () => mocks.ledgerBegin.mockRejectedValue(new Error('db down'))],
+        ['the ledger has no execution id', () => mocks.ledgerBegin.mockResolvedValue({ ...LEDGER, executionId: '' })],
+      ])('refuses, without dispatch, when %s', async (_label, arrange) => {
+        reviewed('low');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
+        arrange();
+        const body = await (await call()).json();
+        expect(body.error ?? body.result?.isError).toBeTruthy();
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      });
+
+      it.each(['changes', 'reject'])('keeps a proposal whose review recommends %s on the approval gate, at any ceiling', async (verdict) => {
+        reviewed('low');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
+        proposalMocks.verdict.value = verdict;
+        const payload = JSON.parse((await (await call()).json()).result.content[0].text);
+        expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [{ proposalId: 'p-1', groupId: 'g-1' }],
+        [{ proposalId: 'p-1', deviceIds: [] }],
+        [{ proposalId: 'p-1', deviceIds: ['dev-1'], groupId: 'g-1' }],
+      ])('keeps a proposal run with no device list (%j) on the approval gate', async (args) => {
+        reviewed('low');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
+        const payload = JSON.parse((await (await callTool('run_script', args)).json()).result.content[0].text);
+        expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      });
+
+      it('passes no unattended context for a library run_script', async () => {
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
+        await callTool('run_script', { scriptId: 's-1', deviceIds: ['dev-1'] });
+        expect(proposalMocks.loadContextInReach).not.toHaveBeenCalled();
+        expect(mocks.executeTool.mock.calls[0]?.[3]).toBeUndefined();
+      });
     });
 
     it('marks the audit row when approval was bypassed, naming the matched principal', async () => {

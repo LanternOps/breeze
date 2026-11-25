@@ -104,6 +104,34 @@ describe('W6 fleet built-ins (#5221)', () => {
     expect(ok.success && ok.data.whenOffline).toBe('queue');
   });
 
+  // ── #12418 W02: the typed fleet filter as a selector ──
+  it('run_script_on_targets accepts a fleetFilter selector alone', () => {
+    const parsed = run.inputSchema.safeParse({ scriptId: SCRIPT, fleetFilter: { osType: 'windows', pendingPatches: true, groupId: GROUP } });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.fleetFilter).toEqual({ osType: 'windows', pendingPatches: true, groupId: GROUP });
+  });
+
+  it.each([
+    ['target', { target: { type: 'all' } }],
+    ['conditions', { conditions: [] }],
+    ['deviceIds', { deviceIds: [GROUP] }],
+    ['fromStep', { fromStep: { stepId: 'a0', set: 'succeeded' } }],
+  ])('fleetFilter beside %s is refused (exactly one selector)', (_name, other) => {
+    const parsed = run.inputSchema.safeParse({ scriptId: SCRIPT, fleetFilter: { osType: 'windows' }, ...other });
+    expect(parsed.success).toBe(false);
+    expect(parsed.success ? '' : parsed.error.issues.map((i) => i.message).join(' ')).toMatch(/^Exactly one of .*fleetFilter/);
+  });
+
+  it('an unknown key inside fleetFilter is refused', () => {
+    const parsed = run.inputSchema.safeParse({ scriptId: SCRIPT, fleetFilter: { osType: 'windows', hostname: 'x' } });
+    expect(parsed.success).toBe(false);
+    expect(parsed.success ? [] : parsed.error.issues.map((i) => i.path.join('.'))).toEqual(['fleetFilter']);
+  });
+
+  it('resolve_targets does not take a fleetFilter', () => {
+    expect(FLOW_BUILTIN_STEPS.resolve_targets.inputSchema.safeParse({ fleetFilter: { osType: 'windows' } }).success).toBe(false);
+  });
+
   it('run_script_on_targets parameters are script parameters (primitive values, env-var keys)', () => {
     const parse = (parameters: unknown) => run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], parameters });
     expect(parse({ mode: 'quick', n: 3, b: true }).success).toBe(true);

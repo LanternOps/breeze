@@ -138,6 +138,9 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
     // B-W02 (#6156, D-B5): partner service principal keys stay unrestricted
     // this wave. Set explicitly — an absent field fails closed to core-only.
     mcpDomains: null,
+    // #12429: these keys store no mode; the resolver answers `full` for them
+    // unless the request itself opts in.
+    mcpToolListMode: null,
   });
 
   // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment (same contract as the

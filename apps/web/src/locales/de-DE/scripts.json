@@ -1223,6 +1223,7 @@
       "notSecret": "„{{key}}“ ist nicht geheim. Wählen Sie eine geheime Variable oder stellen Sie die Quelle auf „Aus einer Variablen“ um.",
       "notSecretRow": "Nicht geheim – „Aus einer Variablen“ verwenden",
       "secretHint": "Wird ausschließlich als Umgebungsvariable {{env}} übergeben – niemals in das Skript geschrieben. Erfordert die Ausführung im Systemkontext und einen Agenten, der die sichere Übergabe von Geheimnissen unterstützt.",
+      "secretRequiredHelp": "Nicht aktiviert: Ist diese geheime Variable für die Organisation des Geräts nicht definiert, wird das Skript trotzdem ausgeführt und {{env}} ist nicht gesetzt. Eine vorhandene, aber nicht lesbare geheime Variable lässt die Ausführung weiterhin fehlschlagen.",
       "hint": "Wird bei der Ausführung für jedes Zielgerät aufgelöst – niemand wird danach gefragt."
     },
     "securityReview": {

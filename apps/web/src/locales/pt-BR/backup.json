@@ -538,10 +538,14 @@
     "destination": "Destino",
     "restoreToAStagingFolderOrProvideAn": "Restaure em uma pasta de preparação no dispositivo ou em um caminho de sua escolha.",
     "stagingFolder": "Pasta de preparação no dispositivo",
-    "stagingFolderHint": "Os arquivos vão para o diretório temporário do dispositivo (breeze-restore); os originais nunca são sobrescritos.",
+    "stagingFolderHint": "Os arquivos vão para uma pasta de preparação no diretório de dados do agente Breeze; os originais nunca são sobrescritos.",
     "alternatePath": "Caminho alternativo",
     "alternatePathPlaceholder": "ex.: D:\\Restored ou /var/restore",
     "alternatePathRequired": "Informe um caminho de destino para continuar.",
+    "alternatePathLayoutHint": "Cada arquivo mantém o caminho original completo nesta pasta. Por exemplo, C:\\Users\\a\\report.docx, restaurado em D:\\Restored, fica em D:\\Restored\\Users\\a\\report.docx.",
+    "rootTargetWarning": "{{path}} é a raiz de uma unidade ou compartilhamento. Cada arquivo mantém o caminho completo sob o destino, então, se os arquivos vieram desta unidade, restaurar aqui sobrescreve cada original. Para manter os originais, escolha uma pasta nova e vazia.",
+    "rootTargetConfirm": "Sobrescrever os arquivos originais",
+    "reviewOverwritesOriginals": "Sobrescreve os arquivos originais nos caminhos originais.",
     "restoreToANewFolder": "Restaurar para uma nova pasta.",
     "reviewConfirm": "Revisar e confirmar",
     "confirmTheRestoreSummaryBeforeStarting": "Confirme o resumo da restauração antes de iniciar.",
@@ -1270,6 +1274,9 @@
   "failureCause": {
     "storage_access_denied": {
       "hint": "O destino do backup recusou a solicitação. Verifique se a chave de acesso é válida e tem permissão de gravação, a política do bucket e a situação da conta de armazenamento, e então execute Testar conexão."
+    },
+    "storage_cap_exceeded": {
+      "hint": "O provedor de armazenamento recusou a solicitação porque um limite ou uma cota da conta foi atingido. Aumente o limite ou libere espaço no provedor. Os limites diários são redefinidos automaticamente."
     },
     "storage_not_found": {
       "hint": "O destino do backup informa que o bucket ou seus objetos não existem. Verifique se o bucket ainda existe e se nenhuma regra de ciclo de vida exclui os dados do backup."

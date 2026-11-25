@@ -7,7 +7,7 @@ import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
 import type { ApprovalBinding } from './networkIsolation/service';
 import type { VerifiedDrPlan } from './drPlanDefinition';
-import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import type { PinnedDeviceEventLogRead, PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 import type { AiRunExportGrants } from '../db/schema/aiAgents';
@@ -147,6 +147,15 @@ export type ToolExecutionContext = {
    */
   releaseDecision?: ReleaseDecision;
   /**
+   * Set ONLY by the MCP route (routes/mcpServer.ts) for a `run_script
+   * { proposalId }` call it let through without approval: the caller is on
+   * MCP_UNATTENDED_TIER3_PRINCIPALS and the proposal's reviewed risk is within
+   * its partner's MCP unattended proposal ceiling. There is no intent, so the
+   * handler claims the proposal with `claimId` (the MCP tool-execution ledger
+   * id) and records approval_method `unattended_mcp_principal`.
+   */
+  unattendedMcpProposalRun?: { claimId: string; principalRef: string };
+  /**
    * The released intent's `source` (`chat` | `mcp_api` | `ai_agent`) — set by
    * the SAME two release paths that set `actionIntentId`, from the intent row
    * they hold, and by nothing else (#6268). `ioc_hunt sweep` stamps its sweep
@@ -266,6 +275,16 @@ export type ToolExecutionContext = {
    * the call that was classified.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * #12453: the strictly-parsed `browse_device_event_log` query / get_event the
+   * chat gate classified as Tier-2 read-only (System / Setup, canonical name).
+   * Set ONLY by `createSessionPreToolUse` from `checkGuardrails`' own parse —
+   * never from model arguments. The handler dispatches exactly these values and
+   * refuses a pin whose action differs from the call's, so the read that runs
+   * is the read that was classified. Device scope is still the call's own
+   * `deviceId` through `verifyDeviceAccess`.
+   */
+  pinnedDeviceEventLogRead?: PinnedDeviceEventLogRead;
   /**
    * #10973: the call a gate classified as one of the four unattended reads. Set
    * ONLY by `createSessionPreToolUse` and the troubleshooting run's pre-tool hook.

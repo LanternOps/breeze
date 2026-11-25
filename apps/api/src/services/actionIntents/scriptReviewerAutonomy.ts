@@ -25,6 +25,7 @@ import { latestCompletedReview, loadProposalForRelease } from '../scriptProposal
 import { captureException } from '../sentry';
 import {
   countRecentLaneIntents,
+  countRecentMcpUnattendedRuns,
   countRunLaneIntents,
   lockScriptLane,
   readLaneDevice,
@@ -73,7 +74,12 @@ export type ScriptReviewerRefusal =
   | 'lane_open'
   | 'hourly_cap'
   | 'requester_unauthorized'
-  | 'device_unavailable';
+  | 'device_unavailable'
+  // An MCP-filed intent (source 'mcp_api'): MCP proposal runs are governed by
+  // the partner's MCP unattended proposal ceiling, decided on the MCP route
+  // (scriptProposals/mcpUnattendedCeiling.ts). A run that gate refused is
+  // filed for a human; this lane must not approve it instead.
+  | 'mcp_origin';
 
 export type ScriptReviewerDecision =
   | { granted: true; evidence: ScriptReviewerEvidence }
@@ -139,9 +145,10 @@ function requestedDeviceIds(args: Record<string, unknown>): string[] {
 }
 
 /** Invariants 2–8 over an immutable proposal + review pair and the effective
- *  policy. Shared by the creation decision and the release revalidation so
- *  the two cannot drift on what "still eligible" means. */
-function checkProposalInvariants(
+ *  policy. Shared by the creation decision, the release revalidation and the
+ *  unattended MCP proposal run (scriptProposals/mcpUnattendedCeiling.ts) so
+ *  none of them can drift on what "still eligible" means. */
+export function checkProposalInvariants(
   proposal: ScriptProposalRow,
   review: ScriptProposalReviewRow | null,
   effective: EffectiveScriptPolicy,
@@ -337,8 +344,12 @@ export async function evaluateScriptReviewerAutonomy(
     if (lane?.state === 'open') return deny('lane_open');
 
     // 12b — the hourly reservation. `>=` not `>`: the cap is the number of
-    // admissions allowed, so the 11th of a cap-10 hour is refused.
-    if ((await countRecentLaneIntents(tx, intentDraft.orgId)) >= effective.maxUnattendedPerHour) {
+    // admissions allowed, so the 11th of a cap-10 hour is refused. Unattended
+    // MCP proposal runs count toward the same cap (mcpUnattendedCeiling.ts),
+    // so the org's two unattended roads share one hourly budget.
+    const usedThisHour = (await countRecentLaneIntents(tx, intentDraft.orgId))
+      + (await countRecentMcpUnattendedRuns(tx, intentDraft.orgId));
+    if (usedThisHour >= effective.maxUnattendedPerHour) {
       return deny('hourly_cap');
     }
 

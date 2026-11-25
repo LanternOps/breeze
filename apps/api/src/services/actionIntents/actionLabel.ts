@@ -187,6 +187,87 @@ function fallbackLabel(toolName: string, input: Record<string, unknown>): string
   return detail.length > 0 ? `${head}: ${detail.join(' ')}` : head;
 }
 
+function plural(count: number, singular: string, pluralForm: string): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function countOf(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+/**
+ * The `manage_patches` install headline (aiGuardrails.ts
+ * `buildApprovalDescription`): `Install 1 patch on device 6eae0f70...` or
+ * `Install 3 patches on 2 devices`. One device is named by the
+ * `on device <id>...` stub the approval surfaces swap for its name
+ * (approvalDeviceName.ts `argumentDeviceId`), as `run_script` does (#11979).
+ * Counts always come from the arguments.
+ */
+export function patchInstallHeadline(input: Record<string, unknown>): string {
+  const devices = Array.isArray(input.deviceIds) ? input.deviceIds : [];
+  const [only] = devices;
+  const target = devices.length === 1 && typeof only === 'string' && only.length > 0
+    ? `device ${only.slice(0, 8)}...`
+    : plural(devices.length, 'device', 'devices');
+  return `${patchInstallCountText(input)} on ${target}`;
+}
+
+/** `Install 3 patches`: the part of the install headline that patch names replace. */
+function patchInstallCountText(input: Record<string, unknown>): string {
+  return `Install ${plural(countOf(input.patchIds), 'patch', 'patches')}`;
+}
+
+/**
+ * Does `text` LEAD with the install headline built from THESE arguments? The
+ * intent service reads patch names only when it does, and the label builder
+ * rewrites only that headline, so a caller-supplied label, or text that merely
+ * mentions an install, is never relabelled.
+ */
+export function hasPatchInstallHeadline(toolName: string, text: string, input: Record<string, unknown>): boolean {
+  if (toolName !== 'manage_patches' || input.action !== 'install') return false;
+  return text.startsWith(`${patchInstallCountText(input)} on `);
+}
+
+/** Shorten a name to `max` UTF-16 units (the unit the cap counts), keeping a quoted title quoted. Null when nothing useful fits. */
+function fitPatchName(name: string, max: number): string | null {
+  if (name.length <= max) return name;
+  const quoted = name.length >= 2 && name.startsWith('"') && name.endsWith('"');
+  // A KB number is not cut: half of one names a different patch.
+  if (!quoted || max < 8) return null;
+  let inner = '';
+  for (const char of Array.from(name.slice(1, -1).replace(/…$/, ''))) {
+    if (inner.length + char.length + '"…"'.length > max) break;
+    inner += char;
+  }
+  return `"${inner.trimEnd()}…"`;
+}
+
+/**
+ * Put the resolved patch names in place of the count: one patch reads
+ * `Install KB5034441 on KIT`, several read `Install KB5034441, "Chrome 120"
+ * +3 more on 2 devices`. "+N more" counts from the ARGUMENTS, so a patch that
+ * did not resolve is still counted. The text after the count (the device, or
+ * the device count) is trusted and must survive the length cap, so the names
+ * are fitted to what is left of it; when no name fits, the count stays.
+ */
+function namePatchesInHeadline(label: string, input: Record<string, unknown>, names: string[]): string {
+  const countText = patchInstallCountText(input);
+  const tail = label.slice(countText.length);
+  const total = countOf(input.patchIds);
+  const budget = MAX_LABEL_LENGTH - 'Install '.length - tail.length;
+  const more = (shown: number) => (total > shown ? ` +${total - shown} more` : '');
+  const fits = (text: string) => text.length <= budget;
+
+  const two = names.slice(0, 2);
+  let nameText: string | null = `${two.join(', ')}${more(two.length)}`;
+  if (!fits(nameText)) {
+    const suffix = more(1);
+    const first = fitPatchName(names[0]!, budget - suffix.length);
+    nameText = first ? `${first}${suffix}` : null;
+  }
+  return nameText ? `Install ${nameText}${tail}` : label;
+}
+
 export interface ActionLabelInput {
   toolName: string;
   input: Record<string, unknown>;
@@ -201,6 +282,13 @@ export interface ActionLabelInput {
    */
   ticketId?: string | null;
   ticketNumber?: string | null;
+  /**
+   * A `manage_patches` install's resolved patch names, display-ready and in
+   * argument order (approvalPatchNames.ts), so `Install 3 patches on 2
+   * devices` names the patches. Applied only when the label leads with the
+   * install headline built from THIS call's arguments.
+   */
+  patchNames?: string[] | null;
 }
 
 export function buildActionLabel(args: ActionLabelInput): string {
@@ -214,6 +302,12 @@ export function buildActionLabel(args: ActionLabelInput): string {
     label = label.replace(stub, () => `ticket ${ticketNumber}`);
   }
   label = label.replace(/\s+/g, ' ').trim();
+  // After the device and ticket rewrites, so a name can never be mistaken for
+  // a stub and given a hostname or a ticket number.
+  const patchNames = (args.patchNames ?? []).filter((name) => str(name) !== null);
+  if (patchNames.length > 0 && hasPatchInstallHeadline(args.toolName, label, args.input)) {
+    label = namePatchesInHeadline(label, args.input, patchNames);
+  }
   return label.length > MAX_LABEL_LENGTH ? `${label.slice(0, MAX_LABEL_LENGTH - 1)}…` : label;
 }
 

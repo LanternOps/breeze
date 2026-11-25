@@ -299,6 +299,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/lifecycle.ts
   'POST /api/v1/me/mobile-devices/:id/block': 'own account: own mobile device / OAuth grant revoke',
   'POST /api/v1/me/oauth-clients/:clientId/revoke': 'own account: own mobile device / OAuth grant revoke',
+  'PATCH /api/v1/me/oauth-clients/:clientId/mcp-tool-list-mode': 'own account: own OAuth connections only (user id in the UPDATE), interactive session required',
   // routes/mcpServer.ts
   'POST /api/v1/mcp/message': 'equivalent check: API-key ai:read preflight + per-tool ai:write/execute scope gates',
   'POST /api/v1/mcp/sse': 'equivalent check: API-key ai:read preflight + per-tool ai:write/execute scope gates',

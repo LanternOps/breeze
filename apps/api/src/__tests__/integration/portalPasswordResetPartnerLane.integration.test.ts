@@ -86,7 +86,7 @@ describe.runIf(!!process.env.DATABASE_URL_APP)('portal password reset resolves t
     });
 
     const email = `portal-reset-${Date.now()}@example.test`;
-    const [user] = await db.insert(portalUsers).values({
+    const [user] = await db.insert(portalUsers).values({ browserAccess: 'granted',
       orgId: org.id, email, name: 'Portal Reset Fixture',
       passwordHash: await hashPassword('Synthetic-Portal-Pass-902!'),
       authMethod: 'password', status: 'active',

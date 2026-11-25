@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ALERT_SEVERITIES } from '../constants';
 import { deploymentTargetConfigSchema } from '../validators/filters';
+import { fleetFilterSchema } from '../validators/fleetFilter';
 import { scriptParametersSchema } from '../validators/scriptParameters';
 import { FLOW_INPUT_NAME_RE, FLOW_LIMITS } from '../validators/flows';
 import { FLOW_RUN_LIMITS } from '../validators/flowRuns';
@@ -205,7 +206,10 @@ export const FLOW_BUILTIN_STEPS = {
         stepId: z.string().regex(FLEET_STEP_ID_RE),
         set: z.enum(['succeeded', 'dispatched']),
       }).strict().optional(),
-    }).strict().superRefine(exactlyOne(['target', 'conditions', 'deviceIds', 'fromStep'])),
+      // The typed fleet filter `get_fleet_device_stats` counts (#12418 W02). Device-reported
+      // fields count but never select: the API refuses them at save and again at resolve.
+      fleetFilter: fleetFilterSchema.optional(),
+    }).strict().superRefine(exactlyOne(['target', 'conditions', 'deviceIds', 'fromStep', 'fleetFilter'])),
   },
 } satisfies Record<string, FlowBuiltinEntry>;
 

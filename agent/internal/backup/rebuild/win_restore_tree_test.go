@@ -154,8 +154,9 @@ func TestRun_ResumeFailsWhenRecordedPartitionIsMissing(t *testing.T) {
 		t.Fatalf("first run: %+v", res1)
 	}
 	vols := sys.volumePathsForDisk(sys.vhdxDiskNumber[opts.Target.Path])
-	// Same count as the live disk (so WaitForVolumes is satisfied), but one
-	// recorded partition number the disk does not have.
+	// Same count as the live disk, but one recorded partition number the
+	// disk does not have: the resume waits for partition 9 by number
+	// (#12576), so it fails on the wait's timeout, which names it.
 	delete(vols, 4)
 	vols[9] = `\\?\Volume{gone}\`
 	st := runState{
@@ -168,8 +169,51 @@ func TestRun_ResumeFailsWhenRecordedPartitionIsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	res2, err := Run(context.Background(), opts)
-	if err == nil || res2 == nil || res2.Status != "failed" || !strings.Contains(res2.Error, "partition 9") {
+	if err == nil || res2 == nil || res2.Status != "failed" || !strings.Contains(res2.Error, "resume: ") || !strings.Contains(res2.Error, "volume for partition 9 did not appear") {
 		t.Fatalf("res=%+v err=%v, want a failed resume naming partition 9", res2, err)
+	}
+}
+
+// #12576: a resume waits for the partitions the earlier run recorded, by
+// number. A volume for some other partition (7) is on the disk at once and
+// the root volume (3) surfaces late; a count-based wait would return on
+// {1, 4, 7} and fail the resume with "partition 3 ... has no volume".
+func TestRun_ResumeWaitsForRecordedPartitionsNotACount(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	sys.strayVolumePartitions = []int{7}
+	res1, _ := Run(context.Background(), opts)
+	if res1 == nil || !phaseCompleted(res1, PhaseRestore) || res1.Plan == nil {
+		t.Fatalf("first run did not get through restore: %+v", res1)
+	}
+	disk := sys.vhdxDiskNumber[opts.Target.Path]
+	live := sys.volumePathsForDisk(disk)
+	delete(live, 7) // the earlier run recorded only the partitions it formatted
+	st := runState{
+		SnapshotID: "win-1", TargetKey: targetKey(opts.Target),
+		Completed: map[Phase]bool{PhasePreflight: true, PhaseProvision: true, PhaseRestore: true},
+		Platform:  "windows", HostOS: "windows", Plan: res1.Plan, Volumes: live,
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rebuild-win-1-"+targetKey(opts.Target)+".json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sys.mu.Lock()
+	sys.cmds = nil
+	sys.volumeDelay[3] = 3
+	sys.mu.Unlock()
+
+	res2, err := Run(context.Background(), opts)
+	if err != nil || res2 == nil || !res2.Resumed || res2.Status != "completed" {
+		t.Fatalf("resumed run: res=%+v err=%v", res2, err)
+	}
+	want := fmt.Sprintf("WaitForVolumes %d partitions=1,3,4", disk)
+	if waits := countCalls(sys.cmds, "WaitForVolumes"); len(waits) != 1 || waits[0] != want {
+		t.Fatalf("WaitForVolumes calls = %v, want exactly %q", waits, want)
 	}
 }
 
@@ -358,5 +402,27 @@ func TestWinRestoreTree_KeepsJunctionTargetsAsCaptured(t *testing.T) {
 	}
 	if !called || !asCaptured {
 		t.Fatalf("called=%v asCaptured=%v, want the Windows rebuild to keep junction targets as captured", called, asCaptured)
+	}
+}
+
+// A rebuild restores onto the volume it is rebuilding, which the recovery
+// environment may even mount as C:: that is the point of the rebuild, so it
+// must never be refused as an overwrite of the originals (#12638).
+func TestWinRestoreTree_RestoresInPlace(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, _ := winFakeOptions(t, dir)
+	var allowed, called bool
+	orig := restoreSnapshotFiles
+	restoreSnapshotFiles = func(ctx context.Context, p providers.BackupProvider, cfg backup.RestoreConfig, fn backup.ProgressFunc) (*backup.RestoreResult, error) {
+		called, allowed = true, cfg.AllowOverwriteOriginals
+		return orig(ctx, p, cfg, fn)
+	}
+	t.Cleanup(func() { restoreSnapshotFiles = orig })
+	if _, err := Run(context.Background(), opts); err != nil && !called {
+		t.Fatal(err)
+	}
+	if !called || !allowed {
+		t.Fatalf("called=%v allowOverwriteOriginals=%v, want the Windows rebuild to restore in place", called, allowed)
 	}
 }

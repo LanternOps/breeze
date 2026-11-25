@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
@@ -114,6 +114,9 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+const toolListModes = vi.hoisted(() => ({ getPriorConnectionToolListModes: vi.fn() }));
+vi.mock('../services/mcpConnectionToolListMode', () => toolListModes);
+
 import { oauthInteractionRoutes } from './oauthInteraction';
 
 function details(overrides: Record<string, unknown> = {}): {
@@ -216,6 +219,12 @@ async function request(app: Hono, path: string, init?: RequestInit) {
   return app.request(path, init, { incoming: {}, outgoing: {} } as any);
 }
 
+/** #12429: the mode fields of a partner the user has no active connection for. */
+const NO_PRIOR_MODE = {
+  prior_mcp_tool_list_mode: null,
+  effective_mcp_tool_list_mode: { mode: 'full', source: 'deployment_default' },
+};
+
 describe('oauthInteractionRoutes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -240,6 +249,8 @@ describe('oauthInteractionRoutes', () => {
       await next();
     });
     mocks.Grant.instances.length = 0;
+    toolListModes.getPriorConnectionToolListModes.mockReset();
+    toolListModes.getPriorConnectionToolListModes.mockResolvedValue(new Map());
     auditMocks.writeRouteAudit.mockReset();
     // Default: no partner-policy narrowing — pass through whatever mcp:*
     // scopes were requested (mirrors "no policy configured" back-compat).
@@ -283,7 +294,8 @@ describe('oauthInteractionRoutes', () => {
       },
       scopes: ['openid', 'offline_access'],
       resource: 'https://api.example/mcp/server',
-      partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'] }],
+      partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'], ...NO_PRIOR_MODE }],
+      mcp_tool_list_default: 'full',
     });
     // MCP-OAUTH-01: the effective scope set for this partner option must be
     // computed authoritatively, not just echoed from the request.
@@ -312,8 +324,8 @@ describe('oauthInteractionRoutes', () => {
     const body = await res.json() as { partners: Array<{ partnerId: string; effectiveScopes: string[] }> };
     expect(res.status).toBe(200);
     expect(body.partners).toEqual([
-      { partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'] },
-      { partnerId: OTHER_PARTNER_ID, partnerName: 'Read-Only MSP', effectiveScopes: ['mcp:read'] },
+      { partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'], ...NO_PRIOR_MODE },
+      { partnerId: OTHER_PARTNER_ID, partnerName: 'Read-Only MSP', effectiveScopes: ['mcp:read'], ...NO_PRIOR_MODE },
     ]);
     expect(mocks.computeEffectiveMcpScopes).toHaveBeenCalledTimes(2);
   });
@@ -703,6 +715,64 @@ describe('oauthInteractionRoutes', () => {
           details: expect.objectContaining({ grantId: 'grant-1', mcpDomains: ['devices', 'tickets'] }),
         }),
       );
+    });
+  });
+
+  describe('mcp_tool_list_mode (#12429)', () => {
+    const OTHER_PARTNER_ID = '22222222-2222-4222-8222-222222222222';
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('GET: each partner starts from its own prior mode; a partner with none inherits', async () => {
+      vi.stubEnv('MCP_TOOL_LIST_DEFAULT', 'progressive');
+      mocks.interactionDetails.mockResolvedValue(details());
+      queueSelect([{ partnerId: PARTNER_ID, partnerName: 'A' }, { partnerId: OTHER_PARTNER_ID, partnerName: 'B' }]);
+      queueSelect([{ metadata: { client_name: 'App' } }], 'limit');
+      toolListModes.getPriorConnectionToolListModes.mockResolvedValue(new Map([[PARTNER_ID, 'full']]));
+      const body = await (await request(loadApp(), '/api/v1/oauth/interaction/uid-1')).json() as any;
+      expect(toolListModes.getPriorConnectionToolListModes).toHaveBeenCalledWith({
+        userId: 'u1', clientId: 'client-1', partnerIds: [PARTNER_ID, OTHER_PARTNER_ID],
+      });
+      expect(body.mcp_tool_list_default).toBe('progressive');
+      expect(body.partners.map((p: any) => [p.prior_mcp_tool_list_mode, p.effective_mcp_tool_list_mode])).toEqual([
+        ['full', { mode: 'full', source: 'credential' }],
+        [null, { mode: 'progressive', source: 'deployment_default' }],
+      ]);
+    });
+
+    function arrange() {
+      const d = details({ prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } } });
+      mocks.interactionDetails.mockResolvedValue(d);
+      queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+      queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+      queueSelect([{ status: 'active' }], 'limit');
+      const upd = queueUpdate();
+      queueInsertGrantReturning({ firstConsented: true });
+      return { d, upd };
+    }
+    const post = (body: Record<string, unknown>) => request(loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST', body: JSON.stringify({ partner_id: PARTNER_ID, approve: true, ...body }),
+    });
+
+    it.each([
+      [{ mcp_tool_list_mode: 'progressive' }, 'progressive'],
+      [{ mcp_tool_list_mode: 'full' }, 'full'],
+      [{ mcp_tool_list_mode: null }, null],
+      [{}, null],
+    ])('consent %j persists it on the grant with its tenancy, and audits it', async (body, stored) => {
+      const { upd } = arrange();
+      expect((await post(body)).status).toBe(200);
+      expect(upd.set).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: 'org-1', mcpDomains: null, mcpToolListMode: stored });
+      expect(auditMocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ mcpToolListMode: stored }),
+      }));
+    });
+
+    it.each(['Full', 'bulk', '', 1, ['full']])('consent with %j is a 400 and saves no grant', async (bad) => {
+      const { d } = arrange();
+      expect((await post({ mcp_tool_list_mode: bad })).status).toBe(400);
+      expect(mocks.update).not.toHaveBeenCalled();
+      expect(mocks.Grant.instances.every((g) => g.save.mock.calls.length === 0)).toBe(true);
+      expect(d.save).not.toHaveBeenCalled();
     });
   });
 

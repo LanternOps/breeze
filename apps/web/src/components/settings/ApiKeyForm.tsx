@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { endOfLocalDayIso, localDateInputValue } from '@/lib/localDate';
-import type { McpGrantableDomain } from '@breeze/shared';
+import type { McpGrantableDomain, McpToolListMode } from '@breeze/shared';
 import McpDomainPicker, { isMcpDomainSelectionValid } from '../shared/McpDomainPicker';
+import McpToolListModeField from '../shared/McpToolListModeField';
 
 export type ApiKeyScope = {
   id: string;
@@ -36,6 +37,8 @@ export type ApiKeyFormValues = {
   scopes: string[];
   /** MCP tool areas (B-W02 #6156). `null` = every tool; always `null` unless an `ai:*` scope is checked. */
   mcpDomains: McpGrantableDomain[] | null;
+  /** MCP tool list mode (#12429). `null` = inherit; absent unless an `ai:*` scope is checked. */
+  mcpToolListMode?: McpToolListMode | null;
   /** Target org, set by the in-form selector when no org context is active. */
   orgId?: string;
 };
@@ -49,6 +52,8 @@ type ApiKeyFormProps = {
   description?: string;
   initialValues?: Partial<ApiKeyFormValues>;
   isAdmin?: boolean;
+  /** What a key with no mode of its own is shown (#12429). */
+  mcpToolListDefault?: McpToolListMode;
   /** When set, the form requires picking a target org (fleet view: no org
    * context to inherit — keys are org-scoped objects). */
   organizations?: Array<{ id: string; name: string }>;
@@ -181,6 +186,7 @@ export default function ApiKeyForm({
   description = 'Create a new API key with specific permissions.',
   initialValues,
   isAdmin = false,
+  mcpToolListDefault = 'full',
   organizations
 }: ApiKeyFormProps) {
   const { t } = useTranslation('settings');
@@ -193,6 +199,7 @@ export default function ApiKeyForm({
   );
   const [scopes, setScopes] = useState<string[]>(initialValues?.scopes ?? []);
   const [mcpDomains, setMcpDomains] = useState<McpGrantableDomain[] | null>(initialValues?.mcpDomains ?? null);
+  const [mcpToolListMode, setMcpToolListMode] = useState<McpToolListMode | null>(initialValues?.mcpToolListMode ?? null);
   const [orgId, setOrgId] = useState(initialValues?.orgId ?? '');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const needsOrgPick = !!organizations && organizations.length > 0;
@@ -267,6 +274,7 @@ export default function ApiKeyForm({
       rateLimit: rateLimit ? Number(rateLimit) : null,
       scopes,
       mcpDomains: hasAiScope ? mcpDomains : null,
+      ...(hasAiScope ? { mcpToolListMode } : {}),
       ...(needsOrgPick ? { orgId } : {})
     });
   };
@@ -447,6 +455,19 @@ export default function ApiKeyForm({
               />
               <p className="text-xs text-muted-foreground">{tc('longTail.mcpDomains.apiKeyHint')}</p>
             </div>
+          )}
+
+          {/* MCP tool list — presentation only, same relevance rule as the areas above */}
+          {hasAiScope && (
+            <McpToolListModeField
+              idPrefix="api-key"
+              variant="key"
+              value={mcpToolListMode}
+              effective={null}
+              deploymentDefault={mcpToolListDefault}
+              onChange={setMcpToolListMode}
+              disabled={loading}
+            />
           )}
 
           {/* Actions */}

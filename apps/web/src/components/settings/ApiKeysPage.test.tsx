@@ -228,3 +228,127 @@ describe('ApiKeysPage background refresh (#9656)', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 });
+
+describe('ApiKeysPage — MCP tool list mode (#12429)', () => {
+  // The exact row GET /api-keys answers with (routes/apiKeys.ts).
+  const AI_KEY = {
+    ...KEY, scopes: ['ai:read'], lastUsedAt: null, expiresAt: null, rateLimit: 1000, mcpDomains: null,
+    mcpToolListMode: 'full', mcpToolListModeEffective: { mode: 'full', source: 'credential' },
+  };
+  const patches = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+  const select = () => screen.getByTestId('mcp-tool-list-mode') as HTMLSelectElement;
+  const effectiveLine = () => screen.getByTestId('mcp-tool-list-effective').textContent;
+
+  function route(key: Record<string, unknown>, opts: { mcpToolListDefault?: string; patch?: Mutation } = {}) {
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET') {
+        return jsonResponse({ data: [key], pagination: { page: 1, limit: 20, total: 1 }, mcpToolListDefault: opts.mcpToolListDefault ?? 'full' });
+      }
+      return jsonResponse(opts.patch?.payload ?? {}, opts.patch?.status ?? 200);
+    });
+  }
+  async function openView() {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'View' }));
+    await screen.findByText('API Key Details');
+  }
+
+  it('the row keeps mcpToolListMode and mcpToolListModeEffective from the GET body', async () => {
+    route({ ...AI_KEY, mcpToolListMode: null, mcpToolListModeEffective: { mode: 'progressive', source: 'deployment_default' } }, { mcpToolListDefault: 'progressive' });
+    await openView();
+    expect(select().value).toBe('inherit');
+    expect(effectiveLine()).toContain('Progressive — deployment default');
+    expect(screen.getByText('Inherit (deployment default: Progressive)')).toBeInTheDocument();
+  });
+
+  it('Save PATCHes only the mode, shows the new effective line and keeps the list row in step', async () => {
+    route(AI_KEY, { patch: { status: 200, payload: { ...AI_KEY, mcpToolListMode: 'progressive', mcpToolListModeEffective: { mode: 'progressive', source: 'credential' } } } });
+    await openView();
+    const save = screen.getByTestId('api-key-tool-list-save');
+    expect(save).toBeDisabled();
+    fireEvent.change(select(), { target: { value: 'progressive' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(patches()[0]![0]).toBe('/api-keys/key-1');
+    expect(JSON.parse(String(patches()[0]![1]!.body))).toEqual({ mcpToolListMode: 'progressive' });
+    await waitFor(() => expect(effectiveLine()).toContain('Progressive — set on this key'));
+    expect(screen.getByTestId('api-key-tool-list-save')).toBeDisabled();
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    // Reopening shows the saved value without a refetch.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'View' }));
+    expect(select().value).toBe('progressive');
+  });
+
+  it('inherit is sent as null; a failure toasts and keeps the choice', async () => {
+    route(AI_KEY, { patch: { status: 403, payload: { error: 'MFA required' } } });
+    await openView();
+    fireEvent.change(select(), { target: { value: 'inherit' } });
+    fireEvent.click(screen.getByTestId('api-key-tool-list-save'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(JSON.parse(String(patches()[0]![1]!.body))).toEqual({ mcpToolListMode: null });
+    expect(select().value).toBe('inherit');
+    expect(screen.getByTestId('api-key-tool-list-save')).not.toBeDisabled();
+  });
+
+  it('a save that answers after another key was opened does not touch that key\'s draft', async () => {
+    const other = { ...AI_KEY, id: 'key-2', name: 'Second key' };
+    let answer!: (r: Response) => void;
+    fetchMock.mockImplementation(async (_input: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') {
+        return jsonResponse({ data: [AI_KEY, other], pagination: { page: 1, limit: 20, total: 2 }, mcpToolListDefault: 'full' });
+      }
+      return new Promise<Response>((resolve) => { answer = resolve; });
+    });
+    await renderPage();
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[0]!);
+    fireEvent.change(select(), { target: { value: 'progressive' } });
+    fireEvent.click(screen.getByTestId('api-key-tool-list-save'));
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'View' })[1]!);
+    expect(select().value).toBe('full');
+    answer(jsonResponse({ ...AI_KEY, mcpToolListMode: 'progressive', mcpToolListModeEffective: { mode: 'progressive', source: 'credential' } }));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+    expect(select().value).toBe('full');
+    expect(screen.getByTestId('api-key-tool-list-save')).toBeDisabled();
+  });
+
+  it('a discarded choice does not survive closing the modal', async () => {
+    route(AI_KEY);
+    await openView();
+    fireEvent.change(select(), { target: { value: 'progressive' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'View' }));
+    expect(select().value).toBe('full');
+  });
+
+  it('no field on a key that cannot reach the MCP server', async () => {
+    route({ ...AI_KEY, scopes: ['devices:read'] });
+    await openView();
+    expect(screen.queryByTestId('mcp-tool-list-mode')).toBeNull();
+  });
+
+  it('read-only (no Save) on a revoked key', async () => {
+    route({ ...AI_KEY, status: 'revoked' });
+    await openView();
+    expect(select()).toBeDisabled();
+    expect(screen.queryByTestId('api-key-tool-list-save')).toBeNull();
+  });
+
+  it('create: the form shows the deployment default and the POST carries the mode', async () => {
+    route(AI_KEY, { mcpToolListDefault: 'progressive', patch: { status: 200, payload: { key: 'brz_new' } } });
+    await renderPage();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Key' })[0]!);
+    const form = screen.getByText('Select all').closest('form')!;
+    fireEvent.change(within(form).getByPlaceholderText('My API Key'), { target: { value: 'New key' } });
+    fireEvent.click(within(form).getByText('Select all'));
+    expect(within(form).getByText('Inherit (deployment default: Progressive)')).toBeInTheDocument();
+    fireEvent.change(within(form).getByTestId('mcp-tool-list-mode'), { target: { value: 'full' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Create Key' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true));
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!;
+    expect(JSON.parse(String(post[1]!.body))).toMatchObject({ mcpToolListMode: 'full' });
+  });
+});

@@ -224,7 +224,7 @@ describe('RLS, FK and merge', () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const [pu] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db.insert(portalUsers).values({
+      db.insert(portalUsers).values({ browserAccess: 'granted',
         orgId: org.id, email: `pu-${randomUUID()}@example.test`, authMethod: 'password',
       }).returning({ id: portalUsers.id }));
     portalUserIds.push(pu!.id);
@@ -411,7 +411,7 @@ async function seedAddinLogin(orgId: string, email: string) {
   const tid = randomUUID();
   const oid = randomUUID();
   const [login] = await sys(() => db.insert(portalUsers).values({
-    orgId, email, authMethod: 'entra', status: 'active', browserAccess: 'none', entraTenantId: tid, entraOid: oid,
+    orgId, email, authMethod: 'entra', status: 'active', browserAccess: 'none',
   }).returning());
   await sys(() => db.insert(portalUserIdentities).values({
     orgId, portalUserId: login!.id, provider: 'entra', issuer: entraIssuer(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
@@ -586,7 +586,7 @@ describe('service', () => {
     const [login] = await loginsFor(org.id, email);
     expect(login).toMatchObject({
       id: result.portalUserId, status: 'active', browserAccess: 'granted', authMethod: 'entra',
-      passwordHash: null, entraTenantId: tid, entraOid: oid, authEpoch: result.authEpoch,
+      passwordHash: null, authEpoch: result.authEpoch,
     });
     expect(login!.contactId).not.toBeNull();
     const [contact] = await sys(() => db.select().from(contacts).where(eq(contacts.id, login!.contactId!)));
@@ -615,7 +615,7 @@ describe('service', () => {
 
     const [login] = await loginsFor(org.id, email);
     expect(login).toMatchObject({
-      status: 'active', browserAccess: 'granted', authMethod: 'google', entraTenantId: null, entraOid: null,
+      status: 'active', browserAccess: 'granted', authMethod: 'google',
     });
     expect(await identitiesOf(login!.id)).toEqual([expect.objectContaining({
       provider: 'google', issuer: GOOGLE_ISSUER, subject: sub, entraTenantId: null, linkedVia: 'jit',
@@ -692,27 +692,6 @@ describe('service', () => {
 
     const err = await rejectionOf(withDbAccessContext(ctx, () =>
       approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: hd.verifiedAt } })));
-    expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
-    expect(await loginsFor(org.id, email)).toEqual([]);
-    expect((await readRequest(requestId)).status).toBe('pending');
-  });
-
-  it('approve entra refuses when a login holds the (tid, oid) on its legacy entra_* columns (IDENTITY_LINKED, no 23505)', async () => {
-    const { org, decider, ctx } = await serviceFixture();
-    const otherPartner = await createPartner();
-    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
-    const tid = await provenTid(org.id);
-    const oid = randomUUID();
-    // Drift: a legacy login with entra_* set and no identity row.
-    await sys(() => db.insert(portalUsers).values({
-      orgId: otherOrg.id, email: `legacy-${randomUUID()}@example.test`, authMethod: 'entra',
-      status: 'active', browserAccess: 'none', entraTenantId: tid, entraOid: oid,
-    }));
-    const email = `drift-${randomUUID()}@example.test`;
-    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: null, tid, oid }));
-
-    const err = await rejectionOf(withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id })));
     expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
     expect(await loginsFor(org.id, email)).toEqual([]);
     expect((await readRequest(requestId)).status).toBe('pending');

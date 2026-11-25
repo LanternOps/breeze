@@ -538,10 +538,14 @@
     "destination": "Destination",
     "restoreToAStagingFolderOrProvideAn": "Restore to a staging folder on the device, or to a path you choose.",
     "stagingFolder": "Staging folder on the device",
-    "stagingFolderHint": "Files go under the device's temp directory (breeze-restore); originals are never overwritten.",
+    "stagingFolderHint": "Files go to a staging folder in the Breeze agent's data directory; originals are never overwritten.",
     "alternatePath": "Alternate path",
     "alternatePathPlaceholder": "e.g. D:\\Restored or /var/restore",
     "alternatePathRequired": "Enter a destination path to continue.",
+    "alternatePathLayoutHint": "Each file keeps its full original path under this folder. For example C:\\Users\\a\\report.docx, restored to D:\\Restored, lands at D:\\Restored\\Users\\a\\report.docx.",
+    "rootTargetWarning": "{{path}} is the root of a drive or share. Each file keeps its full path under the target, so if the files came from this drive, a restore here writes each one back over its original. To keep the originals, choose a new, empty folder instead.",
+    "rootTargetConfirm": "Overwrite the original files",
+    "reviewOverwritesOriginals": "Overwrites the original files at their original paths.",
     "restoreToANewFolder": "Restore to a new folder.",
     "reviewConfirm": "Review & confirm",
     "confirmTheRestoreSummaryBeforeStarting": "Confirm the restore summary before starting.",
@@ -1270,6 +1274,9 @@
   "failureCause": {
     "storage_access_denied": {
       "hint": "The backup destination refused the request. Check that the access key is valid and can write, the bucket policy and the storage account's standing, then run Test connection."
+    },
+    "storage_cap_exceeded": {
+      "hint": "The storage provider refused the request because an account cap or quota was reached. Raise the cap or free space at the provider. Daily caps reset on their own."
     },
     "storage_not_found": {
       "hint": "The backup destination says the bucket or its objects are missing. Check that the bucket still exists and that no lifecycle rule deletes backup data."

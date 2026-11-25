@@ -18,6 +18,13 @@ const POLL_INTERVAL_MS = 5_000;
  * this many times, this far apart, then the card stops polling (#12137).
  */
 const SETTLING_POLL_RETRIES = 2;
+/**
+ * #11965: extra polls for a parked run whose steps are all final. The server
+ * settles a troubleshooting run to `completed` a few seconds after its last
+ * step ends (intent outbox, then the release job); other profiles never
+ * settle, so the grace is bounded.
+ */
+const SETTLE_GRACE_POLLS = 4;
 const SETTLING_POLL_RETRY_MS = 2_000;
 
 interface PolledArtifact {
@@ -196,6 +203,7 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let settlingRetriesLeft = SETTLING_POLL_RETRIES;
+    let settleGraceLeft = SETTLE_GRACE_POLLS;
 
     const tick = async () => {
       if (cancelled || settled) return;
@@ -223,8 +231,20 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
               const hasActionable = (body.data.intents ?? []).some(
                 (i) => i.status === 'pending_approval' && !!i.approvalRequestId,
               );
-              if (isSettled(body.data.status) && !hasActionable) {
-                // A finished (or approval-parked) run never changes on its own; keep polling and every open
+              // #11965: an approved or executing step has not finished yet. Once
+              // it does, a troubleshooting run settles to `completed`, so keep
+              // polling until no step is approved or executing.
+              const intents = body.data.intents ?? [];
+              const stepRunning = body.data.status === 'awaiting_approval' && intents.some(
+                (i) => i.status === 'approved' || i.status === 'executing',
+              );
+              // Every step final but the run not yet settled: a few more polls.
+              const awaitingSettle = body.data.status === 'awaiting_approval' && intents.length > 0
+                && !intents.some((i) => i.status === 'pending_approval' || i.status === 'approved' || i.status === 'executing')
+                && settleGraceLeft > 0;
+              if (awaitingSettle) settleGraceLeft -= 1;
+              if (isSettled(body.data.status) && !hasActionable && !stepRunning && !awaitingSettle) {
+                // A finished run, or a parked one with no step left to run, never changes on its own; keep polling and every open
                 // chat with an old run card becomes a background request forever.
                 settled = true;
                 return;

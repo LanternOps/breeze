@@ -491,7 +491,10 @@
       "ring_deleted": "Gönderimden önce iptal edildi: güncelleme halkası silindi.",
       "ring_disabled": "Gönderimden önce iptal edildi: güncelleme halkası devre dışı bırakıldı.",
       "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı.",
-      "all_managed_by_vendor_updates": "Atlandı: bu cihazdaki bekleyen tüm güncellemeler Üretici güncellemeleri tarafından yönetiliyor, onay gerekmiyor."
+      "all_managed_by_vendor_updates": "Atlandı: bu cihazdaki bekleyen tüm güncellemeler Üretici güncellemeleri tarafından yönetiliyor, onay gerekmiyor.",
+      "requested_patches_not_eligible": "Atlandı: bu iş için seçilen güncellemelerin hiçbiri, geçerli güncelleme ilkesine göre bu cihaza yüklenemez.",
+      "invalid_patch_ids": "Atlandı: bu iş için seçilen güncellemelerin listesi geçerli değildi, bu nedenle hiçbir şey yüklenmedi.",
+      "requested_patches_no_longer_eligible": "Teslimden önce iptal edildi: bu iş için seçilen güncellemelerden en az biri artık bu cihaz için uygun değil. Hâlâ uygun olanları yüklemek için yüklemeyi yeniden çalıştırın."
     },
     "errors": {
       "load": "Yama işi yüklenemedi"

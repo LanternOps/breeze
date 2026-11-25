@@ -5570,7 +5570,12 @@
     "networkError": "Errore di rete",
     "networkErrorDuringRevoke": "Errore di rete durante la revoca",
     "revoking": "Revoca in corso…",
-    "revoke": "Revoca"
+    "revoke": "Revoca",
+    "toolListFull": "Elenco degli strumenti: Completo",
+    "toolListProgressive": "Elenco degli strumenti: Progressivo",
+    "toolListDefault": "Elenco degli strumenti: predefinito della distribuzione",
+    "toolListMixed": "Elenco degli strumenti: varia in base alla connessione",
+    "toolListHint": "Ogni persona lo imposta per la propria connessione in Account → App connesse."
   },
   "mFASettings": {
     "saveRecoveryCodesDescription": "Conserva questi codici in un luogo sicuro. Ogni codice può essere usato una sola volta. Non possono essere mostrati di nuovo.",
@@ -8094,7 +8099,18 @@
     "saved": "Impostazioni di creazione script salvate.",
     "saveFailed": "Non è stato possibile salvare queste impostazioni.",
     "loading": "Caricamento…",
-    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script."
+    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script.",
+    "mcpCeiling": {
+      "title": "Esecuzioni di script MCP non presidiate",
+      "description": "Il rischio valutato più alto con cui un principal MCP elencato in MCP_UNATTENDED_TIER3_PRINCIPALS può eseguire uno script proposto dall'IA senza approvazione umana, fino a Medio. L'esecuzione deve inoltre rispettare le regole della corsia degli script non presidiati per l'organizzazione del dispositivo: adesione, classi di impatto consentite, risorse protette, interruttore di sicurezza e limite orario. Oltre il limite, ogni esecuzione richiede un'approvazione.",
+      "label": "Esegui senza approvazione fino a",
+      "options": {
+        "none": "Mai (richiedi sempre l’approvazione)",
+        "low": "Basso",
+        "medium": "Medio"
+      },
+      "stepUpBody": "Alzare questo limite richiede un nuovo controllo di sicurezza. Conferma, poi seleziona di nuovo Salva."
+    }
   },
   "ticketingHubPage": {
     "heading": "Impostazioni ticket",

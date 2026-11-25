@@ -1343,6 +1343,18 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     expect(onAction).toHaveBeenCalledWith('run-script', baseDevice);
   });
 
+  // The item that opened the retired Device Settings modal now emits
+  // "edit-details"; DevicesPage is tested by firing that string from a stub.
+  it('emits edit-details with the device from the row menu', () => {
+    const onAction = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
+    openRowMenu();
+
+    fireEvent.click(screen.getByRole('button', { name: /^edit details$/i }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('edit-details', baseDevice);
+  });
+
   // Remote Terminal really IS a live session (terminalWs rejects anything but
   // online), so its `!== "online"` gate is correct and applies to every
   // non-online status.

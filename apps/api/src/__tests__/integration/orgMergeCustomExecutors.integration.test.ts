@@ -191,8 +191,8 @@ describe('org merge engine SQL against real Postgres', () => {
       const clientAiToken = `ct-${suffix}`;
       await withSystemDbAccessContext(async () => {
         await db.execute(sql`
-          INSERT INTO portal_users (id, org_id, email)
-          VALUES (${portalUserId}::uuid, ${L}::uuid, ${`pu-${suffix}@x.test`})`);
+          INSERT INTO portal_users (id, org_id, email, browser_access)
+          VALUES (${portalUserId}::uuid, ${L}::uuid, ${`pu-${suffix}@x.test`}, 'granted')`);
       });
 
       portalSessions.set(portalToken, {

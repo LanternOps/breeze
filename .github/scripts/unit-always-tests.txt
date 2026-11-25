@@ -99,6 +99,7 @@ apps/api/src/__tests__/integration/localVaultDeviceOrgFk.integration.test.ts
 apps/api/src/__tests__/integration/m365ConnectionsRls.integration.test.ts
 apps/api/src/__tests__/integration/m365ConsentSessionsV2OnlyMigration.integration.test.ts
 apps/api/src/__tests__/integration/mcpDomainsColumns.integration.test.ts
+apps/api/src/__tests__/integration/mcpToolListModeMigration.integration.test.ts
 apps/api/src/__tests__/integration/mtlsHistoryReconcileMigration.integration.test.ts
 apps/api/src/__tests__/integration/multiCurrencyWave6ContractBilling.integration.test.ts
 apps/api/src/__tests__/integration/networkMonitorAlertEndpointDisplayBackfill.integration.test.ts
@@ -126,9 +127,11 @@ apps/api/src/__tests__/integration/portalAccountFoundationsMigration.integration
 apps/api/src/__tests__/integration/portalDirectoryDeprovisioningMigration.integration.test.ts
 apps/api/src/__tests__/integration/portalDomainVerificationMigration.integration.test.ts
 apps/api/src/__tests__/integration/portalEdrVisibility.integration.test.ts
+apps/api/src/__tests__/integration/portalEntraColumnsPreflight.integration.test.ts
 apps/api/src/__tests__/integration/portalEntraPasswordHashCleanup.integration.test.ts
 apps/api/src/__tests__/integration/portalEntraTenantProofMigration.integration.test.ts
 apps/api/src/__tests__/integration/portalGoogleRequestMigration.integration.test.ts
+apps/api/src/__tests__/integration/portalIdentityFinalBackfill.integration.test.ts
 apps/api/src/__tests__/integration/portalPatchDetail.integration.test.ts
 apps/api/src/__tests__/integration/portalSoftwareInventory.integration.test.ts
 apps/api/src/__tests__/integration/portalUserContactCompositeFk.integration.test.ts
@@ -181,6 +184,7 @@ apps/api/src/__tests__/parkedFanout.contract.test.ts
 apps/api/src/__tests__/partner-wide-write-coverage.test.ts
 apps/api/src/__tests__/portalAccountWriters.contract.test.ts
 apps/api/src/__tests__/portalIdentityFacts.contract.test.ts
+apps/api/src/__tests__/portalUsersInsertBrowserAccess.contract.test.ts
 apps/api/src/__tests__/processLocalCaches.contract.test.ts
 apps/api/src/__tests__/rolePermissionsReaders.contract.test.ts
 apps/api/src/__tests__/singleTableCorrelatedSubquery.contract.test.ts
@@ -263,6 +267,7 @@ apps/api/src/db/migration-ticket-mailbox-permissions.test.ts
 apps/api/src/db/migration-topology-interface-samples.test.ts
 apps/api/src/db/migrationDeferredTriggerAlter.test.ts
 apps/api/src/db/migrationGucAttributes.test.ts
+apps/api/src/db/migrationMcpToolListMode.test.ts
 apps/api/src/db/migrationPartnerExportLocks.test.ts
 apps/api/src/db/migrationRlsScope.test.ts
 apps/api/src/db/offsetPaginationOrdering.test.ts
@@ -279,6 +284,7 @@ apps/api/src/db/schema/aiAgentOpEvidence.registry.test.ts
 apps/api/src/db/schema/aiModelRegistry.contract.test.ts
 apps/api/src/db/schema/aiPlatformModels.contract.test.ts
 apps/api/src/db/schema/aiRunWorkspaces.enums.test.ts
+apps/api/src/db/schema/aiToolSearchEvents.contract.test.ts
 apps/api/src/db/schema/aiUnattendedExposure.test.ts
 apps/api/src/db/schema/alerts.ownerKind.test.ts
 apps/api/src/db/schema/backupConfigsProviderConfig.test.ts
@@ -363,6 +369,7 @@ apps/api/src/routes/alerts/alerts.resolveCas.test.ts
 apps/api/src/routes/alerts/correlations.ephemeralOrg.contract.test.ts
 apps/api/src/routes/analytics.test.ts
 apps/api/src/routes/autopay/mount.test.ts
+apps/api/src/routes/backup/restore.test.ts
 apps/api/src/routes/configurationPolicies/index.test.ts
 apps/api/src/routes/configurationPolicies/precedence.test.ts
 apps/api/src/routes/configurationPolicies/reach.test.ts
@@ -460,10 +467,12 @@ apps/api/src/services/aiOperator/taskCoordinatorPlanApproval.test.ts
 apps/api/src/services/aiOriginMint.contract.test.ts
 apps/api/src/services/aiRemoteToolsPolicy.contract.test.ts
 apps/api/src/services/aiSdkToolArgGuard.test.ts
+apps/api/src/services/aiToolDiscoveryMetrics.test.ts
 apps/api/src/services/aiToolMfaGate.routeParity.contract.test.ts
 apps/api/src/services/aiToolNames.test.ts
 apps/api/src/services/aiToolOutput.encryptedColumns.test.ts
 apps/api/src/services/aiToolSchemas.securityPolicy.test.ts
+apps/api/src/services/aiToolSchemasBackup.restoreTarget.test.ts
 apps/api/src/services/aiTools.deviceAccessSiteScope.contract.test.ts
 apps/api/src/services/aiTools.deviceTextFence.contract.test.ts
 apps/api/src/services/aiTools.deviceWaitContext.contract.test.ts
@@ -761,6 +770,7 @@ apps/web/src/lib/auditFormat.papercuts.test.ts
 apps/web/src/lib/auditFormat.test.ts
 apps/web/src/lib/auditResourceType.test.ts
 apps/web/src/lib/csp.test.ts
+apps/web/src/lib/decimalJsLightAlias.test.ts
 apps/web/src/lib/executionRefusedFields.test.ts
 apps/web/src/lib/i18n/aiUsageByClientKeys.test.ts
 apps/web/src/lib/i18n/callerVerification.test.ts
@@ -823,6 +833,7 @@ packages/shared/src/utils/agentUpdateAttempt.test.ts
 packages/shared/src/utils/backupExclusionGlob.test.ts
 packages/shared/src/utils/cleanupRules.test.ts
 packages/shared/src/utils/networkIsolation.test.ts
+packages/shared/src/utils/restoreTargetRoot.test.ts
 packages/shared/src/utils/scriptSecurityPatterns.test.ts
 packages/shared/src/utils/yaraBundle.test.ts
 packages/shared/src/utils/yaraIocImport.test.ts

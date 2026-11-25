@@ -116,7 +116,7 @@ describe('createIdentityOnlyAccount', () => {
     expect(account!.args[0]).toBe(portalUsers);
     expect(firstArg(account, 'values')).toEqual({
       orgId: ORG, email: 'jane@acme.example', name: 'Jane', passwordHash: null, authMethod: 'entra',
-      entraTenantId: TID, entraOid: OID, status: 'active', browserAccess: 'granted', disabledBy: null, contactId: 'contact-1',
+      status: 'active', browserAccess: 'granted', disabledBy: null, contactId: 'contact-1',
     });
     expect(stepsOf(account, 'onConflictDoNothing')).toHaveLength(1);
     expect(identity!.args[0]).toBe(portalUserIdentities);
@@ -145,7 +145,7 @@ describe('createIdentityOnlyAccount', () => {
     expect(inserts()).toHaveLength(0);
   });
 
-  it('identity_linked when the login insert conflicts (legacy entra_* key): no identity insert', async () => {
+  it('identity_linked when the login insert conflicts: no identity insert', async () => {
     h.results.push([], []);
     expect(await createIdentityOnlyAccount(tx, instant())).toEqual({ kind: 'identity_linked' });
     expect(inserts()).toHaveLength(1);
@@ -197,7 +197,7 @@ describe('createIdentityOnlyAccount — SCIM', () => {
     expect(outcome).toEqual({ kind: 'created', portalUserId: 'pu-new', authEpoch: 1, identityId: 'identity-1' });
     const [account, identity] = inserts();
     expect(firstArg(account, 'values')).toMatchObject({
-      authMethod: 'entra', entraTenantId: TID, entraOid: OID, status: 'active', browserAccess: 'granted', disabledBy: null, contactId: null,
+      authMethod: 'entra', status: 'active', browserAccess: 'granted', disabledBy: null, contactId: null,
     });
     expect(firstArg(identity, 'values')).toEqual({
       orgId: ORG, portalUserId: 'pu-new', provider: 'entra', issuer: entraIssuer(TID), subject: OID, entraTenantId: TID,

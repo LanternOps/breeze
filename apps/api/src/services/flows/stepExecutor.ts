@@ -71,7 +71,7 @@ import type { BuiltinContext } from './builtins/types';
 import { withFlowExecutionContext } from './flowExecutionContext';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
 import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding, type FlowPreApprovalBinding } from './preApproval';
-import { executeFleetStep } from './fleetStep';
+import { executeFleetStep, fleetTargetNote } from './fleetStep';
 import type { RunScriptOnTargetsInput } from './builtins/runScriptOnTargets';
 import { classifyToolResult } from './runLedger';
 
@@ -427,7 +427,12 @@ type ExternalToolBinding = NonNullable<Parameters<typeof createActionIntent>[1][
 async function parkForApproval(
   i: StepExecutionInput,
   rendered: Record<string, FlowValue>,
-  opts: { builtin?: true; externalTool?: ExternalToolBinding } = {},
+  opts: {
+    builtin?: true;
+    externalTool?: ExternalToolBinding;
+    /** #12418 W02: the durable `reason` of the intent and the sentence its approval card adds. */
+    note?: string;
+  } = {},
 ): Promise<StepOutcome> {
   const meta: StepOutcomeMeta = { renderedInput: rendered };
   let intent: Awaited<ReturnType<typeof createActionIntent>>;
@@ -443,6 +448,7 @@ async function parkForApproval(
       // with it, the dispatch claim and release revalidation re-check exactly
       // the row the approver was shown and fail closed on drift.
       ...(opts.externalTool ? { externalTool: opts.externalTool } : {}),
+      ...(opts.note ? { reason: opts.note, approverNote: opts.note } : {}),
       flowRun: {
         runId: i.run.id,
         stepRowId: i.stepRowId,
@@ -594,7 +600,7 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
         const lookup = bindingFor(i.version, i.step.id);
         return executeFleetStep(i, input as unknown as RunScriptOnTargetsInput, builtinContextOf(i, owner, { notify: 0, http: 0 }), {
           binding: lookup.kind === 'invalid' ? 'invalid' : lookup.kind === 'bound' ? lookup.binding : null,
-          park: (frozen) => parkForApproval(i, frozen, { builtin: true }),
+          park: (frozen, summary) => parkForApproval(i, frozen, { builtin: true, note: fleetTargetNote(summary) }),
           run: (fn, meta) => runInFrame(i, fn, 3, meta),
         });
       }

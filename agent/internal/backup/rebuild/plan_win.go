@@ -27,6 +27,21 @@ func windowsPartitionName(role string) string {
 	}
 }
 
+// windowsPlannedFilesystem is the filesystem provision formats p with. An
+// ESP recorded with no filesystem is planned as fat32: the UEFI spec
+// requires FAT for the ESP, and snapshots taken before the collector
+// learned that (Windows Server 2016 exposes no volume for the ESP, #12576)
+// carry an empty one. Left empty, provision would skip the ESP like the MSR
+// and boot would have no ESP to write to. Every other partition keeps its
+// recorded filesystem; an empty one (the MSR) stays unformatted.
+func windowsPlannedFilesystem(p layout.Partition) string {
+	fs := strings.ToLower(p.Filesystem)
+	if fs == "" && p.Role == layout.RoleEFI {
+		return "fat32"
+	}
+	return fs
+}
+
 // PlanPartitionsWindows is PlanPartitions' Windows twin (plan.go): same 1
 // MiB alignment and end-of-disk reserve, but the partition that grows is
 // always the recorded RoleRoot partition — Windows 11's default layout is
@@ -105,7 +120,7 @@ func PlanPartitionsWindows(src *layout.Disk, targetSizeBytes int64, sectorSize i
 		}
 		plan.Partitions = append(plan.Partitions, PlannedPartition{
 			Number: p.Number, Role: p.Role, TypeGUID: p.TypeGUID, PartUUID: p.PartUUID, Name: windowsPartitionName(p.Role),
-			StartBytes: cursor, SizeBytes: size, Filesystem: strings.ToLower(p.Filesystem), FSUUID: p.FSUUID,
+			StartBytes: cursor, SizeBytes: size, Filesystem: windowsPlannedFilesystem(p), FSUUID: p.FSUUID,
 			Label: p.Label, MountPoint: p.MountPoint, Grown: grown, Attributes: p.Attributes,
 		})
 		cursor += size

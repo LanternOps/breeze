@@ -146,3 +146,10 @@ research-eval-summary.md
 
 # Integration TimingSequencer plans, written under CI (W07a, #10751)
 apps/api/shard-plan-*.json
+
+# AI tool telemetry/eval output: production queries must never be committed (#12421)
+apps/api/tool-capture.jsonl
+apps/api/tool-capture.raw.jsonl
+apps/api/tool-eval-report.json
+apps/api/tool-eval-summary.md
+apps/api/.ai-reports/

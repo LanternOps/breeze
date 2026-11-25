@@ -141,7 +141,7 @@ beforeEach(async () => {
   const janeEmail = `jane-${suffix}@known.test`;
   const [janePortalUser] = await db
     .insert(portalUsers)
-    .values({ orgId: orgA.id, email: janeEmail, name: 'Jane Known' })
+    .values({ browserAccess: 'granted', orgId: orgA.id, email: janeEmail, name: 'Jane Known' })
     .returning({ id: portalUsers.id });
 
   // Partner B's victim ticket. Known thread key + internal number so a forged
@@ -545,7 +545,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
       .returning({ id: tickets.id });
 
     const colleagueEmail = `colleague-${suffix}@known.test`;
-    await admin().insert(portalUsers).values({
+    await admin().insert(portalUsers).values({ browserAccess: 'granted',
       orgId: fx.orgA.id,
       email: colleagueEmail,
       name: 'Same Org Colleague'
@@ -595,7 +595,7 @@ describe('processInboundEmail — cross-partner isolation (real driver, system c
     const victimNumber = uniqueInternalNumber();
     const [newRequester] = await admin()
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: fx.orgA.id,
         email: `new-requester-${suffix}@known.test`,
         name: 'New Requester'

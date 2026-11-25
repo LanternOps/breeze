@@ -19,6 +19,8 @@ export default defineConfig({
       components: {
         // Site-wide CTA that points docs readers back to the product.
         Banner: './src/components/DocsCTABanner.astro',
+        // Adds JSON-LD (Organization on every page, Article on content pages).
+        Head: './src/components/Head.astro',
       },
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/LanternOps/breeze' },

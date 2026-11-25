@@ -235,9 +235,20 @@ describe('classifyTerminal', () => {
   it.each([
     'sdk_error', 'sdk_output_error',
     'wall_clock_exceeded', 'budget_exceeded', 'max_turns_exceeded',
-    'llm_unavailable', 'ownership_mismatch', 'run_failed',
+    'ownership_mismatch', 'run_failed',
   ])('increments on failed with runner/ceiling code %s', (code) => {
     expect(classifyTerminal('failed', code, null)).toBe('increment');
+  });
+
+  // #12347 (owner decision 2026-11-24): the model provider being down,
+  // overloaded or rate-limiting is the platform failing the agent, not the
+  // agent misbehaving — same footing as `stalled` / `enqueue_failed`.
+  it('is neutral on failed:llm_unavailable — a provider outage, not the agent', () => {
+    expect(classifyTerminal('failed', 'llm_unavailable', null)).toBe('neutral');
+  });
+
+  it.each(AI_AGENT_RUN_PROFILES)('failed:llm_unavailable is neutral on the %s profile too', (profile) => {
+    expect(classifyTerminal('failed', 'llm_unavailable', null, profile)).toBe('neutral');
   });
 
   it('is neutral on failed:stalled — infrastructure, not the agent', () => {
@@ -291,7 +302,7 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
   it('device_troubleshooting (#11084): a clean finish resets, a genuine failure still increments', () => {
     expect(classifyTerminal('completed', null, 'no_action', 'device_troubleshooting')).toBe('reset');
     expect(classifyTerminal('awaiting_approval', null, null, 'device_troubleshooting')).toBe('reset');
-    expect(classifyTerminal('failed', 'llm_unavailable', null, 'device_troubleshooting')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'device_troubleshooting')).toBe('increment');
   });
 
   it('a patch plan is advice a human must accept, so even needs_attention is neutral', () => {
@@ -299,7 +310,7 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
   });
 
   it('a genuine failure still increments on a patch run', () => {
-    expect(classifyTerminal('failed', 'llm_unavailable', null, 'patch')).toBe('increment');
+    expect(classifyTerminal('failed', 'sdk_error', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'stalled', null, 'patch')).toBe('neutral');
   });
@@ -307,7 +318,7 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
   it('remediation_research runs are streak-neutral on completion and approval (W2)', () => {
     expect(classifyTerminal('completed', null, 'needs_attention', 'remediation_research')).toBe('neutral');
     expect(classifyTerminal('awaiting_approval', null, null, 'remediation_research')).toBe('neutral');
-    expect(classifyTerminal('failed', 'llm_unavailable', null, 'remediation_research')).toBe('increment');
+    expect(classifyTerminal('failed', 'sdk_error', null, 'remediation_research')).toBe('increment');
   });
 });
 
@@ -499,6 +510,18 @@ describe('recordRunTerminal', () => {
     expect(state.updateCount).toBe(0);
   });
 
+  // #12347: a provider outage neither increments NOR resets the streak — no
+  // lock, no read, no write. The run itself still ends `failed` (that is
+  // `transitionRunStatus`'s write, which this module never makes).
+  it('a failed:llm_unavailable run touches no circuit state at all (no increment, no reset)', async () => {
+    await recordRunTerminal(run, 'failed', 'llm_unavailable', null);
+    expect(state.executed).toHaveLength(0);
+    expect(state.selectCount).toBe(0);
+    expect(state.insertCount).toBe(0);
+    expect(state.updateCount).toBe(0);
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
   it('reset classification takes the lock and zeroes the counter without reading the agent/org', async () => {
     await recordRunTerminal(run, 'completed', null, null);
 
@@ -582,7 +605,7 @@ describe('recordRunTerminal', () => {
   // triggering run's error code — an allowlisted machine token, never the
   // run's error message (which can carry model output or tenant text).
   it.each([
-    ['llm_unavailable'],
+    ['max_turns_exceeded'],
     ['wall_clock_exceeded'],
     ['sdk_error'],
   ])('records the triggering error code (%s) in the opened reason', async (errorCode) => {

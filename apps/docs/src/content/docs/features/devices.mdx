@@ -5,7 +5,7 @@ description: Work with the device list and device Info tab — customizable colu
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
+The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device **Details** tab, including VPN presence and battery status.
 
 ---
 
@@ -207,7 +207,7 @@ Moving is refused while durable PAM lifecycle evidence exists for the device, an
 
 ## Reattaching a Reinstalled Machine
 
-When a machine is reformatted or reimaged and the agent is installed again, the new install enrolls as a new device. Breeze compares what the new install reports (system UUID, serial number and manufacturer, hostname) with the partner's existing records. When an older record matches and has gone silent, the new device is flagged as a possible reinstall of it. **Reattach** lets the new install take over the existing record, so the machine keeps its history, policies, custom fields and tickets instead of starting over as a new device.
+When a machine is reformatted or reimaged and the agent is installed again, the new install enrolls as a new device. Breeze compares what the new install reports (its TPM endorsement key, system UUID, serial number and manufacturer, hostname) with the partner's existing records. The TPM key is compared only when TPM key collection is turned on for your Breeze server (`TPM_ATTESTATION_ENABLED`) and the device has a TPM. When an older record matches and has gone silent, the new device is flagged as a possible reinstall of it. **Reattach** lets the new install take over the existing record, so the machine keeps its history, policies, custom fields and tickets instead of starting over as a new device.
 
 ### Where to start a reattach
 
@@ -218,12 +218,16 @@ The action is offered only to partner users with `devices:write` and `devices:de
 
 ### The reattach dialog
 
-The dialog shows the new install and the existing record side by side, with what matched. The identifiers come from the device itself and are not verified, and the dialog says so. To request the reattach you:
+The dialog shows the new install and the existing record side by side, with what matched. The identifiers come from the device itself and are not verified, and the dialog says so.
+
+**TPM key match.** When the new install proved the same TPM endorsement key the existing record proved, the dialog says so and the hostname does not need to be typed. This shows key continuity, not a genuine TPM: the key's certificate is not checked, and cloned virtual machines share their TPM keys. The key does not count when another record of the partner carries it too (a cloned template, for example), when either device holds a key change waiting for review, or when the key was proven before the new install started. The dialog then says why and asks for the hostname.
+
+To request the reattach you:
 
 <Steps>
 1. **Confirm possession.** Tick the box to confirm, outside Breeze, that the new install runs on the machine the existing record describes.
 
-2. **Type the existing record's hostname.** Matching identifiers are only a hint, so the name must be typed (case does not matter).
+2. **Type the existing record's hostname**, unless the TPM key matched. Other matching identifiers are only a hint, so the name must be typed (case does not matter).
 
 3. **Acknowledge an operating system change**, when the new install reports a different operating system than the record.
 
@@ -243,13 +247,22 @@ The request is pending until the new install's agent picks it up the next time i
 - the new device record is retired;
 - the existing record shows a **Reinstalled on *date*** badge, and the reattach appears in its activity feed.
 
-A request expires if the agent does not complete it in time. Breeze refuses a reattach with an explanation when the existing record is still in use (its install authenticated recently), when either device is already in a pending reattach, when the new install's agent is too old to reattach, or when the existing record changed since the dialog was opened.
+A request expires if the agent does not complete it in time. Breeze refuses a reattach with an explanation when the existing record is still in use (its install authenticated recently), when either device is already in a pending reattach, when the new install's agent is too old to reattach, when the existing record changed since the dialog was opened, or when the TPM key match no longer holds. In that last case the dialog reloads and asks for the hostname.
+
+### Reviewing a TPM key change
+
+The first TPM endorsement key a device proves becomes its baseline, shown under **TPM key** on the device's **Security** tab. When the device later proves a different key, Breeze keeps the baseline and holds the new key for review; until then, the device's TPM key does not count as reattach evidence.
+
+- **Accept the new key** when the TPM was replaced or reset on purpose. It becomes the baseline. When two-factor authentication is enabled, you verify with a passkey or an authenticator app (text-message codes cannot be used here); the verification is bound to that device and that held key.
+- **Keep the current key** to discard the held key. If the TPM really changed, the device holds the new key again the next time it proves it.
+
+Reviewing needs the same access as a reattach: a partner user with `devices:write` and `devices:delete` and access to the device's organization; a device in the holding area needs a full partner administrator. A device in a pending reattach cannot be reviewed until the reattach finishes or is cancelled. Both decisions appear in the device's activity feed.
 
 ---
 
 ## Billing Coverage
 
-The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
+The device **Details** tab carries a **Billing** card, in its **Asset record** section, answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
 
 - **Covered** -- one row per active contract line that bills the device, with the contract name, the line description, and *why* it matches: **Org-wide**, **This site**, **Role: Server**, or **Group: VIP Laptops**. Two contracts can both bill the same device; both rows show.
 - **Not billed by any line** -- no active contract line reaches this device.
@@ -322,7 +335,7 @@ Hovering a VPN badge shows the full detail — interface, addresses, and DNS nam
 
 ### On the device Info tab
 
-When a device has reported at least one VPN, its **Info** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
+When a device has reported at least one VPN, its **Details** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
 
 | Field | Description |
 |-------|-------------|
@@ -383,11 +396,11 @@ The same data is available outside the UI:
 
 ---
 
-## The Device Info Tab
+## The Device Details Tab
 
 The device page header (v0.124.0) shows the display name once, with the hostname in the sub-line, and an **Offline · last seen …** pill when the device is not checking in; CPU and RAM read **—** while the device is offline or its last sample is stale. When the device belongs to an organization other than your working organization, the header says **Viewing a *Org* device** with a **Switch to *Org*** action that changes your working organization and keeps you on the record.
 
-Opening a device and selecting **Info** shows the device's identity and inventory at a glance:
+Opening a device and selecting **Details** shows the device's identity and inventory at a glance:
 
 | Section | Contents |
 |---------|----------|
@@ -400,11 +413,11 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **VPN** | Active VPN/overlay clients (only when at least one is active — see above). |
 | **Agent** | Agent, watchdog and helper (Breeze Assist) versions, status, last seen, enrollment date, system uptime, logged-in user. A warning appears here when agent updates are withheld from the device. A **Breeze Assist** row (v0.125.0+) reads **Installed**, **Not deployed**, or **Unavailable** with the reason; see [Breeze Assist availability](/agents/helper/#enabling--disabling-helper-chat). |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
-| **Tags** and **Custom Fields** | Organizational metadata, when present. |
+| **Tags** and **Custom Fields** | Organizational metadata. Tags always show (**No tags** when empty) and are edited with the **Edit tags** pencil button. |
 
-The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
+The device's **Details** tab also has a **Responsible contacts** card, in its **Asset record** section: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
 
-The device **Overview** tab also has a **Physical placement** card (v0.125.0+) for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
+The device **Details** tab also has a **Physical placement** card (v0.125.0+), in its **Asset record** section, for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
 
 ### System Restore tab
 
