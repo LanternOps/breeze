@@ -46,10 +46,16 @@ describe('isVolumeRootRestoreTarget (#12638)', () => {
 // Strix on #12654: the trailing dot/space trim was an end-anchored regex that
 // retried at every offset, quadratic on a long run followed by another character.
 describe('isVolumeRootRestoreTarget cost (#12654)', () => {
+  // Best of three: one GC pause or scheduler stall on a loaded runner must
+  // not read as superlinear growth.
   const time = (target: string): number => {
-    const start = performance.now();
-    isVolumeRootRestoreTarget(target);
-    return performance.now() - start;
+    let best = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const start = performance.now();
+      isVolumeRootRestoreTarget(target);
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
   };
   const cases: Array<[string, (n: number) => string]> = [
     ['spaces then a letter', (n) => `C:\\${' '.repeat(n)}x`],
@@ -66,6 +72,11 @@ describe('isVolumeRootRestoreTarget cost (#12654)', () => {
     ['share then a long tail', (n) => `\\\\srv\\share${'\\. '.repeat(n / 3)}x`],
     ['GLOBALROOT then parents', (n) => `\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3${'\\x\\..'.repeat(n / 5)}`],
     ['data volume prefix then a long tail', (n) => `/System/Volumes/Data/${'a/'.repeat(n / 2)}x`],
+    ['mount points within mount points', (n) => `/Volumes/x${'/Volumes/x'.repeat(n / 10)}/y`],
+    ['data volume paths within mount points', (n) => `${'/Volumes/x/System/Volumes/Data'.repeat(n / 30)}/y`],
+    ['colons after a drive', (n) => `C:\\${'a:'.repeat(n / 2)}x`],
+    ['whitespace around a target', (n) => `${' '.repeat(n / 2)}C:\\x${' '.repeat(n / 2)}`],
+    ['a long tail under /proc', (n) => `/proc/self/root/${'a/'.repeat(n / 2)}x`],
   ];
 
   it.each(cases)('%s scales linearly', (_name, build) => {

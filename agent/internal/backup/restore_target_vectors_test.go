@@ -97,51 +97,81 @@ func TestRestoreTargetVectors_GuardReading(t *testing.T) {
 
 // With this host's real path functions: a target that placement treats as a
 // volume root (absolute, and nothing left after its volume once
-// filepath.Clean has run; on macOS also the data volume path, which names
-// the same folders as /) is never classified not-root by the server, and
+// filepath.Clean has run) is never classified not-root by the server, and
 // the guard never reads it as an ordinary folder. On Windows this is the
-// real filepath.VolumeName/Clean (the Windows CI job runs it); elsewhere
-// the POSIX ones, for the posix and darwin columns.
+// real filepath.VolumeName/Clean (the Windows CI job runs it); elsewhere the
+// POSIX ones, for the posix and darwin columns.
+//
+// Off Windows the file system is asked as well, independently of either
+// side's rules: a target that exists and is the root directory, or holds
+// the root's own probe folder (/Users on macOS, /etc elsewhere: the data
+// volume path, a volume mount point that links to /, /proc/self/root), is
+// never classified not-root for this host. The guard reads those as
+// folders when the alias is a link (#12668), so only the server column is
+// checked for them.
 func TestRestoreTargetVectors_Placement(t *testing.T) {
 	hosts := restoreTargetVectorHosts[1:]
 	if runtime.GOOS == "windows" {
 		hosts = restoreTargetVectorHosts[:1]
 	}
-	roots := 0
+	roots, aliases := 0, 0
 	for _, v := range loadRestoreTargetVectors(t) {
 		if !filepath.IsAbs(v.Target) {
 			continue // placement refuses a target that is not absolute
 		}
 		cleaned := filepath.Clean(v.Target)
 		rest := strings.FieldsFunc(cleaned[len(filepath.VolumeName(cleaned)):], func(r rune) bool { return r == '\\' || r == '/' })
-		for _, h := range hosts {
-			parts := rest
-			if h.style == styleDarwin {
-				parts = withoutDarwinDataVolume(foldParts(parts))
+		if len(rest) == 0 {
+			for _, h := range hosts {
+				roots++
+				if v.Expect[h.name] == "not-root" {
+					t.Errorf("%s: placement treats %q (cleaned %q) as a volume root but the server classifies it not-root (%s)", h.name, v.Target, cleaned, v.Note)
+				}
+				if v.Guard[h.name] == "folder" {
+					t.Errorf("%s: placement treats %q (cleaned %q) as a volume root but the guard reads a folder (%s)", h.name, v.Target, cleaned, v.Note)
+				}
 			}
-			if len(parts) != 0 {
-				continue
-			}
-			roots++
-			if v.Expect[h.name] == "not-root" {
-				t.Errorf("%s: placement treats %q (cleaned %q) as a volume root but the server classifies it not-root (%s)", h.name, v.Target, cleaned, v.Note)
-			}
-			if v.Guard[h.name] == "folder" {
-				t.Errorf("%s: placement treats %q (cleaned %q) as a volume root but the guard reads a folder (%s)", h.name, v.Target, cleaned, v.Note)
-			}
+		}
+		if runtime.GOOS == "windows" || !namesTheRootDirectory(v.Target) {
+			continue
+		}
+		aliases++
+		column := "posix"
+		if runtime.GOOS == "darwin" {
+			column = "darwin"
+		}
+		if v.Expect[column] == "not-root" {
+			t.Errorf("%s: %q is the root directory on this host but the server classifies it not-root (%s)", column, v.Target, v.Note)
 		}
 	}
 	if roots == 0 {
 		t.Fatal("no case is a volume root for placement: the comparison above checked nothing")
 	}
+	if runtime.GOOS != "windows" && aliases == 0 {
+		t.Fatal("no case names the root directory on this host: the file-system check above checked nothing")
+	}
 }
 
-func foldParts(parts []string) []string {
-	folded := make([]string, len(parts))
-	for i, p := range parts {
-		folded[i] = foldObjectKey(p)
+// namesTheRootDirectory reports whether target, on this host's file system,
+// is / or holds the root's probe folder.
+func namesTheRootDirectory(target string) bool {
+	root, err := os.Stat("/")
+	if err != nil {
+		return false
 	}
-	return folded
+	if got, err := os.Stat(target); err == nil && os.SameFile(got, root) {
+		return true
+	}
+	probe := "etc"
+	if runtime.GOOS == "darwin" {
+		probe = "Users"
+	}
+	want, err := os.Stat("/" + probe)
+	if err != nil {
+		return false
+	}
+	got, err := os.Stat(filepath.Join(target, probe))
+	return err == nil && os.SameFile(got, want)
 }
 
 // On macOS /System/Volumes/Data names the same folders as / (#12671): the

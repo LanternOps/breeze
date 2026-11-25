@@ -25,10 +25,10 @@ export const RESTORE_TARGET_PATH_MAX_LENGTH = 32_767;
 
 const SEPARATOR = /[\\/]/;
 // Go's Windows filepath reads any first character before a colon as a
-// drive (`1:\` is absolute there), so this does too; only a letter names a
-// drive through a device prefix (DRIVE_ONLY), where anything else needs
-// confirmation anyway.
-const DRIVE = /^[^\\/]:/;
+// drive (`1:\`, ` :\` and `\:\` are absolute there), so this does too;
+// only a letter names a drive through a device prefix (DRIVE_ONLY), where
+// anything else needs confirmation anyway.
+const DRIVE = /^[\s\S]:/;
 const DRIVE_ONLY = /^[A-Za-z]:$/;
 // `\\?`, `\\.` and `\??` (either separator in every position), ending the
 // path or followed by a separator: Go's filepath reads exactly these as a
@@ -78,16 +78,29 @@ export function isVolumeRootRestoreTarget(targetPath: string): boolean {
  *   share need confirmation.
  * - posix: a path starting with `/`, split on `/` only and cleaned, that
  *   leaves nothing (`/`, `//./`, `/x\y/..`).
+ * - posix: anything under `/proc` needs confirmation.
  * - darwin: posix, and `/System/Volumes/Data` (the data volume's own path,
  *   whose firmlinked folders are the ones under `/`) read as `/`. That
- *   over-refuses slightly: not every folder under `/` is firmlinked. Any
- *   other path ending in it needs confirmation.
+ *   over-refuses slightly: not every folder under `/` is firmlinked. A
+ *   volume mount point (`/Volumes/<name>`) is a root; `/.vol`, `/.file`
+ *   and other paths ending in the data volume path need confirmation
+ *   (darwinClass).
+ * - windows: a colon after the drive or share needs confirmation.
+ *
+ * The target is read as received and trimmed; the stricter reading wins.
  *
  * Linear in the length of the target: splits and single scans only.
  */
 export function classifyRestoreTarget(targetPath: string, host?: RestoreTargetHost): RestoreTargetClass {
-  const path = targetPath.trim();
-  if (path === '') return 'not-root';
+  // The helper receives the target exactly as sent, untrimmed; the trimmed
+  // form is read too, so surrounding whitespace never hides a root.
+  const trimmed = targetPath.trim();
+  if (trimmed === '') return 'not-root';
+  const cls = classifyPath(trimmed, host);
+  return trimmed === targetPath ? cls : stricter(cls, classifyPath(targetPath, host));
+}
+
+function classifyPath(path: string, host: RestoreTargetHost | undefined): RestoreTargetClass {
   switch (host) {
     case 'windows':
       return windowsClass(path);
@@ -103,13 +116,13 @@ export function classifyRestoreTarget(targetPath: string, host?: RestoreTargetHo
 
 function windowsClass(path: string): RestoreTargetClass {
   if (DEVICE_PREFIX.test(path)) return deviceClass(path);
-  if (DRIVE.test(path)) return countClass(resolveParts(path.slice(2).split(SEPARATOR), true));
+  if (DRIVE.test(path)) return foldersClass(path.slice(2).split(SEPARATOR));
   if (SEPARATOR.test(path.charAt(0)) && SEPARATOR.test(path.charAt(1))) {
     // `\\server\share\…` (either separator). Go's volume is the server and
     // share; `..` does not climb above it.
     const [server, share, ...tail] = path.slice(2).split(SEPARATOR);
     if (!server || !share) return 'needs-confirmation';
-    return countClass(resolveParts(tail, true));
+    return foldersClass(tail);
   }
   if (SEPARATOR.test(path.charAt(0))) {
     // Rooted with no drive: the helper refuses it, but it names the current
@@ -118,6 +131,16 @@ function windowsClass(path: string): RestoreTargetClass {
     return countClass(resolveParts(path.split(SEPARATOR), path.charAt(0) === '\\'));
   }
   return 'not-root'; // relative or drive-less: the helper refuses it
+}
+
+/**
+ * The folders after a drive or share. A Win32 folder name cannot hold a
+ * colon: one there is stream syntax (`::$INDEX_ALLOCATION`), which this
+ * check does not model.
+ */
+function foldersClass(raw: string[]): RestoreTargetClass {
+  if (raw.some((part) => part.includes(':'))) return 'needs-confirmation';
+  return countClass(resolveParts(raw, true));
 }
 
 /**
@@ -139,6 +162,7 @@ function deviceClass(path: string): RestoreTargetClass {
 }
 
 function deviceVolumeClass(volume: string, rest: string[]): RestoreTargetClass {
+  if (rest.some((part) => part.includes(':'))) return 'needs-confirmation'; // stream syntax, as in foldersClass
   if (DRIVE_ONLY.test(volume)) return countClass(rest);
   if (/^Volume\{[0-9a-f-]+\}$/i.test(volume)) return countClass(rest);
   if (
@@ -157,15 +181,43 @@ function deviceVolumeClass(volume: string, rest: string[]): RestoreTargetClass {
 
 function posixClass(path: string, darwin: boolean): RestoreTargetClass {
   if (path.charAt(0) !== '/') return 'not-root'; // relative: the helper refuses it
-  let parts = resolveParts(path.split('/'), false);
-  if (!darwin) return countClass(parts);
-  if (parts.length >= 3 && isDataVolumeAt(parts, 0)) parts = parts.slice(3);
-  const cls = countClass(parts);
-  // Another path ending in the data volume path (`/Volumes/<boot volume>`
-  // is a link to /, so `/Volumes/Macintosh HD/System/Volumes/Data` is the
-  // data volume too) can name the same folders: confirm.
-  if (cls === 'not-root' && parts.length >= 3 && isDataVolumeAt(parts, parts.length - 3)) return 'needs-confirmation';
-  return cls;
+  const parts = resolveParts(path.split('/'), false);
+  // Linux: /proc/<pid>/root (and the per-thread and cwd links beside it) can
+  // lead back to /; nothing under /proc is a restore folder.
+  if (parts[0] === 'proc') return 'needs-confirmation';
+  return darwin ? darwinClass(parts) : countClass(parts);
+}
+
+/**
+ * macOS: `/System/Volumes/Data` is read as `/`; `/Volumes/<name>` is a
+ * volume's mount point (a root, like `E:\`); `/.vol/…` and `/.file/…` reach
+ * files by volume and file ID and need confirmation. The boot volume's
+ * mount point is a link to `/`, so a path inside any mounted volume is read
+ * again from there: anything that is not an ordinary folder that way needs
+ * confirmation. A path ending in the data volume path needs it too. Each
+ * step moves forward through the components: linear.
+ */
+function darwinClass(parts: string[]): RestoreTargetClass {
+  let i = 0;
+  let throughMount = false;
+  for (;;) {
+    if (parts.length - i >= 3 && isDataVolumeAt(parts, i)) i += 3;
+    const left = parts.length - i;
+    let cls: RestoreTargetClass = 'not-root';
+    if (left === 0) {
+      cls = 'root';
+    } else if (foldName(parts[i]!) === '.vol' || foldName(parts[i]!) === '.file') {
+      cls = 'needs-confirmation';
+    } else if (foldName(parts[i]!) === 'volumes' && left === 2) {
+      cls = 'root';
+    } else if (foldName(parts[i]!) === 'volumes' && left > 2) {
+      i += 2;
+      throughMount = true;
+      continue;
+    }
+    if (cls === 'not-root' && left >= 3 && isDataVolumeAt(parts, parts.length - 3)) return 'needs-confirmation';
+    return throughMount && cls === 'root' ? 'needs-confirmation' : cls;
+  }
 }
 
 // macOS compares names ignoring case (the helper folds them with Unicode case

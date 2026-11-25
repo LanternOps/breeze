@@ -565,6 +565,22 @@ describe('restore routes', () => {
       expect(payload).not.toHaveProperty('allowOverwriteOriginals');
     });
 
+    // The helper receives the target exactly as sent, so that exact string is
+    // what is classified: surrounding whitespace is neither trimmed off the
+    // forwarded target nor allowed to hide a root from the check.
+    it('classifies and forwards the same, untrimmed target', async () => {
+      const refused = await post({ targetPath: ' :\\' });
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).code).toBe('restore_would_overwrite_originals');
+
+      primeRestore('D:\\Restore ');
+      const res = await post({ targetPath: 'D:\\Restore ' });
+      expect(res.status).toBe(201);
+      const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+      expect(payload.targetPath).toBe('D:\\Restore ');
+      expect(payload).not.toHaveProperty('allowOverwriteOriginals');
+    });
+
     it('leaves a folder target unchanged: no flag needed, none sent', async () => {
       primeRestore('D:\\Restored');
       const res = await post({ targetPath: 'D:\\Restored' });
