@@ -155,6 +155,14 @@ export const harnessState = {
   tenantTools: [] as Array<{ tier: number; definition: { name: string; description: string; input_schema: Record<string, unknown> } }>,
   flowTools: [] as Array<{ name: string; description: string; tier: number; inputSchema: Record<string, unknown> }>,
   sessions: new Map<string, string>(),
+  ledgerBegin: vi.fn(async (..._args: unknown[]) => ({ aiOrigin: { kind: 'ai_assistant', sessionId: 's' }, executionId: 'e', sessionId: 's', orgId: 'org-1' }) as unknown),
+  ledgerComplete: vi.fn(async (..._args: unknown[]) => undefined),
+  /** Return a GuardrailCheck to override checkGuardrails for one tool; undefined keeps the default. */
+  guardrailOverride: undefined as undefined | ((name: string, input: Record<string, unknown>) => { allowed: boolean; tier: number; reason?: string } | undefined),
+  executeTenantToolDetailed: vi.fn(async (..._args: unknown[]) => ({ isError: false, text: JSON.stringify({ tenant: true }) })),
+  callMcpFlowTool: vi.fn(async (..._args: unknown[]) => ({ kind: 'result', tier: 1, text: JSON.stringify({ flow: true }), isError: false }) as unknown),
+  /** MCP_SKIP_AMBIENT_DB_CONTEXT_KEY as the auth middleware saw it, per request. */
+  observedSkipFlags: [] as unknown[],
   resolveTenantTools: vi.fn(async (..._args: unknown[]) => harnessState.tenantTools),
   listMcpFlowTools: vi.fn(async (..._args: unknown[]) => harnessState.flowTools),
 };
@@ -170,6 +178,12 @@ export function resetHarnessState(): void {
   harnessState.tenantTools = [];
   harnessState.flowTools = [];
   harnessState.sessions.clear();
+  harnessState.observedSkipFlags = [];
+  harnessState.ledgerBegin.mockReset().mockImplementation(async () => ({ aiOrigin: { kind: 'ai_assistant', sessionId: 's' }, executionId: 'e', sessionId: 's', orgId: 'org-1' }));
+  harnessState.ledgerComplete.mockReset().mockResolvedValue(undefined);
+  harnessState.guardrailOverride = undefined;
+  harnessState.executeTenantToolDetailed.mockReset().mockImplementation(async () => ({ isError: false, text: JSON.stringify({ tenant: true }) }));
+  harnessState.callMcpFlowTool.mockReset().mockImplementation(async () => ({ kind: 'result', tier: 1, text: JSON.stringify({ flow: true }), isError: false }));
   harnessState.resolveTenantTools.mockReset().mockImplementation(async () => harnessState.tenantTools);
   harnessState.listMcpFlowTools.mockReset().mockImplementation(async () => harnessState.flowTools);
 }
@@ -189,6 +203,7 @@ export async function envMock(orig: Orig) {
 export function apiKeyAuthMock() {
   return {
     apiKeyAuthMiddleware: async (c: any, next: any) => {
+      harnessState.observedSkipFlags.push(c.get('mcpSkipAmbientDbContext'));
       c.set('apiKey', { name: 'test', keyPrefix: 'brz_test', rateLimit: 1000, createdBy: 'user-1', ...harnessState.context });
       return next();
     },
@@ -239,9 +254,10 @@ export async function guardrailsMock(orig: Orig) {
   const actual = await orig<typeof import('../services/aiGuardrails')>();
   return {
     ...actual,
-    checkGuardrails: (name: string, input: Record<string, unknown>, context?: unknown) => (harnessState.realRegistry
-      ? actual.checkGuardrails(name, input, context as never)
-      : { allowed: true, tier: harnessState.catalog[name]?.tier ?? 1 }),
+    checkGuardrails: (name: string, input: Record<string, unknown>, context?: unknown) => (harnessState.guardrailOverride?.(name, input)
+      ?? (harnessState.realRegistry
+        ? actual.checkGuardrails(name, input, context as never)
+        : { allowed: true, tier: harnessState.catalog[name]?.tier ?? 1 })),
     checkToolPermission: (...args: unknown[]) => harnessState.checkToolPermission(...args),
     checkToolRateLimit: (...args: unknown[]) => harnessState.checkToolRateLimit(...args),
     checkPermissionRequirement: async () => null,
@@ -259,13 +275,16 @@ export function auditMock() {
 export function resolverMock() {
   return {
     resolveTenantTools: (...args: unknown[]) => harnessState.resolveTenantTools(...args),
-    resolveTenantToolByName: async () => null,
+    resolveTenantToolByName: async (_auth: unknown, name: string) => harnessState.tenantTools.find((t) => t.definition.name === name) ?? null,
     resolveTenantToolHealthByName: async () => ({ found: false }),
   };
 }
 
 export function flowToolsMock() {
-  return { listMcpFlowTools: (...args: unknown[]) => harnessState.listMcpFlowTools(...args), callMcpFlowTool: vi.fn() };
+  return {
+    listMcpFlowTools: (...args: unknown[]) => harnessState.listMcpFlowTools(...args),
+    callMcpFlowTool: (...args: unknown[]) => harnessState.callMcpFlowTool(...args),
+  };
 }
 
 export function executionOrgMock() {
@@ -288,7 +307,19 @@ export function redisMock() {
 
 export function ledgerMock() {
   return {
-    beginMcpToolExecutionLedger: vi.fn(async () => ({ aiOrigin: { kind: 'ai_assistant', sessionId: 's' }, executionId: 'e', sessionId: 's', orgId: 'org-1' })),
-    completeMcpToolExecutionLedger: vi.fn(async () => undefined),
+    beginMcpToolExecutionLedger: (...args: unknown[]) => harnessState.ledgerBegin(...args),
+    completeMcpToolExecutionLedger: (...args: unknown[]) => harnessState.ledgerComplete(...args),
   };
+}
+
+export async function tenantExecuteMock(orig: Orig) {
+  return { ...await orig<Record<string, unknown>>(), executeTenantToolDetailed: (...args: unknown[]) => harnessState.executeTenantToolDetailed(...args) };
+}
+
+export async function tenantGuardrailsMock(orig: Orig) {
+  return { ...await orig<Record<string, unknown>>(), checkTenantToolRateLimit: async () => null };
+}
+
+export function rateLimitMock() {
+  return { rateLimiter: async () => ({ allowed: true, resetAt: new Date(Date.now() + 60_000) }) };
 }

@@ -78,7 +78,7 @@ import {
 } from '../services/mcpDomains';
 import { AI_TOOL_DOMAINS, isAiToolDomain, type AiToolDomain } from '@breeze/shared';
 import { isAlwaysLoadedToolName, MCP_GET_TOOL_DETAILS_TOOL_NAME, MCP_META_TOOL_NAMES, MCP_SEARCH_TOOLS_TOOL_NAME, MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
-import { handleGetToolDetails, handleSearchTools, MCP_META_TOOL_LIST_ENTRIES, type McpToolListEntry } from '../services/mcpMetaTools';
+import { handleGetToolDetails, handleSearchTools, MCP_META_TOOL_LIST_ENTRIES, unwrapCallToolRequest, type McpToolListEntry } from '../services/mcpMetaTools';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { isFlowToolName } from '../services/flows/toolNames';
 import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
@@ -277,15 +277,24 @@ async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
     if (parsed.tooLarge || parsed.parseError || !parsed.body || typeof parsed.body !== 'object') {
       return false;
     }
-    const body = parsed.body as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
+    const body = parsed.body as { method?: unknown; params?: unknown };
     if (body.method !== 'tools/call') return false;
-    const name = body.params?.name;
+    const outer = body.params !== null && typeof body.params === 'object' && !Array.isArray(body.params)
+      ? body.params as Record<string, unknown>
+      : undefined;
+    // #12427: call_tool is unwrapped here exactly as handleJsonRpc unwraps it,
+    // so a wrapped tenant or self-managed call leaves the ambient transaction
+    // the same way a direct one does. A malformed wrapper is a safe false.
+    const unwrapped = unwrapCallToolRequest(outer);
+    if ('invalid' in unwrapped) return false;
+    const params = unwrapped.params;
+    const name = params?.name;
     if (typeof name !== 'string') return false;
     // Also true for a flow tool (`flow__<slug>` has the tenant shape), on
     // purpose: handleFlowToolCall's reads and the run insert open their own
     // system contexts, exactly like the tenant path (W5 PR C, #5220).
     if (isTenantToolName(name)) return true;
-    const input = body.params?.arguments;
+    const input = params?.arguments;
     if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
     return toolManagesDbContext(aiTools.get(resolveDeprecatedToolAlias(name)), input as Record<string, unknown>);
   } catch {
@@ -739,13 +748,16 @@ async function buildCheckedAuthFromApiKey(
  * canonical tool (after alias resolution) or the resource URI — and its
  * domain, so "who keeps hitting a domain they were not granted" is a query.
  */
-function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcResponse): Record<string, unknown> {
+function domainDenialAuditDetails(body: JsonRpcRequest, response: JsonRpcResponse, auditExtras: McpAuditExtras): Record<string, unknown> {
   const data = response.error?.data as { reason?: unknown; domain?: unknown } | undefined;
   if (data?.reason !== 'domain_not_granted') return {};
   const params = body.params ?? {};
+  // #12427: a call_tool denial names the inner tool (already canonical and bounded).
   const target = body.method === 'resources/read'
     ? { resourceUri: typeof params.uri === 'string' ? boundDeniedName(params.uri) : null }
-    : { canonicalTool: typeof params.name === 'string' ? boundDeniedName(resolveDeprecatedToolAlias(params.name)) : null };
+    : auditExtras.metaTool === 'call_tool' && auditExtras.toolName !== undefined
+      ? { canonicalTool: auditExtras.toolName }
+      : { canonicalTool: typeof params.name === 'string' ? boundDeniedName(resolveDeprecatedToolAlias(params.name)) : null };
   return { ...target, domain: data.domain, deniedReason: 'domain_not_granted' };
 }
 
@@ -781,7 +793,21 @@ type McpDispatchContext = {
  * B-W06 (#6160, D-B53): `taskId` only when it is a UUID; `taskResult` on a
  * tools/call that returned a CreateTaskResult.
  */
-type McpAuditExtras = { mcpApp?: string; taskId?: string; taskResult?: true };
+type McpAuditExtras = {
+  mcpApp?: string;
+  taskId?: string;
+  taskResult?: true;
+  /**
+   * #12427: a tools/call that arrived through call_tool, the canonical inner
+   * tool and (when an alias was used) the inner name as sent; both bounded.
+   * `toolIsError` marks any tools/call result with isError: true, direct or
+   * wrapped (a tool failure is not a JSON-RPC error, so `result` cannot).
+   */
+  metaTool?: 'call_tool';
+  toolName?: string;
+  requestedToolName?: string;
+  toolIsError?: true;
+};
 
 /** Legacy-era methods that may read the negotiated-extension side key (D-B42). */
 const MCP_SIDE_KEY_METHODS: ReadonlySet<string> = new Set(['tools/list', 'resources/read', 'tools/call']);
@@ -838,13 +864,18 @@ async function dispatchAndAudit(
       ...(apiKey.partnerServicePrincipalId
         ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
         : {}),
-      ...domainDenialAuditDetails(body, response),
+      ...domainDenialAuditDetails(body, response, ctx.auditExtras),
       // B-W05 (#6159, D-B44): both keys absent unless set, so pre-W05 rows and
       // queries are unchanged. `mcpApp` is a registry key, never caller text.
       ...(clientExtensions.ui ? { uiExtension: true } : {}),
       ...(ctx.auditExtras.mcpApp ? { mcpApp: ctx.auditExtras.mcpApp } : {}),
       ...(ctx.auditExtras.taskId ? { taskId: ctx.auditExtras.taskId } : {}),
       ...(ctx.auditExtras.taskResult ? { taskResult: true } : {}),
+      // #12427: absent unless set, so a direct call's row is unchanged.
+      ...(ctx.auditExtras.metaTool ? { metaTool: ctx.auditExtras.metaTool } : {}),
+      ...(ctx.auditExtras.toolName !== undefined ? { toolName: ctx.auditExtras.toolName } : {}),
+      ...(ctx.auditExtras.requestedToolName !== undefined ? { requestedToolName: ctx.auditExtras.requestedToolName } : {}),
+      ...(ctx.auditExtras.toolIsError ? { toolIsError: true } : {}),
       ...correlationAuditDetails(ctx.correlation),
     },
     result: response.error ? 'failure' : 'success',
@@ -1458,15 +1489,30 @@ async function handleJsonRpc(
         return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions(), toolListMode);
 
       case 'tools/call': {
-        noteMcpAppToolCall(req.params, ctx.auditExtras);
+        // #12427: call_tool is unwrapped ONCE, here (and in the pre-auth
+        // classifier), so every reader below — the Apps counter, every gate in
+        // handleToolsCall, the rate limit, the ledger and the audit — sees the
+        // inner name. Mode and protocol classification already ran on the
+        // original envelope.
+        const unwrapped = unwrapCallToolRequest(req.params);
+        if (unwrapped.wrapped) ctx.auditExtras.metaTool = 'call_tool';
+        if ('invalid' in unwrapped) return jsonRpcError(req.id, -32602, 'Invalid params', { reason: unwrapped.invalid });
+        const params = unwrapped.params ?? {};
+        if (unwrapped.wrapped) {
+          const canonical = resolveDeprecatedToolAlias(unwrapped.params.name);
+          ctx.auditExtras.toolName = boundDeniedName(canonical);
+          if (canonical !== unwrapped.params.name) ctx.auditExtras.requestedToolName = boundDeniedName(unwrapped.params.name);
+        }
+        noteMcpAppToolCall(params, ctx.auditExtras);
         // B-W06 (#6160, D-B47): Tasks are modern-only and declared per request.
         const tasksDeclared = ctx.era === 'modern' && (await ctx.resolveClientExtensions()).tasks;
-        const response = await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared, {
-          surface: 'direct',
+        const response = await handleToolsCall(req.id, params, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared, {
+          surface: unwrapped.wrapped ? 'call_tool' : 'direct',
           toolListMode,
           clientExtensions: await ctx.resolveClientExtensions(),
         });
         if (tasksDeclared && isCreateTaskResponse(response)) ctx.auditExtras.taskResult = true;
+        if ((response.result as { isError?: unknown } | undefined)?.isError === true) ctx.auditExtras.toolIsError = true;
         return response;
       }
 
@@ -2339,6 +2385,15 @@ async function handleToolsCall(
 
   if (!requestedToolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // #12427: call_tool never targets a meta-tool (no recursion, no wrapped
+  // discovery), checked on the CANONICAL name and before the continuation
+  // branch, so neither an alias nor a requestState can slip one through.
+  // Direct search_tools / get_tool_details calls stay callable.
+  if (options.surface === 'call_tool' && typeof requestedToolName === 'string'
+    && MCP_META_TOOL_NAMES.has(resolveDeprecatedToolAlias(requestedToolName))) {
+    return jsonRpcError(id, -32602, 'Invalid params', { reason: 'meta_tool_target' });
   }
 
   // B-W04 (#6158, D-B32): a 2026-07-28 MRTR retry of an approval elicitation.
