@@ -102,7 +102,8 @@ func TestRefuseRestoreOverOriginals_SecondPassFailure(t *testing.T) {
 	noteAll(g, selected, nil)
 	result := &RestoreResult{}
 	if !refuseRestoreOverOriginals(g, selected, nil, nil, nil, failing, result) ||
-		result.Code != ResultCodeRestoreOverwriteCheckFailed || !strings.Contains(result.Error, broken.Error()) {
+		result.Code != ResultCodeRestoreOverwriteCheckFailed || !strings.Contains(result.Error, broken.Error()) ||
+		strings.Contains(result.Error, "path below") {
 		t.Fatalf("second pass failed: result %+v; want refused with %s", result, ResultCodeRestoreOverwriteCheckFailed)
 	}
 

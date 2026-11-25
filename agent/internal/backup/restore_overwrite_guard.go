@@ -549,15 +549,15 @@ func refusalPath(p string) string {
 // because the check could not finish: what to do first, then the first
 // path that could not be examined.
 func overwriteCheckFailedRefusal(targetBase string, err error) string {
-	msg := fmt.Sprintf("restore refused: could not confirm that restoring to %s leaves the original files untouched; nothing was written. Choose a new, empty folder as the target, or give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again.", refusalPath(targetBase))
+	msg := fmt.Sprintf("restore refused: could not confirm that restoring to %s leaves the original files untouched; nothing was written. Choose a new, empty folder as the target", refusalPath(targetBase))
 	if unchecked, ok := errors.AsType[*uncheckedPathError](err); ok {
 		reason := unchecked.err
 		if pathErr, ok := errors.AsType[*fs.PathError](reason); ok {
 			reason = pathErr.Err // the path is named already
 		}
-		return fmt.Sprintf("%s First path that could not be checked (%s): %s (%v)", msg, unchecked.what, refusalPath(unchecked.path), reason)
+		return fmt.Sprintf("%s, or give the Breeze backup helper access to the path below (on macOS, Full Disk Access) and try again. First path that could not be checked (%s): %s (%v)", msg, unchecked.what, refusalPath(unchecked.path), reason)
 	}
-	return fmt.Sprintf("%s (%v)", msg, err)
+	return fmt.Sprintf("%s. (%v)", msg, err)
 }
 
 // notADirectory reports a stat error that establishes there is no directory
