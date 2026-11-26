@@ -360,7 +360,7 @@ sentinelOneRoutes.post(
     // An edit keeps the stored token when it is not given one, so it must not
     // act on a row a disconnect cleared after this request read it. Lock the
     // active row for the rest of the request (a disconnect waits for it, or has
-    // already committed and the row is gone). An edit that saw the row active
+    // already committed and the row is no longer active). An edit that saw the row active
     // and then lost it answers 409 instead of reactivating it (#12691).
     const [seen] = await db
       .select({ id: s1Integrations.id })

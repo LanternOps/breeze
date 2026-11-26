@@ -27,8 +27,9 @@
  *
  * Races. An edit locks the active row before it reads the secrets it keeps,
  * so it cannot write them back over a disconnect; one that saw the row active
- * and then lost it to a disconnect answers 409. Two connects or reconnects
- * that race on the unique index answer 409 for the loser. Disconnect locks the
+ * and then lost it to a disconnect answers 409. Two connects that race answer
+ * 409 for the loser: a lost race on the unique index, or, for two reconnects
+ * of one row, an update that finds the row already reactivated. Disconnect locks the
  * integration row first and its mappings second; the S1 sync takes the same
  * integration lock before it writes any mapping. A sync that finishes after a
  * disconnect writes no status onto the disconnected row.

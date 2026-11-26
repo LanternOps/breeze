@@ -463,7 +463,7 @@ huntressRoutes.post(
     // An edit keeps the stored secrets it is not given, so it must not act on a
     // row a disconnect cleared after this request read it. Lock the active row
     // for the rest of the request (a disconnect waits for it, or has already
-    // committed and the row is gone). An edit that saw the row active and then
+    // committed and the row is no longer active). An edit that saw the row active and then
     // lost it answers 409 instead of writing the old secrets back (#12691).
     const [seen] = await db
       .select({ id: huntressIntegrations.id })

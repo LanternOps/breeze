@@ -3,11 +3,12 @@
  * Huntress integration, on real Postgres. Routes run as the unprivileged
  * `breeze_app` role through the real middleware; the competing transaction is
  * held open on a separate connection and released only once the request or
- * sync under test is seen waiting on its lock (pg_stat_activity), so every
- * interleaving is forced, not timed.
+ * sync under test is seen waiting on its lock (pg_stat_activity), so those
+ * interleavings are forced, not timed.
  *
- * The vendor clients are replaced with fakes: no network call is made, and a
- * fake can run a disconnect "while the vendor call is in flight".
+ * The vendor clients are replaced with fakes: no network call is made. The
+ * sync-in-flight cases run the disconnect from inside the faked vendor call
+ * instead of holding a transaction.
  *
  * Run (needs `pnpm test-stack up`):
  *   cd apps/api && npx vitest run --config vitest.integration.config.ts \
@@ -21,6 +22,7 @@ import { eq, sql } from 'drizzle-orm';
 
 const s1Fake = vi.hoisted(() => ({
   agents: [] as unknown[],
+  sites: [] as Array<{ siteId: string; siteName: string | null; registrationToken: string | null }>,
   onListThreats: null as null | (() => Promise<void>),
 }));
 const huntressFake = vi.hoisted(() => ({
@@ -31,7 +33,7 @@ vi.mock('../../services/sentinelOne/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sentinelOne/client')>();
   class FakeSentinelOneClient {
     async listAgents() { return { results: s1Fake.agents, truncated: false }; }
-    async listSites() { return []; }
+    async listSites() { return s1Fake.sites; }
     async listThreats() {
       if (s1Fake.onListThreats) await s1Fake.onListThreats();
       return { results: [], truncated: false };
@@ -355,13 +357,34 @@ describe('concurrent connects answer 409, not 500 (#12691)', () => {
   });
 });
 
+const branchAgent = {
+  id: 'agent-1', uuid: null, computerName: 'pc-1', machineType: null, siteId: 'site-real', siteName: 'Branch',
+  osName: null, infected: false, activeThreats: 0, isActive: true, policyName: null, lastSeen: null, updatedAt: null,
+};
+
 describe('a sync racing a disconnect (#12691)', () => {
-  it('SentinelOne: the sync takes the integration lock before writing any site mapping, so it cannot deadlock a disconnect', async () => {
+  it('SentinelOne control: a sync of an active integration stores the fetched site token', async () => {
+    const { integration } = await seedS1({ provisionalSite: 'Branch' });
+    s1Fake.agents = [branchAgent];
+    s1Fake.sites = [{ siteId: 'site-real', siteName: 'Branch', registrationToken: 'reg-token-new' }];
+    s1Fake.onListThreats = null;
+    try {
+      await processS1SyncIntegration({
+        type: 'sync-integration', integrationId: integration.id, syncAgents: true, syncThreats: false,
+      });
+    } finally {
+      s1Fake.sites = [];
+    }
+    const [mapping] = await (getTestDb() as any).select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
+    expect(mapping.s1SiteId).toBe('site-real');
+    expect(decryptSecret(mapping.registrationToken, { aad: 's1_org_mappings.registration_token' })).toBe('reg-token-new');
+  });
+
+  it('SentinelOne: the sync takes the integration lock before writing any site mapping, so it cannot deadlock a disconnect, and stores no token after it', async () => {
     const { org, integration } = await seedS1({ provisionalSite: 'Branch' });
-    s1Fake.agents = [{
-      id: 'agent-1', uuid: null, computerName: 'pc-1', machineType: null, siteId: 'site-real', siteName: 'Branch',
-      osName: null, infected: false, activeThreats: 0, isActive: true, policyName: null, lastSeen: null, updatedAt: null,
-    }];
+    s1Fake.agents = [branchAgent];
+    // The console returns a token: only the disconnect keeps it out of the row.
+    s1Fake.sites = [{ siteId: 'site-real', siteName: 'Branch', registrationToken: 'reg-token-new' }];
     s1Fake.onListThreats = null;
 
     // Disconnect order: integration row first, then its mappings.
@@ -392,6 +415,7 @@ describe('a sync racing a disconnect (#12691)', () => {
 
     expect(stepError).toBeNull();
     await expect(sync).resolves.toMatchObject({ integrationId: integration.id });
+    s1Fake.sites = [];
 
     const mappings = await (getTestDb() as any).select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
     expect(mappings).toHaveLength(1);

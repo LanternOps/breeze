@@ -363,8 +363,8 @@ export async function upsertDiscoveredSites(params: {
   // the integration row until this transaction ends and store tokens only
   // while it is active, so a disconnect either waits for this write and then
   // clears it, or has already committed and no token is written (#12691).
-  // The sync took this lock already, before its first mapping write; taking
-  // it again in the same transaction is a no-op.
+  // The sync already holds this lock in the same transaction (see
+  // syncAgentsForIntegration), so this adds no new wait; the read decides storeTokens.
   const storeTokens = (await lockIntegrationRow(params.integrationId)) === true;
 
   const now = new Date();
