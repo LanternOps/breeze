@@ -21,6 +21,11 @@ import {
 } from '../services/sentinelOne/actions';
 import { escapeLike } from '../utils/sql';
 import { checkSsrfSafe } from '../services/ssrfGuard';
+import {
+  activeIntegrationIds,
+  disconnectS1Integration,
+  findReconnectableS1Integration,
+} from '../services/securityIntegrationDisconnect';
 // SentinelOne deploys as managed SaaS only. Per-tenant management consoles
 // use the .sentinelone.net suffix (e.g. usea1-partners.sentinelone.net).
 // Any tenant-supplied URL pointing elsewhere is treated as SSRF. Shared with
@@ -328,6 +333,13 @@ sentinelOneRoutes.post(
     const partnerResult = requirePartnerManager(auth, body.partnerId ?? requestedPartnerId(c));
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
+    // Turning the integration off goes through DELETE /integration, which also
+    // clears the stored token. An inactive row that kept its token would be a
+    // disconnected integration that still holds a usable secret (#12691).
+    if (body.isActive === false) {
+      return c.json({ error: 'To disconnect SentinelOne, use DELETE /s1/integration' }, 400);
+    }
+
     // Token is required for new integrations, optional for updates
     const hasToken = typeof body.apiToken === 'string' && body.apiToken.length > 0;
     let encryptedToken: string | null = null;
@@ -356,6 +368,12 @@ sentinelOneRoutes.post(
     if (!existing && !encryptedToken) {
       return c.json({ error: 'API token is required for new integrations' }, 400);
     }
+
+    // Reconnect: with no active integration, reactivate the partner's most
+    // recently disconnected row so its history and site mappings stay attached
+    // (#12691). It is saved exactly like a first connect: the token supplied
+    // now is the only one it carries.
+    const reconnectTarget = existing ? null : await findReconnectableS1Integration(partnerResult.partnerId);
     if (existing && !encryptedToken && normalizedHost(existing.managementUrl) !== normalizedHost(body.managementUrl)) {
       return c.json({ error: 'API token must be re-entered when changing the SentinelOne management host' }, 400);
     }
@@ -384,11 +402,40 @@ sentinelOneRoutes.post(
         .set({
           name: body.name,
           managementUrl: body.managementUrl,
-          isActive: body.isActive ?? existing.isActive ?? true,
+          isActive: true,
           ...(encryptedToken ? { apiTokenEncrypted: encryptedToken } : {}),
           updatedAt: now,
         })
         .where(eq(s1Integrations.id, existing.id))
+        .returning({
+          id: s1Integrations.id,
+          partnerId: s1Integrations.partnerId,
+          name: s1Integrations.name,
+          managementUrl: s1Integrations.managementUrl,
+          isActive: s1Integrations.isActive,
+          lastSyncAt: s1Integrations.lastSyncAt,
+          lastSyncStatus: s1Integrations.lastSyncStatus,
+          lastSyncError: s1Integrations.lastSyncError,
+          createdAt: s1Integrations.createdAt,
+          updatedAt: s1Integrations.updatedAt,
+        })
+      : reconnectTarget
+      ? await db
+        .update(s1Integrations)
+        .set({
+          name: body.name,
+          managementUrl: body.managementUrl,
+          apiTokenEncrypted: tokenForInsert,
+          isActive: true,
+          lastSyncStatus: null,
+          lastSyncError: null,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(s1Integrations.id, reconnectTarget.id),
+          eq(s1Integrations.partnerId, partnerResult.partnerId),
+          eq(s1Integrations.isActive, false)
+        ))
         .returning({
           id: s1Integrations.id,
           partnerId: s1Integrations.partnerId,
@@ -408,7 +455,7 @@ sentinelOneRoutes.post(
           name: body.name,
           managementUrl: body.managementUrl,
           apiTokenEncrypted: tokenForInsert,
-          isActive: body.isActive ?? true,
+          isActive: true,
           createdBy: auth.user.id,
           createdAt: now,
           updatedAt: now,
@@ -455,7 +502,7 @@ sentinelOneRoutes.post(
     try {
       writeRouteAudit(c, {
         orgId: null,
-        action: existing ? 's1.integration.update' : 's1.integration.create',
+        action: existing ? 's1.integration.update' : reconnectTarget ? 's1.integration.reconnect' : 's1.integration.create',
         resourceType: 's1_integration',
         resourceId: integration.id,
         resourceName: integration.name,
@@ -478,6 +525,44 @@ sentinelOneRoutes.post(
       },
       ...(warning ? { warning } : {})
     }, existing ? 200 : 201);
+  }
+);
+
+// DELETE /integration — disconnect (#12691). Same gate as connecting: partner
+// scope (or system with partnerId), organizations.write, MFA, full partner org
+// access. Soft: the row and its synced history stay; it goes inactive and its
+// API token and site registration tokens are cleared.
+const integrationDisconnectQuerySchema = z.object({
+  partnerId: z.string().guid().optional(),
+});
+
+sentinelOneRoutes.delete(
+  '/integration',
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('query', integrationDisconnectQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const partnerResult = requirePartnerManager(auth, query.partnerId);
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    const integration = await disconnectS1Integration(partnerResult.partnerId);
+    if (!integration) {
+      return c.json({ error: 'No connected SentinelOne integration' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 's1.integration.disconnect',
+      resourceType: 's1_integration',
+      resourceId: integration.id,
+      resourceName: integration.name,
+      details: { partnerId: integration.partnerId },
+    });
+
+    return c.json({ success: true, data: { id: integration.id, isActive: false } });
   }
 );
 
@@ -706,7 +791,8 @@ sentinelOneRoutes.get(
       const integrations = await db
         .select({ id: s1Integrations.id })
         .from(s1Integrations)
-        .where(and(eq(s1Integrations.partnerId, partnerResult.partnerId), eq(s1Integrations.isActive, true)));
+        // Disconnected integrations included: their threats stay readable (#12691).
+        .where(eq(s1Integrations.partnerId, partnerResult.partnerId));
       const integrationIds = integrations.map((i) => i.id);
       if (integrationIds.length === 0) {
         return c.json({ data: [], pagination: { total: 0, limit: query.limit ?? 100, offset: query.offset ?? 0 } });
@@ -785,8 +871,9 @@ sentinelOneRoutes.get(
     ]);
 
     const total = Number(countRows[0]?.count ?? 0);
+    const activeIds = await activeIntegrationIds('sentinelone', rows.map((row) => row.integrationId));
     return c.json({
-      data: rows,
+      data: rows.map((row) => ({ ...row, integrationDisconnected: !activeIds.has(row.integrationId) })),
       pagination: {
         total,
         limit,

@@ -36,6 +36,11 @@ import { escapeLike } from '../utils/sql';
 import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { UUID_REGEX } from '../utils/uuid';
+import {
+  activeIntegrationIds,
+  disconnectHuntressIntegration,
+  findReconnectableHuntressIntegration,
+} from '../services/securityIntegrationDisconnect';
 
 import { isUnassignedPoolOrgType, PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -442,6 +447,13 @@ huntressRoutes.post(
     const partnerResult = requirePartnerManager(auth, body.partnerId ?? requestedPartnerId(c));
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
+    // Turning the integration off goes through DELETE /integration, which also
+    // clears the stored secrets. An inactive row that kept them would be a
+    // disconnected integration that still holds usable secrets (#12691).
+    if (body.isActive === false) {
+      return c.json({ error: 'To disconnect Huntress, use DELETE /huntress/integration' }, 400);
+    }
+
     const [existing] = await db
       .select()
       .from(huntressIntegrations)
@@ -454,6 +466,12 @@ huntressRoutes.post(
     if (!existing && !body.apiKey) {
       return c.json({ error: 'apiKey is required when creating a Huntress integration' }, 400);
     }
+
+    // Reconnect: with no active integration, reactivate the partner's most
+    // recently disconnected row so its history and org mappings stay attached
+    // (#12691). `existing` stays undefined, so the payload below is built like a
+    // first connect and no secret stored on the old row is carried over.
+    const reconnectTarget = existing ? null : await findReconnectableHuntressIntegration(partnerResult.partnerId);
 
     const apiKeyEncrypted = body.apiKey
       ? encryptSecret(body.apiKey)
@@ -482,7 +500,7 @@ huntressRoutes.post(
       accountKeyEncrypted,
       apiBaseUrl: body.apiBaseUrl ?? existing?.apiBaseUrl ?? 'https://api.huntress.io/v1',
       webhookSecretEncrypted,
-      isActive: body.isActive ?? existing?.isActive ?? true,
+      isActive: true,
       updatedAt: new Date(),
     };
 
@@ -491,6 +509,28 @@ huntressRoutes.post(
         .update(huntressIntegrations)
         .set(payload)
         .where(eq(huntressIntegrations.id, existing.id))
+        .returning({
+          id: huntressIntegrations.id,
+          partnerId: huntressIntegrations.partnerId,
+          name: huntressIntegrations.name,
+          accountId: huntressIntegrations.accountId,
+          apiBaseUrl: huntressIntegrations.apiBaseUrl,
+          isActive: huntressIntegrations.isActive,
+          lastSyncAt: huntressIntegrations.lastSyncAt,
+          lastSyncStatus: huntressIntegrations.lastSyncStatus,
+          lastSyncError: huntressIntegrations.lastSyncError,
+          createdAt: huntressIntegrations.createdAt,
+          updatedAt: huntressIntegrations.updatedAt,
+        })
+      : reconnectTarget
+      ? await db
+        .update(huntressIntegrations)
+        .set({ ...payload, lastSyncStatus: null, lastSyncError: null })
+        .where(and(
+          eq(huntressIntegrations.id, reconnectTarget.id),
+          eq(huntressIntegrations.partnerId, partnerResult.partnerId),
+          eq(huntressIntegrations.isActive, false)
+        ))
         .returning({
           id: huntressIntegrations.id,
           partnerId: huntressIntegrations.partnerId,
@@ -552,7 +592,7 @@ huntressRoutes.post(
 
     writeRouteAudit(c, {
       orgId: null,
-      action: existing ? 'huntress.integration.update' : 'huntress.integration.create',
+      action: existing ? 'huntress.integration.update' : reconnectTarget ? 'huntress.integration.reconnect' : 'huntress.integration.create',
       resourceType: 'huntress_integration',
       resourceId: integration.id,
       resourceName: integration.name,
@@ -571,6 +611,45 @@ huntressRoutes.post(
       syncJobId,
       ...(syncWarning ? { syncWarning } : {}),
     }, existing ? 200 : 201);
+  }
+);
+
+// DELETE /integration — disconnect (#12691). Same gate as connecting: partner
+// scope (or system with partnerId), organizations.write, MFA, full partner org
+// access. Soft: the row and its synced history stay; it goes inactive and its
+// API key, account key and webhook secret are cleared, so the webhook receiver
+// refuses its deliveries.
+const integrationDisconnectQuerySchema = z.object({
+  partnerId: z.string().guid().optional(),
+});
+
+huntressRoutes.delete(
+  '/integration',
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('query', integrationDisconnectQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const partnerResult = requirePartnerManager(auth, query.partnerId);
+    if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
+
+    const integration = await disconnectHuntressIntegration(partnerResult.partnerId);
+    if (!integration) {
+      return c.json({ error: 'No connected Huntress integration' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'huntress.integration.disconnect',
+      resourceType: 'huntress_integration',
+      resourceId: integration.id,
+      resourceName: integration.name,
+      details: { partnerId: integration.partnerId },
+    });
+
+    return c.json({ success: true, data: { id: integration.id, isActive: false } });
   }
 );
 
@@ -983,10 +1062,8 @@ huntressRoutes.get(
       const integrations = await db
         .select({ id: huntressIntegrations.id })
         .from(huntressIntegrations)
-        .where(and(
-          eq(huntressIntegrations.partnerId, partnerResult.partnerId),
-          eq(huntressIntegrations.isActive, true)
-        ));
+        // Disconnected integrations included: their incidents stay readable (#12691).
+        .where(eq(huntressIntegrations.partnerId, partnerResult.partnerId));
       const integrationIds = integrations.map((integration) => integration.id);
       if (integrationIds.length === 0) {
         return c.json({ data: [], total: 0, limit, offset });
@@ -1071,8 +1148,9 @@ huntressRoutes.get(
           .where(where),
       ]);
 
+      const activeIds = await activeIntegrationIds('huntress', rows.map((row) => row.integrationId));
       return c.json({
-        data: rows,
+        data: rows.map((row) => ({ ...row, integrationDisconnected: !activeIds.has(row.integrationId) })),
         total: Number(countRow?.count ?? 0),
         limit,
         offset,

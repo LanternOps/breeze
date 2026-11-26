@@ -140,6 +140,13 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../services/securityIntegrationDisconnect', () => ({
+  // Default: every integration a listed row came from is still connected.
+  activeIntegrationIds: vi.fn(async (_vendor: string, ids: string[]) => new Set(ids)),
+  disconnectS1Integration: vi.fn(),
+  findReconnectableS1Integration: vi.fn(async () => null),
+}));
+
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string | undefined) => `enc:${value ?? ''}`)
 }));
@@ -165,6 +172,12 @@ import {
   getActiveS1IntegrationForOrg
 } from '../services/sentinelOne/actions';
 import { encryptSecret } from '../services/secretCrypto';
+import { writeRouteAudit } from '../services/auditEvents';
+import {
+  activeIntegrationIds,
+  disconnectS1Integration,
+  findReconnectableS1Integration,
+} from '../services/securityIntegrationDisconnect';
 
 const PARTNER_ID = 'a0000000-0000-4000-8000-000000000001';
 const OTHER_PARTNER_ID = 'a0000000-0000-4000-8000-000000000002';
@@ -543,6 +556,122 @@ describe('sentinel one routes', () => {
   });
 
   // ───────────────────── B2: GET /integration ─────────────────────
+  // ───────────────────── DELETE /integration (#12691) ─────────────────────
+  describe('DELETE /integration', () => {
+    beforeEach(() => {
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      authState.partnerId = PARTNER_ID;
+      authState.partnerOrgAccess = 'all';
+    });
+
+    it('rejects an organization-scope caller without touching the integration', async () => {
+      authState.scope = 'organization';
+      authState.orgId = ORG_ID;
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectS1Integration).not.toHaveBeenCalled();
+    });
+
+    it('requires MFA, like connecting', async () => {
+      mfaGate.deny = true;
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectS1Integration).not.toHaveBeenCalled();
+    });
+
+    it('requires organizations.write, like connecting', async () => {
+      permissionGate.deny = true;
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectS1Integration).not.toHaveBeenCalled();
+    });
+
+    it('requires full partner org access', async () => {
+      authState.partnerOrgAccess = 'selected';
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectS1Integration).not.toHaveBeenCalled();
+    });
+
+    it('refuses a partner caller naming another partner', async () => {
+      const res = await app.request(`/s1/integration?partnerId=${OTHER_PARTNER_ID}`, { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectS1Integration).not.toHaveBeenCalled();
+    });
+
+    it('disconnects the caller partner integration and audits it', async () => {
+      vi.mocked(disconnectS1Integration).mockResolvedValueOnce({ id: INTEGRATION_ID, partnerId: PARTNER_ID, name: 'S1' });
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true, data: { id: INTEGRATION_ID, isActive: false } });
+      expect(disconnectS1Integration).toHaveBeenCalledWith(PARTNER_ID);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 's1.integration.disconnect',
+        resourceId: INTEGRATION_ID,
+      }));
+    });
+
+    it('answers 404 when nothing is connected', async () => {
+      vi.mocked(disconnectS1Integration).mockResolvedValueOnce(null);
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(404);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /integration — disconnect and reconnect (#12691)', () => {
+    beforeEach(() => {
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      authState.partnerId = PARTNER_ID;
+      authState.partnerOrgAccess = 'all';
+    });
+
+    it('refuses isActive: false, which would deactivate without clearing the token', async () => {
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'S1', managementUrl: 'https://example.sentinelone.net', isActive: false }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('DELETE /s1/integration');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('reactivates the disconnected row instead of inserting a new one', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+      } as any);
+      vi.mocked(findReconnectableS1Integration).mockResolvedValueOnce({ id: INTEGRATION_ID });
+      const set = vi.fn();
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: set.mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID, partnerId: PARTNER_ID, name: 'S1', managementUrl: 'https://example.sentinelone.net',
+              isActive: true, lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+              createdAt: new Date(), updatedAt: new Date(),
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'S1', managementUrl: 'https://example.sentinelone.net', apiToken: 'new-token' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect((await res.json()).data.id).toBe(INTEGRATION_ID);
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ isActive: true, apiTokenEncrypted: 'enc:new-token' }));
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 's1.integration.reconnect' }));
+    });
+  });
+
   describe('GET /integration', () => {
     const INTEGRATION_ROW = {
       id: INTEGRATION_ID,
@@ -1500,6 +1629,34 @@ describe('sentinel one routes', () => {
       const body = await res.json();
       expect(body.data.map((t: any) => t.orgId).sort()).toEqual([ORG_ID, ORG_ID_B].sort());
       expect(body.pagination.total).toBe(2);
+    });
+
+    it('keeps threats from a disconnected integration and labels them (#12691)', async () => {
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      authState.partnerId = PARTNER_ID;
+      authState.accessibleOrgIds = [ORG_ID];
+      authState.canAccessOrg = (orgId: string) => orgId === ORG_ID;
+      authState.orgCondition = () => undefined as any;
+
+      mockActiveIntegrations([{ id: INTEGRATION_ID }, { id: INTEGRATION_ID_B }]);
+      mockThreatsQueries(
+        [
+          { id: 'threat-a', orgId: ORG_ID, integrationId: INTEGRATION_ID },
+          { id: 'threat-b', orgId: ORG_ID, integrationId: INTEGRATION_ID_B }
+        ],
+        2
+      );
+      vi.mocked(activeIntegrationIds).mockResolvedValueOnce(new Set([INTEGRATION_ID]));
+
+      const res = await app.request('/s1/threats');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((t: any) => [t.id, t.integrationDisconnected])).toEqual([
+        ['threat-a', false],
+        ['threat-b', true],
+      ]);
+      expect(activeIntegrationIds).toHaveBeenCalledWith('sentinelone', [INTEGRATION_ID, INTEGRATION_ID_B]);
     });
   });
 

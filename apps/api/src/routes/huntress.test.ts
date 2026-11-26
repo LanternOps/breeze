@@ -154,6 +154,13 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../services/securityIntegrationDisconnect', () => ({
+  // Default: every integration a listed row came from is still connected.
+  activeIntegrationIds: vi.fn(async (_vendor: string, ids: string[]) => new Set(ids)),
+  disconnectHuntressIntegration: vi.fn(),
+  findReconnectableHuntressIntegration: vi.fn(async () => null),
+}));
+
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
@@ -169,6 +176,12 @@ import { findHuntressIntegrationByAccount, ingestHuntressWebhookPayload } from '
 import { decryptForColumn } from '../services/secretCrypto';
 import { buildHuntressWebhookSignature } from '../services/huntressClient';
 import { huntressRoutes } from './huntress';
+import { writeRouteAudit } from '../services/auditEvents';
+import {
+  activeIntegrationIds,
+  disconnectHuntressIntegration,
+  findReconnectableHuntressIntegration,
+} from '../services/securityIntegrationDisconnect';
 
 const WEBHOOK_INTEGRATION_ID = '33333333-3333-4333-8333-333333333333';
 const SW_KEY = Buffer.from('huntress-standard-webhooks-key-32');
@@ -275,6 +288,104 @@ describe('huntress routes', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('ORG_PROTECTED');
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // ───────────────────── DELETE /integration (#12691) ─────────────────────
+  describe('DELETE /integration', () => {
+    const PARTNER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const INTEGRATION = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    beforeEach(() => {
+      authState.scope = 'partner';
+      authState.orgId = null;
+      authState.partnerId = PARTNER;
+      authState.partnerOrgAccess = 'all';
+    });
+
+    it('rejects an organization-scope caller', async () => {
+      authState.scope = 'organization';
+      authState.orgId = '11111111-1111-1111-1111-111111111111';
+      const res = await app.request('/huntress/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectHuntressIntegration).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['MFA', () => { mfaGate.deny = true; }],
+      ['organizations.write', () => { permissionGate.deny = true; }],
+      ['full partner org access', () => { authState.partnerOrgAccess = 'selected'; }],
+    ])('requires %s, like connecting', async (_label, deny) => {
+      deny();
+      const res = await app.request('/huntress/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(disconnectHuntressIntegration).not.toHaveBeenCalled();
+    });
+
+    it('disconnects the caller partner integration and audits it', async () => {
+      vi.mocked(disconnectHuntressIntegration).mockResolvedValueOnce({ id: INTEGRATION, partnerId: PARTNER, name: 'Huntress' });
+      const res = await app.request('/huntress/integration', { method: 'DELETE' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true, data: { id: INTEGRATION, isActive: false } });
+      expect(disconnectHuntressIntegration).toHaveBeenCalledWith(PARTNER);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'huntress.integration.disconnect',
+        resourceId: INTEGRATION,
+      }));
+    });
+
+    it('answers 404 when nothing is connected', async () => {
+      vi.mocked(disconnectHuntressIntegration).mockResolvedValueOnce(null);
+      const res = await app.request('/huntress/integration', { method: 'DELETE' });
+      expect(res.status).toBe(404);
+    });
+
+    it('POST refuses isActive: false, which would deactivate without clearing the secrets', async () => {
+      const res = await app.request('/huntress/integration', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Huntress', isActive: false }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('DELETE /huntress/integration');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('POST reconnect reactivates the disconnected row and carries no stored secret over', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
+      } as any);
+      vi.mocked(findReconnectableHuntressIntegration).mockResolvedValueOnce({ id: INTEGRATION });
+      const set = vi.fn();
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: set.mockReturnValue({
+          where: vi.fn(() => ({
+            returning: vi.fn(async () => [{
+              id: INTEGRATION, partnerId: PARTNER, name: 'Huntress', accountId: null,
+              apiBaseUrl: 'https://api.huntress.io/v1', isActive: true, lastSyncAt: null,
+              lastSyncStatus: null, lastSyncError: null, createdAt: new Date(), updatedAt: new Date(),
+            }]),
+          })),
+        }),
+      } as any);
+
+      const res = await app.request('/huntress/integration', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Huntress', apiKey: 'new-key' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body).toMatchObject({ id: INTEGRATION, hasWebhookSecret: false, hasAccountKey: false });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({
+        isActive: true,
+        apiKeyEncrypted: 'enc:new-key',
+        accountKeyEncrypted: null,
+        webhookSecretEncrypted: null,
+      }));
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'huntress.integration.reconnect' }));
+    });
   });
 
   describe('GET /status partner-wide authority', () => {
@@ -875,6 +986,36 @@ describe('huntress routes', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ accepted: true, integrationId: WEBHOOK_INTEGRATION_ID });
       expect(ingestHuntressWebhookPayload).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('GET /incidents disconnected source label (#12691)', () => {
+    it('labels incidents whose integration is no longer active', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          leftJoin: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn(() => ({ limit: vi.fn(() => ({ offset: vi.fn(async () => [
+                { id: 'inc-live', integrationId: 'live-int', title: 'a' },
+                { id: 'inc-old', integrationId: 'old-int', title: 'b' },
+              ]) })) })),
+            })),
+          })),
+        })),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({ where: vi.fn(async () => [{ count: 2 }]) })),
+      } as any);
+      vi.mocked(activeIntegrationIds).mockResolvedValueOnce(new Set(['live-int']));
+
+      const res = await app.request('/huntress/incidents');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((row: any) => [row.id, row.integrationDisconnected])).toEqual([
+        ['inc-live', false],
+        ['inc-old', true],
+      ]);
     });
   });
 
