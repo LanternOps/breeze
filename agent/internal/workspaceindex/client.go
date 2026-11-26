@@ -41,6 +41,14 @@ var (
 	ErrRunConflict     = errors.New("workspace index run conflict")
 	ErrBatchTooLarge   = errors.New("workspace index batch too large")
 	ErrAuthUnavailable = errors.New("workspace index request skipped while authentication is unavailable")
+	// ErrUnavailable marks a crawl-config answer unlikely to change within a
+	// minute: any 503 (typically the module is loaded but disabled, or a
+	// proxy is shedding load) or any 403 (typically the device is parked,
+	// quarantined or draining). The loop backs off instead of asking again
+	// each minute, so a device whose state is cleared may wait up to that
+	// back-off before indexing resumes (#12713). A 401 is not in this set; it
+	// stays an auth failure on the shared monitor.
+	ErrUnavailable = errors.New("workspace index unavailable")
 	// ErrNoServerURL names a wiring bug — the ServerURL provider is unset or
 	// returned empty — so it can't masquerade as a transport failure.
 	ErrNoServerURL = errors.New("workspace index client has no server URL (ServerURL provider unset or empty)")
@@ -56,6 +64,10 @@ var (
 type HTTPError struct {
 	StatusCode int
 	Body       string
+	// RetryAfter is the Retry-After (seconds or HTTP-date) of any non-2xx
+	// answer, capped at unavailableRetryAfterCeiling. Zero when absent,
+	// malformed, zero or past. Only the ErrUnavailable back-off reads it.
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string {
@@ -139,7 +151,11 @@ func (c *Client) FetchConfig(ctx context.Context) (*CrawlConfig, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if err := c.checkResponse(resp, ErrModuleAbsent, http.StatusNotFound); err != nil {
+	sentinel, sentinelStatus := ErrModuleAbsent, http.StatusNotFound
+	if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusForbidden {
+		sentinel, sentinelStatus = ErrUnavailable, resp.StatusCode
+	}
+	if err := c.checkResponse(resp, sentinel, sentinelStatus); err != nil {
 		return nil, err
 	}
 
@@ -350,7 +366,11 @@ func (c *Client) checkResponse(resp *http.Response, sentinel error, sentinelStat
 	if token != "" {
 		body = strings.ReplaceAll(body, token, "[REDACTED]")
 	}
-	httpErr := &HTTPError{StatusCode: resp.StatusCode, Body: body}
+	httpErr := &HTTPError{
+		StatusCode: resp.StatusCode,
+		Body:       body,
+		RetryAfter: httputil.ParseRetryAfterCapped(resp.Header, time.Now(), unavailableRetryAfterCeiling),
+	}
 	if readErr != nil {
 		httpErr.Body = "unable to read error response"
 	}

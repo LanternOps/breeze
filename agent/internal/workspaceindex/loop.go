@@ -22,6 +22,21 @@ import (
 
 const moduleAbsentBackoff = 6 * time.Hour
 
+// Back-off after crawl-config answers ErrUnavailable (#12713). Without it,
+// every agent re-polls each minute for a feature that is off.
+const (
+	// Without Retry-After the wait is uniform in [min, max], so a fleet that
+	// hit the same 503 does not come back in step.
+	unavailableBackoffMin = 30 * time.Minute
+	unavailableBackoffMax = 60 * time.Minute
+	// A Retry-After is honoured within [floor, ceiling]. The floor is the
+	// loop's normal one-minute tick, so a short hint never makes the agent
+	// poll faster than it did before. The ceiling is moduleAbsentBackoff, so
+	// a Retry-After never parks the poll longer than a 404 already does.
+	unavailableRetryAfterFloor   = time.Minute
+	unavailableRetryAfterCeiling = moduleAbsentBackoff
+)
+
 // indexingScopeSignature reduces the announced source set to a comparable
 // string so the consent signal re-fires when the server changes WHAT is
 // indexed, not only when it toggles indexing on. sources must already be
@@ -138,6 +153,9 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		watchers := make(map[string]watchRegistration)
 		var running *activeCrawl
 		var nextFetch time.Time
+		// lastUnavailableStatus is the status of the previous fetch when it
+		// was ErrUnavailable, else 0; it keeps repeat back-off logs quiet.
+		lastUnavailableStatus := 0
 		// auditedScope is the signature of the source set last announced by the
 		// consent signal (prominent log + device-audit event, #2425). Tracking
 		// the SCOPE rather than a mere on/off bool means a server that widens
@@ -315,11 +333,36 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 				return
 			}
 			config, err := deps.Client.FetchConfig(ctx)
+			if !errors.Is(err, ErrUnavailable) {
+				lastUnavailableStatus = 0
+			}
 			if err != nil {
 				if errors.Is(err, ErrModuleAbsent) {
 					markIndexingInactive("workspace module absent on server")
 					cancelActivity()
 					nextFetch = now.Add(moduleAbsentBackoff)
+					return
+				}
+				if errors.Is(err, ErrUnavailable) {
+					// Leave running crawls and watchers alone: a 503 may be a
+					// brief proxy blip, and a crawl that gets the same answer
+					// fails on its own. Only the config poll slows down.
+					var retryAfter time.Duration
+					status := 0
+					if httpErr, ok := errors.AsType[*HTTPError](err); ok {
+						retryAfter, status = httpErr.RetryAfter, httpErr.StatusCode
+					}
+					wait := unavailableBackoff(retryAfter)
+					// Warn (which ships) on entering the state or a change of
+					// status; repeats of the same answer stay local at Debug.
+					logAt := deps.Log.Debug
+					if status != lastUnavailableStatus {
+						logAt = deps.Log.Warn
+					}
+					lastUnavailableStatus = status
+					logAt("workspace index unavailable; backing off config poll",
+						"status", status, "retryAfterHint", retryAfter, "retryIn", wait, "err", err)
+					nextFetch = now.Add(wait)
 					return
 				}
 				deps.Log.Warn("fetch workspace index config", "err", err)
@@ -368,6 +411,21 @@ func isSourceDue(now time.Time, src SourceConfig) bool {
 		return true
 	}
 	return now.Sub(*src.LastCompleteRunAt) >= time.Duration(src.CadenceMinutes)*time.Minute
+}
+
+// unavailableBackoff returns how long to wait after an ErrUnavailable
+// crawl-config answer. retryAfter is the server's hint (0 when absent). With a
+// hint the wait is the hint clamped to [floor, ceiling] plus up to 10% jitter,
+// never past the ceiling and never earlier than the server asked; without one
+// it is uniform in [unavailableBackoffMin, unavailableBackoffMax].
+func unavailableBackoff(retryAfter time.Duration) time.Duration {
+	if retryAfter <= 0 {
+		span := unavailableBackoffMax - unavailableBackoffMin
+		return unavailableBackoffMin + time.Duration(rand.Int64N(int64(span)+1))
+	}
+	base := min(max(retryAfter, unavailableRetryAfterFloor), unavailableRetryAfterCeiling)
+	jitter := time.Duration(rand.Int64N(int64(base/10) + 1))
+	return min(base+jitter, unavailableRetryAfterCeiling)
 }
 
 func jitterPollInterval(seconds int) time.Duration {

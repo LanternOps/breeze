@@ -408,6 +408,7 @@ describe('mountExtensionGateway', () => {
     const response = await app.request('/api/v1/ext/demo/health');
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: 'extension unavailable' });
+    expect(response.headers.get('Retry-After')).toBe('1800');
     expect(app.routes).toHaveLength(routeCount);
   });
 
@@ -422,6 +423,8 @@ describe('mountExtensionGateway', () => {
       headers: { Authorization: 'Bearer agent-test' },
     });
     expect(authenticated.status).toBe(503);
+    expect(authenticated.headers.get('Retry-After')).toBe('1800');
+    expect(unauthenticated.headers.get('Retry-After')).toBeNull();
     expect(agentAuthMiddleware).toHaveBeenCalledTimes(2);
   });
 
@@ -429,8 +432,14 @@ describe('mountExtensionGateway', () => {
     const isEnabled = vi.fn(async (name: string) => name !== 'demo');
     const { app } = makeGatewayFixture({ isEnabled });
 
-    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
-    expect((await app.request('/api/v1/ext/missing/health')).status).toBe(503);
+    const disabled = await app.request('/api/v1/ext/demo/health');
+    const missing = await app.request('/api/v1/ext/missing/health');
+    expect(disabled.status).toBe(503);
+    expect(missing.status).toBe(503);
+    // #12713: a disabled extension carries the back-off hint; an unknown name
+    // is not a state an operator flips, so it gets the plain 503.
+    expect(disabled.headers.get('Retry-After')).toBe('1800');
+    expect(missing.headers.get('Retry-After')).toBeNull();
     expect(isEnabled).toHaveBeenCalledOnce();
   });
 
