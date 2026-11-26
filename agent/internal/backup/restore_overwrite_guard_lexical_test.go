@@ -20,12 +20,14 @@ import (
 // is handed (originalSource: the restore's own verified manifest file).
 //
 // This test holds that by source: it walks every function the guard's file
-// declares and every same-package function they reach, and fails on any
-// reference to another package that is not on the reviewed list below
-// (os, io/fs, syscall, golang.org/x/sys, filepath.EvalSymlinks/Abs/Walk/Glob
-// are deliberately absent) and on any same-package callee outside the guard
-// file that is not on the reviewed helper list. A new callee is not wrong,
-// but it must be read and added here on purpose.
+// declares and every same-package function they name (called or used as a
+// value), and fails on any reference to another package that is not on the
+// reviewed list below (os, io/fs, syscall, golang.org/x/sys,
+// filepath.EvalSymlinks/Abs/Walk/Glob are deliberately absent) and on any
+// same-package function or variable outside the guard file that is not on
+// the reviewed helper list. A new callee is not wrong, but it must be read
+// and added here on purpose. Other packages' functions on the list are
+// trusted, not walked; methods are matched by name (see inspect).
 func TestOriginalsGuard_NoFileSystemAccess(t *testing.T) {
 	// References to other packages the guard (or a helper it calls) may
 	// make. Each is lexical. securefs.CleanRelative is filepath.Clean plus,
@@ -70,64 +72,72 @@ func TestOriginalsGuard_NoFileSystemAccess(t *testing.T) {
 			queue = append(queue, fd)
 		}
 	}
-	// inspect checks one guard-reached node: its references to other
-	// packages, and the same-package functions and methods it calls.
-	inspect := func(file *parsedGoFile, where string, node ast.Node) {
-		ast.Inspect(node, func(n ast.Node) bool {
+	// inspect checks one guard-reached node: every reference to another
+	// package, and every same-package function, method or variable it
+	// names, called or used as a value.
+	inspect := func(file *parsedGoFile, where string, node ast.Node, locals map[string]bool) {
+		if _, ok := file.imports["."]; ok {
+			violations = append(violations, where+" is in a file with a dot import, which this walk cannot resolve")
+		}
+		var visit func(ast.Node) bool
+		visit = func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.SelectorExpr:
 				if id, ok := n.X.(*ast.Ident); ok {
-					if path, isImport := file.imports[id.Name]; isImport {
+					if path, isImport := file.imports[id.Name]; isImport && !locals[id.Name] {
 						if !allowedExternal[path+"."+n.Sel.Name] && !allowedExternalPackages[path] {
 							violations = append(violations, where+" references "+path+"."+n.Sel.Name)
 						}
-						return true
+						return false
 					}
 				}
-			case *ast.CallExpr:
-				switch fun := n.Fun.(type) {
-				case *ast.Ident:
-					if fds, ok := pkg.funcs[fun.Name]; ok {
-						for _, fd := range fds {
-							if pkg.file[fd] != guardFile && !reviewedHelpers[fun.Name] {
-								violations = append(violations, where+" calls "+fun.Name+" ("+pkg.file[fd]+"), not a reviewed helper")
-							}
-							enqueue(fd)
-						}
-					} else if want, ok := reviewedFuncVars[fun.Name]; ok {
-						if got := pkg.vars[fun.Name]; got != want {
-							violations = append(violations, where+" calls "+fun.Name+", which holds "+got+", not "+want)
-						}
-					} else if _, ok := pkg.vars[fun.Name]; ok {
-						violations = append(violations, where+" calls the package variable "+fun.Name+", not a reviewed one")
+				// x.Name: a field, or a method of x's type, called or used
+				// as a value. Without type information it is resolved by
+				// name: every same-package method so named that the guard
+				// file declares or that is reviewed is walked, and a name
+				// only unreviewed methods carry fails. Known limit: a call
+				// that reaches an unreviewed method sharing its name with a
+				// guard or reviewed one (String, Error, check, …) is not
+				// told apart from it. A name no method here carries is a
+				// field, or a method of another package's type.
+				candidates := pkg.methods[n.Sel.Name]
+				reached := false
+				for _, fd := range candidates {
+					if pkg.file[fd] == guardFile || reviewedHelpers[funcKey(fd)] {
+						enqueue(fd)
+						reached = true
 					}
-				case *ast.SelectorExpr:
-					if id, ok := fun.X.(*ast.Ident); ok {
-						if _, isImport := file.imports[id.Name]; isImport {
-							break
+				}
+				if len(candidates) > 0 && !reached {
+					violations = append(violations, where+" may call "+n.Sel.Name+", a method only unreviewed types here declare")
+				}
+				ast.Inspect(n.X, visit)
+				return false
+			case *ast.KeyValueExpr:
+				if _, ok := n.Key.(*ast.Ident); ok {
+					ast.Inspect(n.Value, visit) // a struct field name as key
+					return false
+				}
+			case *ast.Ident:
+				if locals[n.Name] {
+					return true
+				}
+				if fds, ok := pkg.funcs[n.Name]; ok {
+					for _, fd := range fds {
+						if pkg.file[fd] != guardFile && !reviewedHelpers[n.Name] {
+							violations = append(violations, where+" uses "+n.Name+" ("+pkg.file[fd]+"), not a reviewed helper")
 						}
+						enqueue(fd)
 					}
-					// Resolved by name: every same-package method so named
-					// that the guard file declares or that is reviewed is
-					// walked. A name only unreviewed methods carry is a new
-					// callee; a name no method here carries is a method of
-					// another package's type (an allowed reference's
-					// result, or the error interface).
-					candidates := pkg.methods[fun.Sel.Name]
-					reached := false
-					for _, fd := range candidates {
-						if pkg.file[fd] == guardFile || reviewedHelpers[funcKey(fd)] {
-							enqueue(fd)
-							reached = true
-						}
-					}
-					if len(candidates) > 0 && !reached {
-						violations = append(violations, where+" calls method "+fun.Sel.Name+", declared here only by unreviewed types")
+				} else if _, ok := pkg.vars[n.Name]; ok && pkg.varFile[n.Name] != guardFile {
+					if want, reviewed := reviewedFuncVars[n.Name]; !reviewed || pkg.vars[n.Name] != want {
+						violations = append(violations, where+" uses the package variable "+n.Name+" ("+pkg.varFile[n.Name]+" = "+pkg.vars[n.Name]+"), not a reviewed one")
 					}
 				}
 			}
 			return true
-		})
+		}
+		ast.Inspect(node, visit)
 	}
 
 	guard := pkg.files[guardFile]
@@ -139,7 +149,7 @@ func TestOriginalsGuard_NoFileSystemAccess(t *testing.T) {
 		case *ast.FuncDecl:
 			enqueue(d)
 		case *ast.GenDecl:
-			inspect(guard, guardFile+" declarations", d)
+			inspect(guard, guardFile+" declarations", d, nil)
 		}
 	}
 	walked := map[string]bool{}
@@ -148,8 +158,16 @@ func TestOriginalsGuard_NoFileSystemAccess(t *testing.T) {
 		queue = queue[1:]
 		name := funcKey(fd)
 		walked[name] = true
+		locals := localNames(fd)
+		for local := range locals {
+			if _, isFunc := pkg.funcs[local]; isFunc {
+				violations = append(violations, name+" declares "+local+", shadowing a package function the walk would then miss")
+			} else if _, isVar := pkg.vars[local]; isVar {
+				violations = append(violations, name+" declares "+local+", shadowing a package variable the walk would then miss")
+			}
+		}
 		if fd.Body != nil {
-			inspect(pkg.files[pkg.file[fd]], name, fd.Body)
+			inspect(pkg.files[pkg.file[fd]], name, fd.Body, locals)
 		}
 	}
 	// The walk must reach the guard's entry points and the helpers, or it
@@ -176,6 +194,7 @@ type parsedBackupPackage struct {
 	funcs   map[string][]*ast.FuncDecl // package-level functions (one per build variant)
 	methods map[string][]*ast.FuncDecl
 	vars    map[string]string // package-level variable → its initializer, as written
+	varFile map[string]string // package-level variable → file name
 }
 
 // parseBackupPackage parses every non-test file of this package, whatever
@@ -189,7 +208,7 @@ func parseBackupPackage(t *testing.T) *parsedBackupPackage {
 	fset := token.NewFileSet()
 	pkg := &parsedBackupPackage{
 		files: map[string]*parsedGoFile{}, file: map[*ast.FuncDecl]string{},
-		funcs: map[string][]*ast.FuncDecl{}, methods: map[string][]*ast.FuncDecl{}, vars: map[string]string{},
+		funcs: map[string][]*ast.FuncDecl{}, methods: map[string][]*ast.FuncDecl{}, vars: map[string]string{}, varFile: map[string]string{},
 	}
 	for _, name := range names {
 		if strings.HasSuffix(name, "_test.go") {
@@ -229,6 +248,7 @@ func parseBackupPackage(t *testing.T) *parsedBackupPackage {
 				for _, spec := range d.Specs {
 					vs := spec.(*ast.ValueSpec)
 					for i, id := range vs.Names {
+						pkg.varFile[id.Name] = name
 						if i < len(vs.Values) {
 							pkg.vars[id.Name] = string(src[fset.Position(vs.Values[i].Pos()).Offset:fset.Position(vs.Values[i].End()).Offset])
 						} else {
@@ -240,6 +260,46 @@ func parseBackupPackage(t *testing.T) *parsedBackupPackage {
 		}
 	}
 	return pkg
+}
+
+// localNames is every name fd declares anywhere in it (receiver,
+// parameters, results, := and var declarations, closures' parameters):
+// such a name in fd's body is not a package-level one. Per function rather
+// than per scope, so a package-level name fd also declares locally would
+// not be walked in fd: the test fails on any such name.
+func localNames(fd *ast.FuncDecl) map[string]bool {
+	locals := map[string]bool{}
+	add := func(ids ...*ast.Ident) {
+		for _, id := range ids {
+			locals[id.Name] = true
+		}
+	}
+	ast.Inspect(fd, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.Field:
+			add(n.Names...)
+		case *ast.ValueSpec:
+			add(n.Names...)
+		case *ast.AssignStmt:
+			if n.Tok == token.DEFINE {
+				for _, lhs := range n.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						add(id)
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if n.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{n.Key, n.Value} {
+					if id, ok := e.(*ast.Ident); ok {
+						add(id)
+					}
+				}
+			}
+		}
+		return true
+	})
+	return locals
 }
 
 func receiverName(fd *ast.FuncDecl) string {
