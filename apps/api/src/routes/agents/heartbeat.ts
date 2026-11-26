@@ -695,7 +695,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }),
     );
 
-    return c.json({ commands: drainCommands, containment: { networkIsolation: null } });
+    // #8318 D-1a: a parked device being removed still tells its agent it is
+    // parked, so the agent does not read this minimal beat as an assignment
+    // and resume loops every route of which is refused.
+    return c.json({
+      commands: drainCommands,
+      containment: { networkIsolation: null },
+      ...(agent.isPreAssignment ? { parked: true } : {}),
+    });
   }
 
   // Pre-assignment — a device parked in its partner's

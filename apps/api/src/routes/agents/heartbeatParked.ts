@@ -75,6 +75,13 @@ const TERMINAL_DEVICE_STATUSES: Array<'decommissioned' | 'quarantined'> = ['deco
  *     update policy, upgrade target, remote access, topology, helper or
  *     feature policy, merged configuration).
  *
+ * Both roles' responses carry `parked: true` (#8318 wave D-1a), the one
+ * explicit signal of this state: the full beat never carries the field, so a
+ * successful beat without it tells the agent it has been assigned. The agent
+ * suspends every loop the allow-list refuses while the field is present, and
+ * resumes them (re-sending its startup inventory) on the first beat without
+ * it. Additive: an agent that predates it ignores the key.
+ *
  * The Go agent decodes a missing `helperEnabled` / `manageRemoteManagement` as
  * false (see the drain beat in ./heartbeat.ts), which is the intended parked
  * behaviour: a parked device runs no helper and no managed remote access.
@@ -202,7 +209,7 @@ export async function respondParkedHeartbeat(
   );
 
   if (isWatchdog) {
-    return c.json({ commands, containment: { networkIsolation: null }, ...scoped.maintenance });
+    return c.json({ parked: true, commands, containment: { networkIsolation: null }, ...scoped.maintenance });
   }
 
   // #8318 §6.2 — outside every DB context (#1105), as on the full beat.
@@ -225,6 +232,7 @@ export async function respondParkedHeartbeat(
   ]);
 
   return c.json({
+    parked: true,
     containment: { networkIsolation: null },
     commands,
     ...scoped.maintenance,

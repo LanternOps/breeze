@@ -594,10 +594,11 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
 // Distinct from buildDrainingApp (a healthy device on an OFFBOARDING TENANT):
 // this one is the machine itself being uninstalled, and it gets the minimal
 // drain beat rather than a full heartbeat.
-function buildDeviceDrainApp(): Hono {
+function buildDeviceDrainApp(opts: { isPreAssignment?: boolean } = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      ...(opts.isPreAssignment ? { isPreAssignment: true } : {}),
       installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
@@ -791,6 +792,9 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(update.status).toBe('online');
     expect(update.lastSeenAt).toBeInstanceOf(Date);
+    // #8318 D-1a: the full beat never carries the parked signal — its
+    // absence is how the agent learns it was assigned.
+    expect(await response.json()).not.toHaveProperty('parked');
   });
 
   it('records valid v1 health only after the main heartbeat DB context is released', async () => {
@@ -8627,6 +8631,21 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     expect(await resp.json()).toEqual({ commands: [], containment: { networkIsolation: null } });
   });
 
+  // #8318 D-1a: a removed device that is parked keeps the parked signal, so
+  // its agent does not read the minimal beat as an assignment and resume
+  // loops every route of which is refused. A regular device's drain beat
+  // never carries it (exact key set above).
+  it('a parked device in the drain window keeps `parked: true`', async () => {
+    const resp = await buildDeviceDrainApp({ isPreAssignment: true }).request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(richHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toEqual({ commands: [], containment: { networkIsolation: null }, parked: true });
+  });
+
   it('a TENANT drain still gets the full heartbeat (the minimal branch is device-scoped only)', async () => {
     // Guards the branch condition: keying the minimal beat on `tenantDraining`
     // would silently strip config/upgrades from every machine of a customer
@@ -9535,8 +9554,8 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
   // delegations (so it can verify the signed `rebind` directive) and, while
   // the device is the source of an open reattach intent, the directive.
   const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
-    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind', 'configUpdate'],
-    watchdog: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
+    agent: ['parked', 'commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind', 'configUpdate'],
+    watchdog: ['parked', 'commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
   };
   const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
   const FORBIDDEN_KEYS = [
@@ -9681,6 +9700,15 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       if (role === 'agent') expect(body.configUpdate).toEqual({ tpm_attestation_enabled: false });
     });
 
+    // #8318 D-1a: the explicit parked signal the agent suspends its loops on.
+    // The full beat never carries it (asserted in the normal-path tests below).
+    it(`${role}: carries parked: true`, async () => {
+      const resp = await parkedBeat(role);
+
+      expect(resp.status).toBe(200);
+      expect(((await resp.json()) as Record<string, unknown>).parked).toBe(true);
+    });
+
     it(`${role}: claims only self_uninstall`, async () => {
       await parkedBeat(role);
 
@@ -9747,7 +9775,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST, ...PARKED_CONFIG });
+    expect(body).toEqual({ parked: true, containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9757,7 +9785,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST, ...PARKED_CONFIG });
+    expect(await resp.json()).toEqual({ parked: true, containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
@@ -9806,7 +9834,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST, ...PARKED_CONFIG });
+    expect(await resp.json()).toEqual({ parked: true, containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST, ...PARKED_CONFIG });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),
@@ -9845,7 +9873,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('watchdog');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [], containment: { networkIsolation: null } });
+    expect(body).toEqual({ parked: true, commands: [], containment: { networkIsolation: null } });
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     // #4297 — watchdogEdition rides with watchdogVersion so the pair always

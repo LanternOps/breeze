@@ -248,7 +248,9 @@ describe('parked device — minimal heartbeat', () => {
     // this device is the source of no reattach intent.
     // #4618: parked beats explicitly clear containment without looking up episodes.
     // #8318 wave T2: plus the TPM attestation switch, and no other config key.
-    expect(Object.keys(body).sort()).toEqual(['commands', 'configUpdate', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
+    // #8318 D-1a: plus `parked: true`, the signal the agent suspends on.
+    expect(Object.keys(body).sort()).toEqual(['commands', 'configUpdate', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'parked', 'renewCert', 'rotateToken']);
+    expect(body.parked).toBe(true);
     expect(body.configUpdate).toEqual({ tpm_attestation_enabled: false });
     expect(body.containment).toEqual({ networkIsolation: null });
     expect(body.renewCert).toBe(true);
@@ -281,6 +283,7 @@ describe('parked device — minimal heartbeat', () => {
     expect(res.status, await res.clone().text()).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(Object.keys(body)).toContain('configUpdate');
+    expect(body).not.toHaveProperty('parked');
   });
 });
 
@@ -360,7 +363,7 @@ describe('parked device — WebSocket and Helper ingresses', () => {
     const parked = await seedParkedAgent(pool.orgId, pool.siteId);
     const regular = await seedRegularAgent(regularOrgId, regularSiteId);
 
-    expect(await validateAgentToken(parked.agentId, parked.agentToken)).toEqual({ ok: false, reason: 'unauthorized' });
+    expect(await validateAgentToken(parked.agentId, parked.agentToken)).toEqual({ ok: false, reason: 'pending_assignment' });
     const accepted = await validateAgentToken(regular.agentId, regular.agentToken);
     expect(accepted.ok).toBe(true);
 
@@ -370,7 +373,10 @@ describe('parked device — WebSocket and Helper ingresses', () => {
       return new Response('ws', { status: 101 });
     }) as never);
     const res = await wsApp.request(`/${parked.agentId}/ws`, { headers: { Authorization: `Bearer ${parked.agentToken}` } });
-    expect(res.status).toBe(401);
+    // #8318 D-1a: the parked refusal every other ingress returns (403
+    // device_pending_assignment), so the agent waits for assignment.
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'device_pending_assignment' });
     expect(upgraded).toBe(0);
   });
 
