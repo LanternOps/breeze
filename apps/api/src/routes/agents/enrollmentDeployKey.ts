@@ -85,6 +85,7 @@ import { checkDeployKeyRateBuckets } from '../../services/unassignedPool/enrollm
 import { isDeployKeyEnrollmentEnabled } from '../../services/unassignedPool/switches';
 import { getOrCreateUnassignedPoolOrg } from '../../services/unassignedPool/poolOrg';
 import { lockPartnerHoldingArea } from '../../services/unassignedPool/holdingAreaLock';
+import { parkedCertificateLifetimeDays } from '../../services/unassignedPool/limits';
 import {
   admitDeployKeyParkedCapacity,
   admitParkedEnrollment,
@@ -446,9 +447,14 @@ export async function enrollWithDeployKey(
       throw err;
     }
 
-    // TODO(#8318 D-1 §5): bound a pool-enrolled certificate to the parked
-    // lifetime (spec §10.4). Issued unchanged for now.
-    const mtls = await issueMtlsCertForDevice(written.device.id, pool.orgId);
+    // Spec §10.4 / §13 decision 9: a pool-enrolled certificate lives no
+    // longer than the device's parking window (measured from created_at,
+    // which an in-place re-enrollment keeps). Parked renewal is refused
+    // (routes/agents/mtls.ts), and assignment asks for the real one.
+    const parkedAt = written.device.createdAt;
+    const mtls = await issueMtlsCertForDevice(written.device.id, pool.orgId, {
+      lifetimeDays: (policyDays) => parkedCertificateLifetimeDays({ policyDays, parkedAt }),
+    });
 
     return {
       device: written.device,

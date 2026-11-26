@@ -40,6 +40,10 @@ vi.mock('../deviceDecommission', () => ({ decommissionDeviceInTransaction: h.dec
 vi.mock('../deviceLifecycle', () => ({ purgeRemovedDevice: vi.fn(), DeviceLifecycleError: class extends Error {} }));
 vi.mock('./holdingAreaLock', () => ({ lockPartnerHoldingArea: vi.fn() }));
 vi.mock('./assignParkedDeviceSteps', () => ({ lockDeviceForAssignment: h.lockDevice }));
+vi.mock('./parkedCertificates', () => ({
+  demoteParkedDeviceCertificates: vi.fn(async () => []),
+  hasUnrevokedLiveCertificate: vi.fn(async () => false),
+}));
 vi.mock('../deviceReattach/intentStore', () => ({
   lockOpenReattachIntentsOfDevice: vi.fn(async () => []),
   endIntentInTransaction: vi.fn(),

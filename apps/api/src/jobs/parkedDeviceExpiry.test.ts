@@ -102,6 +102,10 @@ vi.mock('../services/deviceLifecycle', () => ({
 }));
 vi.mock('../services/unassignedPool/holdingAreaLock', () => ({ lockPartnerHoldingArea: vi.fn() }));
 vi.mock('../services/unassignedPool/assignParkedDeviceSteps', () => ({ lockDeviceForAssignment: h.lockDevice }));
+vi.mock('../services/unassignedPool/parkedCertificates', () => ({
+  demoteParkedDeviceCertificates: vi.fn(async () => []),
+  hasUnrevokedLiveCertificate: vi.fn(async () => false),
+}));
 vi.mock('../services/deviceReattach/intentStore', () => ({
   lockOpenReattachIntentsOfDevice: vi.fn(async () => []),
   endIntentInTransaction: vi.fn(),

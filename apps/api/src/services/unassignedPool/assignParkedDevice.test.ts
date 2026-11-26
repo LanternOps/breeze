@@ -46,6 +46,7 @@ vi.mock('./assignParkedDeviceSteps', () => ({
   siteBelongsToOrg: vi.fn(),
   findIdentityCollisions: vi.fn(),
   lockLiveUserSession: vi.fn(),
+  requestCertificateRenewalAfterAssignment: vi.fn(),
 }));
 
 vi.mock('../deviceOrgMove/moveDeviceOrgInTransaction', async (importOriginal) => {
@@ -182,6 +183,7 @@ beforeEach(() => {
   vi.mocked(steps.lockTargetOrg).mockImplementation(async () => { calls.push('targetOrgLock'); return targetOrg(); });
   vi.mocked(steps.siteBelongsToOrg).mockImplementation(async () => { calls.push('siteCheck'); return true; });
   vi.mocked(steps.findIdentityCollisions).mockImplementation(async () => { calls.push('collisions'); return []; });
+  vi.mocked(steps.requestCertificateRenewalAfterAssignment).mockImplementation(async () => { calls.push('certRenewalRequest'); });
   vi.mocked(previewPartnerDeviceCapacity).mockImplementation(async () => {
     calls.push('capacityPreview');
     return { allowed: true, partnerId: PARTNER, maxDevices: null, activeCount: null };
@@ -225,8 +227,10 @@ describe('assignParkedDevice', () => {
     expect(result).toEqual({ ok: true, deviceId: DEVICE, targetOrgId: TARGET_ORG, targetSiteId: TARGET_SITE, ledgerEventId: 'ledger-1' });
     expect(calls).toEqual([
       'partnerLock', `deviceLock:${DEVICE}`, 'targetOrgLock', 'siteCheck', 'collisions',
-      'capacityPreview', 'actorLock', 'sessionLock', 'consume', 'engine', 'capacity', 'ledger',
+      'capacityPreview', 'actorLock', 'sessionLock', 'consume', 'engine', 'certRenewalRequest', 'capacity', 'ledger',
     ]);
+    // #8318 spec §10.4: in the same transaction, after the move.
+    expect(steps.requestCertificateRenewalAfterAssignment).toHaveBeenCalledWith(fakeTx, DEVICE);
     expect(steps.lockLiveUserSession).toHaveBeenCalledWith(fakeTx, { userId: 'user-1', sid: 'sid-1' });
     expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(steps.lockPartnerHoldingArea).toHaveBeenCalledWith(fakeTx, PARTNER);

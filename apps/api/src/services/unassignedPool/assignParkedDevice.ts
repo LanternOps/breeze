@@ -13,7 +13,8 @@
  *   5. an unlocked licensed-capacity preview (refuse before spending a grant);
  *   6. the step-up grant (single: consumed here; bulk: consumed once for the
  *      batch before the first transaction, actor assurance re-locked here);
- *   7. the shared org-move engine, via 'pool_assignment';
+ *   7. the shared org-move engine, via 'pool_assignment', then the request
+ *      for the device's real mTLS certificate (#8318 spec §10.4);
  *   8. licensed-capacity admission under the partner row lock (assignment is
  *      when capacity is consumed; last, so that lock is held only to commit);
  *   9. the `assigned` ledger row.
@@ -66,6 +67,7 @@ import { isParkedDeviceExpired } from './limits';
 import {
   findIdentityCollisions,
   lockDeviceForAssignment,
+  requestCertificateRenewalAfterAssignment,
   lockLiveUserSession,
   lockPartnerHoldingArea,
   lockTargetOrg,
@@ -306,6 +308,9 @@ async function assignInTransaction(
     stepUp: null,
     via: 'pool_assignment',
   });
+
+  // #8318 spec §10.4: the parked certificate gives way to the target org's.
+  await requestCertificateRenewalAfterAssignment(tx, device.id);
 
   // Assignment is the moment the device starts consuming licensed capacity.
   // Admitted LAST, after the move: the partner row lock this takes (FOR

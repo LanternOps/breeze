@@ -56,15 +56,18 @@ const TERMINAL_DEVICE_STATUSES: Array<'decommissioned' | 'quarantined'> = ['deco
 /**
  * Pre-assignment minimal heartbeat.
  *
- * A device parked in its partner's holding org gets certificate and token
- * rotation and lifecycle removal, and nothing else. So this beat:
+ * A device parked in its partner's holding org gets token rotation and
+ * lifecycle removal, and nothing else. So this beat:
  *   - records liveness (main agent: lastSeenAt, status 'online', agent version;
  *     watchdog: its own last-seen/status/version columns), guarded against the
  *     terminal statuses exactly like the full beat;
  *   - returns `commands` (claimed with the self_uninstall-only allowlist) plus
- *     `renewCert` / `rotateToken` / `confirmTokenRotation`, computed by the
- *     same helper as the full beat. The watchdog never received rotation
- *     signals from the full beat either, so it gets commands only;
+ *     `rotateToken` / `confirmTokenRotation`, computed by the same helper as
+ *     the full beat. Never `renewCert` (#8318 spec §10.4, §13 decision 9): the
+ *     certificate issued at pool enrollment is bounded to the parking window
+ *     and `/renew-cert` refuses a parked device; assignment asks for the
+ *     real one. The watchdog never received rotation signals from the full
+ *     beat either, so it gets commands only;
  *   - #8318 §6.2 (main agent only): records `rebindProtocolVersion`, non-sticky
  *     like the full beat, and returns the signed `rebind` directive while the
  *     device is the source of an open reattach intent, plus
@@ -177,6 +180,8 @@ export async function respondParkedHeartbeat(
         authenticatedWithPreviousToken: credentialState.authenticatedWithPreviousToken,
         pendingTokenPresented: credentialState.pendingTokenPresented,
         presentedTokenHash: agent.authTokenHash,
+        // #8318 spec §10.4: the parked certificate is never renewed.
+        allowCertRenewal: false,
       });
       return { found: true, maintenance };
     },

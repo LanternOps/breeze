@@ -12,6 +12,8 @@ import { devices, organizations, deviceMtlsCertificates } from '../../db/schema'
 import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { authMiddleware, requireMfa, requirePermission, type AuthContext } from '../../middleware/auth';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
+import { PARKED_DEVICE_REFUSAL } from '../../middleware/agentAuthParked';
+import { isUnassignedPoolOrgType } from '../../services/unassignedPool/orgType';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
   CloudflareMtlsError,
@@ -313,8 +315,10 @@ async function authenticateAgentBearer(
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         mtlsCertExpiresAt: devices.mtlsCertExpiresAt,
         mtlsCertCfId: devices.mtlsCertCfId,
+        organizationType: organizations.type,
       })
       .from(devices)
+      .leftJoin(organizations, eq(organizations.id, devices.orgId))
       .where(or(eq(devices.agentTokenHash, tokenHash), eq(devices.previousTokenHash, tokenHash)))
       .limit(1);
     return row ?? null;
@@ -379,6 +383,16 @@ async function authenticateAgentBearer(
 
   if (device.status === 'quarantined') {
     return { response: c.json({ error: 'Device quarantined', quarantined: true }, 403) };
+  }
+
+  // #8318 spec §10.4 / §13 decision 9: a device parked in its partner's
+  // holding org renews nothing. Its certificate was issued for the parking
+  // window only; assignment asks for the real one, and reattach stages the
+  // target's. Covers /renew-cert, /renew-cert/challenge and
+  // /renew-cert/confirm, before any rate limiter or provider call, with the
+  // body every other parked refusal returns (middleware/agentAuthParked.ts).
+  if (isUnassignedPoolOrgType(device.organizationType)) {
+    return { response: c.json(PARKED_DEVICE_REFUSAL, 403) };
   }
 
   return { device };

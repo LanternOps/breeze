@@ -41,6 +41,10 @@ export const devices = pgTable('devices', {
   mtlsCertExpiresAt: timestamp('mtls_cert_expires_at'),
   mtlsCertIssuedAt: timestamp('mtls_cert_issued_at'),
   mtlsCertCfId: varchar('mtls_cert_cf_id', { length: 128 }),
+  // #8318 spec §10.4: the serial of a certificate the server wants replaced;
+  // the full heartbeat signals renewCert while it equals mtlsCertSerialNumber.
+  // Set by parked-device assignment, never cleared (renewal ends the match).
+  mtlsRenewalRequestedSerial: varchar('mtls_renewal_requested_serial', { length: 128 }),
   quarantinedAt: timestamp('quarantined_at'),
   quarantinedReason: varchar('quarantined_reason', { length: 255 }),
   // Task 18: Auto-suspend agent tokens after repeated cross-tenant probe

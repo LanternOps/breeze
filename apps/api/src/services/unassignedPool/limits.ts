@@ -65,3 +65,21 @@ const DAY_MS = 86_400_000;
 export function isParkedDeviceExpired(parkedAt: Date, now: number = Date.now()): boolean {
   return now - parkedAt.getTime() > PARKED_DEVICE_TTL_DAYS * DAY_MS;
 }
+
+/**
+ * The lifetime of an mTLS certificate issued to a parked device (spec
+ * 2026-10-12 §10.4, §13 decision 9): the org's policy, cut to the whole days
+ * left before the device's parking window closes (rounded down, never below
+ * one day, the provider's minimum). Parked renewal is refused, so the
+ * certificate cannot outlive the parked device by more than that one day.
+ */
+export function parkedCertificateLifetimeDays(input: {
+  policyDays: number;
+  parkedAt: Date;
+  now?: number;
+}): number {
+  const now = input.now ?? Date.now();
+  const msLeft = input.parkedAt.getTime() + PARKED_DEVICE_TTL_DAYS * DAY_MS - now;
+  const daysLeft = Math.max(1, Math.floor(msLeft / DAY_MS));
+  return Math.min(input.policyDays, daysLeft);
+}

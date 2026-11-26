@@ -14,6 +14,7 @@ vi.mock('../../middleware/agentAuth', () => ({
 
 import {
   computeCredentialMaintenance,
+  isCertRenewalRequested,
   shouldRenewCert,
   type CredentialMaintenanceDevice,
 } from './heartbeatCredentialMaintenance';
@@ -62,6 +63,19 @@ describe('shouldRenewCert', () => {
   });
 });
 
+describe('isCertRenewalRequested', () => {
+  it.each([
+    ['no request', null, 'AA01', false],
+    ['request for the current certificate', 'AA01', 'AA01', true],
+    ['request for a replaced certificate', 'AA01', 'BB02', false],
+    ['request, but no certificate', 'AA01', null, false],
+    ['neither (mTLS not configured)', null, null, false],
+    ['empty request', '', '', false],
+  ] as const)('%s', (_label, requested, current, expected) => {
+    expect(isCertRenewalRequested({ mtlsRenewalRequestedSerial: requested, mtlsCertSerialNumber: current })).toBe(expected);
+  });
+});
+
 describe('computeCredentialMaintenance', () => {
   beforeEach(() => {
     promoteMock.mockReset();
@@ -81,6 +95,48 @@ describe('computeCredentialMaintenance', () => {
       device: device({ mtlsCertIssuedAt: hoursAgo(80), mtlsCertExpiresAt: hoursAhead(10) }),
     });
     expect(result).toEqual({ renewCert: true });
+  });
+
+  it('never asks for a certificate renewal when the caller disallows it (the parked beat, #8318 §10.4)', async () => {
+    rotationDueMock.mockReturnValue(true);
+    const result = await computeCredentialMaintenance({
+      ...base,
+      allowCertRenewal: false,
+      device: device({
+        mtlsCertIssuedAt: hoursAgo(80),
+        mtlsCertExpiresAt: hoursAhead(10),
+        mtlsCertSerialNumber: 'AA01',
+        mtlsRenewalRequestedSerial: 'AA01',
+      }),
+    });
+    // Token rotation is unaffected.
+    expect(result).toEqual({ rotateToken: true });
+  });
+
+  it('asks for a certificate renewal the server requested, before two thirds of the lifetime (#8318 §10.4: after assignment)', async () => {
+    const result = await computeCredentialMaintenance({
+      ...base,
+      device: device({
+        mtlsCertIssuedAt: hoursAgo(1),
+        mtlsCertExpiresAt: hoursAhead(300),
+        mtlsCertSerialNumber: 'AA01',
+        mtlsRenewalRequestedSerial: 'AA01',
+      }),
+    });
+    expect(result).toEqual({ renewCert: true });
+  });
+
+  it('stops asking once the renewal replaced the requested certificate', async () => {
+    const result = await computeCredentialMaintenance({
+      ...base,
+      device: device({
+        mtlsCertIssuedAt: hoursAgo(1),
+        mtlsCertExpiresAt: hoursAhead(2000),
+        mtlsCertSerialNumber: 'BB02',
+        mtlsRenewalRequestedSerial: 'AA01',
+      }),
+    });
+    expect(result).toEqual({});
   });
 
   it('asks for a token rotation when rotation is due', async () => {
