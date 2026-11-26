@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/parked"
 )
 
 func TestIsSourceDue(t *testing.T) {
@@ -632,4 +634,34 @@ func waitForAuditEvents(t *testing.T, audit *recordingAuditLogger, count int) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// #8318 D-1a: a parked device fetches no crawl config until it is assigned.
+func TestStartLoopFetchesNothingWhileParked(t *testing.T) {
+	var fetches atomic.Int32
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	st := parked.New()
+	st.ObserveBeat(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := StartLoop(ctx, Deps{
+		Client:       client,
+		Log:          loopTestLogger(),
+		TickInterval: time.Millisecond,
+		Parked:       st,
+	})
+	defer func() {
+		cancel()
+		waitLoopSignal(t, done, "loop shutdown")
+	}()
+
+	time.Sleep(30 * time.Millisecond) // ~30 ticks
+	if got := fetches.Load(); got != 0 {
+		t.Fatalf("fetches while parked = %d, want 0", got)
+	}
+	st.ObserveBeat(false)
+	waitLoopCondition(t, func() bool { return fetches.Load() >= 1 }, "fetch after assignment")
 }

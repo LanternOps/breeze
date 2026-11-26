@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/parked"
 	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
@@ -118,6 +119,12 @@ type Shipper struct {
 	// deferLogged is true once the current deferral has been announced on
 	// stderr, so the line is emitted once per deferral, not once per tick.
 	deferLogged bool
+	// parked is the holding-area state (#8318 D-1a): while it reads parked
+	// the loop holds its batch instead of posting it (the server refuses
+	// /logs for a parked device) and ships it once the device is assigned.
+	parked *parked.State
+	// parkedHoldLogged: the current hold has been announced (once).
+	parkedHoldLogged atomic.Bool
 }
 
 // ShipperConfig configures the log shipper.
@@ -147,6 +154,9 @@ type ShipperConfig struct {
 	// every levelOverridePollInterval, so an override outlives a restart and
 	// reaches helper processes (#7416). Empty disables both.
 	LevelOverridePath string
+	// Parked, when set, suspends shipping while the device is parked in its
+	// partner's holding area (#8318 D-1a). Nil ships as before.
+	Parked *parked.State
 }
 
 // NewShipper creates a new log shipper.
@@ -176,6 +186,7 @@ func NewShipper(cfg ShipperConfig) *Shipper {
 		minLevel:     parseLevel(cfg.MinLevel),
 		authMon:      cfg.AuthMonitor,
 		overridePath: cfg.LevelOverridePath,
+		parked:       cfg.Parked,
 	}
 }
 
@@ -303,7 +314,8 @@ func (s *Shipper) Enqueue(entry LogEntry) {
 	case s.buffer <- entry:
 	default:
 		dropped := s.droppedCount.Add(1)
-		if dropped == 1 || dropped%100 == 0 {
+		// While parked the hold line already said later entries are dropped.
+		if (dropped == 1 || dropped%100 == 0) && !s.parked.Parked() {
 			fmt.Fprintf(os.Stderr, "[log-shipper] buffer full, dropped %d log entries\n", dropped)
 		}
 	}
@@ -443,6 +455,8 @@ func (s *Shipper) shipLoop() {
 		if len(batch) >= defaultMaxBatchSize {
 			in = nil
 		}
+		// Closed at the next parked transition; nil (never fires) unwired.
+		parkedChanged := s.parked.Changed()
 
 		select {
 		case <-s.stopChan:
@@ -465,13 +479,28 @@ func (s *Shipper) shipLoop() {
 				}
 			}
 			if len(batch) > 0 {
-				s.shipHeld(batch)
+				if s.parked.Parked() {
+					// The server refuses /logs while parked: drop instead
+					// of posting a doomed request on the way out.
+					s.droppedCount.Add(int64(len(batch)))
+					fmt.Fprintf(os.Stderr, "[log-shipper] device awaiting assignment; dropping %d held entries at shutdown\n", len(batch))
+				} else {
+					s.shipHeld(batch)
+				}
 			}
 			return
 
+		case <-parkedChanged:
+			// Assigned: ship what was held now, not at the next tick.
+			if len(batch) > 0 && !s.holdWhileParked() && !s.shipDeferred() {
+				s.shipHeld(batch)
+				clear(batch)
+				batch = batch[:0]
+			}
+
 		case entry := <-in:
 			batch = append(batch, entry)
-			if len(batch) >= defaultMaxBatchSize && !s.shipDeferred() {
+			if len(batch) >= defaultMaxBatchSize && !s.holdWhileParked() && !s.shipDeferred() {
 				s.shipHeld(batch)
 				// Release strings and field maps before reusing the backing array.
 				// shipBatch has finished; any re-buffered entries are value copies.
@@ -480,7 +509,7 @@ func (s *Shipper) shipLoop() {
 			}
 
 		case <-tick:
-			if len(batch) > 0 && !s.shipDeferred() {
+			if len(batch) > 0 && !s.holdWhileParked() && !s.shipDeferred() {
 				s.shipHeld(batch)
 				clear(batch)
 				batch = batch[:0]
@@ -588,6 +617,23 @@ func (s *Shipper) shipDeferred() bool {
 		s.deferLogged = true
 		fmt.Fprintf(os.Stderr, "[log-shipper] deferring log shipping for %v (server Retry-After)\n",
 			s.notBefore.Sub(now).Round(time.Second))
+	}
+	return true
+}
+
+// holdWhileParked reports whether the loop must hold its batch because the
+// device is parked (#8318 D-1a). Memory stays bounded the same way as under
+// a Retry-After hold: a full batch stops pulling from the buffer, which then
+// fills and Enqueue drops (and counts) the newest entries. Announced once
+// per hold on stderr; the heartbeat logs the parked state itself.
+func (s *Shipper) holdWhileParked() bool {
+	if !s.parked.Parked() {
+		s.parkedHoldLogged.Store(false)
+		return false
+	}
+	if s.parkedHoldLogged.CompareAndSwap(false, true) {
+		fmt.Fprintf(os.Stderr, "[log-shipper] device awaiting assignment: holding up to %d log entries until it is assigned; later entries are dropped\n",
+			defaultMaxBatchSize+defaultBufferSize)
 	}
 	return true
 }

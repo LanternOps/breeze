@@ -52,6 +52,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
+	"github.com/breeze-rmm/agent/internal/parked"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -386,6 +387,10 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
+	// Parked is true on the minimal beat the server returns while the device
+	// waits in its partner's holding area (#8318 D-1a). The full beat never
+	// carries it, so its absence on a successful beat means assigned.
+	Parked                bool                    `json:"parked,omitempty"`
 	Containment           *ContainmentDesired     `json:"containment"`
 	NetworkContextReceipt *networkcontext.Receipt `json:"networkContextReceipt,omitempty"`
 	Commands              []Command               `json:"commands"`
@@ -1343,6 +1348,13 @@ type Heartbeat struct {
 	backupPrefetchFailureCount int
 
 	hbConsecutiveFailures int // guarded by h.mu
+
+	// parkedState is whether the device waits in its partner's holding area
+	// (#8318 D-1a, parked_mode.go). Nil-safe: nil is never parked.
+	parkedState *parked.State
+	// parkedSelfRenewAt is the UnixNano of the last self-initiated renewal
+	// started while parked (parkedSelfRenewAllowed).
+	parkedSelfRenewAt atomic.Int64
 }
 
 type rollbackController interface {
@@ -1388,6 +1400,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		config:        cfg,
 		secureToken:   secToken,
 		client:        httpClient,
+		parkedState:   parked.New(),
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
 		// Memory-only until SetStatePath gives it a file.
@@ -1698,6 +1711,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.tunnelMgr.CleanupOrphanedVNC()
 	h.initializeRollbackController()
 	h.initializeContainment(config.GetDataDir())
+	h.parkedState.SetObserver(h.onParkedTransition)
 
 	return h
 }
@@ -2658,6 +2672,13 @@ func (h *Heartbeat) Start() {
 				continue
 			}
 			h.sendHeartbeatWithWatchdog()
+			// #8318 D-1a: while the device waits for assignment every route
+			// below is refused; schedule nothing and stamp no cadence gate,
+			// so all of them are due the moment it is assigned
+			// (parked_mode.go).
+			if h.isParked() {
+				continue
+			}
 			now := time.Now()
 			patchRouteReady := h.loopReady("PUT", h.agentRouteURL("patches/pending")) // W09: before the claim; outside h.mu
 			// Send inventory every 15 minutes
@@ -2976,6 +2997,11 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 //   - hardware / patch:   daily (or configured), dispatched from the tick gate
 //   - security / sessions: every 5 minutes, dispatched from their own tick gates
 func (h *Heartbeat) sendInventory() {
+	if h.isParked() {
+		// Refused while parked; nothing is collected. Re-run on assignment.
+		log.Debug("inventory skipped: device awaiting assignment")
+		return
+	}
 	fns := []func(){
 		h.sendSoftwareInventory,
 		h.sendDiskInventory,
@@ -3064,6 +3090,8 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 		}
 		log.Debug("inventory sent", "label", label)
 		return nil
+	} else if h.noteParkedRefusal(resp) {
+		log.Debug("inventory send refused: device awaiting assignment", "label", label)
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
 	}
@@ -3259,6 +3287,8 @@ func (h *Heartbeat) sendProcessSample() {
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		log.Debug("process sample sent", "count", len(entries))
+	} else if h.noteParkedRefusal(resp) {
+		log.Debug("process sample refused: device awaiting assignment")
 	} else {
 		log.Warn("process sample send failed", "status", resp.StatusCode)
 	}
@@ -3300,6 +3330,14 @@ func (h *Heartbeat) sendHardwareInventory() {
 	// Launched as a bare goroutine; without this a panic takes down the process.
 	defer observability.Recoverer("heartbeat.hardwareInventory")
 
+	if h.isParked() {
+		// The hardware route is refused while parked and re-run on
+		// assignment, but TPM attestation is on the parked allow-list: a
+		// parked reattach source must still be able to prove its key.
+		log.Debug("hardware inventory skipped: device awaiting assignment")
+		h.maybeAttestTPM(h.tpmAvailability())
+		return
+	}
 	collectHW := h.hardwareCollectFn
 	if collectHW == nil {
 		collectHW = h.hardwareCol.CollectHardware
@@ -4291,6 +4329,12 @@ func (h *Heartbeat) sendPatchInventory() {
 	// Launched as a bare goroutine; without this a panic takes down the process.
 	defer observability.Recoverer("heartbeat.patchInventory")
 
+	if h.isParked() {
+		// Refused while parked: no scan, no failed-send retry. Re-run on
+		// assignment.
+		log.Debug("patch inventory skipped: device awaiting assignment")
+		return
+	}
 	pendingItems, installedItems, coveredSources, err := h.collectPatchInventory()
 	if err != nil {
 		log.Warn("patch inventory collection warning", "error", err.Error())
@@ -5047,7 +5091,9 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 		return
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if h.noteParkedRefusal(resp) {
+		log.Debug("boot performance refused: device awaiting assignment")
+	} else if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		log.Warn("boot performance upload returned non-success",
 			"status", resp.StatusCode,
@@ -5101,6 +5147,10 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 	}
 	defer resp.Body.Close()
 
+	if h.noteParkedRefusal(resp) {
+		log.Debug("reliability metrics refused: device awaiting assignment")
+		return
+	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		log.Warn("reliability metrics upload returned non-success",
@@ -6221,6 +6271,14 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	// #8318 D-1a: a parked beat enters the parked state before anything this
+	// response triggers can call a refused route; a full beat leaves it after
+	// the response is applied, so the resumed sends see its configuration.
+	if response.Parked {
+		h.observeParkedBeat(true)
+	} else {
+		defer h.observeParkedBeat(false)
+	}
 	h.reconcileContainment(response.Containment)
 	// First: a scope change purges the old MSP's prompt list entries and
 	// replaces the identity before anything else in this response can create
@@ -6701,6 +6759,10 @@ func (h *Heartbeat) maybeSelfInitiateCertRenewal() {
 	}
 
 	if !mtls.IsExpired(certExpires) && !mtls.ExpiresWithin(certExpires, selfInitiatedRenewalLeadTime) {
+		return
+	}
+	// #8318 D-1a: hourly, not every tick, while parked (parked_mode.go).
+	if !mtls.IsExpired(certExpires) && !h.parkedSelfRenewAllowed(time.Now()) {
 		return
 	}
 

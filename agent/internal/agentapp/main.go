@@ -33,6 +33,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
+	"github.com/breeze-rmm/agent/internal/parked"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/safemode"
@@ -835,6 +836,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// stops spamming the API (#401).
 	authMon := authstate.NewMonitor(3)
 
+	// #8318 D-1a: whether this device waits in its partner's holding area for
+	// assignment. The heartbeat owns its transitions; the log shipper, the
+	// WebSocket, the UniFi collector and the workspace index read it and
+	// suspend while parked. Clients built here also note a 403
+	// device_pending_assignment into it.
+	parkedState := parked.New()
+
 	// Initialize log shipper for centralized diagnostics.
 	//
 	// The shipper's URL is a provider, not a copied string: after a
@@ -851,9 +859,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			AgentID:      cfg.AgentID,
 			AuthToken:    secureToken,
 			AgentVersion: version,
-			HTTPClient:   newShipperHTTPClient(),
+			HTTPClient:   parked.WrapClient(newShipperHTTPClient(), parkedState),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
+			Parked:       parkedState,
 			// Restores a set_log_level override across restarts (#7416).
 			LevelOverridePath: config.LogLevelOverridePath(),
 		})
@@ -1003,6 +1012,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+	hb.SetParkedState(parkedState)
 	// #8619: a server-signalled watchdog target on a host whose watchdog is
 	// not registered is installed through the bounded, persisted Ensure path
 	// instead of the legacy swap. Never in a support session.
@@ -1054,6 +1064,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		TLSConfig: tlsCfg,
 
 		FirstReconnectWindow: wsReconnectConfig(cfg),
+		Parked:               parkedState,
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
 	hb.SetWebSocketClient(wsClient)
@@ -1087,7 +1098,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			// instead of POSTing to the dead one forever (#2423).
 			APIBaseURL: hb.ServerURL,
 			AgentID:    cfg.AgentID,
-			HTTP:       newUnifiAPIClient(secureToken, tlsCfg),
+			HTTP:       parked.WrapClient(newUnifiAPIClient(secureToken, tlsCfg), parkedState),
+			Parked:     parkedState,
 			// Loop failures here are config-fetch / telemetry-upload errors —
 			// operationally significant and, unlike poll errors, never surface
 			// via the ingest worker. Log at Warn so the log shipper (MinLevel
@@ -1110,10 +1122,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		// URL provider, not a copied string — see the UniFi collector wiring
 		// above (#2423). The agent ID builds the default base (#12690).
 		workspaceClient := workspaceindex.NewClient(workspaceIndexClientConfig(
-			cfg, hb.ServerURL, secureToken, newUnifiAPIClient(secureToken, tlsCfg), authMon))
+			cfg, hb.ServerURL, secureToken, parked.WrapClient(newUnifiAPIClient(secureToken, tlsCfg), parkedState), authMon))
 		var workspaceIndexCtx context.Context
 		workspaceIndexCtx, workspaceIndexCancel = context.WithCancel(context.Background())
-		workspaceIndexDeps := workspaceindex.Deps{Client: workspaceClient}
+		workspaceIndexDeps := workspaceindex.Deps{Client: workspaceClient, Parked: parkedState}
 		// Device-audit trace for server-driven indexing activation (#2425).
 		// Assign only a non-nil logger: a nil *audit.Logger stored in the
 		// AuditLogger interface is a TYPED nil, which passes `!= nil` and would
