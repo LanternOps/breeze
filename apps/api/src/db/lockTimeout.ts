@@ -21,7 +21,7 @@ const PG_MAX_TIMEOUT_MS = 2147483647;
  * range Postgres can actually hold (negative, or above int4 milliseconds) —
  * i.e. whenever a confident number would be a fabricated one.
  */
-function readPriorMs(result: unknown): number | null {
+export function readPriorMs(result: unknown): number | null {
   const rows = Array.isArray(result)
     ? result
     : Array.isArray((result as { rows?: unknown })?.rows)

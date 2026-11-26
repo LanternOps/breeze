@@ -10,6 +10,8 @@ const dbMock = vi.hoisted(() => ({
   queryError: undefined as Error | undefined,
   /** Rejects the nth `execute` (1-based) of the next call. */
   executeError: undefined as { at: number; error: Error } | undefined,
+  /** What every `execute` resolves to; the prior limit read when unset. */
+  executeRows: undefined as unknown[] | undefined,
   wheres: [] as unknown[],
 }));
 vi.mock('../db', () => {
@@ -34,7 +36,7 @@ vi.mock('../db', () => {
       dbMock.executed.push(q);
       dbMock.events.push('execute');
       if (dbMock.executeError?.at === dbMock.executed.length) throw dbMock.executeError.error;
-      return [{ value: '2s' }];
+      return dbMock.executeRows ?? [{ prior_ms: '2000' }];
     },
     select: () => {
       dbMock.events.push('query');
@@ -728,6 +730,7 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     dbMock.events.length = 0;
     dbMock.queryError = undefined;
     dbMock.executeError = undefined;
+    dbMock.executeRows = undefined;
   });
 
   const matchesFilter: FilterConditionGroup = {
@@ -737,7 +740,7 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
 
   const expectTimeoutWrappedQuery = () => {
     const executions = renderedExecutions();
-    expect(executions[0]?.sql).toMatch(/current_setting\('statement_timeout'/i);
+    expect(executions[0]?.sql).toMatch(/from pg_catalog\.pg_settings where name = 'statement_timeout'/i);
     expect(executions[1]?.sql).toMatch(/set_config\('statement_timeout'/i);
     expect(executions[1]?.params).toEqual(['500ms']);
 
@@ -745,9 +748,26 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     const restoreIndex = dbMock.events.lastIndexOf('execute');
     expect(firstQueryIndex).toBeGreaterThan(1);
     expect(restoreIndex).toBeGreaterThan(firstQueryIndex);
-    expect(executions.at(-1)?.sql).toMatch(/set_config\('statement_timeout'/i);
-    expect(executions.at(-1)?.params).toEqual(['2s']);
+    // #12715: one statement, no parameters and no function call. postgres.js
+    // sends an unprepared statement with parameters as Parse/Describe/Flush,
+    // then waits for the reply before Bind/Execute, and the server's statement
+    // timer runs across that wait. Without parameters it is one
+    // simple-protocol Query message.
+    expect(executions.at(-1)?.sql).toBe('SET LOCAL statement_timeout = 2000');
+    expect(executions.at(-1)?.params).toEqual([]);
   };
+
+  it.each([
+    ['no row', []],
+    ['a value that is not whole milliseconds', [{ prior_ms: '2s' }]],
+    ['a negative value', [{ prior_ms: '-1' }]],
+  ])('reads nothing when the limit to restore is unreadable (%s)', async (_name, rows) => {
+    dbMock.executeRows = rows;
+
+    await expect(evaluateFilter(matchesFilter, { orgId: 'org-1' })).rejects.toThrow(/statement_timeout/);
+
+    expect(dbMock.events).toEqual(['execute']);
+  });
 
   it('evaluateFilterWithPreview sets a statement_timeout before querying', async () => {
     await evaluateFilterWithPreview(matchesFilter, { orgId: 'org-1', previewLimit: 5 });

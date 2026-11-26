@@ -1,5 +1,6 @@
 import { and, eq, ne, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { readPriorMs } from '../db/lockTimeout';
 import { sqlTextArray, sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
 import { PG_UUID_REGEX } from '../utils/uuid';
@@ -1015,17 +1016,16 @@ export async function withFilterStatementTimeout<T>(
     throw new Error('withFilterStatementTimeout: timeoutMs must be a positive integer');
   }
   return db.transaction(async (tx) => {
-    const previousResult = await tx.execute(
-      sql`select current_setting('statement_timeout', true) as value`
-    );
-    const previousRow = (Array.isArray(previousResult)
-      ? previousResult[0]
-      : (previousResult as unknown as { rows: Array<{ value: string | null }> }).rows[0]
-    ) as { value: string | null } | undefined;
-    // `statement_timeout` is a built-in setting, so PostgreSQL normally returns
-    // `0` when no timeout is configured. Keep the fallback for pool/session
-    // configurations that surface an empty value.
-    const previousTimeout = previousRow?.value || '0';
+    // Whole milliseconds (`pg_settings` reports this setting in its base unit),
+    // so the restore below can carry it as an integer literal.
+    const previousMs = readPriorMs(await tx.execute(
+      sql`select setting::bigint as prior_ms from pg_catalog.pg_settings where name = 'statement_timeout'`
+    ));
+    // Nothing to put back means no way to keep the promise below: refuse
+    // before any read rather than leave the bound, or no bound, in force.
+    if (previousMs === null) {
+      throw new Error('withFilterStatementTimeout: could not read the statement_timeout to restore');
+    }
     await tx.execute(
       sql`select set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`
     );
@@ -1033,13 +1033,26 @@ export async function withFilterStatementTimeout<T>(
       // A savepoint of its own, so a statement `run` fails AND swallows (the
       // driver rethrows it when its scope ends) is still classified below.
       const result = await tx.transaction((queryTx) => run(queryTx));
-      // The restore runs under whatever limit `run` left, so it can be
-      // cancelled too: inside this try, that is the same timeout (#12656). Only
-      // on success: every throw rolls `tx` back, which reverts the limit, and a
+      // Every read has finished. The restore runs under whatever limit `run`
+      // left, as low as GROUP_CHECK_MIN_STATEMENT_MS (#12715), so it is one
+      // `SET LOCAL` with nothing to bind and no function to call:
+      //   - no parameters: postgres.js sends a statement with parameters that
+      //     is not prepared on the connection (drizzle's `execute` does not
+      //     prepare) as Parse/Describe/Flush, waits for the reply, then sends
+      //     Bind/Execute, and the server's statement timer runs across that
+      //     wait, so an event-loop stall here cancelled it. Without parameters
+      //     it is one simple-protocol Query message, which the server finishes
+      //     without waiting on the client.
+      //   - no function: `set_config` resolves through the search_path `run`
+      //     may have changed; `SET` does not.
+      // `previousMs` is an integer that readPriorMs range-checked, so the literal
+      // cannot carry anything else.
+      //
+      // It stays inside this try: should even this be cancelled, that is still
+      // a timeout and the check is refused, never passed (#12656). Only on
+      // success: every throw rolls `tx` back, which reverts the limit, and a
       // statement sent on the way out could replace the error being reported.
-      await tx.execute(
-        sql`select set_config('statement_timeout', ${previousTimeout}, true)`
-      );
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${previousMs}`));
       return result;
     } catch (error) {
       // Anything that is not a cancellation — a bad column, a lock error, a
