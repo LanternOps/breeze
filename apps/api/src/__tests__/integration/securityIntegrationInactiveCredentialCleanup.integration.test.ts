@@ -120,10 +120,12 @@ async function huntressIntegration(
 }
 
 /**
- * Partner A: an active integration with secrets and, from before a dedupe,
- * an older inactive one with secrets. Partner B: an inactive one with
- * secrets. Partner C: an inactive one already cleared by Disconnect.
- * Each integration has site mappings under it.
+ * Partner A: an active integration with secrets and, from before a dedupe, an
+ * inactive one with secrets. Partner B: an inactive one with secrets (for
+ * Huntress, three rows that each hold only one of the three secrets).
+ * Partner C: an inactive one already cleared by Disconnect and, for
+ * SentinelOne, an inactive one with no API token whose mapping still holds a
+ * registration token. Each SentinelOne integration has site mappings under it.
  */
 async function seed() {
   const partnerA = await createPartner();
@@ -137,6 +139,7 @@ async function seed() {
   const s1OldInactive = await s1Integration(partnerA.id, 'a-old', { active: false, token: true });
   const s1Inactive = await s1Integration(partnerB.id, 'b', { active: false, token: true });
   const s1Cleared = await s1Integration(partnerC.id, 'c', { active: false, token: false });
+  const s1Tokenless = await s1Integration(partnerC.id, 'c-tokenless', { active: false, token: false });
 
   const mapActive = await s1Mapping(s1Active.id, partnerA.id, orgA.id, 'a-active', true);
   const mapOldInactive = await s1Mapping(s1OldInactive.id, partnerA.id, orgA.id, 'a-old', true);
@@ -144,26 +147,29 @@ async function seed() {
   const mapInactive2 = await s1Mapping(s1Inactive.id, partnerB.id, orgB.id, 'b-2', true);
   const mapInactiveNoToken = await s1Mapping(s1Inactive.id, partnerB.id, orgB.id, 'b-3', false);
   const mapCleared = await s1Mapping(s1Cleared.id, partnerC.id, orgC.id, 'c', false);
+  const mapTokenless = await s1Mapping(s1Tokenless.id, partnerC.id, orgC.id, 'c-tokenless', true);
 
   const hActive = await huntressIntegration(partnerA.id, 'a-active', { active: true, apiKey: true, accountKey: true, webhookSecret: true });
   const hOldInactive = await huntressIntegration(partnerA.id, 'a-old', { active: false, apiKey: true, accountKey: true, webhookSecret: true });
-  const hPartial = await huntressIntegration(partnerB.id, 'b', { active: false, apiKey: false, accountKey: false, webhookSecret: true });
+  const hWebhookOnly = await huntressIntegration(partnerB.id, 'b-webhook', { active: false, apiKey: false, accountKey: false, webhookSecret: true });
+  const hApiKeyOnly = await huntressIntegration(partnerB.id, 'b-api', { active: false, apiKey: true, accountKey: false, webhookSecret: false });
+  const hAccountKeyOnly = await huntressIntegration(partnerB.id, 'b-account', { active: false, apiKey: false, accountKey: true, webhookSecret: false });
   const hCleared = await huntressIntegration(partnerC.id, 'c', { active: false, apiKey: false, accountKey: false, webhookSecret: false });
 
   return {
     s1: {
       active: [s1Active.id],
       clear: [s1OldInactive.id, s1Inactive.id],
-      alreadyClear: [s1Cleared.id],
+      alreadyClear: [s1Cleared.id, s1Tokenless.id],
     },
     mappings: {
       active: [mapActive.id],
-      clear: [mapOldInactive.id, mapInactive1.id, mapInactive2.id],
+      clear: [mapOldInactive.id, mapInactive1.id, mapInactive2.id, mapTokenless.id],
       alreadyClear: [mapInactiveNoToken.id, mapCleared.id],
     },
     huntress: {
       active: [hActive.id],
-      clear: [hOldInactive.id, hPartial.id],
+      clear: [hOldInactive.id, hWebhookOnly.id, hApiKeyOnly.id, hAccountKeyOnly.id],
       alreadyClear: [hCleared.id],
     },
   };
@@ -179,7 +185,7 @@ async function snapshotAll(s: Seeded) {
   };
 }
 
-/** How many rows the migration's predicates match, read before it runs. */
+/** How many rows the migration's predicates match right now (read before and after applying it). */
 async function predicateCounts() {
   const [row] = (await getTestDb().execute(sql`
     SELECT
@@ -225,7 +231,7 @@ describe('#12730 migration: clear credentials on inactive SentinelOne and Huntre
 
   it('matches exactly the inactive rows that still hold a secret', async () => {
     await seed();
-    expect(await predicateCounts()).toEqual({ s1: 2, mappings: 3, huntress: 2 });
+    expect(await predicateCounts()).toEqual({ s1: 2, mappings: 4, huntress: 4 });
     await applyAsApp();
     expect(await predicateCounts()).toEqual({ s1: 0, mappings: 0, huntress: 0 });
   });
@@ -268,7 +274,7 @@ describe('#12730 migration: clear credentials on inactive SentinelOne and Huntre
     await applyAsApp(stripped);
 
     const after = await snapshotAll(s);
-    expect(await predicateCounts()).toEqual({ s1: 2, mappings: 3, huntress: 2 });
+    expect(await predicateCounts()).toEqual({ s1: 2, mappings: 4, huntress: 4 });
     expect([...after.s1.values()].map((r) => r.text)).toEqual([...before.s1.values()].map((r) => r.text));
     expect([...after.mappings.values()].map((r) => r.text)).toEqual([...before.mappings.values()].map((r) => r.text));
     expect([...after.huntress.values()].map((r) => r.text)).toEqual([...before.huntress.values()].map((r) => r.text));

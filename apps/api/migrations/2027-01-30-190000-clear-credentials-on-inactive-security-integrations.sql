@@ -1,11 +1,13 @@
 -- #12730: an inactive SentinelOne or Huntress integration holds no credential.
 --
--- Disconnect (#12691, previous migration) sets every stored secret on the
+-- Disconnect (#12691, application code; its migration 2027-01-30-180000 only
+-- relaxed NOT NULL on the credential columns) sets every stored secret on the
 -- integration to NULL when it deactivates the row. Rows deactivated before
 -- that, through `isActive: false` on the connect route or by an earlier
 -- dedupe, can still hold their old encrypted secrets. This clears them, so a
 -- disconnected integration means the same thing whenever it was disconnected.
--- A reconnect already requires every secret to be entered again.
+-- A reconnect already carries no stored secret over: the API token or key
+-- must be entered again, and any other secret is set only if supplied again.
 --
 -- It clears exactly the columns Disconnect clears, and nothing else:
 --   s1_integrations.api_token_encrypted            WHERE is_active = false
@@ -15,14 +17,17 @@
 --   huntress_integrations.api_key_encrypted,
 --     account_key_encrypted, webhook_secret_encrypted WHERE is_active = false
 -- is_active is NOT NULL, so `is_active = false` is every row that is not
--- active. updated_at is left alone: a reconnect revives the partner's most
--- recently updated inactive row, and bumping it here would change which one.
+-- active. updated_at is left alone on the integration rows, because a
+-- reconnect revives the partner's most recently updated inactive row and
+-- bumping it here would change which one. It is left alone on the mappings
+-- too (Disconnect bumps a mapping's updated_at; nothing orders by it).
 --
 -- Each UPDATE also requires a secret to still be present, so a row that holds
 -- nothing is not rewritten and a re-run changes nothing.
 --
--- Concurrency: the inactive SentinelOne rows are locked first, then their
--- mappings are written, the same integration-then-mappings order Disconnect,
+-- Concurrency: the inactive SentinelOne rows are locked first (FOR NO KEY
+-- UPDATE, the lock the S1 sync and the connect route take), then their
+-- mappings are written: the same integration-then-mappings order Disconnect,
 -- reconnect and the S1 sync use. A row reactivated before the lock is taken
 -- is skipped; one locked here cannot be reactivated until this commits.
 --
@@ -37,7 +42,7 @@ BEGIN
      FROM public.s1_integrations
     WHERE is_active = false
     ORDER BY id
-      FOR UPDATE;
+      FOR NO KEY UPDATE;
 
   UPDATE public.s1_org_mappings m
      SET registration_token = NULL
