@@ -753,6 +753,9 @@ func TestIsSecretYAMLKey(t *testing.T) {
 		"mtls_cert_pem":       true,
 		"mtls_key_pem":        true,
 		"mtls_cert_expires":   true,
+		// #9540: a digest of a short, multi-use, 7–30 day token — brute-forceable
+		// offline from a world-readable file, so it is secrets-only.
+		"bootstrap_token_fingerprint": true,
 		// Caught by suffix rules (_access_key, _secret_key).
 		"backup_s3_access_key": true,
 		"backup_s3_secret_key": true,
@@ -1172,6 +1175,54 @@ func TestSaveToRoundTripsDeviceID(t *testing.T) {
 	}
 	if loaded.DeviceID != cfg.DeviceID {
 		t.Errorf("DeviceID = %q, want %q", loaded.DeviceID, cfg.DeviceID)
+	}
+}
+
+// TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint pins the field the
+// MSI bootstrap path uses to tell "the same installer file ran again" (an
+// upgrade with the original download) from "a new installer was sent to this
+// host" (#9540). It is a digest of a short-lived but brute-forceable token, so
+// it round-trips through secrets.yaml, never agent.yaml.
+func TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent"
+	cfg.BootstrapTokenFingerprint = BootstrapTokenFingerprint("6ke9mdug56")
+
+	if err := SaveEnrollment(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveEnrollment: %v", err)
+	}
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.BootstrapTokenFingerprint != cfg.BootstrapTokenFingerprint {
+		t.Errorf("BootstrapTokenFingerprint = %q, want %q", loaded.BootstrapTokenFingerprint, cfg.BootstrapTokenFingerprint)
+	}
+	if loaded.BootstrapTokenFingerprint == "" || strings.Contains(loaded.BootstrapTokenFingerprint, "6ke9mdug56") {
+		t.Errorf("fingerprint %q must be a digest, never the raw token", loaded.BootstrapTokenFingerprint)
+	}
+	agentYAML, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(agentYAML), cfg.BootstrapTokenFingerprint) {
+		t.Error("fingerprint must not land in world-readable agent.yaml (offline brute force of a ~52-bit, multi-use token)")
+	}
+	secretsYAML, err := os.ReadFile(filepath.Join(dir, "secrets.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(secretsYAML), cfg.BootstrapTokenFingerprint) {
+		t.Error("fingerprint must be written to secrets.yaml")
+	}
+	if BootstrapTokenFingerprint("6KE9MDUG56") == cfg.BootstrapTokenFingerprint {
+		t.Error("fingerprint must be case-sensitive: tokens are case-sensitive and a lowercased filename is a different (mangled) token")
 	}
 }
 
