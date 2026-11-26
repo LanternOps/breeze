@@ -273,7 +273,7 @@
     "created": "Criado",
     "expires": "Expira",
     "unavailableNotice": "As chaves de criptografia do lado do cliente ainda não estão disponíveis. As chaves listadas aqui não são usadas para criptografar nenhum backup.",
-    "providerEncryptionNote": "Hoje, os backups são criptografados em repouso pelo provedor de armazenamento, quando o destino oferece suporte (criptografia no lado do servidor do Amazon S3). A configuração fica em Backup > Armazenamento.",
+    "providerEncryptionNote": "Hoje, os backups são criptografados em repouso pelo provedor de armazenamento, quando o destino oferece suporte (criptografia no lado do servidor do Amazon S3).",
     "statusActive": "Ativa",
     "statusInactive": "Inativa"
   },

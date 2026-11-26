@@ -273,7 +273,7 @@
     "created": "Creata",
     "expires": "Scade",
     "unavailableNotice": "Le chiavi di crittografia lato client non sono ancora disponibili. Le chiavi elencate qui non vengono usate per crittografare alcun backup.",
-    "providerEncryptionNote": "Oggi i backup sono crittografati a riposo dal provider di archiviazione, quando la destinazione lo supporta (crittografia lato server di Amazon S3). L'impostazione si trova in Backup > Archiviazione.",
+    "providerEncryptionNote": "Oggi i backup sono crittografati a riposo dal provider di archiviazione, quando la destinazione lo supporta (crittografia lato server di Amazon S3).",
     "statusActive": "Attiva",
     "statusInactive": "Inattiva"
   },

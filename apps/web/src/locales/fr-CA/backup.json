@@ -273,7 +273,7 @@
     "created": "Création",
     "expires": "Expiration",
     "unavailableNotice": "Les clés de chiffrement côté client ne sont pas encore offertes. Les clés listées ici ne servent à chiffrer aucune sauvegarde.",
-    "providerEncryptionNote": "Aujourd'hui, les sauvegardes sont chiffrées au repos par le fournisseur de stockage, lorsque la destination le prend en charge (chiffrement côté serveur d'Amazon S3). Le réglage se trouve sous Sauvegarde > Stockage.",
+    "providerEncryptionNote": "Aujourd'hui, les sauvegardes sont chiffrées au repos par le fournisseur de stockage, lorsque la destination le prend en charge (chiffrement côté serveur d'Amazon S3).",
     "statusActive": "Active",
     "statusInactive": "Inactive"
   },

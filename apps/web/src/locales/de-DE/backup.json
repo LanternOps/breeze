@@ -273,7 +273,7 @@
     "created": "Erstellt",
     "expires": "Läuft ab",
     "unavailableNotice": "Clientseitige Verschlüsselungsschlüssel sind noch nicht verfügbar. Hier aufgeführte Schlüssel werden nicht zum Verschlüsseln von Backups verwendet.",
-    "providerEncryptionNote": "Backups werden derzeit vom Speicheranbieter im Ruhezustand verschlüsselt, sofern das Speicherziel dies unterstützt (serverseitige Amazon-S3-Verschlüsselung). Die Einstellung finden Sie unter Backup > Speicher.",
+    "providerEncryptionNote": "Backups werden derzeit vom Speicheranbieter im Ruhezustand verschlüsselt, sofern das Speicherziel dies unterstützt (serverseitige Amazon-S3-Verschlüsselung).",
     "statusActive": "Aktiv",
     "statusInactive": "Inaktiv"
   },

@@ -273,7 +273,7 @@
     "created": "Created",
     "expires": "Expires",
     "unavailableNotice": "Client-side encryption keys are not available yet. Keys listed here are not used to encrypt any backup.",
-    "providerEncryptionNote": "Backups are encrypted at rest by the storage provider today, where the storage destination supports it (Amazon S3 server-side encryption). See Backup > Storage for the setting.",
+    "providerEncryptionNote": "Backups are encrypted at rest by the storage provider today, where the storage destination supports it (Amazon S3 server-side encryption).",
     "statusActive": "Active",
     "statusInactive": "Inactive"
   },

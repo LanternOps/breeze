@@ -28,8 +28,9 @@ const KEY_TYPE_LABELS: Record<string, string> = {
 
 // ── Component ─────────────────────────────────────────────────────
 
-// Read-only on purpose: nothing consumes these keys yet, and the create,
-// rotate and deactivate requests cannot succeed, so none are offered.
+// Read-only on purpose: nothing consumes these keys yet, and the old page's
+// create, rotate and deactivate requests were malformed against the API
+// (missing key material, wrong HTTP verb), so none are offered.
 export default function EncryptionKeyList() {
   const { t } = useTranslation('backup');
   const [keys, setKeys] = useState<EncryptionKey[]>([]);

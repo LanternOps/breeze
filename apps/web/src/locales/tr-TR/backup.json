@@ -273,7 +273,7 @@
     "created": "Oluşturuldu",
     "expires": "Süresi doluyor",
     "unavailableNotice": "İstemci tarafı şifreleme anahtarları henüz kullanılabilir değil. Burada listelenen anahtarlar hiçbir yedeği şifrelemek için kullanılmaz.",
-    "providerEncryptionNote": "Yedekler bugün, hedef destekliyorsa depolama sağlayıcısı tarafından bekleme halinde şifrelenir (Amazon S3 sunucu tarafı şifreleme). Ayar Yedekleme > Depolama altındadır.",
+    "providerEncryptionNote": "Yedekler bugün, hedef destekliyorsa depolama sağlayıcısı tarafından bekleme halinde şifrelenir (Amazon S3 sunucu tarafı şifreleme).",
     "statusActive": "Etkin",
     "statusInactive": "Etkin değil"
   },

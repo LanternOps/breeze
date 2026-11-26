@@ -45,6 +45,15 @@ describe('EncryptionKeyList', () => {
     expect(screen.getByText(/Client-side encryption keys are not available yet/i)).toBeTruthy();
   });
 
+  it('shows the error banner, not the empty state, when the list fails to load', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'boom' }, false, 500));
+
+    render(<EncryptionKeyList />);
+
+    await screen.findByText('boom');
+    expect(screen.getByText('Encryption Keys')).toBeTruthy();
+  });
+
   it('offers no create, rotate or deactivate control', async () => {
     fetchMock.mockResolvedValue(
       makeJsonResponse({
@@ -67,7 +76,6 @@ describe('EncryptionKeyList', () => {
     render(<EncryptionKeyList />);
 
     await screen.findByText('Encryption Keys');
-    expect(screen.getByText(/not available yet/i)).toBeTruthy();
     expect(screen.getByText(/encrypted at rest by the storage provider/i)).toBeTruthy();
   });
 
@@ -87,10 +95,26 @@ describe('EncryptionKeyList', () => {
     expect(within(row).getByText('Active')).toBeTruthy();
   });
 
-  it('never issues a mutating request', async () => {
+  it('renders rsa, inactive and unknown key types, and only ever issues a GET', async () => {
+    fetchMock.mockResolvedValue(
+      makeJsonResponse({
+        data: [
+          { id: 'k1', name: 'Rsa key', keyType: 'rsa_2048', isActive: false, createdAt: '2026-05-06T00:00:00Z' },
+          { id: 'k2', name: 'Odd key', keyType: 'chacha20', isActive: true, createdAt: '2026-05-06T00:00:00Z' },
+        ],
+      }),
+    );
+
     render(<EncryptionKeyList />);
-    await screen.findByText('Encryption Keys');
+
+    const rsa = (await screen.findByText('Rsa key')).closest('tr') as HTMLElement;
+    expect(within(rsa).getByText('RSA-2048')).toBeTruthy();
+    expect(within(rsa).getByText('Inactive')).toBeTruthy();
+    const odd = screen.getByText('Odd key').closest('tr') as HTMLElement;
+    expect(within(odd).getByText('chacha20')).toBeTruthy();
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
     for (const call of fetchMock.mock.calls) {
+      expect(call[0]).toBe('/backup/encryption/keys');
       expect((call[1] as RequestInit | undefined)?.method ?? 'GET').toBe('GET');
     }
   });

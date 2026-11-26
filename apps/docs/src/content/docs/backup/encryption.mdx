@@ -1,6 +1,6 @@
 ---
 title: Encryption Key Management
-description: How backup data is actually encrypted at rest today (S3 server-side encryption), and the early-access client-managed key manager for a future client-side encryption model.
+description: How backup data is actually encrypted at rest today (S3 server-side encryption), and the read-only client-side key list (client-side encryption is not yet available).
 sidebar:
   order: 11
   label: "Encryption"
@@ -23,7 +23,7 @@ If you enable encryption on a **Local disk** destination, or on S3 without a rec
 
 ---
 
-## Encryption Keys Manager (Early Access)
+## Encryption Keys Page (Read-Only)
 
 Go to **Backup > Device Backup > Encryption** to see the key manager.
 
@@ -34,7 +34,7 @@ Go to **Backup > Device Backup > Encryption** to see the key manager.
 If any keys already exist for your organization, the list shows them read-only:
 - Key name
 - Key type (AES-256 or RSA-2048)
-- Status: **Active** (green) or **Inactive** (gray)
+- Status (the list shows active keys only)
 - Created date
 - Expiry date (if set)
 

@@ -273,7 +273,7 @@
     "created": "Creado",
     "expires": "Vence",
     "unavailableNotice": "Las claves de cifrado del lado del cliente aún no están disponibles. Las claves que aparecen aquí no se usan para cifrar ninguna copia de seguridad.",
-    "providerEncryptionNote": "Hoy, las copias de seguridad las cifra en reposo el proveedor de almacenamiento, cuando el destino lo admite (cifrado del lado del servidor de Amazon S3). La opción está en Copia de seguridad > Almacenamiento.",
+    "providerEncryptionNote": "Hoy, las copias de seguridad las cifra en reposo el proveedor de almacenamiento, cuando el destino lo admite (cifrado del lado del servidor de Amazon S3).",
     "statusActive": "Activa",
     "statusInactive": "Inactiva"
   },
