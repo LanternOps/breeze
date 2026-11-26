@@ -32,15 +32,19 @@ import {
 import {
   devices,
   huntressAgents,
+  huntressIncidents,
   huntressIntegrations,
   huntressOrgMappings,
+  incidents,
   s1Agents,
   s1Integrations,
+  s1Threats,
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { AiTool } from '../../services/aiTools';
 import { registerHuntressTools } from '../../services/aiToolsHuntress';
 import { getEdrStatus } from '../../services/edrProviders/read';
+import { buildIncidentFeed } from '../../routes/incidents.helpers';
 import { enrichedDevicesForOrg } from '../../services/portal/deviceReadModel';
 import { devicesProtectedTile, securityDevicesPage } from '../../services/portal/securityReadModel';
 import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY } from '../../services/postureEvidence';
@@ -264,15 +268,15 @@ describe('Huntress AI tools', () => {
     expect(JSON.parse(rawB).summary).toMatchObject({ totalAgents: 1, mappedAgents: 1 });
   });
 
-  runDb('get_huntress_agents (org and partner): each agent says whether its integration is connected', async () => {
+  runDb('get_huntress_agents (org and partner): each agent says whether its integration is disconnected', async () => {
     const { a, b } = await seed();
     for (const [ctx, scope] of [[a.orgCtx, 'organization'], [a.partnerCtx, 'partner']] as const) {
       const out = JSON.parse(await asCtx(ctx, () => huntressTool('get_huntress_agents')({}, authFor(scope, a))));
       expect(out.agents).toHaveLength(1);
-      expect(out.agents[0]).toMatchObject({ deviceId: a.deviceId, integrationActive: false });
+      expect(out.agents[0]).toMatchObject({ deviceId: a.deviceId, integrationDisconnected: true });
     }
     const outB = JSON.parse(await asCtx(b.orgCtx, () => huntressTool('get_huntress_agents')({}, authFor('organization', b))));
-    expect(outB.agents[0]).toMatchObject({ deviceId: b.deviceId, integrationActive: true });
+    expect(outB.agents[0]).toMatchObject({ deviceId: b.deviceId, integrationDisconnected: false });
   });
 });
 
@@ -356,4 +360,40 @@ describe('the shared lookup answers only from agent rows the caller can read', (
       .toEqual({ sentinelone: [], huntress: [] });
     expect(await asCtx(a.partnerCtx, () => activeIntegrationIdsOfReadableAgents('sentinelone', undefined))).toEqual([]);
   });
+});
+
+describe('incident feed findings (history stays, labelled)', () => {
+  async function seedFindings(t: Tenant) {
+    await admin().insert(s1Threats).values({
+      orgId: t.orgId, integrationId: t.s1IntegrationId, s1ThreatId: `threat-${randomUUID().slice(0, 8)}`,
+      threatName: 'EICAR', status: 'active', severity: 'high', deviceId: t.deviceId, detectedAt: NOW,
+    });
+    await admin().insert(huntressIncidents).values({
+      orgId: t.orgId, integrationId: t.huntressIntegrationId, huntressIncidentId: `inc-${randomUUID().slice(0, 8)}`,
+      title: 'Footholds found', status: 'open', severity: 'high', deviceId: t.deviceId, reportedAt: NOW,
+    });
+    await admin().insert(incidents).values({
+      orgId: t.orgId, title: 'Tracked', classification: 'malware', severity: 'p2', status: 'detected', detectedAt: NOW,
+    } as typeof incidents.$inferInsert);
+  }
+  const params = { limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null };
+
+  for (const scope of ['organization', 'partner'] as const) {
+    runDb(`${scope} caller: findings of a disconnected integration stay listed and say so`, async () => {
+      const a = await seedTenant('a');
+      const b = await seedTenant('b');
+      await seedFindings(a);
+      await seedFindings(b);
+      await disconnect(a);
+      const ctxOf = (t: Tenant) => (scope === 'organization' ? t.orgCtx : t.partnerCtx);
+
+      const feedA = await asCtx(ctxOf(a), () => buildIncidentFeed(authFor(scope, a), params));
+      const bySource = (rows: typeof feedA.rows) => Object.fromEntries(rows.map((r) => [r.source, r.integrationDisconnected]));
+      expect(feedA.total).toBe(3);
+      expect(bySource(feedA.rows)).toEqual({ s1: true, huntress: true, breeze: false });
+
+      const feedB = await asCtx(ctxOf(b), () => buildIncidentFeed(authFor(scope, b), params));
+      expect(bySource(feedB.rows)).toEqual({ s1: false, huntress: false, breeze: false });
+    });
+  }
 });

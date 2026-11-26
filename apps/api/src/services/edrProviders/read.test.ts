@@ -205,8 +205,14 @@ describe('legacy agent coverage query (DB-less SQL, #10394)', () => {
     expect(s1.sql).toMatch(/exists \(select 1 from "s1_integrations" i where i\.id = "s1_agents"\."integration_id" and i\.is_active\)/);
   });
 
-  it('organization scope skips the integration-state filter (org tokens cannot read the partner-axis integration row under RLS)', () => {
-    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress').toSQL().sql).not.toContain('huntress_integrations');
+  it('organization scope filters by the active integration ids it is handed, never reading the partner-axis table (#12726)', () => {
+    const some = buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress', ['int-1']).toSQL();
+    expect(some.sql).not.toContain('huntress_integrations');
+    expect(some.sql).toMatch(/"huntress_agents"\."integration_id" in \(\$\d+\)/);
+    expect(some.params).toContain('int-1');
+    // No connected integration (or no ids passed): no agent counts.
+    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'sentinelone', []).toSQL().sql).toMatch(/\bfalse\b/);
+    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'sentinelone').toSQL().sql).toMatch(/\bfalse\b/);
   });
 });
 

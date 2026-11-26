@@ -133,3 +133,20 @@ describe('IncidentsPage framework EDR sources (#8166)', () => {
     expect(screen.getByRole('link', { name: /View in EDR provider/ })).toBeInTheDocument();
   });
 });
+
+describe('IncidentsPage disconnected-integration label (#12726)', () => {
+  it('labels a finding synced from a disconnected integration and keeps it listed', async () => {
+    fetchWithAuth.mockResolvedValueOnce(feed([
+      trackedRow,
+      { ...findingRow, integrationDisconnected: true },
+      { ...findingRow, sourceId: 'hunt-2', title: 'Huntress: Live finding', integrationDisconnected: false },
+    ]));
+    render(<IncidentsPage />);
+    await waitFor(() => expect(screen.getByText('Huntress: Bad login')).toBeInTheDocument());
+    expect(screen.getByText('Huntress: Live finding')).toBeInTheDocument();
+    const badges = screen.getAllByTestId('incident-feed-disconnected-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('Disconnected integration');
+    expect(badges[0]).toHaveAttribute('title', 'Synced from an integration that is no longer connected');
+  });
+});

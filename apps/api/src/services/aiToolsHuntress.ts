@@ -553,7 +553,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         agents: rows.map(({ integrationId, ...row }) => ({
           ...row,
           mapped: row.deviceId !== null,
-          integrationActive: active.has(integrationId),
+          integrationDisconnected: !active.has(integrationId),
         })),
         total: Number(countRow?.count ?? 0),
         limit,

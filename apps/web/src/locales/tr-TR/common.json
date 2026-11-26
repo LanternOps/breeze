@@ -2420,6 +2420,8 @@
           "closed": "kapalı"
         },
         "viewInSource": "{{source}}'da görüntüle",
+        "disconnectedIntegration": "Bağlantısı kesilmiş entegrasyon",
+        "disconnectedIntegrationTooltip": "Artık bağlı olmayan bir entegrasyondan eşitlendi",
         "promoteFromEdr": "EDR görünümünden yükseltme",
         "pagination": "Sayfa {{page}} / {{totalPages}} ({{total}} toplam)",
         "previous": "Önceki",

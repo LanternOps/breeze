@@ -5,6 +5,19 @@
  * snapshot must stay byte-for-byte what it was.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// #12726: every integration behind these fixtures' agent rows is connected.
+// The disconnected case runs on real Postgres in
+// edrCoverageDisconnectedIntegration.integration.test.ts.
+vi.mock('./securityIntegrationDisconnect', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./securityIntegrationDisconnect')>()),
+  activeIntegrationIds: vi.fn(async (_vendor: string, ids: readonly string[]) => new Set(ids)),
+  activeIntegrationIdsOfReadableAgents: vi.fn(async () => ['connected-integration']),
+  activeAgentIntegrationIdsForOrg: vi.fn(async () => ({
+    sentinelone: ['connected-integration'],
+    huntress: ['connected-integration'],
+  })),
+}));
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));

@@ -2420,6 +2420,8 @@
           "closed": "geschlossen"
         },
         "viewInSource": "Ansicht in {{source}}",
+        "disconnectedIntegration": "Getrennte Integration",
+        "disconnectedIntegrationTooltip": "Von einer Integration synchronisiert, die nicht mehr verbunden ist",
         "promoteFromEdr": "Aus EDR-Ansicht übernehmen",
         "pagination": "Seite {{page}} von {{totalPages}} ({{total}} insgesamt)",
         "previous": "Zurück",
