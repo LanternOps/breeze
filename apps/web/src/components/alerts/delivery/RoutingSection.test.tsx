@@ -145,6 +145,41 @@ describe('RoutingSection (W05b)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('labels a channel that no longer exists as a deleted channel instead of an id fragment (#12002)', () => {
+    renderSection([rule({ id: 'mixed', channelIds: ['ch-org', 'ch-gone-1234567'] })]);
+    const row = screen.getByTestId('routing-row-mixed');
+    expect(row).toHaveTextContent('Org email');
+    expect(within(row).getByTestId('routing-deleted-channel')).toHaveTextContent('Deleted channel');
+    expect(row).not.toHaveTextContent('ch-gone-');
+    expect(within(row).queryByTestId('routing-no-live-channels')).toBeNull();
+  });
+
+  it('flags a rule whose channels are all deleted as having no live channels (#12002)', () => {
+    renderSection([rule({ id: 'gone', channelIds: ['ch-gone'] })]);
+    expect(within(screen.getByTestId('routing-row-gone')).getByTestId('routing-no-live-channels')).toHaveTextContent('No live channels');
+    expect(within(screen.getByTestId('routing-row-gone')).queryByTestId('routing-no-channels')).toBeNull();
+  });
+
+  it('shows a rule with no channels as such, and says it is skipped (#12002)', () => {
+    renderSection([rule({ id: 'empty', channelIds: [] })]);
+    const row = screen.getByTestId('routing-row-empty');
+    expect(within(row).getByTestId('routing-no-channels')).toHaveTextContent('No channels');
+    expect(within(row).getByTestId('routing-no-channels-hint')).toHaveTextContent('Skipped: matching alerts go to the next rule');
+    expect(within(row).queryByTestId('routing-no-live-channels')).toBeNull();
+    expect(row).not.toHaveTextContent('Send to');
+  });
+
+  it('flags the Everything else row when every channel it names is deleted, but not when it is inbox only (#12002)', () => {
+    const { rerender } = renderSection([rule({ id: 'd-org', isDefault: true, channelIds: ['ch-gone'] })]);
+    const def = screen.getByTestId('routing-row-default');
+    expect(within(def).getByTestId('routing-deleted-channel')).toHaveTextContent('Deleted channel');
+    expect(within(def).getByTestId('routing-no-live-channels')).toBeInTheDocument();
+    rerender(<RoutingSection rules={[rule({ id: 'd-org', isDefault: true, channelIds: [] })]} channels={channels} policies={policies}
+      currentOrgId="org-1" isPartnerScope={false} defaultOwnerScope="organization" onChanged={async () => {}} onUnauthorized={() => {}} />);
+    expect(within(screen.getByTestId('routing-row-default')).getByText('Inbox only')).toBeInTheDocument();
+    expect(screen.queryByTestId('routing-no-live-channels')).toBeNull();
+  });
+
   it('new rule drawer posts monitorKinds, severities and escalationPolicyId', async () => {
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/alerts/routing-rules' && init?.method === 'POST') return json({ data: { id: 'new' } });

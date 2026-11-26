@@ -5,7 +5,7 @@
  * removed to inherit. Default rows cannot be reordered; their channels may be
  * emptied to mean inbox only). One body, two callers.
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { escalationPolicies, notificationRoutingRules } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -100,4 +100,55 @@ export async function upsertDefaultRow(
     })
     .returning();
   return row!;
+}
+
+type ChannelRemovalAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'orgCondition'>;
+
+/**
+ * The routing rules a channel delete by this caller rewrites: the same set the
+ * routing routes would let it edit (#12002). Row-level security alone is not
+ * that boundary: a partner-wide rule can name an org-owned channel, and a
+ * caller without the partner-wide capability must not rewrite it.
+ */
+function writableRulesUsingChannel(channelId: string, auth: ChannelRemovalAuth) {
+  const orgOwned = and(isNotNull(notificationRoutingRules.orgId), auth.orgCondition(notificationRoutingRules.orgId));
+  const partnerWide = !canManagePartnerWidePolicies(auth) ? undefined
+    // System scope edits any partner's rules through the routing routes and usually has no partnerId.
+    : auth.scope === 'system' ? isNull(notificationRoutingRules.orgId)
+    : auth.partnerId ? and(isNull(notificationRoutingRules.orgId), eq(notificationRoutingRules.partnerId, auth.partnerId))
+    : undefined;
+  return and(sql`jsonb_exists(${notificationRoutingRules.channelIds}, ${channelId}::text)`, or(orgOwned, partnerWide));
+}
+
+export async function removeChannelFromWritableRoutingRules(
+  executor: DbExecutor,
+  channelId: string,
+  auth: ChannelRemovalAuth,
+): Promise<string[]> {
+  const rules = await executor
+    .update(notificationRoutingRules)
+    .set({ channelIds: sql`${notificationRoutingRules.channelIds} - ${channelId}::text`, updatedAt: new Date() })
+    .where(writableRulesUsingChannel(channelId, auth))
+    .returning({ id: notificationRoutingRules.id });
+  return rules.map((rule) => rule.id);
+}
+
+type AffectedRule = { id: string; name: string; isDefault: boolean };
+
+/** What removeChannelFromWritableRoutingRules would change, for the delete dialog. */
+export async function previewChannelRemovalFromRoutingRules(
+  executor: DbExecutor,
+  channelId: string,
+  auth: ChannelRemovalAuth,
+): Promise<{ emptied: AffectedRule[]; reduced: AffectedRule[] }> {
+  const rules = await executor
+    .select({ id: notificationRoutingRules.id, name: notificationRoutingRules.name, isDefault: notificationRoutingRules.isDefault, channelIds: notificationRoutingRules.channelIds })
+    .from(notificationRoutingRules)
+    .where(writableRulesUsingChannel(channelId, auth));
+  const emptied: AffectedRule[] = [];
+  const reduced: AffectedRule[] = [];
+  for (const { channelIds, ...rule } of rules) {
+    (channelIds.every((id) => id === channelId) ? emptied : reduced).push(rule);
+  }
+  return { emptied, reduced };
 }

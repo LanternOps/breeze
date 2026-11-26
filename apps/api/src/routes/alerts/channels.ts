@@ -17,6 +17,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
+import { previewChannelRemovalFromRoutingRules, removeChannelFromWritableRoutingRules } from '../../services/delivery/routingRuleWrites';
 import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
@@ -396,6 +397,31 @@ channelsRoutes.put(
   }
 );
 
+// GET /alerts/channels/:id/routing-impact - Routing rules a DELETE by this caller would change
+channelsRoutes.get(
+  '/channels/:id/routing-impact',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    // Same gates as the DELETE it describes: a caller refused the delete
+    // (e.g. a site-restricted user) must not read the rule inventory through it.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const channelId = c.req.param('id')!;
+    const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
+    if (!channel) {
+      return c.json({ error: 'Notification channel not found' }, 404);
+    }
+    if (channel.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    return c.json({ data: await previewChannelRemovalFromRoutingRules(db, channelId, auth) });
+  }
+);
+
 // DELETE /alerts/channels/:id - Delete notification channel
 channelsRoutes.delete(
   '/channels/:id',
@@ -420,9 +446,15 @@ channelsRoutes.delete(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    await db
-      .delete(notificationChannels)
-      .where(eq(notificationChannels.id, channelId));
+    // A rule left pointing at a deleted channel still matches and then delivers
+    // nowhere; with the id gone, an emptied rule is skipped by resolveDelivery (#12002).
+    const routingRuleIds = await db.transaction(async (tx) => {
+      const ruleIds = await removeChannelFromWritableRoutingRules(tx, channelId, auth);
+      await tx
+        .delete(notificationChannels)
+        .where(eq(notificationChannels.id, channelId));
+      return ruleIds;
+    });
 
     writeRouteAudit(c, {
       orgId: channel.orgId,
@@ -430,6 +462,7 @@ channelsRoutes.delete(
       resourceType: 'notification_channel',
       resourceId: channel.id,
       resourceName: channel.name,
+      details: { routingRuleIds },
     });
 
     return c.json({ success: true });

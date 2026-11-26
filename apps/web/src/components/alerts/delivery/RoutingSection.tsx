@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2 } from 'lucide-react';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
@@ -37,7 +37,11 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
   // Org view: the org row shadows the partner row. All-orgs view: the partner row.
   const orgView = currentOrgId !== null;
   const effectiveDefault = orgView ? (orgDefault ?? partnerDefault) : partnerDefault;
-  const channelName = (id: string) => channels.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  const channelName = (id: string) => channels.find((c) => c.id === id)?.name ?? t('deliveryPage.routing.deletedChannel');
+  const isLive = (id: string) => channels.some((c) => c.id === id);
+  const channelList = (ids: string[]) => ids.map((id, i) => <Fragment key={`${i}-${id}`}>{i > 0 && ', '}
+    {isLive(id) ? channelName(id) : <span data-testid="routing-deleted-channel" className="font-medium text-warning">{channelName(id)}</span>}</Fragment>);
+  const noLiveChannels = <span data-testid="routing-no-live-channels" className="inline-flex items-center rounded-full border border-warning/30 bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">{t('deliveryPage.routing.noLiveChannels')}</span>;
   const policyName = (id: string | null) => (id ? policies.find((p) => p.id === id)?.name ?? id.slice(0, 8) : null);
 
   const run = async (fn: () => Promise<void>, fallback: string) => {
@@ -109,11 +113,16 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
                   </span>
                 )}
                 {!rule.enabled && <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{t('notificationChannelsPage.disabled')}</span>}
+                {rule.channelIds.length === 0
+                  ? <span data-testid="routing-no-channels" className="inline-flex items-center rounded-full border border-warning/30 bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">{t('deliveryPage.routing.noChannels')}</span>
+                  : !rule.channelIds.some(isLive) && noLiveChannels}
               </div>
               <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{t('notificationChannelsPage.priority')} {rule.priority}</span>
                 <span>{describeMatch(rule, t)}</span>
-                <span>{t('deliveryPage.routing.sendTo')}: {rule.channelIds.map(channelName).join(', ')}</span>
+                {rule.channelIds.length > 0
+                  ? <span>{t('deliveryPage.routing.sendTo')}: {channelList(rule.channelIds)}</span>
+                  : <span data-testid="routing-no-channels-hint" className="text-warning">{t('deliveryPage.routing.noChannelsHint')}</span>}
                 {rule.escalationPolicyId && <span>{t('deliveryPage.routing.escalateVia')}: {policyName(rule.escalationPolicyId)}</span>}
               </div>
             </div>
@@ -132,12 +141,13 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
               {effectiveDefault && isPartnerRail(effectiveDefault) && (
                 <span className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary" data-testid="routing-rule-partner-wide-badge">{t('notificationChannelsPage.allOrgs')}</span>
               )}
+              {effectiveDefault && effectiveDefault.channelIds.length > 0 && !effectiveDefault.channelIds.some(isLive) && noLiveChannels}
             </div>
             <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>{t('deliveryPage.routing.matchAll')}</span>
               <span>
                 {t('deliveryPage.routing.sendTo')}: {effectiveDefault && effectiveDefault.channelIds.length > 0
-                  ? effectiveDefault.channelIds.map(channelName).join(', ')
+                  ? channelList(effectiveDefault.channelIds)
                   : <span>{t('deliveryPage.routing.inboxOnly')}</span>}
               </span>
               {effectiveDefault?.escalationPolicyId && <span>{t('deliveryPage.routing.escalateVia')}: {policyName(effectiveDefault.escalationPolicyId)}</span>}

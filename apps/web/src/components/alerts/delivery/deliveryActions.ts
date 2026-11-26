@@ -62,6 +62,19 @@ export async function runChannelDelete(
   });
 }
 
+export type ChannelRoutingImpact = { emptied: AffectedRoutingRule[]; reduced: AffectedRoutingRule[] };
+type AffectedRoutingRule = { id: string; name: string; isDefault: boolean };
+
+/** The routing rules deleting this channel will change; null when the check fails (the dialog then says the rules could not be checked). */
+export async function fetchChannelRoutingImpact(channelId: string): Promise<ChannelRoutingImpact | null> {
+  try {
+    const res = await fetchWithAuth(`/alerts/channels/${channelId}/routing-impact`);
+    return res.ok ? ((await res.json()) as { data: ChannelRoutingImpact }).data : null;
+  } catch {
+    return null;
+  }
+}
+
 // Exported for unit-testing without mounting the full component.
 export async function runRoutingRuleSave(
   rule: Omit<EditableRoutingRule, 'id' | 'isDefault' | 'orgId' | 'partnerId' | 'inherited'> & { id?: string; ownerScope?: 'organization' | 'partner' },

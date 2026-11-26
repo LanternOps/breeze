@@ -4,7 +4,7 @@ import { Plus } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from '../NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from '../NotificationChannelForm';
 import { ActionError } from '../../../lib/runAction';
-import { runChannelDelete, runChannelSave, runChannelTest } from './deliveryActions';
+import { fetchChannelRoutingImpact, runChannelDelete, runChannelSave, runChannelTest, type ChannelRoutingImpact } from './deliveryActions';
 import { formSecretValue } from '../../../lib/redactedSecret';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
@@ -23,6 +23,8 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [channelOwnerScope, setChannelOwnerScope] = useState<'organization' | 'partner'>('organization');
+  // 'pending' and 'failed' keep the dialog from deleting silently before the routing check has answered (#12002).
+  const [impact, setImpact] = useState<{ channelId: string; result: ChannelRoutingImpact | 'pending' | 'failed' } | null>(null);
   const handleCreate = () => {
     setChannelOwnerScope(defaultOwnerScope);
     setSelectedChannel(null);
@@ -37,7 +39,13 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
   const handleDelete = (channel: NotificationChannel) => {
     setSelectedChannel(channel);
     setModalMode('delete');
+    setImpact({ channelId: channel.id, result: 'pending' });
+    void fetchChannelRoutingImpact(channel.id).then((data) => setImpact({ channelId: channel.id, result: data ?? 'failed' }));
   };
+  const ruleNames = (rules: ChannelRoutingImpact['emptied']) =>
+    rules.map((rule) => (rule.isDefault ? t('deliveryPage.routing.everythingElse') : rule.name)).join(', ');
+  const impactResult = impact && impact.channelId === selectedChannel?.id ? impact.result : 'pending';
+  const shownImpact = typeof impactResult === 'object' ? impactResult : null;
 
   const handleTest = async (channel: NotificationChannel) => {
     await runChannelTest(channel, {
@@ -354,6 +362,21 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
             <p className="mt-2 text-sm text-muted-foreground">
               {t('notificationChannelsPage.deleteChannelConfirm', { name: selectedChannel.name })}
             </p>
+            {shownImpact && shownImpact.emptied.length > 0 && (
+              <p data-testid="channel-delete-emptied-rules" className="mt-2 text-sm font-medium text-warning">
+                {t('notificationChannelsPage.deleteEmptiesRoutingRules', { count: shownImpact.emptied.length, names: ruleNames(shownImpact.emptied) })}
+              </p>
+            )}
+            {impactResult === 'failed' && (
+              <p data-testid="channel-delete-impact-failed" className="mt-2 text-sm font-medium text-warning">
+                {t('notificationChannelsPage.deleteRoutingImpactFailed')}
+              </p>
+            )}
+            {shownImpact && shownImpact.reduced.length > 0 && (
+              <p data-testid="channel-delete-reduced-rules" className="mt-2 text-sm text-muted-foreground">
+                {t('notificationChannelsPage.deleteReducesRoutingRules', { count: shownImpact.reduced.length, names: ruleNames(shownImpact.reduced) })}
+              </p>
+            )}
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
@@ -367,7 +390,7 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
                 type="button"
                 onClick={handleConfirmDelete}
                 data-testid="channel-delete-confirm"
-                disabled={submitting}
+                disabled={submitting || impactResult === 'pending'}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? t('notificationChannelsPage.deleting') : t('common:actions.delete')}

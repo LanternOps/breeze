@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 // partnerWideAccess.ts is a dependency-free leaf and intentionally NOT mocked
 // (per CLAUDE.md / the repo's app-layer-gate testing convention).
 
-const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, configTableMarker } = vi.hoisted(() => ({
+const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, configTableMarker, routingRulesMarker, routingUpdateRef } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'organization' as string,
@@ -20,6 +20,7 @@ const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, c
       orgId: 'org-1' as string | null,
       accessibleOrgIds: null as string[] | null,
       canAccessOrg: (_id: string) => true as boolean,
+      orgCondition: (_column: unknown) => undefined as unknown,
     },
   },
   insertedRef: { current: undefined as Record<string, unknown> | undefined },
@@ -32,6 +33,22 @@ const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, c
   // Identity marker so the shared db mock can tell `db.insert(notificationChannels)`
   // apart from `db.insert(notificationChannelConfigs)`.
   configTableMarker: { __table: 'notification_channel_configs' },
+  // #12002: DELETE strips the channel id from notification_routing_rules.
+  routingRulesMarker: {
+    __table: 'notification_routing_rules',
+    id: { name: 'id' },
+    orgId: { name: 'org_id' },
+    partnerId: { name: 'partner_id' },
+    channelIds: { name: 'channel_ids' },
+    name: { name: 'name' },
+    isDefault: { name: 'is_default' },
+  },
+  routingUpdateRef: {
+    set: undefined as Record<string, unknown> | undefined,
+    where: undefined as unknown,
+    rows: [] as { id: string }[],
+    selectRows: [] as { id: string; name: string; isDefault: boolean; channelIds: string[] }[],
+  },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -105,11 +122,21 @@ vi.mock('../../db', () => {
     },
     onConflictDoUpdate: () => Promise.resolve(undefined),
   };
+  const routingBuilder: any = {
+    set: (vals: Record<string, unknown>) => { routingUpdateRef.set = vals; return routingBuilder; },
+    where: (cond: unknown) => { routingUpdateRef.where = cond; return routingBuilder; },
+    returning: () => Promise.resolve(routingUpdateRef.rows),
+  };
   const dbMock: any = {
     insert: (table: unknown) => (table === configTableMarker ? configBuilder : builder),
-    update: () => builder,
+    update: (table: unknown) => (table === routingRulesMarker ? routingBuilder : builder),
     delete: () => ({ where: () => Promise.resolve(undefined) }),
-    select: () => builder,
+    select: () => ({
+      ...builder,
+      from: (table: unknown) => (table === routingRulesMarker
+        ? { where: (cond: unknown) => { routingUpdateRef.where = cond; return Promise.resolve(routingUpdateRef.selectRows); } }
+        : builder),
+    }),
     // Tests run the callback synchronously against the same mock — there is
     // no real pool/connection here for tx to isolate.
     transaction: (fn: (tx: unknown) => unknown) => fn(dbMock),
@@ -135,6 +162,7 @@ vi.mock('../../db/schema', () => ({
     createdAt: { name: 'created_at' },
   },
   notificationChannelConfigs: configTableMarker,
+  notificationRoutingRules: routingRulesMarker,
   organizations: { id: { name: 'id' }, partnerId: { name: 'partner_id' } },
   partners: { id: { name: 'id' }, settings: { name: 'settings' } },
   // Referenced (unused) by ./helpers' unrelated exports; not exercised here.
@@ -166,8 +194,12 @@ vi.mock('../../services/notificationChannelSecrets', () => ({
   ),
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { eq, type SQL } from 'drizzle-orm';
 import { channelsRoutes } from './channels';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 function makeApp() {
   const app = new Hono();
@@ -187,6 +219,7 @@ function setPartnerAuth(partnerOrgAccess: 'all' | 'selected' | 'none') {
     orgId: null,
     accessibleOrgIds: ['org-1'],
     canAccessOrg: () => true,
+    orgCondition: (column: unknown) => eq(column as never, 'org-1'),
   } as typeof authRef.current;
 }
 
@@ -213,6 +246,10 @@ describe('notification channels — partner-wide gating (#2130)', () => {
     insertedConfigRef.current = undefined;
     existingRowRef.current = undefined;
     updateSetRef.current = undefined;
+    routingUpdateRef.set = undefined;
+    routingUpdateRef.where = undefined;
+    routingUpdateRef.rows = [];
+    routingUpdateRef.selectRows = [];
   });
 
   describe('PUT /alerts/channels/:id', () => {
@@ -423,6 +460,108 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { success: boolean };
       expect(body.success).toBe(true);
+    });
+
+    it('removes the channel from every routing rule that sends to it and names those rules in the audit (#12002)', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL };
+      routingUpdateRef.rows = [{ id: 'rule-a' }, { id: 'default-row' }];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(routingUpdateRef.set).toMatchObject({ updatedAt: expect.any(Date) });
+      const dialect = new PgDialect();
+      const strip = dialect.sqlToQuery(routingUpdateRef.set!.channelIds as SQL);
+      expect(strip.sql).toMatch(/ - \$\d+::text$/);
+      expect(strip.params).toContain(CHANNEL_ID);
+      // The mocked schema columns are plain objects, so they bind as $n params.
+      // Full partner org access: org-owned rules in reach plus this partner's partner-wide rules.
+      const match = dialect.sqlToQuery(routingUpdateRef.where as SQL);
+      expect(match.sql).toBe('(jsonb_exists($1, $2::text) and (($3 is not null and $4 = $5) or ($6 is null and $7 = $8)))');
+      expect(match.params).toEqual([
+        { name: 'channel_ids' }, CHANNEL_ID,
+        { name: 'org_id' }, { name: 'org_id' }, 'org-1',
+        { name: 'org_id' }, { name: 'partner_id' }, PARTNER_ID,
+      ]);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'notification_channel.delete',
+        details: { routingRuleIds: ['rule-a', 'default-row'] },
+      }));
+    });
+
+    it('leaves partner-wide routing rules alone when the caller lacks full partner org access (#12002)', async () => {
+      setPartnerAuth('selected');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, orgId: 'org-1', partnerId: null };
+      routingUpdateRef.rows = [{ id: 'org-rule' }];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      const match = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
+      expect(match.sql).toBe('(jsonb_exists($1, $2::text) and ($3 is not null and $4 = $5))');
+      expect(match.params).toEqual([{ name: 'channel_ids' }, CHANNEL_ID, { name: 'org_id' }, { name: 'org_id' }, 'org-1']);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: { routingRuleIds: ['org-rule'] },
+      }));
+    });
+  });
+
+  describe('GET /alerts/channels/:id/routing-impact', () => {
+    it('lists the rules a delete would empty apart from the rules that only lose the channel, matching exactly the rules the delete edits (#12002)', async () => {
+      setPartnerAuth('selected');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, orgId: 'org-1', partnerId: null };
+      routingUpdateRef.selectRows = [
+        { id: 'only', name: 'Critical to NOC', isDefault: false, channelIds: [CHANNEL_ID] },
+        { id: 'shared', name: 'Disk alerts', isDefault: false, channelIds: ['other', CHANNEL_ID] },
+        { id: 'def', name: 'Everything else', isDefault: true, channelIds: [CHANNEL_ID, CHANNEL_ID] },
+      ];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: {
+        emptied: [{ id: 'only', name: 'Critical to NOC', isDefault: false }, { id: 'def', name: 'Everything else', isDefault: true }],
+        reduced: [{ id: 'shared', name: 'Disk alerts', isDefault: false }],
+      } });
+      const preview = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
+
+      routingUpdateRef.where = undefined;
+      await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+      const deleted = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
+      expect(preview).toEqual(deleted);
+      expect(preview.sql).toBe('(jsonb_exists($1, $2::text) and ($3 is not null and $4 = $5))');
+    });
+
+    it('403s a site-restricted caller, as the delete does, without reading any rule (#12002)', async () => {
+      setPartnerAuth('all');
+      authRef.current = { ...authRef.current, scope: 'organization', orgId: 'org-1', allowedSiteIds: ['site-1'] } as typeof authRef.current;
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, orgId: 'org-1', partnerId: null };
+      routingUpdateRef.selectRows = [{ id: 'other-site', name: 'Site B pager', isDefault: false, channelIds: [CHANNEL_ID] }];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(SITE_CEILING_WRITE_DENIED_MESSAGE);
+      expect(routingUpdateRef.where).toBeUndefined();
+    });
+
+    it('403s a partner-wide channel without the partner-wide capability, as the delete does (#12002)', async () => {
+      setPartnerAuth('none');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL };
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(PARTNER_WIDE_WRITE_DENIED_MESSAGE);
+      expect(routingUpdateRef.where).toBeUndefined();
+    });
+
+    it('returns 404 for a channel the caller cannot see (#12002)', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = undefined;
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}/routing-impact`);
+      expect(res.status).toBe(404);
     });
   });
 
