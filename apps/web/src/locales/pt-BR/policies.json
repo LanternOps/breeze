@@ -1702,6 +1702,13 @@
     }
   },
   "software": {
+    "uploadFailure": {
+      "stepCreate": "Iniciando o envio",
+      "stepChunk": "Enviando o arquivo",
+      "stepComplete": "Finalizando o envio",
+      "failedHttp": "{{step}} falhou (HTTP {{status}})",
+      "failedReason": "{{step}} falhou: {{reason}}"
+    },
     "addPackageModal": {
       "failedToCreatePackage": "Falha ao criar pacote",
       "missingPackageId": "ID do pacote ausente",

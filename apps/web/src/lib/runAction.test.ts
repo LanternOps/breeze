@@ -110,6 +110,47 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Network error', type: 'error' });
   });
 
+  it('opt-in showRequestErrorDetail: toasts the rejection message as detail under the fallback headline (#12756)', async () => {
+    await expect(runAction({
+      request: async () => { throw new TypeError('Failed to fetch'); },
+      errorFallback: 'Adding the version failed',
+      showRequestErrorDetail: true,
+    })).rejects.toMatchObject({ message: 'Adding the version failed', status: 0 });
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Adding the version failed', detail: 'Failed to fetch', type: 'error',
+    });
+  });
+
+  it('showRequestErrorDetail: first line only, capped, never a stack', async () => {
+    const err = new Error(`first line ${'x'.repeat(500)}\n    at secret (file.js:1:1)`);
+    await expect(runAction({
+      request: async () => { throw err; },
+      errorFallback: 'Failed',
+      showRequestErrorDetail: true,
+    })).rejects.toMatchObject({ status: 0 });
+    const toast = showToast.mock.calls[0][0] as { detail: string };
+    expect(toast.detail.length).toBeLessThanOrEqual(200);
+    expect(toast.detail).not.toContain('secret');
+    expect(toast.detail).toMatch(/^first line/);
+  });
+
+  it('showRequestErrorDetail: no detail for an AbortError', async () => {
+    await expect(runAction({
+      request: async () => { throw new DOMException('The user aborted a request.', 'AbortError'); },
+      errorFallback: 'Failed',
+      showRequestErrorDetail: true,
+    })).rejects.toMatchObject({ status: 0 });
+    expect(showToast).toHaveBeenCalledWith({ message: 'Failed', type: 'error' });
+  });
+
+  it('without the option a rejection still toasts only the fallback', async () => {
+    await expect(runAction({
+      request: async () => { throw new TypeError('Failed to fetch'); },
+      errorFallback: 'Failed',
+    })).rejects.toMatchObject({ status: 0 });
+    expect(showToast).toHaveBeenCalledWith({ message: 'Failed', type: 'error' });
+  });
+
   it('suppresses the network toast when the caller renders inline feedback', async () => {
     const suppressErrorToast = vi.fn((status: number) => status === 0);
     await expect(runAction({

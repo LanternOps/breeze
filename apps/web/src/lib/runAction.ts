@@ -55,6 +55,28 @@ export interface RunActionOptions<T> {
    * 409 as "the worker is already syncing this row" (#7386).
    */
   suppressErrorToast?: (status: number, code: string | undefined, body?: unknown) => boolean;
+  /**
+   * Opt in to showing WHY `request()` rejected (network failure, timeout, or an
+   * error the request thunk threw) as the toast's detail line under the
+   * `errorFallback` headline. Off by default: most thunks are a bare fetch whose
+   * rejection message ("Failed to fetch") adds nothing. Intended for multi-step
+   * thunks (the chunked package upload) that throw a message naming the failed
+   * step. Only the first line is shown, capped, and never a stack; an
+   * AbortError is a caller-driven cancel and gets no detail. `ActionError`
+   * still carries the fallback message and status 0 either way.
+   */
+  showRequestErrorDetail?: boolean;
+}
+
+const REQUEST_ERROR_DETAIL_MAX = 200;
+
+function requestErrorDetail(err: unknown): string | undefined {
+  if (!(err instanceof Error) || err.name === 'AbortError') return undefined;
+  const firstLine = err.message.split('\n')[0]?.trim();
+  if (!firstLine) return undefined;
+  return firstLine.length > REQUEST_ERROR_DETAIL_MAX
+    ? `${firstLine.slice(0, REQUEST_ERROR_DETAIL_MAX - 1)}…`
+    : firstLine;
 }
 
 function isZodValidationFailure(data: unknown): boolean {
@@ -93,9 +115,10 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
   let response: Response;
   try {
     response = await opts.request();
-  } catch {
+  } catch (err) {
     if (!opts.suppressErrorToast?.(0, undefined)) {
-      showToast({ message: opts.errorFallback, type: 'error' });
+      const detail = opts.showRequestErrorDetail ? requestErrorDetail(err) : undefined;
+      showToast({ message: opts.errorFallback, ...(detail !== undefined ? { detail } : {}), type: 'error' });
     }
     throw new ActionError(opts.errorFallback, 0);
   }

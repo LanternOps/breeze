@@ -54,6 +54,7 @@
  */
 import { fetchWithAuth } from '../stores/auth';
 import type { DetectionRule } from '@breeze/shared';
+import { i18n } from './i18n';
 
 export const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024; // default target; overridden if the server returns a different `chunkSize` from session create
 const CHUNK_TIMEOUT_MS = 5 * 60_000; // generous floor: 8MB in 5min ≈ 0.2 Mbps uplink
@@ -113,6 +114,59 @@ function combineSignals(a: AbortSignal | undefined, b: AbortSignal): AbortSignal
   if (b.aborted) controller.abort(b.reason);
   else b.addEventListener('abort', forward(b), { once: true });
   return controller.signal;
+}
+
+type UploadStep = 'create' | 'chunk' | 'complete';
+
+function stepLabel(step: UploadStep): string {
+  switch (step) {
+    case 'create':
+      return i18n.t('policies:software.uploadFailure.stepCreate');
+    case 'chunk':
+      return i18n.t('policies:software.uploadFailure.stepChunk');
+    case 'complete':
+      return i18n.t('policies:software.uploadFailure.stepComplete');
+  }
+}
+
+/**
+ * A failing response whose body carries no readable reason (a reverse proxy's
+ * HTML 413/502/504 page, a truncated connection) reaches runAction as a bare
+ * status with nothing to show. Name the step and HTTP status instead
+ * (#12756). A body that already carries `error`/`message` is the server's own
+ * wording and passes through untouched.
+ */
+async function explainFailure(step: UploadStep, response: Response): Promise<Response> {
+  if (response.ok) return response;
+  let body: unknown = null;
+  try {
+    body = await response.clone().json();
+  } catch {
+    // Not JSON (or unreadable): fall through to the synthesized reason.
+  }
+  if (body && typeof body === 'object') {
+    const { error, message } = body as { error?: unknown; message?: unknown };
+    if (error || message) return response;
+  }
+  return new Response(
+    JSON.stringify({
+      error: i18n.t('policies:software.uploadFailure.failedHttp', {
+        step: stepLabel(step),
+        status: response.status,
+      }),
+    }),
+    { status: response.status, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+/** Rethrows a request rejection with the failing step named; a caller abort is passed through untouched. */
+function rejectWithStep(step: UploadStep, err: unknown, signal: AbortSignal | undefined): never {
+  if (signal?.aborted) throw err;
+  const reason = err instanceof Error && err.message ? err.message : String(err);
+  throw new Error(
+    i18n.t('policies:software.uploadFailure.failedReason', { step: stepLabel(step), reason }),
+    { cause: err },
+  );
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -259,20 +313,25 @@ export async function uploadPackageVersion(
 ): Promise<Response> {
   const { catalogId, file, metadata, onProgress, signal } = opts;
 
-  const createResponse = await fetchWithAuth(
-    `/software/catalog/${catalogId}/versions/uploads`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        fileName: file.name,
-        fileSize: file.size,
-        chunkSize: UPLOAD_CHUNK_SIZE,
-        ...metadata,
-      }),
-      signal: combineSignals(signal, AbortSignal.timeout(CREATE_TIMEOUT_MS)),
-    },
-  );
-  if (!createResponse.ok) return createResponse;
+  let createResponse: Response;
+  try {
+    createResponse = await fetchWithAuth(
+      `/software/catalog/${catalogId}/versions/uploads`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          fileName: file.name,
+          fileSize: file.size,
+          chunkSize: UPLOAD_CHUNK_SIZE,
+          ...metadata,
+        }),
+        signal: combineSignals(signal, AbortSignal.timeout(CREATE_TIMEOUT_MS)),
+      },
+    );
+  } catch (err) {
+    rejectWithStep('create', err, signal);
+  }
+  if (!createResponse.ok) return explainFailure('create', createResponse);
 
   const created = (await createResponse.json().catch(() => null)) as
     | { data?: { uploadId?: string; bytesReceived?: number; chunkSize?: number } }
@@ -304,8 +363,13 @@ export async function uploadPackageVersion(
   try {
     while (offset < file.size) {
       const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
-      const outcome = await sendChunk(catalogId, uploadId, chunk, offset, signal);
-      if (outcome.kind === 'failed') return outcome.response;
+      let outcome: ChunkOutcome;
+      try {
+        outcome = await sendChunk(catalogId, uploadId, chunk, offset, signal);
+      } catch (err) {
+        rejectWithStep('chunk', err, signal);
+      }
+      if (outcome.kind === 'failed') return explainFailure('chunk', outcome.response);
 
       if (outcome.resynced) {
         totalResyncs += 1;
@@ -335,16 +399,21 @@ export async function uploadPackageVersion(
       onProgress?.(offset, file.size);
     }
 
-    const completeResponse = await fetchWithAuth(
-      `/software/catalog/${catalogId}/versions/uploads/${uploadId}/complete`,
-      {
-        method: 'POST',
-        body: JSON.stringify({}),
-        signal: combineSignals(signal, AbortSignal.timeout(COMPLETE_TIMEOUT_MS)),
-      },
-    );
+    let completeResponse: Response;
+    try {
+      completeResponse = await fetchWithAuth(
+        `/software/catalog/${catalogId}/versions/uploads/${uploadId}/complete`,
+        {
+          method: 'POST',
+          body: JSON.stringify({}),
+          signal: combineSignals(signal, AbortSignal.timeout(COMPLETE_TIMEOUT_MS)),
+        },
+      );
+    } catch (err) {
+      rejectWithStep('complete', err, signal);
+    }
     completed = completeResponse.ok;
-    return completeResponse;
+    return explainFailure('complete', completeResponse);
   } finally {
     if (!completed) await releaseUploadSession(catalogId, uploadId);
   }

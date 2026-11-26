@@ -1702,6 +1702,13 @@
     }
   },
   "software": {
+    "uploadFailure": {
+      "stepCreate": "Iniciando la carga",
+      "stepChunk": "Cargando el archivo",
+      "stepComplete": "Finalizando la carga",
+      "failedHttp": "{{step}} falló (HTTP {{status}})",
+      "failedReason": "{{step}} falló: {{reason}}"
+    },
     "addPackageModal": {
       "failedToCreatePackage": "No se pudo crear el paquete",
       "missingPackageId": "Falta la identificación del paquete",
