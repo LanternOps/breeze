@@ -260,3 +260,26 @@ func TestAllReturnsSnapshot(t *testing.T) {
 		t.Fatalf("All() returned %d checks, want 2", len(all))
 	}
 }
+
+func TestRemoveDropsComponentFromSnapshot(t *testing.T) {
+	m := NewMonitor()
+	m.Update("kept", Healthy, "")
+	m.Update("gone", Degraded, "reason")
+
+	m.Remove("gone")
+	m.Remove("never-added") // removing an absent component is a no-op
+
+	if _, ok := m.Get("gone"); ok {
+		t.Fatal("Get still returns a removed component")
+	}
+	snap := m.Snapshot(SnapshotMetadata{AgentVersion: "1.0.0", ObservedAt: time.Now()})
+	if _, ok := snap.Components["gone"]; ok {
+		t.Fatalf("snapshot still carries the removed component: %+v", snap.Components)
+	}
+	if _, ok := snap.Components["kept"]; !ok {
+		t.Fatalf("Remove dropped an unrelated component: %+v", snap.Components)
+	}
+	if snap.Overall != AgentHealthHealthy {
+		t.Fatalf("overall = %q after removing the only degraded component, want healthy", snap.Overall)
+	}
+}

@@ -81,17 +81,21 @@ func TestPlaintextWarningOncePerProcess(t *testing.T) {
 			t.Errorf("warning line missing %q; log:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "brz_") {
-		t.Errorf("warning must not carry the token; log:\n%s", out)
-	}
 }
 
 // connect is the only dial path (first connect and every reconnect), so the
 // warning is wired there: the first connect warns, the next one does not.
+// connect holds the agent's token when it warns, so this is also where the
+// log is checked for it. Host names use the reserved .invalid TLD so a dial
+// that does start never reaches a real resolver answer.
 func TestConnectWarnsOnceForPlaintextServer(t *testing.T) {
 	buf := capturePlaintextWarnings(t)
 
-	c := newTestClient("http://rmm.example.com", noopHandler)
+	c := newTestClient("http://rmm.example.invalid", noopHandler)
+	token := c.config.AuthToken.Reveal()
+	if !strings.HasPrefix(token, "brz_") {
+		t.Fatalf("test client token %q does not look like an agent token; the leak check below would prove nothing", token)
+	}
 	// Stopped first so the dial is cancelled at once: this test is about the
 	// warning, which is logged before the dial, not about the connection.
 	c.Stop()
@@ -101,15 +105,19 @@ func TestConnectWarnsOnceForPlaintextServer(t *testing.T) {
 			t.Fatal("connect on a stopped client must fail")
 		}
 	}
+	out := buf.String()
 	if n := countPlaintextWarnings(buf); n != 1 {
-		t.Fatalf("got %d warnings across 3 connects, want 1; log:\n%s", n, buf.String())
+		t.Fatalf("got %d warnings across 3 connects, want 1; log:\n%s", n, out)
+	}
+	if strings.Contains(out, token) || strings.Contains(out, "brz_") {
+		t.Errorf("log must not carry the agent token; log:\n%s", out)
 	}
 }
 
 func TestConnectDoesNotWarnForEncryptedServer(t *testing.T) {
 	buf := capturePlaintextWarnings(t)
 
-	c := newTestClient("https://rmm.example.com", noopHandler)
+	c := newTestClient("https://rmm.example.invalid", noopHandler)
 	c.Stop()
 	_ = c.connect()
 

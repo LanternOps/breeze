@@ -39,9 +39,11 @@ func PlaintextRemoteHost(raw string) (string, bool) {
 // IsLoopbackHost reports whether host names this machine: the name
 // "localhost" (any case, with or without a trailing dot), or an IP literal in
 // 127.0.0.0/8 or ::1 (including the IPv4-mapped form). The unspecified
-// addresses (0.0.0.0, ::) are not loopback. No other name is resolved or
-// trusted, including names under ".localhost": the Go resolver does not pin
-// those to loopback, so DNS or a hosts file could send one anywhere.
+// addresses (0.0.0.0, ::) are not loopback. The literal name "localhost" is
+// exempt by convention: it names this machine everywhere, even though a hosts
+// file could point it elsewhere. No other name is resolved or trusted,
+// including names under ".localhost": the Go resolver does not pin those to
+// loopback, so they resolve like any other name.
 func IsLoopbackHost(host string) bool {
 	if strings.TrimSuffix(strings.ToLower(host), ".") == "localhost" {
 		return true

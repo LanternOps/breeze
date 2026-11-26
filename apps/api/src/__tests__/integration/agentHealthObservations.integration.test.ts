@@ -292,12 +292,13 @@ describe('agent health observation storage', () => {
     await expect(withDbAccessContext(orgContext(orgB.id), () => readPlaintextServerConnection(deviceB)))
       .resolves.toEqual({ observedAt: '2026-11-20T10:00:00.000Z' });
 
-    // A newer observation after server_url moved to https clears it.
+    // A newer observation after server_url moved to https clears it. The agent
+    // then sends no server_connection component at all.
     await recordAgentHealthObservation({
       device: deviceA,
       observation: {
         ...health(deviceA.id, '2026-11-20T11:00:00.000Z'),
-        components: { metrics: { state: 'healthy' }, server_connection: { state: 'healthy' } },
+        components: { metrics: { state: 'healthy' } },
       },
       receivedAt: new Date('2026-11-20T11:00:01.000Z'),
     });

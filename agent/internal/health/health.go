@@ -112,6 +112,14 @@ func (m *Monitor) Update(name string, status Status, message string) {
 	}
 }
 
+// Remove drops a named component, so later snapshots no longer carry it.
+// Removing a component that is not registered is a no-op.
+func (m *Monitor) Remove(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.checks, name)
+}
+
 // Get returns the health check for a named component.
 func (m *Monitor) Get(name string) (Check, bool) {
 	m.mu.RLock()

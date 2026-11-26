@@ -191,7 +191,7 @@ describe('derivePlaintextServerConnection', () => {
     ['a healthy component with an empty reason', { state: 'healthy', reason: '' }],
     ['a warning with a different reason', { state: 'warning', reason: 'something_else' }],
     ['an error state with the plaintext reason', { state: 'error', reason: 'plaintext_websocket' }],
-    ['no component (older agent)', null],
+    ['no component (encrypted connection, or an older agent)', null],
     ['no component (undefined)', undefined],
     ['a non-object component', 'plaintext_websocket'],
   ])('returns null for %s', (_label, component) => {
@@ -230,6 +230,18 @@ describe('readPlaintextServerConnection', () => {
       .resolves.toEqual({ observedAt: '2026-11-20T10:00:00.000Z' });
     expect(node.innerJoin).toHaveBeenCalledTimes(1);
     expect(node.limit).toHaveBeenCalledWith(1);
+  });
+
+  // The agent sends the component only while the connection is plaintext, so
+  // a newest observation without it (jsonb `->` of a missing key is SQL NULL)
+  // is the normal "nothing to report" case for every encrypted agent.
+  it('returns null when the newest observation has no server_connection component', async () => {
+    selectReturning([{
+      schemaVersion: 1,
+      component: null,
+      observedAt: new Date('2026-11-20T10:00:00.000Z'),
+    }]);
+    await expect(readPlaintextServerConnection({ id: DEVICE_ID, orgId: ORG_ID })).resolves.toBeNull();
   });
 
   it('returns null when the device has no observation', async () => {

@@ -117,11 +117,11 @@ export async function recordAgentHealthObservation(input: {
 }
 
 /**
- * #12729 — the agent health component an agent reports about how it reaches
- * the server, and the reason it carries when that connection is unencrypted:
- * server_url is http:// (or ws://) to a non-loopback host, so the
- * WebSocket is plain ws://. Kept in step with
- * agent/internal/heartbeat/server_connection.go.
+ * #12729 — the agent health component an agent reports when its connection to
+ * the server is unencrypted (server_url is http:// or ws:// to a non-loopback
+ * host, so the WebSocket is plain ws://), and the reason it carries. The agent
+ * sends the component only in that case; an encrypted agent sends none.
+ * Kept in step with agent/internal/heartbeat/server_connection.go.
  */
 export const AGENT_HEALTH_SERVER_CONNECTION_COMPONENT = 'server_connection';
 export const AGENT_HEALTH_PLAINTEXT_SERVER_CONNECTION = 'plaintext_websocket';
@@ -130,9 +130,9 @@ export type PlaintextServerConnectionNotice = { observedAt: string };
 
 /**
  * The device-detail notice for one stored server_connection component, or
- * null. Only the exact (warning, plaintext_websocket) pair counts: an agent
- * older than #12729 sends no component, and any other value is not this
- * notice.
+ * null. Only the exact (warning, plaintext_websocket) pair counts. A missing
+ * component (null: an encrypted connection, or an agent older than #12729)
+ * means no notice, and so does any other value.
  */
 export function derivePlaintextServerConnection(
   component: unknown,

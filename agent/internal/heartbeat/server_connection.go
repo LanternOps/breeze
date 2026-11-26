@@ -17,23 +17,27 @@ const serverConnectionComponentName = "server_connection"
 // TestObserveServerConnection_WireLiterals.
 const serverConnectionPlaintextReason = "plaintext_websocket"
 
-// observeServerConnection records the server_connection component from the
-// current server URL: warning when it is plaintext to a remote host (the rule
-// is config.PlaintextRemoteHost), healthy otherwise. It reports only; it never
-// changes the connection. A warning component also makes the observation's
-// overall state "warning"; nothing alerts on that today. Monitor.Update
-// warn-logs every non-healthy call, so the component is re-recorded only when
-// its value changes.
+// observeServerConnection keeps the server_connection component in step with
+// the current server URL. While the URL is plaintext to a remote host (the
+// rule is config.PlaintextRemoteHost) the component is present as a warning;
+// otherwise it is absent. There is no "healthy" form: one observation row is
+// stored per heartbeat, so only agents with something to report add bytes to
+// it, and the server reads an absent component as "no warning". It reports
+// only; it never changes the connection. A warning component also makes the
+// observation's overall state "warning"; nothing alerts on that today.
+// Monitor.Update warn-logs every non-healthy call, so the component is
+// re-recorded only when it is not already set.
 func (h *Heartbeat) observeServerConnection() {
 	if h.healthMon == nil {
 		return
 	}
-	status, reason := health.Healthy, ""
-	if _, plaintext := config.PlaintextRemoteHost(h.serverURL()); plaintext {
-		status, reason = health.Degraded, serverConnectionPlaintextReason
-	}
-	if c, ok := h.healthMon.Get(serverConnectionComponentName); ok && c.Status == status && c.Message == reason {
+	if _, plaintext := config.PlaintextRemoteHost(h.serverURL()); !plaintext {
+		h.healthMon.Remove(serverConnectionComponentName)
 		return
 	}
-	h.healthMon.Update(serverConnectionComponentName, status, reason)
+	if c, ok := h.healthMon.Get(serverConnectionComponentName); ok &&
+		c.Status == health.Degraded && c.Message == serverConnectionPlaintextReason {
+		return
+	}
+	h.healthMon.Update(serverConnectionComponentName, health.Degraded, serverConnectionPlaintextReason)
 }
