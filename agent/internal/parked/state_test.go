@@ -70,7 +70,7 @@ func TestBeatEntersAndLeaves(t *testing.T) {
 // enters the state from a beat.
 func TestOldServerBeatsNeverPark(t *testing.T) {
 	s := New()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if ev := s.ObserveBeat(false); ev.Transition != None {
 			t.Fatalf("beat %d = %v, want none", i, ev.Transition)
 		}
@@ -142,7 +142,7 @@ func TestObserverSeesTransitionsInOrder(t *testing.T) {
 		mu.Unlock()
 	})
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(2)
 		go func() { defer wg.Done(); s.ObserveBeat(true) }()
 		go func() { defer wg.Done(); s.ObserveBeat(false) }()

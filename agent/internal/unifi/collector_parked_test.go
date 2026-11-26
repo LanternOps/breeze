@@ -20,7 +20,7 @@ func TestCollectorLoopSuspendedWhileParked(t *testing.T) {
 	deps.Parked = st
 	startLoop(t, deps)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		waker.Wake()
 		time.Sleep(10 * time.Millisecond)
 	}
