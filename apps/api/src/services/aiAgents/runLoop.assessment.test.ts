@@ -392,11 +392,11 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
   // run actually registers refuses an org subject that is not that org.
   it('names the run org in the prompt and wires record_concern to refuse another org id', async () => {
     seedRows({ profile: 'assessment', grant: true });
-    dbMockState.rowQueues.organizations = [[{ id: ORG_ID, partnerId: PARTNER_ID, name: 'Berthoud Vet Care' }]];
+    dbMockState.rowQueues.organizations = [[{ id: ORG_ID, partnerId: PARTNER_ID, name: 'Example Org' }]];
     await executeAgentRun(RUN_ID);
     const prompt = String(lastQuery?.prompt);
     expect(prompt).toContain(`Organization id: ${ORG_ID}.`);
-    expect(prompt).toContain('Berthoud Vet Care');
+    expect(prompt).toContain('Example Org');
 
     const record = hooks.extraTools?.find((t) => t.name === 'record_concern');
     expect(record).toBeDefined();
