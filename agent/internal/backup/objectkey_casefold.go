@@ -51,8 +51,15 @@ func foldObjectKey(k string) string {
 // paths that differ only by case — and immune to folding. The ".gz" suffix
 // is load-bearing: the local provider compresses/decompresses on it.
 func caseTwinBackupPath(prefix, snapshotPath string) string {
+	return hashedBackupPath(prefix, caseTwinDir, snapshotPath)
+}
+
+// hashedBackupPath is prefix/files/<dir>/<hex sha256(snapshotPath)>.gz: a
+// fixed-shape key, injective over snapshot paths, that no natural key can
+// equal or fold onto as long as dir does not start with "path_".
+func hashedBackupPath(prefix, dir, snapshotPath string) string {
 	sum := sha256.Sum256([]byte(snapshotPath))
-	return ensureGzipExtension(path.Join(prefix, snapshotFilesDir, caseTwinDir, hex.EncodeToString(sum[:])))
+	return ensureGzipExtension(path.Join(prefix, snapshotFilesDir, dir, hex.EncodeToString(sum[:])))
 }
 
 // objectKeyClaims tracks which folded object keys a snapshot has already
@@ -78,9 +85,16 @@ func (c objectKeyClaims) clone() objectKeyClaims {
 	return out
 }
 
-// assign returns the key a newly uploaded file must use: its natural key
-// when that is free, else its case-twin key. The chosen key is claimed.
+// assign returns the key a newly uploaded file must use: its long-name key
+// when the natural key exceeds a store's name limits (objectkey_length.go),
+// else its natural key when that is free, else its case-twin key. The
+// chosen key is claimed.
 func (c objectKeyClaims) assign(prefix, snapshotPath, naturalKey string) string {
+	if !objectKeyFitsStore(naturalKey) {
+		long := longNameBackupPath(prefix, snapshotPath)
+		c.claim(long)
+		return long
+	}
 	if c.claim(naturalKey) {
 		return naturalKey
 	}

@@ -1459,7 +1459,14 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				markDedupeHashed(file, hashed)
 				naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
 				backupPath := keyClaims.assign(prefix, file.snapshotPath, naturalKey)
-				if backupPath != naturalKey {
+				if backupPath != naturalKey && !objectKeyFitsStore(naturalKey) {
+					log.Info("object key exceeds a store's name limits; storing under a bounded key",
+						"path", file.sourcePath,
+						"naturalKeyBytes", len(naturalKey),
+						"backupPath", backupPath,
+						"snapshotId", snapshot.ID,
+					)
+				} else if backupPath != naturalKey {
 					log.Info("object key folds onto a case twin's; storing under a disambiguated key",
 						"path", file.sourcePath,
 						"naturalKey", naturalKey,
