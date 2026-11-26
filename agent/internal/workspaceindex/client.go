@@ -46,7 +46,8 @@ var (
 	// proxy is shedding load) or any 403 (typically the device is parked,
 	// quarantined or draining). The loop backs off instead of asking again
 	// each minute (#12713). The first refusal leaves running crawls and
-	// watchers alone; a second consecutive refusal stops them (#12727).
+	// watchers alone; a later consecutive refusal stops them once the run of
+	// refusals is at least 30 minutes old (#12727, unavailableStopGrace).
 	// Either way, a device whose state is cleared may wait up to that
 	// back-off before indexing resumes. A 401 is not in this set; it
 	// stays an auth failure on the shared monitor.

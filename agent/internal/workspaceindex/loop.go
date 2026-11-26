@@ -39,13 +39,18 @@ const (
 	unavailableRetryAfterFloor   = time.Minute
 	unavailableRetryAfterCeiling = moduleAbsentBackoff
 
-	// unavailableStopAfterRefusals is how many consecutive ErrUnavailable
-	// answers stop running crawls and watchers (#12727). The first refusal
-	// only backs off the poll, so a short proxy or deploy blip does not tear
-	// indexing down; if the poll after that back-off (30 to 60 minutes later
-	// without a Retry-After, up to six hours with one) is refused too, they
-	// are stopped.
+	// A run of consecutive ErrUnavailable answers stops running crawls and
+	// watchers (#12727) once it is both unavailableStopAfterRefusals answers
+	// long and unavailableStopGrace old (measured from its first answer). The
+	// first refusal only backs off the poll, so a short proxy or deploy blip
+	// does not tear indexing down.
 	unavailableStopAfterRefusals = 2
+	// unavailableStopGrace keeps the grace period time-based: a short
+	// Retry-After (a proxy answering "60" during a deploy) brings the second
+	// refusal a minute after the first, and a count alone would then stop
+	// indexing within minutes. It must not exceed unavailableBackoffMin, so
+	// with no Retry-After the second refusal is always old enough and stops.
+	unavailableStopGrace = 30 * time.Minute
 )
 
 // indexingScopeSignature reduces the announced source set to a comparable
@@ -167,9 +172,11 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		// lastUnavailableStatus is the status of the previous fetch when it
 		// was ErrUnavailable, else 0; it keeps repeat back-off logs quiet.
 		lastUnavailableStatus := 0
-		// unavailableRefusals counts consecutive ErrUnavailable fetches; any
-		// other outcome resets it.
+		// unavailableRefusals counts consecutive ErrUnavailable fetches and
+		// unavailableSince is when the first of them came; any other outcome
+		// resets both.
 		unavailableRefusals := 0
+		var unavailableSince time.Time
 		// auditedScope is the signature of the source set last announced by the
 		// consent signal (prominent log + device-audit event, #2425). Tracking
 		// the SCOPE rather than a mere on/off bool means a server that widens
@@ -350,6 +357,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 			if !errors.Is(err, ErrUnavailable) {
 				lastUnavailableStatus = 0
 				unavailableRefusals = 0
+				unavailableSince = time.Time{}
 			}
 			if err != nil {
 				if errors.Is(err, ErrModuleAbsent) {
@@ -361,9 +369,10 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 				if errors.Is(err, ErrUnavailable) {
 					// The first refusal only slows the config poll: a 503 may
 					// be a brief proxy blip, and a crawl that gets the same
-					// answer fails on its own. A refusal that outlasts the
-					// back-off stops crawls and watchers as a 404 does, and a
-					// later successful fetch starts them again (#12727).
+					// answer fails on its own. A run of refusals that lasts
+					// unavailableStopGrace stops crawls and watchers as a 404
+					// does, and a later successful fetch starts them again
+					// (#12727).
 					var retryAfter time.Duration
 					status := 0
 					if httpErr, ok := errors.AsType[*HTTPError](err); ok {
@@ -380,7 +389,11 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 					logAt("workspace index unavailable; backing off config poll",
 						"status", status, "retryAfterHint", retryAfter, "retryIn", wait, "err", err)
 					unavailableRefusals++
-					if unavailableRefusals >= unavailableStopAfterRefusals {
+					if unavailableSince.IsZero() {
+						unavailableSince = now
+					}
+					if unavailableRefusals >= unavailableStopAfterRefusals &&
+						now.Sub(unavailableSince) >= unavailableStopGrace {
 						markIndexingInactive(fmt.Sprintf("workspace index unavailable on server (HTTP %d)", status))
 						cancelActivity()
 					}

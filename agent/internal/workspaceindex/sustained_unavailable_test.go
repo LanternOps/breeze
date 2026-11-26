@@ -374,3 +374,101 @@ func TestConfigPollRetryAfterZeroIsTheFloor(t *testing.T) {
 		}
 	}
 }
+
+// With no Retry-After the second refusal comes at least unavailableBackoffMin
+// after the first, so it must always be old enough to stop: the grace may not
+// outlast the shortest default back-off.
+func TestUnavailableStopGraceFitsInsideTheDefaultBackoff(t *testing.T) {
+	if unavailableStopGrace > unavailableBackoffMin {
+		t.Fatalf("unavailableStopGrace %v > unavailableBackoffMin %v: the default back-off would no longer stop on the second refusal",
+			unavailableStopGrace, unavailableBackoffMin)
+	}
+	for range 1000 {
+		if wait := unavailableBackoff(0); wait < unavailableStopGrace {
+			t.Fatalf("default back-off %v is shorter than unavailableStopGrace %v", wait, unavailableStopGrace)
+		}
+	}
+}
+
+// shortRetryAfterStep is one poll interval under "Retry-After: 60": the
+// one-minute hint plus its at-most-10% jitter.
+const shortRetryAfterStep = 67 * time.Second
+
+// refuseWithRetryAfter makes every crawl-config poll answer 503 with the given
+// Retry-After.
+func (l *indexingLoop) refuseWithRetryAfter(retryAfter string) {
+	l.server.retryAfter.Store(retryAfter)
+	l.server.status.Store(http.StatusServiceUnavailable)
+}
+
+// A short Retry-After brings the next poll round in about a minute, and that
+// alone must not tear indexing down: the stop also waits until the refusal
+// streak is unavailableStopGrace old (#12727).
+func TestStartLoopShortRetryAfterDoesNotStopIndexingEarly(t *testing.T) {
+	l := startIndexingLoop(t, nil)
+	l.refuseWithRetryAfter("60")
+
+	l.fetchAt(t, 2*time.Minute, 2)
+	l.fetchAt(t, 2*time.Minute+shortRetryAfterStep, 3)
+	l.assertStillIndexing(t, "after two refusals about a minute apart")
+}
+
+// Under a short Retry-After the agent keeps polling at that cadence and stops
+// at the first refused poll that is unavailableStopGrace or more after the
+// streak began (the first refusal, here at two minutes).
+func TestStartLoopShortRetryAfterStopsOnceTheStreakIsOldEnough(t *testing.T) {
+	l := startIndexingLoop(t, nil)
+	l.refuseWithRetryAfter("60")
+
+	const streakStart = 2 * time.Minute
+	l.fetchAt(t, streakStart, 2)
+	l.fetchAt(t, streakStart+shortRetryAfterStep, 3)
+	// 70 s short of the grace: still running.
+	l.fetchAt(t, streakStart+unavailableStopGrace-70*time.Second, 4)
+	l.assertStillIndexing(t, "70 s before the stop grace ends")
+
+	// Exactly at the grace: stop. The previous poll's back-off (at most 66 s)
+	// has run out by then, so this poll is due.
+	stopAt := streakStart + unavailableStopGrace
+	l.fetchAt(t, stopAt, 5)
+	l.assertStopped(t, "at the first refused poll at the stop grace")
+	wantReason := fmt.Sprintf("%s (HTTP %d)", reasonUnavailablePrefix, http.StatusServiceUnavailable)
+	waitLoopCondition(t, func() bool { return len(l.deactivationReasons()) == 1 }, "deactivation audit")
+
+	// Further refusals keep the cadence and do not record again.
+	l.fetchAt(t, stopAt+shortRetryAfterStep, 6)
+	l.fetchAt(t, stopAt+2*shortRetryAfterStep, 7)
+	if got := l.deactivationReasons(); !slices.Equal(got, []string{wantReason}) {
+		t.Fatalf("deactivation reasons = %q, want [%q]", got, wantReason)
+	}
+}
+
+// Any outcome other than a refusal ends the streak, so the next refusal starts
+// a new one and the grace is measured from it, not from the old streak.
+func TestStartLoopNonRefusalResetsTheStreakStart(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+	}{
+		{name: "200", status: http.StatusOK},
+		{name: "500", status: http.StatusInternalServerError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			l := startIndexingLoop(t, nil)
+			l.refuseWithRetryAfter("60")
+
+			l.fetchAt(t, 2*time.Minute, 2)
+			l.server.status.Store(int32(tt.status))
+			l.fetchAt(t, 2*time.Minute+shortRetryAfterStep, 3)
+
+			// A new streak starts well past the old one's grace...
+			newStreak := 2*time.Minute + unavailableStopGrace + 5*time.Minute
+			l.server.status.Store(http.StatusServiceUnavailable)
+			l.fetchAt(t, newStreak, 4)
+			// ...and its second refusal, about a minute later, is inside its
+			// own grace.
+			l.fetchAt(t, newStreak+shortRetryAfterStep, 5)
+			l.assertStillIndexing(t, fmt.Sprintf("a minute into a streak that began after a %d", tt.status))
+		})
+	}
+}
