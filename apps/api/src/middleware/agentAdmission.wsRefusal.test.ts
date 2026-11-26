@@ -80,6 +80,44 @@ describe('agent WS refusal on the wire', () => {
     expect(raw).not.toMatch(/Retry-After/i);
   });
 
+  // #8318 wave D-1a. The parked refusal (routes/agentWs.ts) reaches the agent
+  // only as this header: node-ws writes the refusal with Content-Length: 0.
+  async function startRefusing(headerValue: string) {
+    const app = new Hono();
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+    app.get(
+      '/api/v1/agent-ws/:id/ws',
+      async (c) => {
+        c.header('X-Breeze-Refusal', headerValue);
+        return c.json({ error: headerValue }, 403);
+      },
+      upgradeWebSocket(() => ({})),
+    );
+    const port = await new Promise<number>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) => resolve(info.port));
+    });
+    injectWebSocket(server!);
+    return port;
+  }
+
+  it('forwards the parked refusal header on a refused upgrade (body is dropped)', async () => {
+    const raw = await handshake(await startRefusing('device_pending_assignment'));
+    expect(raw).toMatch(/^HTTP\/1\.1 403 /);
+    expect(raw).toMatch(/\r\nX-Breeze-Refusal: device_pending_assignment\r\n/);
+    expect(raw).toMatch(/\r\nContent-Length: 0\r\n/);
+  });
+
+  // Header values cannot carry CR/LF (the Headers API refuses them), so the
+  // allow-list guards against any other text reaching the raw socket.
+  it.each(['something_else', 'DEVICE_PENDING_ASSIGNMENT', 'device_pending_assignment; x=1'])(
+    'drops a refusal header value outside the allow-list (%j)',
+    async (value) => {
+      const raw = await handshake(await startRefusing(value));
+      expect(raw).toMatch(/^HTTP\/1\.1 403 /);
+      expect(raw).not.toMatch(/X-Breeze-Refusal/i);
+    },
+  );
+
   it('an admitted upgrade still switches protocols', async () => {
     const onOpen = vi.fn();
     const port = await start({ action: 'admit' }, onOpen);

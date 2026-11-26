@@ -1119,6 +1119,8 @@ describe('validateAgentToken — tenant-status gate', () => {
     // #8318 D-1a: the REST parked refusal, so the agent waits for assignment
     // instead of redialing. An older agent treats any non-101 alike.
     expect(res.status).toBe(403);
+    // The header is what survives a real upgrade (node-ws drops the body).
+    expect(res.headers.get('x-breeze-refusal')).toBe('device_pending_assignment');
     expect(await res.json()).toEqual({ error: 'device_pending_assignment' });
     expect(upgradeHandler).not.toHaveBeenCalled();
     logSpy.mockRestore();
@@ -1132,6 +1134,7 @@ describe('validateAgentToken — tenant-status gate', () => {
     const res = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
 
     expect(res.status).toBe(401);
+    expect(res.headers.get('x-breeze-refusal')).toBeNull();
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
     expect(upgradeHandler).not.toHaveBeenCalled();
   });

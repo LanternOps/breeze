@@ -55,7 +55,7 @@ import { applyCommandProgress } from '../services/commandProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
-import { PARKED_DEVICE_REFUSAL } from '../middleware/agentAuthParked';
+import { PARKED_DEVICE_REFUSAL, PARKED_REFUSAL_HEADER } from '../middleware/agentAuthParked';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import {
   enforceAgentCertificateBinding,
@@ -5508,8 +5508,12 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
         // #8318 D-1a: 403, not 401. The Go agent's WS client treats every
         // non-101 answer alike (a refused dial, backed off; no auth monitor
         // reads it), so the status changes nothing for an older agent, while
-        // the body lets a current one suspend its redials until assignment.
+        // the refusal lets a current one suspend its redials until assignment.
+        // On a real upgrade @hono/node-ws drops the body and keeps only the
+        // allow-listed headers, so the header is what reaches the agent; the
+        // body is for clients that see the response itself.
         if (result.reason === 'pending_assignment') {
+          c.header(PARKED_REFUSAL_HEADER, PARKED_DEVICE_REFUSAL.error);
           return c.json(PARKED_DEVICE_REFUSAL, 403);
         }
         return c.json({ error: 'Unauthorized' }, 401);
