@@ -105,6 +105,15 @@ export default function TpmKeyPanel({ deviceId, timezone }: { deviceId: string; 
     void load();
   }, [load]);
 
+  // An idle panel drops the grant when it stops being usable, so an
+  // authenticator-app user sees the code field again instead of an Accept
+  // that would fail on the first click (#12641 review).
+  useEffect(() => {
+    if (!heldGrant) return;
+    const timer = setTimeout(() => setHeldGrant(null), Math.max(0, heldGrant.mintedAt + HELD_GRANT_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [heldGrant]);
+
   const fmt = (value: string | null) => formatDateTime(value, timezone ? { timeZone: timezone, fallback: '-' } : { fallback: '-' });
 
   const review = useCallback(async (action: Action) => {
@@ -117,6 +126,12 @@ export default function TpmKeyPanel({ deviceId, timezone }: { deviceId: string; 
       const reusable = heldGrant && heldGrant.version === mismatch.version && Date.now() - heldGrant.mintedAt < HELD_GRANT_MS
         ? heldGrant
         : null;
+      if (action === 'accept' && stepUp && !reusable && heldGrant && tier !== 'passkey' && code.length !== 6) {
+        // Checked again at the click: a background tab can run the expiry
+        // timer late. Ask for a fresh code and send nothing.
+        setHeldGrant(null);
+        return;
+      }
       if (action === 'accept' && stepUp && reusable) {
         // The server judges the step-up last: a refusal before it (an open
         // reattach, a network error) left this grant unspent.

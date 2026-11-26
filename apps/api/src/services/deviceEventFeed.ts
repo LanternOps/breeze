@@ -462,7 +462,10 @@ const actionLabels: Record<string, string> = {
   'device.reinstall.expired': 'Reattach request expired',
   'device.reinstall.reattached': 'Reinstalled machine reattached',
   // #8318 wave T2: an operator's review of a held TPM key change
-  // (services/tpmBaseline). The agent's recorded/mismatch rows are agent-actor.
+  // (services/tpmBaseline). `device.tpm_baseline.recorded` / `.mismatch` are
+  // written since wave T1 by the agent's attestation
+  // (services/tpmAttestation completeAttestation) with actor_type 'agent', so
+  // NON_AGENT_ACTOR keeps them out of the deliberate feed and they need no label.
   'device.tpm_baseline.mismatch_accepted': 'New TPM key accepted as the baseline',
   'device.tpm_baseline.mismatch_dismissed': 'Held TPM key change dismissed',
   'device.agent_token.rotate': 'Agent token rotated',

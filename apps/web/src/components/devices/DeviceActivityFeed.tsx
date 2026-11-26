@@ -82,8 +82,9 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   // (reinstall_suspected, the expiry sweep).
   { prefix: "device.reinstall", icon: RefreshCcw },
   // A held TPM key change accepted or dismissed by an operator (#8318 wave
-  // T2). The agent's own rows (`recorded`, `mismatch`) are agent-actor and
-  // never reach this feed.
+  // T2). The `recorded` and `mismatch` rows are written since wave T1 by the
+  // agent's attestation (services/tpmAttestation completeAttestation) with
+  // actor_type 'agent', which the server's deliberate feed leaves out.
   { prefix: "device.tpm_baseline", icon: KeyRound },
   // Automated agent-dispatched commands (scheduled patches, automations). Listed
   // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
