@@ -22,6 +22,8 @@ export interface S1Threat {
   resolvedAt: string | null;
   updatedAt: string;
   details: unknown;
+  /** True when the row was synced from an integration that is no longer connected. */
+  integrationDisconnected?: boolean;
 }
 
 export interface HuntressIncident {
@@ -42,6 +44,8 @@ export interface HuntressIncident {
   details: unknown;
   createdAt: string;
   updatedAt: string;
+  /** True when the row was synced from an integration that is no longer connected. */
+  integrationDisconnected?: boolean;
 }
 
 export interface S1ThreatFilters {

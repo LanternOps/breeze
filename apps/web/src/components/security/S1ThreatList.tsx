@@ -154,10 +154,21 @@ export default function S1ThreatList() {
       {threat.status}
     </span>
   );
+  const renderDisconnectedBadge = (threat: S1Threat) =>
+    threat.integrationDisconnected ? (
+      <span
+        data-testid="s1-threat-disconnected-badge"
+        title={t("securityS1ThreatList.disconnectedIntegrationTooltip")}
+        className="ml-2 inline-flex rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+      >
+        {t("securityS1ThreatList.disconnectedIntegration")}
+      </span>
+    ) : null;
   const renderActions = (threat: S1Threat) => {
     return (
       <div className="flex flex-wrap items-center gap-2">
         {threat.status === "active" &&
+          !threat.integrationDisconnected &&
           (["kill", "quarantine", "rollback"] as const).map((action) => (
             <button
               key={action}
@@ -379,6 +390,7 @@ export default function S1ThreatList() {
                     <td className="px-4 py-3">
                       {threat.threatName ??
                         t("securityS1ThreatList.unknownThreat")}
+                      {renderDisconnectedBadge(threat)}
                     </td>
                     <td className="px-4 py-3">{renderSeverityBadge(threat)}</td>
                     <td className="px-4 py-3">{renderStatusBadge(threat)}</td>
@@ -422,6 +434,7 @@ export default function S1ThreatList() {
                     <div className="truncate font-semibold">
                       {threat.threatName ??
                         t("securityS1ThreatList.unknownThreat")}
+                      {renderDisconnectedBadge(threat)}
                     </div>
                     <div className="truncate text-xs text-muted-foreground">
                       {threat.deviceName ?? threat.deviceId ?? "-"}

@@ -452,6 +452,12 @@
     "saveAndVerify": "Speichern und überprüfen"
   },
   "huntressIntegration": {
+    "disconnect": "Trennen",
+    "disconnectTitle": "Huntress trennen?",
+    "disconnectMessage": "Die Synchronisierung wird beendet, Huntress-Webhook-Zustellungen werden abgelehnt, und der gespeicherte API-Schlüssel, der Kontoschlüssel und das Webhook-Signaturgeheimnis werden gelöscht. Bereits synchronisierte Agents, Vorfälle und Organisationszuordnungen bleiben erhalten. Wenn Sie Huntress erneut verbinden, werden sie wieder zugeordnet, und Sie geben die Schlüssel erneut ein.",
+    "disconnectConfirm": "Trennen",
+    "integrationDisconnected": "Huntress getrennt",
+    "failedToDisconnect": "Huntress konnte nicht getrennt werden",
     "notConfigured": "Nicht konfiguriert",
     "syncing": "Synchronisierung",
     "error": "Fehler",
@@ -992,6 +998,12 @@
     "noProviderConfigured": "Auf dieser Instanz ist kein Buchhaltungsanbieter konfiguriert."
   },
   "securityIntegration": {
+    "disconnect": "Trennen",
+    "disconnectTitle": "SentinelOne trennen?",
+    "disconnectMessage": "Die Synchronisierung wird beendet, und das gespeicherte API-Token sowie die Standort-Registrierungstoken werden gelöscht. Bereits synchronisierte Agents, Bedrohungen und Standort-zu-Organisation-Zuordnungen bleiben erhalten. Wenn Sie SentinelOne erneut verbinden, werden sie wieder zugeordnet, und Sie geben ein neues API-Token ein.",
+    "disconnectConfirm": "Trennen",
+    "integrationDisconnected": "SentinelOne getrennt",
+    "failedToDisconnect": "SentinelOne konnte nicht getrennt werden",
     "notConfigured": "Nicht konfiguriert",
     "syncing": "Synchronisierung",
     "error": "Fehler",

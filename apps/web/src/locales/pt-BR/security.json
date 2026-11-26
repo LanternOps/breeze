@@ -389,6 +389,8 @@
     "unknown": "Desconhecido"
   },
   "securityHuntressIncidentList": {
+    "disconnectedIntegration": "Integração desconectada",
+    "disconnectedIntegrationTooltip": "Sincronizado de uma integração que não está mais conectada",
     "actions": "Ações",
     "all": "todos",
     "allSeverities": "Todas as severidades",
@@ -524,6 +526,8 @@
     "thisAccessHasBeenRecordedInThe": "Este acesso foi registrado na trilha de auditoria."
   },
   "securityS1ThreatList": {
+    "disconnectedIntegration": "Integração desconectada",
+    "disconnectedIntegrationTooltip": "Sincronizado de uma integração que não está mais conectada",
     "actions": "Ações",
     "active": "Ativo",
     "all": "todos",

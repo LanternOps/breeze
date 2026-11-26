@@ -15,6 +15,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { fetchAllOrganizationsFrom } from "../../lib/fetchAllOrganizations";
 import { ListFetchError } from "../../lib/fetchAllSites";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { navigateTo } from "@/lib/navigation";
 import { getJwtClaims, loginPathWithNext } from "../../lib/authScope";
 import { type Organization, useOrgStore } from "../../stores/orgStore";
@@ -145,6 +146,8 @@ export default function SecurityIntegration() {
 
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
   const [syncState, setSyncState] = useState<SyncState>({ status: "idle" });
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>(
     {},
   );
@@ -332,6 +335,31 @@ export default function SecurityIntegration() {
       );
     }
   }, [isPartnerAdmin, load]);
+
+  const handleDisconnect = useCallback(async () => {
+    if (!isPartnerAdmin) return;
+    setDisconnecting(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth("/s1/integration", { method: "DELETE" }),
+        errorFallback: t("securityIntegration.failedToDisconnect"),
+        successMessage: t("securityIntegration.integrationDisconnected"),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setDisconnectOpen(false);
+      setName("");
+      setManagementUrl("");
+      setApiToken("");
+      setSaveState({ status: "idle" });
+      setSyncState({ status: "idle" });
+      await load();
+    } catch (err) {
+      setDisconnectOpen(false);
+      handleActionError(err, t("securityIntegration.failedToDisconnect"));
+    } finally {
+      setDisconnecting(false);
+    }
+  }, [isPartnerAdmin, load, t]);
 
   const handleMap = useCallback(
     async (s1SiteId: string, orgId: string | null) => {
@@ -551,6 +579,17 @@ export default function SecurityIntegration() {
                 {t("securityIntegration.syncNow")}
               </button>
             )}
+            {integration && (
+              <button
+                type="button"
+                onClick={() => setDisconnectOpen(true)}
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive hover:bg-destructive/10"
+                data-testid="s1-disconnect"
+              >
+                <Unplug className="h-4 w-4" />
+                {t("securityIntegration.disconnect")}
+              </button>
+            )}
             {saveState.message && (
               <span
                 className={`text-sm ${saveState.status === "error" ? "text-red-600" : "text-emerald-600"}`}
@@ -766,6 +805,18 @@ export default function SecurityIntegration() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={disconnectOpen}
+        onClose={() => setDisconnectOpen(false)}
+        onConfirm={() => void handleDisconnect()}
+        title={t("securityIntegration.disconnectTitle")}
+        message={t("securityIntegration.disconnectMessage")}
+        confirmLabel={t("securityIntegration.disconnectConfirm")}
+        variant="destructive"
+        isLoading={disconnecting}
+        confirmTestId="s1-disconnect-confirm"
+      />
     </div>
   );
 }

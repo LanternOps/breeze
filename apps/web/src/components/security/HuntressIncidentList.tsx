@@ -105,6 +105,17 @@ export default function HuntressIncidentList() {
       setPromotingId(null);
     }
   };
+  const renderDisconnectedBadge = (incident: HuntressIncident) =>
+    incident.integrationDisconnected ? (
+      <span
+        data-testid="huntress-incident-disconnected-badge"
+        title={t("securityHuntressIncidentList.disconnectedIntegrationTooltip")}
+        className="ml-2 inline-flex rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+      >
+        {t("securityHuntressIncidentList.disconnectedIntegration")}
+      </span>
+    ) : null;
+
   const renderSeverityBadge = (incident: HuntressIncident) => (
     <span
       className={cn(
@@ -321,7 +332,10 @@ export default function HuntressIncidentList() {
                     <td className="px-4 py-3 font-medium">
                       {deviceLabel(incident)}
                     </td>
-                    <td className="px-4 py-3">{incident.title}</td>
+                    <td className="px-4 py-3">
+                      {incident.title}
+                      {renderDisconnectedBadge(incident)}
+                    </td>
                     <td className="px-4 py-3">{incident.category ?? "-"}</td>
                     <td className="px-4 py-3">
                       {renderSeverityBadge(incident)}
@@ -368,6 +382,7 @@ export default function HuntressIncidentList() {
                   <div className="min-w-0">
                     <div className="truncate font-semibold">
                       {incident.title}
+                      {renderDisconnectedBadge(incident)}
                     </div>
                     <div className="truncate text-xs text-muted-foreground">
                       {deviceLabel(incident)}

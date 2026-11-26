@@ -452,6 +452,12 @@
     "saveAndVerify": "Kaydet ve doğrula"
   },
   "huntressIntegration": {
+    "disconnect": "Bağlantıyı kes",
+    "disconnectTitle": "Huntress bağlantısı kesilsin mi?",
+    "disconnectMessage": "Eşitleme durur, Huntress webhook teslimatları reddedilir; saklanan API anahtarı, hesap anahtarı ve webhook imza gizli anahtarı silinir. Daha önce eşitlenmiş aracılar, olaylar ve organizasyon eşlemeleri korunur. Huntress'i yeniden bağlarsanız bunlar yeniden eşleşir ve anahtarları tekrar girersiniz.",
+    "disconnectConfirm": "Bağlantıyı kes",
+    "integrationDisconnected": "Huntress bağlantısı kesildi",
+    "failedToDisconnect": "Huntress bağlantısı kesilemedi",
     "notConfigured": "Yapılandırılmadı ",
     "syncing": "Senkronizasyon ",
     "error": "Hata ",
@@ -992,6 +998,12 @@
     "noProviderConfigured": "Bu örnekte yapılandırılmış bir muhasebe sağlayıcısı yok."
   },
   "securityIntegration": {
+    "disconnect": "Bağlantıyı kes",
+    "disconnectTitle": "SentinelOne bağlantısı kesilsin mi?",
+    "disconnectMessage": "Eşitleme durur; saklanan API belirteci ve site kayıt belirteçleri silinir. Daha önce eşitlenmiş aracılar, tehditler ve site-organizasyon eşlemeleri korunur. SentinelOne'u yeniden bağlarsanız bunlar yeniden eşleşir ve yeni bir API belirteci girersiniz.",
+    "disconnectConfirm": "Bağlantıyı kes",
+    "integrationDisconnected": "SentinelOne bağlantısı kesildi",
+    "failedToDisconnect": "SentinelOne bağlantısı kesilemedi",
     "notConfigured": "Yapılandırılmadı ",
     "syncing": "Senkronizasyon ",
     "error": "Hata ",

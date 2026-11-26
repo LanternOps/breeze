@@ -128,6 +128,12 @@ function mockPartnerLoad(
     if (url === "/huntress/integration" && init?.method === "POST") {
       return makeResponse({ id: "huntress-1" }, true, integration ? 200 : 201);
     }
+    if (url === "/huntress/integration" && init?.method === "DELETE") {
+      return makeResponse({
+        success: true,
+        data: { id: "huntress-1", isActive: false },
+      });
+    }
     if (url === "/huntress/organizations/map" && init?.method === "POST") {
       return makeResponse({
         data: {
@@ -983,5 +989,67 @@ describe("HuntressIntegration", () => {
       await vi.advanceTimersByTimeAsync(2500 * 4 + 100);
     });
     expect(screen.getByText(/Could not read sync status/)).toBeInTheDocument();
+  });
+  describe("disconnect", () => {
+    const deleteCalls = () =>
+      fetchWithAuthMock.mock.calls.filter(
+        ([url, init]) =>
+          url === "/huntress/integration" && init?.method === "DELETE",
+      );
+    const integrationLoads = () =>
+      fetchWithAuthMock.mock.calls.filter(
+        ([url, init]) => url === "/huntress/integration" && !init,
+      ).length;
+
+    it("shows Disconnect only when an integration is connected", async () => {
+      mockPartnerLoad({ integration: null });
+      const { unmount } = render(<HuntressIntegration />);
+      await screen.findByText("Partner connection");
+      expect(screen.queryByTestId("huntress-disconnect")).not.toBeInTheDocument();
+      unmount();
+
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<HuntressIntegration />);
+      expect(await screen.findByTestId("huntress-disconnect")).toBeInTheDocument();
+    });
+
+    it("hides Disconnect for an org-scope token", async () => {
+      getJwtClaimsMock.mockReturnValue(orgClaims);
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<HuntressIntegration />);
+      await waitFor(() => expect(integrationLoads()).toBeGreaterThan(0));
+      expect(screen.queryByTestId("huntress-disconnect")).not.toBeInTheDocument();
+    });
+
+    it("explains what stops and what is kept, and sends nothing on cancel", async () => {
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<HuntressIntegration />);
+      fireEvent.click(await screen.findByTestId("huntress-disconnect"));
+
+      expect(await screen.findByText("Disconnect Huntress?")).toBeInTheDocument();
+      expect(screen.getByText(/webhook deliveries are refused/)).toBeInTheDocument();
+      expect(screen.getByText(/already synced are kept/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() =>
+        expect(screen.queryByText("Disconnect Huntress?")).not.toBeInTheDocument(),
+      );
+      expect(deleteCalls()).toHaveLength(0);
+    });
+
+    it("sends DELETE /huntress/integration on confirm and reloads", async () => {
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<HuntressIntegration />);
+      fireEvent.click(await screen.findByTestId("huntress-disconnect"));
+      const before = integrationLoads();
+
+      fireEvent.click(await screen.findByTestId("huntress-disconnect-confirm"));
+
+      await waitFor(() => expect(deleteCalls()).toHaveLength(1));
+      await waitFor(() => expect(integrationLoads()).toBeGreaterThan(before));
+      await waitFor(() =>
+        expect(screen.queryByText("Disconnect Huntress?")).not.toBeInTheDocument(),
+      );
+    });
   });
 });
