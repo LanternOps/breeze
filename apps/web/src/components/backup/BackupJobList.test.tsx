@@ -247,6 +247,52 @@ describe('BackupJobList', () => {
     expect(screen.getByTestId('backup-job-eta').textContent).toBe('about 9m left');
   });
 
+  it('says why a running job sits at 0 bytes while an interrupted run is released (#12693)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:10:00.000Z'));
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              transferredSize: 0,
+              lastKeepaliveAt: '2026-04-01T00:09:50.000Z',
+              writerWaitUntil: '2026-04-01T00:20:30.000Z',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    const note = screen.getByTestId('backup-job-writer-wait');
+    expect(note.textContent).toContain('Waiting for the interrupted run to be released');
+    expect(note.textContent).toContain('starts in about 10m');
+    expect(screen.queryByTestId('backup-job-stalled')).toBeNull();
+  });
+
+  it('shows no wait note for a running job that is not waiting', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({ data: [runningJob({ writerWaitUntil: null })] });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    expect(screen.queryByTestId('backup-job-writer-wait')).toBeNull();
+  });
+
   it('shows no ETA for a stalled running job', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-01T00:10:00.000Z'));

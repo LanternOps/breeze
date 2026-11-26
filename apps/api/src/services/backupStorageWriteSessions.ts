@@ -38,6 +38,7 @@ import {
 } from '../db/schema';
 import { normalizeStorageIdentity } from './backupStorageIdentity';
 import { effectiveHelperProtocol } from './backupHelperProtocols';
+import { STORAGE_DELETE_SETTLE_MS, STORAGE_WRITE_TRANSFER_MARGIN_MS } from './backupWriterWait';
 import { loadOriginKeyRootRows } from './backupOriginKeyRoots';
 import {
   keyRootForNewSnapshot,
@@ -129,7 +130,7 @@ export { MIN_BACKUP_WRITE_PROTOCOL_VERSION };
  * and sealing at publication (migration 2026-11-08-160000, as
  * `interval '15 minutes'`) — waits out URL expiry PLUS this margin.
  */
-export const STORAGE_WRITE_TRANSFER_MARGIN_MS = 15 * 60 * 1000;
+export { STORAGE_WRITE_TRANSFER_MARGIN_MS };
 
 const MAX_KEY_LENGTH = 1024;
 const LIVE_JOB_STATUSES = ['pending', 'running'];
@@ -1321,7 +1322,7 @@ export async function listWriteSessionPrefix(
 }
 
 /** A delete marker older than this was left by a call that never finished. */
-export const STORAGE_DELETE_SETTLE_MS = 5 * 60 * 1000;
+export { STORAGE_DELETE_SETTLE_MS };
 
 /**
  * Deletes keys under the reserved prefix, in three steps: a short phase

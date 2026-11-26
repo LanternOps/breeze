@@ -1,6 +1,11 @@
 import { and, eq, inArray, isNotNull, max } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupStorageSessions } from '../../db/schema';
+import {
+  STORAGE_DELETE_SETTLE_MS,
+  STORAGE_WRITE_TRANSFER_MARGIN_MS,
+  computeWriterWaits,
+} from '../../services/backupWriterWait';
 import type { BackupPolicySchedule } from './types';
 
 /**
@@ -28,6 +33,41 @@ export async function loadJobResumedAt(jobIds: string[]): Promise<Map<string, Da
     if (row.jobId && row.resumedAt) resumedByJob.set(row.jobId, new Date(row.resumedAt));
   }
   return resumedByJob;
+}
+
+/**
+ * When each running job may start uploading, for jobs held back by an
+ * interrupted writer of the same snapshot (#12693). Jobs that are not waiting
+ * have no entry. Two reads, both inside the request's RLS scope; nothing is
+ * stored.
+ */
+export async function loadJobWriterWaits(jobIds: string[], now: Date = new Date()): Promise<Map<string, Date>> {
+  if (jobIds.length === 0) return new Map();
+
+  const columns = {
+    id: backupStorageSessions.id,
+    jobId: backupStorageSessions.jobId,
+    reservationSnapshotId: backupStorageSessions.reservationSnapshotId,
+    revokedAt: backupStorageSessions.revokedAt,
+    createdAt: backupStorageSessions.createdAt,
+    urlHorizonAt: backupStorageSessions.urlHorizonAt,
+    deletingSince: backupStorageSessions.deletingSince,
+  };
+  const own = await db
+    .select(columns)
+    .from(backupStorageSessions)
+    .where(and(inArray(backupStorageSessions.jobId, jobIds), eq(backupStorageSessions.scope, 'snapshot_write')));
+  const reservations = [...new Set(own.map((s) => s.reservationSnapshotId).filter((r): r is string => !!r))];
+  if (reservations.length === 0) return new Map();
+
+  const sessions = await db
+    .select(columns)
+    .from(backupStorageSessions)
+    .where(inArray(backupStorageSessions.reservationSnapshotId, reservations));
+  return computeWriterWaits(sessions, jobIds, now, {
+    transferMarginMs: STORAGE_WRITE_TRANSFER_MARGIN_MS,
+    deleteSettleMs: STORAGE_DELETE_SETTLE_MS,
+  });
 }
 
 export function toDateOrNull(value?: string) {

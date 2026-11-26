@@ -42,6 +42,9 @@
     "filesProgress": "{{done}} / {{total}} Dateien",
     "speedValue": "{{value}}/s",
     "etaValue": "noch etwa {{value}}",
+    "writerWaitLabel": "Wartet auf die Freigabe der unterbrochenen Sicherung",
+    "writerWaitRemaining": "startet in etwa {{value}}",
+    "writerWaitExplain": "Eine frühere Ausführung dieser Sicherung wurde unterbrochen. Die nächste Ausführung wartet, bis die frühere nicht mehr in denselben Snapshot schreiben kann, damit sich keine Daten vermischen. Es ist nichts defekt; die Sicherung startet von selbst.",
     "created": "Erstellt",
     "updated": "Aktualisiert",
     "files": "Dateien",
@@ -228,6 +231,7 @@
     "activePhase": {
       "waiting_for_device": "An das Gerät gesendet, wartet auf den Start",
       "queued_on_device": "Wartet, bis eine andere Sicherung auf diesem Gerät abgeschlossen ist",
+      "waiting_for_previous_run": "Wartet auf die Freigabe einer unterbrochenen Sicherung",
       "resuming": "Unterbrochene Sicherung wird fortgesetzt",
       "scanning": "Dateien werden durchsucht",
       "backing_up": "Wird gesichert"

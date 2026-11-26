@@ -26,7 +26,7 @@ import { asList } from '@/lib/asList';
 import ReparseSkipNotice from './ReparseSkipNotice';
 import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
 import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
-import { estimateRemainingMs, formatEta, nextSpeedSample, stallState } from './backupJobProgress';
+import { estimateRemainingMs, formatEta, nextSpeedSample, stallState, writerWaitRemainingMs } from './backupJobProgress';
 import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory, type BackupFailureCause, type BackupJobDataAccounting } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -59,6 +59,7 @@ type BackupJobRaw = {
   totalFiles?: number | null;
   lastProgressAt?: string | null;
   lastKeepaliveAt?: string | null;
+  writerWaitUntil?: string | null;
   errorCount?: number | null;
   errorLog?: string | null;
   failureCategory?: BackupFailureCategory | null;
@@ -99,6 +100,8 @@ type BackupJob = {
   totalFiles: number | null;
   lastProgressAt: string | null;
   lastKeepaliveAt: string | null;
+  // #12693: when a run held back by an interrupted earlier run may start.
+  writerWaitUntil: string | null;
 };
 
 // Poll the jobs list while any job is running so progress/speed stay live.
@@ -218,6 +221,7 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     totalFiles: raw.totalFiles ?? null,
     lastProgressAt: raw.lastProgressAt ?? null,
     lastKeepaliveAt: raw.lastKeepaliveAt ?? null,
+    writerWaitUntil: raw.writerWaitUntil ?? null,
     errorCount: raw.errorCount ?? 0,
     errorDetail: cleanedErrorLog,
     failureCategory: raw.failureCategory ?? null,
@@ -565,6 +569,10 @@ export default function BackupJobList() {
                 const etaMs = isRunning && !isStalled
                   ? estimateRemainingMs({ transferredSize: job.transferredSize, totalSize: job.totalSizeBytes }, speedBps)
                   : null;
+                const writerWaitMs = writerWaitRemainingMs(
+                  { status: job.status, writerWaitUntil: job.writerWaitUntil },
+                  Date.now(),
+                );
                 const details = jobDetails[job.id];
                 const detailNotes = splitReparseSkipNotice(cleanedJobLog(details?.errorLog));
                 const isExpanded = expandedJobId === job.id;
@@ -599,6 +607,16 @@ export default function BackupJobList() {
                             >
                               <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
                               {t('backupJobList.failedCount', { count: job.errorCount })}
+                            </span>
+                          )}
+                          {writerWaitMs != null && (
+                            <span
+                              data-testid="backup-job-writer-wait"
+                              title={t('backupJobList.writerWaitExplain')}
+                              className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-medium text-primary"
+                            >
+                              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                              {`${t('backupJobList.writerWaitLabel')} · ${t('backupJobList.writerWaitRemaining', { value: formatEta(writerWaitMs) })}`}
                             </span>
                           )}
                           {isStalled && (
@@ -737,6 +755,14 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
+                          {writerWaitMs != null && (
+                            <p data-testid="backup-job-writer-wait-detail" className="mt-4 text-sm text-muted-foreground">
+                              <span className="font-medium text-foreground">
+                                {`${t('backupJobList.writerWaitLabel')} · ${t('backupJobList.writerWaitRemaining', { value: formatEta(writerWaitMs) })}.`}
+                              </span>{' '}
+                              {t('backupJobList.writerWaitExplain')}
+                            </p>
+                          )}
                           {details.dataAccounting && (
                             <BackupJobDataSummary
                               accounting={details.dataAccounting}
