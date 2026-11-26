@@ -20,6 +20,10 @@ import InlineEntityPicker from "./InlineEntityPicker";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import {
+  POLICY_AUTOMATION_EVENT_TYPES,
+  type PolicyAutomationEventType,
+} from "@breeze/shared";
 type TriggerType = "schedule" | "event" | "manual";
 type ActionType =
   | "run_script"
@@ -150,36 +154,24 @@ const cronPresets = [
     value: "0 0 * * 0",
   },
 ];
-const eventTypes = [
-  {
-    value: "device.offline",
-    labelKey: "configurationPolicies.featureTabs.automationTab.deviceOffline",
-  },
-  {
-    value: "device.online",
-    labelKey: "configurationPolicies.featureTabs.automationTab.deviceOnline",
-  },
-  {
-    value: "device.enrolled",
-    labelKey: "configurationPolicies.featureTabs.automationTab.deviceEnrolled",
-  },
-  {
-    value: "alert.triggered",
-    labelKey: "configurationPolicies.featureTabs.automationTab.alertTriggered",
-  },
-  {
-    value: "alert.resolved",
-    labelKey: "configurationPolicies.featureTabs.automationTab.alertResolved",
-  },
-  {
-    value: "compliance.failed",
-    labelKey: "configurationPolicies.featureTabs.automationTab.complianceFailed",
-  },
-  {
-    value: "patch.available",
-    labelKey: "configurationPolicies.featureTabs.automationTab.patchAvailable",
-  },
-];
+// Offered event types come from the shared published-only list (#12710); the
+// Record type makes a new entry there fail to compile until it has a label.
+const eventTypeLabelKeys: Record<PolicyAutomationEventType, string> = {
+  "device.offline":
+    "configurationPolicies.featureTabs.automationTab.deviceOffline",
+  "device.online":
+    "configurationPolicies.featureTabs.automationTab.deviceOnline",
+  "device.enrolled":
+    "configurationPolicies.featureTabs.automationTab.deviceEnrolled",
+  "alert.triggered":
+    "configurationPolicies.featureTabs.automationTab.alertTriggered",
+  "alert.resolved":
+    "configurationPolicies.featureTabs.automationTab.alertResolved",
+};
+const eventTypes = POLICY_AUTOMATION_EVENT_TYPES.map((value) => ({
+  value,
+  labelKey: eventTypeLabelKeys[value],
+}));
 function normalizeItem(item: AutomationItem): AutomationItem {
   if (!Array.isArray(item.actions))
     return { ...item, actions: [...defaultItem.actions] };
