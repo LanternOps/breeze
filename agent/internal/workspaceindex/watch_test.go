@@ -62,7 +62,7 @@ func TestStartWatchDebouncesAndCoalescesEventsIntoOnePost(t *testing.T) {
 
 	payloads := make(chan watchEventsPayload, 4)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/sources/source-watch/events" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/agent-1/sources/source-watch/events" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -156,7 +156,7 @@ func TestStartWatchDegradesToCrawlOnlyWhenDirectoryCapExceeded(t *testing.T) {
 
 	var eventPosts atomic.Int32
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/sources/source-capped/events" {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/sources/source-capped/events" {
 			eventPosts.Add(1)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -245,7 +245,7 @@ func TestStartWatchExcludesHiddenFilesFromUpserts(t *testing.T) {
 
 	payloads := make(chan watchEventsPayload, 4)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/sources/source-watch/events" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/agent-1/sources/source-watch/events" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

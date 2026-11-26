@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 )
@@ -22,6 +23,11 @@ func TestAgentDrivesEverySteadyStateStream(t *testing.T) {
 	}
 	if got := f.count(RouteCrawlConfig); got != 1 {
 		t.Errorf("crawl-config 404 must back off for 6 h: got %d requests, want 1", got)
+	}
+	// #12690: like the real agent, the sim puts its agent ID in the workspace
+	// path; the ID-less path is a 401 on a server with Workspace enabled.
+	if got, want := f.crawlConfigPaths(), []string{"/api/v1/workspace/agent/" + id.AgentID + "/crawl-config"}; !slices.Equal(got, want) {
+		t.Errorf("crawl-config paths = %q, want %q", got, want)
 	}
 	if hb := f.count(RouteHeartbeat); hb < 15 || hb > 27 {
 		t.Errorf("heartbeats at 100 ms over ~2.4 s: got %d, want 15..27", hb)

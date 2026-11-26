@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ type fakeAPI struct {
 
 	mu          sync.Mutex
 	counts      map[string]int
+	crawlPaths  []string          // raw request paths that keyed to RouteCrawlConfig
 	tokens      map[string]string // agentId -> bearer token
 	devices     map[string]string // deviceId -> agentId
 	sockets     map[string]*fakeSocket
@@ -103,6 +105,9 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	route := RouteKey(r.Method, r.URL.Path)
 	f.mu.Lock()
 	f.counts[route]++
+	if route == RouteCrawlConfig {
+		f.crawlPaths = append(f.crawlPaths, r.URL.Path)
+	}
 	f.mu.Unlock()
 	switch {
 	case route == RouteEnroll:
@@ -316,7 +321,12 @@ func (f *fakeAPI) dropSockets() {
 	}
 }
 
-func (f *fakeAPI) count(route string) int       { f.mu.Lock(); defer f.mu.Unlock(); return f.counts[route] }
+func (f *fakeAPI) count(route string) int { f.mu.Lock(); defer f.mu.Unlock(); return f.counts[route] }
+func (f *fakeAPI) crawlConfigPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.crawlPaths)
+}
 func (f *fakeAPI) result(id string) string      { f.mu.Lock(); defer f.mu.Unlock(); return f.results[id] }
 func (f *fakeAPI) pongs() int                   { f.mu.Lock(); defer f.mu.Unlock(); return f.pongCount }
 func (f *fakeAPI) setRejectWS(v bool)           { f.mu.Lock(); f.rejectWS = v; f.mu.Unlock() }

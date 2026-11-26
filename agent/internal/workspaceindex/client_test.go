@@ -52,6 +52,7 @@ func newTestClient(t *testing.T, handler http.Handler) *Client {
 
 	return NewClient(ClientConfig{
 		ServerURL:  func() string { return serverURL },
+		AgentID:    "agent-1",
 		AuthToken:  token,
 		HTTPClient: httpClient,
 	})
@@ -60,7 +61,7 @@ func newTestClient(t *testing.T, handler http.Handler) *Client {
 func TestFetchConfigSendsAuthorizationAndDecodesWireShape(t *testing.T) {
 	startedAt := time.Date(2026, time.July, 12, 12, 30, 0, 0, time.UTC)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/crawl-config" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/agent-1/crawl-config" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -92,7 +93,7 @@ func TestFetchConfigSendsAuthorizationAndDecodesWireShape(t *testing.T) {
 func TestPostBatchGzipRoundTrip(t *testing.T) {
 	mtime := time.Date(2026, time.July, 12, 13, 0, 0, 0, time.UTC)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/runs/run-1/batch" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/agent-1/runs/run-1/batch" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -199,6 +200,7 @@ func TestRedirectToOtherHostIsRefused(t *testing.T) {
 	defer token.Zero()
 	client := NewClient(ClientConfig{
 		ServerURL:  func() string { return "http://origin.test" },
+		AgentID:    "agent-1",
 		AuthToken:  token,
 		HTTPClient: &http.Client{Transport: transport},
 	})
@@ -267,6 +269,7 @@ func TestClientFollowsServerURLProviderAcrossFailover(t *testing.T) {
 	serverURL.Store("http://primary.test")
 	client := NewClient(ClientConfig{
 		ServerURL:  func() string { return serverURL.Load().(string) },
+		AgentID:    "agent-1",
 		AuthToken:  token,
 		HTTPClient: &http.Client{Transport: transport},
 	})
@@ -317,6 +320,7 @@ func TestClientFailsFastWithoutServerURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := NewClient(ClientConfig{
 				ServerURL:  tt.provider,
+				AgentID:    "agent-1",
 				AuthToken:  token,
 				HTTPClient: &http.Client{Transport: transport},
 			})

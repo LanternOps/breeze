@@ -209,7 +209,7 @@ If `/metrics/scrape` is not reachable through the stack's base URL, pass
 |---|---|---|
 | `POST /agents/:id/heartbeat` | 60 s, first beat at a random point in the first interval | `internal/config` `DefaultHeartbeatIntervalSeconds`, `heartbeat.go Start()` |
 | `GET /agents/:id/unifi-collectors` | 30 s | `internal/unifi/collector.go` |
-| `GET /api/v1/workspace/agent/crawl-config` | ~60 s ±10 %; 6 h after a 404 | `internal/workspaceindex` |
+| `GET /api/v1/workspace/agent/:id/crawl-config` (reported as `GET /workspace/agent/crawl-config`) | ~60 s ±10 %; 6 h after a 404 | `internal/workspaceindex` |
 | `POST /agents/:id/process-sample` | 180 s | `config.Default().ProcessSampleIntervalSeconds` |
 | `PUT security/status`, `PUT sessions` | tick-gated, 5 min | `heartbeat.go Start()` |
 | `PUT software, disks, network, connections, registry-state, config-state` | tick-gated, 15 min, concurrent | `sendInventory()` |

@@ -50,13 +50,13 @@ func TestRunCrawlLocalProfileUploadsBatchesAndCompletesWithStats(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch r.URL.Path {
-		case "/api/v1/workspace/agent/runs":
+		case "/api/v1/workspace/agent/agent-1/runs":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"runId":"run-happy","cursor":""}`)
-		case "/api/v1/workspace/agent/runs/run-happy/batch":
+		case "/api/v1/workspace/agent/agent-1/runs/run-happy/batch":
 			batches = append(batches, decodeReceivedBatch(t, r))
 			w.WriteHeader(http.StatusAccepted)
-		case "/api/v1/workspace/agent/runs/run-happy/complete":
+		case "/api/v1/workspace/agent/agent-1/runs/run-happy/complete":
 			if err := json.NewDecoder(r.Body).Decode(&completion); err != nil {
 				t.Errorf("decode completion: %v", err)
 			}
@@ -82,10 +82,10 @@ func TestRunCrawlLocalProfileUploadsBatchesAndCompletesWithStats(t *testing.T) {
 	}
 
 	if want := []string{
-		"/api/v1/workspace/agent/runs",
-		"/api/v1/workspace/agent/runs/run-happy/batch",
-		"/api/v1/workspace/agent/runs/run-happy/batch",
-		"/api/v1/workspace/agent/runs/run-happy/complete",
+		"/api/v1/workspace/agent/agent-1/runs",
+		"/api/v1/workspace/agent/agent-1/runs/run-happy/batch",
+		"/api/v1/workspace/agent/agent-1/runs/run-happy/batch",
+		"/api/v1/workspace/agent/agent-1/runs/run-happy/complete",
 	}; !reflect.DeepEqual(requests, want) {
 		t.Fatalf("request order = %#v, want %#v", requests, want)
 	}
@@ -118,16 +118,16 @@ func TestRunCrawlSMBDialFailureCompletesWithoutBatchOrCredentialLeak(t *testing.
 	)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/workspace/agent/runs":
+		case "/api/v1/workspace/agent/agent-1/runs":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"runId":"run-smb","cursor":""}`)
-		case "/api/v1/workspace/agent/sources/smb-1/credential":
+		case "/api/v1/workspace/agent/agent-1/sources/smb-1/credential":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"username":"svc-crawler","password":"`+password+`"}`)
-		case "/api/v1/workspace/agent/runs/run-smb/batch":
+		case "/api/v1/workspace/agent/agent-1/runs/run-smb/batch":
 			batchRequests++
 			w.WriteHeader(http.StatusAccepted)
-		case "/api/v1/workspace/agent/runs/run-smb/complete":
+		case "/api/v1/workspace/agent/agent-1/runs/run-smb/complete":
 			if err := json.NewDecoder(r.Body).Decode(&completion); err != nil {
 				t.Errorf("decode completion: %v", err)
 			}
@@ -190,13 +190,13 @@ func TestRunCrawlSMBWalkFailureRedactsCredentialFromCompletionAndReturn(t *testi
 	)
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/workspace/agent/runs":
+		case "/api/v1/workspace/agent/agent-1/runs":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"runId":"run-smb-walk","cursor":""}`)
-		case "/api/v1/workspace/agent/sources/smb-walk/credential":
+		case "/api/v1/workspace/agent/agent-1/sources/smb-walk/credential":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"username":"`+username+`","password":"`+password+`","domain":"`+domain+`"}`)
-		case "/api/v1/workspace/agent/runs/run-smb-walk/complete":
+		case "/api/v1/workspace/agent/agent-1/runs/run-smb-walk/complete":
 			if err := json.NewDecoder(r.Body).Decode(&completion); err != nil {
 				t.Errorf("decode completion: %v", err)
 			}
@@ -267,13 +267,13 @@ func TestRunCrawlLocalProfileResumeCursorUsesPrefixedCursorSpace(t *testing.T) {
 	var uploaded []string
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/workspace/agent/runs":
+		case "/api/v1/workspace/agent/agent-1/runs":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"runId":"run-resume","cursor":"alice/Downloads/a.txt"}`)
-		case "/api/v1/workspace/agent/runs/run-resume/batch":
+		case "/api/v1/workspace/agent/agent-1/runs/run-resume/batch":
 			uploaded = append(uploaded, entryRelPaths(decodeReceivedBatch(t, r).Entries)...)
 			w.WriteHeader(http.StatusAccepted)
-		case "/api/v1/workspace/agent/runs/run-resume/complete":
+		case "/api/v1/workspace/agent/agent-1/runs/run-resume/complete":
 			w.WriteHeader(http.StatusAccepted)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -350,13 +350,13 @@ func TestRunCrawlLocalProfileOrdersUsersAndResumesAcrossMultipleRoots(t *testing
 		var uploaded []string
 		client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
-			case "/api/v1/workspace/agent/runs":
+			case "/api/v1/workspace/agent/agent-1/runs":
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"runId":"`+runID+`","cursor":"`+cursor+`"}`)
-			case "/api/v1/workspace/agent/runs/" + runID + "/batch":
+			case "/api/v1/workspace/agent/agent-1/runs/" + runID + "/batch":
 				uploaded = append(uploaded, entryRelPaths(decodeReceivedBatch(t, r).Entries)...)
 				w.WriteHeader(http.StatusAccepted)
-			case "/api/v1/workspace/agent/runs/" + runID + "/complete":
+			case "/api/v1/workspace/agent/agent-1/runs/" + runID + "/complete":
 				w.WriteHeader(http.StatusAccepted)
 			default:
 				t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -427,9 +427,9 @@ func TestRunCrawlZeroesCredentialWhenSMBDialPanics(t *testing.T) {
 	var dialedCred *Credential
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/workspace/agent/runs":
+		case "/api/v1/workspace/agent/agent-1/runs":
 			_, _ = io.WriteString(w, `{"runId":"run-panic","cursor":""}`)
-		case "/api/v1/workspace/agent/sources/smb-panic/credential":
+		case "/api/v1/workspace/agent/agent-1/sources/smb-panic/credential":
 			_, _ = io.WriteString(w, `{"username":"panic-user","password":"panic-secret"}`)
 		default:
 			w.WriteHeader(http.StatusAccepted)
