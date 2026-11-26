@@ -30,10 +30,28 @@ const publisherSources = sourceFiles(API_SRC)
   .map((f) => readFileSync(f, 'utf8'));
 
 describe('policy automation event types (#12710)', () => {
-  it.each([...POLICY_AUTOMATION_EVENT_TYPES])('%s has a publisher outside the event bus declaration', (type) => {
-    expect(publisherSources.some((src) => src.includes(`'${type}'`)), `${type} is never published`).toBe(true);
+  // A bare string match would also pass on a schema column or a hook list, so
+  // require an actual publishEvent('<type>' ...) call.
+  it.each([...POLICY_AUTOMATION_EVENT_TYPES])('%s is published by a publishEvent call', (type) => {
+    const call = new RegExp(`publishEvent(?:<[^>]*>)?\\(\\s*'${type.replace('.', '\\.')}'`);
+    expect(publisherSources.some((src) => call.test(src)), `${type} is never published`).toBe(true);
   });
 
+  // Negative control: the same matcher must reject a type that is only declared.
+  it('the publisher matcher rejects a type with no publishEvent call', () => {
+    const call = /publishEvent(?:<[^>]*>)?\(\s*'patch\.available'/;
+    expect(publisherSources.some((src) => call.test(src))).toBe(false);
+  });
+
+  it('the docs reference row lists the same event types', () => {
+    const mdx = readFileSync(join(API_SRC, '..', '..', 'docs', 'src', 'content', 'docs', 'features', 'ai-tools.mdx'), 'utf8');
+    const row = mdx.split('\n').find((l) => l.startsWith('| `automation` |')) ?? '';
+    const listed = row.match(/eventType\?: ([^,]+),/)?.[1]?.split('\\|').map((v) => v.trim().replace(/"/g, ''));
+    expect(listed).toEqual([...POLICY_AUTOMATION_EVENT_TYPES]);
+  });
+
+  // Tripwire: if a publisher for either ships, move it into the shared list
+  // deliberately and delete this assertion.
   it('never offers the two types nothing publishes', () => {
     expect(POLICY_AUTOMATION_EVENT_TYPES).not.toContain('compliance.failed');
     expect(POLICY_AUTOMATION_EVENT_TYPES).not.toContain('patch.available');

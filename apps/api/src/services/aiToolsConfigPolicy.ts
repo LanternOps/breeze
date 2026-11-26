@@ -1,7 +1,7 @@
 import { db } from '../db';
 import { securitySettingsAutoQuarantine, withoutFeatureLinkAuthority } from './securityScanQuarantineAuthority';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
-import { POLICY_AUTOMATION_EVENT_TYPES, CONFIG_FEATURE_TYPES,RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
+import { POLICY_AUTOMATION_EVENT_TYPES, CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES, isRetiredConfigFeatureType, ORG_SCOPED_ONLY_FEATURE_TYPES, type ConfigFeatureType } from '@breeze/shared/constants';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, automationPolicyCompliance } from '../db/schema';
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
