@@ -13,14 +13,20 @@
  * cannot open or decide the request (routes/pam.ts checks `canAccessSite`), so
  * they are not sent its device and org name either.
  *
- * Throttle: one in-app notice per recipient, device and 15-minute window
- * (`pamElevationNotifyDedupeKey`, enforced by the user_notifications dedupe
- * index), and the email goes only to recipients whose notice was created by
- * this call. A device raising many requests, an agent retrying, or two
- * requests racing each other therefore produce one notice and one email per
- * person per window. The window matches the pending TTL, so a request that is
- * still waiting has been announced. A recipient whose in-app write failed is
- * still emailed, so one channel failing never silences the other.
+ * Throttle: a request is announced unless an EARLIER request from the same
+ * device is still pending and was created within the last
+ * PAM_ELEVATION_NOTIFY_WINDOW_MINUTES (the pending TTL). That earlier
+ * request's notice already sent everyone to the Requests tab, where the new
+ * one is listed too, so a device raising many requests produces one notice and
+ * one email per person until someone decides or the earlier request expires.
+ * A request raised after the earlier one was decided is announced again.
+ * "Earlier" is ordered by (created_at, id), so of two requests racing each
+ * other exactly one is announced, never neither. Each announced request writes
+ * one in-app notice per person (dedupe key per request, so a repeated call
+ * writes nothing twice), and the email goes to each person whose notice this
+ * call created. A person whose in-app write failed is still emailed, so one
+ * channel failing never silences the other; the earlier-pending rule bounds
+ * that path too.
  *
  * Content: device hostname and org name only. No executable path, command line
  * or requesting username: those are in the PAM page, behind sign-in.
@@ -30,9 +36,9 @@
  * on it.
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
-import { organizations, organizationUsers, users } from '../db/schema';
+import { elevationRequests, organizations, organizationUsers, users } from '../db/schema';
 import { getEmailService } from './email';
 import { escapeHtml, renderButton, renderLayout, renderParagraph } from './emailLayout';
 import { PERMISSIONS } from './permissions';
@@ -41,7 +47,10 @@ import { normalizeSiteAllowlist } from './siteAllowlist';
 import { createNotification } from './userNotifications';
 import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
-/** One notice per recipient and device per window. Matches PAM_PENDING_REQUEST_TTL_MINUTES. */
+/**
+ * How far back an earlier pending request from the same device suppresses the
+ * announcement of a newer one. Matches PAM_PENDING_REQUEST_TTL_MINUTES.
+ */
 export const PAM_ELEVATION_NOTIFY_WINDOW_MINUTES = 15;
 
 /** Where a permission holder decides a pending request on the web. */
@@ -49,13 +58,9 @@ export const PAM_REQUESTS_PATH = '/pam#requests';
 
 const MAIL_PURPOSE = 'staff.pam_elevation_request' as const;
 
-/**
- * The dedupe key for `deviceId` at `at`: fixed windows of
- * PAM_ELEVATION_NOTIFY_WINDOW_MINUTES on the server clock.
- */
-export function pamElevationNotifyDedupeKey(deviceId: string, at: Date): string {
-  const window = Math.floor(at.getTime() / (PAM_ELEVATION_NOTIFY_WINDOW_MINUTES * 60_000));
-  return `pam-elevation:${deviceId}:${window}`;
+/** The in-app dedupe key: one notice per person and request. */
+export function pamElevationNotifyDedupeKey(elevationRequestId: string): string {
+  return `pam-elevation:${elevationRequestId}`;
 }
 
 function dashboardBase(): string {
@@ -77,7 +82,7 @@ export function buildPendingElevationEmail(p: { deviceName: string; orgName: str
     ? `An elevation request from ${device} (${org}) is waiting for a decision.`
     : `An elevation request from ${device} is waiting for a decision.`;
   const note = `A request nobody decides expires after ${PAM_ELEVATION_NOTIFY_WINDOW_MINUTES} minutes. `
-    + `You get at most one email per device every ${PAM_ELEVATION_NOTIFY_WINDOW_MINUTES} minutes.`;
+    + 'Further requests from this device while this one is waiting are listed there without another email.';
   return {
     subject: `Elevation request waiting: ${device}`,
     html: renderLayout({
@@ -102,9 +107,11 @@ export interface PendingElevationNotifyArgs {
 }
 
 export interface PendingElevationNotifyResult {
-  /** Permission holders who may decide this request. */
+  /** Set when nobody was notified because an earlier request from the device is still pending. */
+  skipped: 'earlier_request_pending' | null;
+  /** Permission holders who may decide this request (0 when skipped). */
   recipients: number;
-  /** In-app notices created by this call (0 for a recipient already told this window). */
+  /** In-app notices created by this call (0 for a person this request already told). */
   inAppCreated: number;
   /** Recipients whose in-app write failed. */
   inAppFailed: number;
@@ -134,6 +141,35 @@ async function holdersWhoCanSeeSite(orgId: string, siteId: string | null, holder
   return holderIds.filter((id) => !blocked.has(id));
 }
 
+/**
+ * True when another request from the device, ordered before this one by
+ * (created_at, id), is still pending and was created within the window. A
+ * missing row for `elevationRequestId` compares as NULL, so it never suppresses.
+ */
+async function earlierRequestStillPending(args: {
+  orgId: string; deviceId: string; elevationRequestId: string; now: Date;
+}): Promise<boolean> {
+  const since = new Date(args.now.getTime() - PAM_ELEVATION_NOTIFY_WINDOW_MINUTES * 60_000);
+  const rows = await db
+    .select({ id: elevationRequests.id })
+    .from(elevationRequests)
+    .where(and(
+      eq(elevationRequests.orgId, args.orgId),
+      eq(elevationRequests.deviceId, args.deviceId),
+      eq(elevationRequests.status, 'pending'),
+      gte(elevationRequests.createdAt, since),
+      sql`(${elevationRequests.createdAt}, ${elevationRequests.id}) < (SELECT r.created_at, r.id FROM elevation_requests r WHERE r.id = ${args.elevationRequestId})`,
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** The SQLSTATE or error name only: a query or mail error can carry bound values or addresses. */
+function errorCode(err: unknown): string {
+  const { cause, name, code } = (err ?? {}) as { cause?: { code?: unknown }; name?: unknown; code?: unknown };
+  return String(cause?.code ?? code ?? name ?? 'unknown');
+}
+
 async function sendEmails(recipients: Recipient[], mail: PendingElevationEmail, elevationRequestId: string) {
   let sent = 0;
   let failed = 0;
@@ -151,7 +187,7 @@ async function sendEmails(recipients: Recipient[], mail: PendingElevationEmail, 
       sent++;
     } catch (err) {
       failed++;
-      console.error(`[PamElevationNotify] ${MAIL_PURPOSE} send failed`, { elevationRequestId, userId: r.id }, err);
+      console.error(`[PamElevationNotify] ${MAIL_PURPOSE} send failed for user=${r.id} elevation=${elevationRequestId}: ${errorCode(err)}`);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
@@ -166,24 +202,40 @@ async function sendEmails(recipients: Recipient[], mail: PendingElevationEmail, 
  * that context closes, in the background: `emailDelivery` reports how they
  * went and never rejects.
  *
- * Throws only if the recipient lookup itself fails; the caller catches that.
+ * Throws only if a lookup itself fails; the caller catches that.
  */
 export async function notifyPendingElevation(args: PendingElevationNotifyArgs): Promise<PendingElevationNotifyResult> {
   const { elevationRequestId, orgId, siteId, deviceId, deviceHostname } = args;
   const now = args.now ?? new Date();
-  const dedupeKey = pamElevationNotifyDedupeKey(deviceId, now);
+  const dedupeKey = pamElevationNotifyDedupeKey(elevationRequestId);
+  const none = {
+    recipients: [] as Recipient[], toEmail: [] as Recipient[], orgName: '', inAppCreated: 0, inAppFailed: 0,
+  };
 
-  const { recipients, toEmail, orgName, inAppCreated, inAppFailed } = await runOutsideDbContext(() =>
+  const { skipped, recipients, toEmail, orgName, inAppCreated, inAppFailed } = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
+      if (await earlierRequestStillPending({ orgId, deviceId, elevationRequestId, now })) {
+        return { ...none, skipped: 'earlier_request_pending' as const };
+      }
       const holderIds = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.PAM_APPROVE);
       const ids = await holdersWhoCanSeeSite(orgId, siteId, holderIds);
-      if (ids.length === 0) {
-        return { recipients: [] as Recipient[], toEmail: [] as Recipient[], orgName: '', inAppCreated: 0, inAppFailed: 0 };
-      }
-      const people = await db
+      const people = ids.length === 0 ? [] : await db
         .select({ id: users.id, email: users.email })
         .from(users)
         .where(and(inArray(users.id, ids), eq(users.status, 'active')));
+      if (people.length === 0) {
+        // Nobody who can decide this request can be told. Counts only. With
+        // holders but none left after the site narrowing, the mobile side may
+        // have audited `no_notifying_device`; this line is what says the
+        // request was not announced at all.
+        console.warn('[PamElevationNotify] pending elevation has no one to notify', {
+          elevationRequestId,
+          orgId,
+          permissionHolders: holderIds.length,
+          withSiteAccess: ids.length,
+        });
+        return { ...none, skipped: null };
+      }
       const [orgRow] = await db
         .select({ name: organizations.name })
         .from(organizations)
@@ -223,15 +275,15 @@ export async function notifyPendingElevation(args: PendingElevationNotifyArgs): 
         } catch (err) {
           failed++;
           emailTo.push(person);
-          // The SQLSTATE or error name only, as the approval insert does.
-          const { cause, name: errName } = err as { cause?: { code?: unknown }; name?: unknown };
           console.error(
-            `[PamElevationNotify] in-app notice failed for user=${person.id} elevation=${elevationRequestId}: ${String(cause?.code ?? errName ?? 'unknown')}`,
+            `[PamElevationNotify] in-app notice failed for user=${person.id} elevation=${elevationRequestId}: ${errorCode(err)}`,
           );
           captureException(err instanceof Error ? err : new Error(String(err)));
         }
       }
-      return { recipients: people, toEmail: emailTo, orgName: name, inAppCreated: created, inAppFailed: failed };
+      return {
+        skipped: null, recipients: people, toEmail: emailTo, orgName: name, inAppCreated: created, inAppFailed: failed,
+      };
     }),
   );
 
@@ -247,11 +299,11 @@ export async function notifyPendingElevation(args: PendingElevationNotifyArgs): 
       ))
       .catch((err: unknown) => {
         // Building the mail threw; sendEmails itself never rejects.
-        console.error('[PamElevationNotify] email delivery failed', { elevationRequestId }, err);
+        console.error(`[PamElevationNotify] email delivery failed for elevation=${elevationRequestId}: ${errorCode(err)}`);
         captureException(err instanceof Error ? err : new Error(String(err)));
         return { sent: 0, failed: toEmail.length };
       });
   }
 
-  return { recipients: recipients.length, inAppCreated, inAppFailed, emailDelivery };
+  return { skipped, recipients: recipients.length, inAppCreated, inAppFailed, emailDelivery };
 }

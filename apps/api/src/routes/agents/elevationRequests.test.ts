@@ -80,7 +80,7 @@ function approverResolution(approverIds: string[], candidates = approverIds.leng
 // elevationApproverNotify.integration.test.ts; here only the route's call.
 const notifyMocks = vi.hoisted(() => ({
   notifyPendingElevation: vi.fn(async () => ({
-    recipients: 0, inAppCreated: 0, inAppFailed: 0, emailDelivery: Promise.resolve({ sent: 0, failed: 0 }),
+    skipped: null, recipients: 0, inAppCreated: 0, inAppFailed: 0, emailDelivery: Promise.resolve({ sent: 0, failed: 0 }),
   })),
 }));
 vi.mock('../../services/pamElevationNotify', () => notifyMocks);
@@ -1163,13 +1163,22 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
       const res = await post(buildApp());
       expect(res.status).toBe(201);
       expect(approvalValueCalls(values)).toHaveLength(1);
-      expect(errors).toHaveBeenCalledWith(
-        '[ElevationRequests] approver notification failed for request=req-uuid:',
-        expect.any(Error),
-      );
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith(
+        '[ElevationRequests] approver notification failed for request=req-uuid: Error',
+      ));
     } finally {
       errors.mockRestore();
     }
+  });
+
+  it('#11231: the 201 does not wait for the notifier', async () => {
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([]));
+    notifyMocks.notifyPendingElevation.mockReturnValueOnce(new Promise(() => {}));
+    happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+    const res = await post(buildApp());
+    expect(res.status).toBe(201);
+    expect(notifyMocks.notifyPendingElevation).toHaveBeenCalledOnce();
   });
 
   it('#11231: a failing mobile bridge does not stop the notice', async () => {

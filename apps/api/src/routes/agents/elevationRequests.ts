@@ -325,9 +325,9 @@ interface ApproverReach {
  * carrying why the list was empty as counts. `no_permission_holder` means
  * nobody can decide it at all, so it sits unseen until the stale-pending
  * expirer closes it. `no_notifying_device` means holders exist but none has a
- * notifying phone; those holders are still told in-app and by email
- * (services/pamElevationNotify.ts), so the event records a push gap, not an
- * unannounced request.
+ * notifying phone; those who can see the device's site are still told in-app
+ * and by email (services/pamElevationNotify.ts, which logs its own warn line
+ * when nobody is left to tell), so the event records a push gap.
  *
  * Not in any transaction of the request: `writeAuditEvent` persists on its own
  * pooled connection in a fresh system context (`persistAuditLog`) and is
@@ -901,24 +901,24 @@ elevationRequestsRoutes.post(
       // #11231: every permission holder hears about the request in-app and by
       // email, phone or not. Separate from the mobile bridge above so neither
       // one's failure silences the other; it writes on its own system context,
-      // so it can never roll back the approval rows. Emails go out in the
-      // background (`emailDelivery` never rejects); the 201 never waits on them.
-      try {
-        const { device } = ingest.mobileFanOut;
-        await notifyPendingElevation({
-          elevationRequestId: ingest.mobileFanOut.elevationRequestId,
-          orgId: device.orgId,
-          siteId: device.siteId,
-          deviceId: device.id,
-          deviceHostname: device.hostname,
-        });
-      } catch (notifyErr) {
+      // so it can never roll back the approval rows. Not awaited: the 201 never
+      // waits on the recipient writes or the emails, and a failure here is
+      // logged, never returned to the agent. `emailDelivery` never rejects.
+      const { elevationRequestId, device } = ingest.mobileFanOut;
+      void notifyPendingElevation({
+        elevationRequestId,
+        orgId: device.orgId,
+        siteId: device.siteId,
+        deviceId: device.id,
+        deviceHostname: device.hostname,
+      }).catch((notifyErr: unknown) => {
+        // The SQLSTATE or error name only: a query error carries bound values.
+        const { cause, name } = (notifyErr ?? {}) as { cause?: { code?: unknown }; name?: unknown };
         console.error(
-          `[ElevationRequests] approver notification failed for request=${ingest.mobileFanOut.elevationRequestId}:`,
-          notifyErr,
+          `[ElevationRequests] approver notification failed for request=${elevationRequestId}: ${String(cause?.code ?? name ?? 'unknown')}`,
         );
         captureException(notifyErr instanceof Error ? notifyErr : new Error(String(notifyErr)));
-      }
+      });
     }
 
     // #8928: the MSP's name, for the end-user notices. Best-effort: a failed

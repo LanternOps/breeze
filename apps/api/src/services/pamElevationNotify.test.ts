@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dbMocks = vi.hoisted(() => ({
-  /** One entry per db.select() in call order: memberships, users, org. */
+  /** One entry per db.select() in call order: earlier pending request, memberships, users, org. */
   selectResults: [] as unknown[][],
   select: vi.fn(),
 }));
@@ -20,6 +20,9 @@ vi.mock('../db', () => {
   };
 });
 vi.mock('../db/schema', () => ({
+  elevationRequests: {
+    id: 'er.id', orgId: 'er.org_id', deviceId: 'er.device_id', status: 'er.status', createdAt: 'er.created_at',
+  },
   organizations: { id: 'organizations.id', name: 'organizations.name' },
   organizationUsers: { userId: 'ou.user_id', orgId: 'ou.org_id', siteIds: 'ou.site_ids' },
   users: { id: 'users.id', email: 'users.email', status: 'users.status' },
@@ -43,7 +46,6 @@ import {
   buildPendingElevationEmail,
   notifyPendingElevation,
   pamElevationNotifyDedupeKey,
-  PAM_ELEVATION_NOTIFY_WINDOW_MINUTES,
 } from './pamElevationNotify';
 import { PERMISSIONS } from './permissions';
 
@@ -61,13 +63,9 @@ function person(id: string) {
 }
 
 describe('pamElevationNotifyDedupeKey', () => {
-  it('is stable inside one window and changes at the next', () => {
-    const windowMs = PAM_ELEVATION_NOTIFY_WINDOW_MINUTES * 60_000;
-    const start = new Date(Math.floor(Date.parse('2026-11-25T10:07:00Z') / windowMs) * windowMs);
-    const a = pamElevationNotifyDedupeKey('device-1', start);
-    expect(pamElevationNotifyDedupeKey('device-1', new Date(start.getTime() + windowMs - 1))).toBe(a);
-    expect(pamElevationNotifyDedupeKey('device-1', new Date(start.getTime() + windowMs))).not.toBe(a);
-    expect(pamElevationNotifyDedupeKey('device-2', start)).not.toBe(a);
+  it('is one key per request', () => {
+    expect(pamElevationNotifyDedupeKey('req-1')).toBe(pamElevationNotifyDedupeKey('req-1'));
+    expect(pamElevationNotifyDedupeKey('req-1')).not.toBe(pamElevationNotifyDedupeKey('req-2'));
   });
 });
 
@@ -100,19 +98,52 @@ describe('notifyPendingElevation', () => {
     mocks.createNotification.mockImplementation(async (input: { userId: string }) => `notice-${input.userId}`);
   });
 
-  it('notifies nobody and sends nothing when no one holds pam:approve', async () => {
+  it('notifies nobody and logs counts when no one holds pam:approve', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await notifyPendingElevation(ARGS);
+      expect(mocks.resolveUsersWithPermissionForOrg).toHaveBeenCalledWith('org-1', PERMISSIONS.PAM_APPROVE);
+      expect(result).toMatchObject({ skipped: null, recipients: 0, inAppCreated: 0, inAppFailed: 0 });
+      expect(await result.emailDelivery).toEqual({ sent: 0, failed: 0 });
+      expect(mocks.createNotification).not.toHaveBeenCalled();
+      expect(mocks.sendEmail).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith('[PamElevationNotify] pending elevation has no one to notify', {
+        elevationRequestId: 'req-1', orgId: 'org-1', permissionHolders: 0, withSiteAccess: 0,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs when every holder is restricted to other sites', async () => {
+    mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['restricted']);
+    dbMocks.selectResults = [[], [{ userId: 'restricted', siteIds: ['site-2'] }]];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await notifyPendingElevation(ARGS);
+      expect(result.recipients).toBe(0);
+      expect(warn).toHaveBeenCalledWith('[PamElevationNotify] pending elevation has no one to notify', {
+        elevationRequestId: 'req-1', orgId: 'org-1', permissionHolders: 1, withSiteAccess: 0,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('tells nobody while an earlier request from the device is still pending', async () => {
+    dbMocks.selectResults = [[{ id: 'req-0' }]];
     const result = await notifyPendingElevation(ARGS);
-    expect(mocks.resolveUsersWithPermissionForOrg).toHaveBeenCalledWith('org-1', PERMISSIONS.PAM_APPROVE);
-    expect(result).toMatchObject({ recipients: 0, inAppCreated: 0, inAppFailed: 0 });
+    expect(result).toMatchObject({ skipped: 'earlier_request_pending', recipients: 0, inAppCreated: 0 });
     expect(await result.emailDelivery).toEqual({ sent: 0, failed: 0 });
+    expect(mocks.resolveUsersWithPermissionForOrg).not.toHaveBeenCalled();
     expect(mocks.createNotification).not.toHaveBeenCalled();
-    expect(mocks.sendEmail).not.toHaveBeenCalled();
   });
 
   it('drops a member restricted to other sites; keeps an unrestricted member and partner staff', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['restricted', 'unrestricted', 'partner-staff']);
     dbMocks.selectResults = [
+      [],
       [{ userId: 'restricted', siteIds: ['site-2'] }, { userId: 'unrestricted', siteIds: null }],
       [person('unrestricted'), person('partner-staff')],
       [{ name: 'Acme' }],
@@ -124,7 +155,7 @@ describe('notifyPendingElevation', () => {
 
   it('writes one approval notice per recipient keyed to the device window, linking to the requests tab', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['u1']);
-    dbMocks.selectResults = [[], [person('u1')], [{ name: 'Acme' }]];
+    dbMocks.selectResults = [[], [], [person('u1')], [{ name: 'Acme' }]];
     await notifyPendingElevation(ARGS);
     expect(mocks.createNotification).toHaveBeenCalledWith({
       userId: 'u1',
@@ -135,13 +166,13 @@ describe('notifyPendingElevation', () => {
       message: 'An elevation request from WS-01 (Acme) is waiting for a decision.',
       link: '/pam#requests',
       metadata: { elevationRequestId: 'req-1', deviceId: 'device-1' },
-      dedupeKey: pamElevationNotifyDedupeKey('device-1', ARGS.now),
+      dedupeKey: pamElevationNotifyDedupeKey('req-1'),
     });
   });
 
-  it('emails only recipients whose notice is new this window, one message each', async () => {
+  it('emails only recipients whose notice this call created, one message each', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['new', 'already-told']);
-    dbMocks.selectResults = [[], [person('new'), person('already-told')], [{ name: 'Acme' }]];
+    dbMocks.selectResults = [[], [], [person('new'), person('already-told')], [{ name: 'Acme' }]];
     mocks.createNotification.mockImplementation(async (input: { userId: string }) =>
       (input.userId === 'already-told' ? null : 'notice-new'));
     const result = await notifyPendingElevation(ARGS);
@@ -153,7 +184,7 @@ describe('notifyPendingElevation', () => {
 
   it('a failed in-app write for one recipient leaves the others, and that recipient is still emailed', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['broken', 'fine']);
-    dbMocks.selectResults = [[], [person('broken'), person('fine')], [{ name: 'Acme' }]];
+    dbMocks.selectResults = [[], [], [person('broken'), person('fine')], [{ name: 'Acme' }]];
     mocks.createNotification.mockImplementation(async (input: { userId: string }) => {
       if (input.userId === 'broken') throw Object.assign(new Error('insert failed'), { cause: { code: '23514' } });
       return 'notice-fine';
@@ -164,7 +195,7 @@ describe('notifyPendingElevation', () => {
       expect(result).toMatchObject({ recipients: 2, inAppCreated: 1, inAppFailed: 1 });
       expect(await result.emailDelivery).toEqual({ sent: 2, failed: 0 });
       expect(mocks.captureException).toHaveBeenCalledOnce();
-      expect(errors.mock.calls[0]![0]).toContain('user=broken elevation=req-1: 23514');
+      expect(errors.mock.calls[0]![0]).toBe('[PamElevationNotify] in-app notice failed for user=broken elevation=req-1: 23514');
     } finally {
       errors.mockRestore();
     }
@@ -172,7 +203,7 @@ describe('notifyPendingElevation', () => {
 
   it('a failed send is counted, reported and never rejects', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['u1', 'u2']);
-    dbMocks.selectResults = [[], [person('u1'), person('u2')], [{ name: 'Acme' }]];
+    dbMocks.selectResults = [[], [], [person('u1'), person('u2')], [{ name: 'Acme' }]];
     mocks.sendEmail.mockRejectedValueOnce(new Error('smtp down'));
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -187,7 +218,7 @@ describe('notifyPendingElevation', () => {
   it('with email not configured, writes the in-app notices and sends nothing', async () => {
     mocks.emailConfigured = false;
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['u1']);
-    dbMocks.selectResults = [[], [person('u1')], [{ name: 'Acme' }]];
+    dbMocks.selectResults = [[], [], [person('u1')], [{ name: 'Acme' }]];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await notifyPendingElevation(ARGS);
@@ -201,9 +232,9 @@ describe('notifyPendingElevation', () => {
 
   it('skips the site narrowing read for a device with no site', async () => {
     mocks.resolveUsersWithPermissionForOrg.mockResolvedValue(['u1']);
-    dbMocks.selectResults = [[person('u1')], [{ name: 'Acme' }]];
+    dbMocks.selectResults = [[], [person('u1')], [{ name: 'Acme' }]];
     const result = await notifyPendingElevation({ ...ARGS, siteId: null });
     expect(result.recipients).toBe(1);
-    expect(dbMocks.select).toHaveBeenCalledTimes(2);
+    expect(dbMocks.select).toHaveBeenCalledTimes(3);
   });
 });

@@ -10,8 +10,9 @@
  *   - never a user of another partner, a partner member whose org access does
  *     not cover the org, a member of a sibling org, a member restricted to
  *     other sites, a disabled account, or a member without the permission;
- *   - a second request from the same device inside the window notifies nobody
- *     again (one in-app row and one email per recipient, device and window);
+ *   - a second request from the same device while the first is still pending
+ *     notifies nobody again; once the first is decided, the next request is
+ *     announced again;
  *   - the email names the device and org and links to the PAM requests tab,
  *     and carries no executable path, command line or requesting username.
  */
@@ -49,7 +50,9 @@ vi.mock('../../services/email', async (importOriginal) => {
 });
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { devices, mobileDevices, organizationUsers, partnerUsers, userNotifications } from '../../db/schema';
+import {
+  devices, elevationRequests, mobileDevices, organizationUsers, partnerUsers, userNotifications,
+} from '../../db/schema';
 import { elevationRequestsRoutes } from '../../routes/agents/elevationRequests';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -211,6 +214,15 @@ async function elevationNotices(userIds: string[], deviceId: string) {
   return rows.filter((r) => (r.metadata as { deviceId?: string } | null)?.deviceId === deviceId);
 }
 
+function noticeRequestId(n: { metadata: unknown }): string | undefined {
+  return (n.metadata as { elevationRequestId?: string } | null)?.elevationRequestId;
+}
+
+async function restrictToSites(userId: string, orgId: string, siteIds: string[]) {
+  await getTestDb().update(organizationUsers).set({ siteIds })
+    .where(and(eq(organizationUsers.userId, userId), eq(organizationUsers.orgId, orgId)));
+}
+
 function emailRecipients(): string[] {
   return mail.sendEmail.mock.calls.flatMap(([p]) => (Array.isArray(p.to) ? p.to : [p.to]));
 }
@@ -240,13 +252,21 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     await seedPhone(withPhone.id);
     const partnerAll = await seedPartnerMember(f.partnerId, [PERMISSIONS.PAM_APPROVE], 'all');
     const partnerSelectedCovering = await seedPartnerMember(f.partnerId, [PERMISSIONS.PAM_APPROVE], 'selected', [f.orgId]);
+    const deviceSiteOnly = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    await restrictToSites(deviceSiteOnly.id, f.orgId, [f.siteId]);
 
     // Should not be told.
     const nonHolder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.DEVICES_EXECUTE]);
     const disabledHolder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE], { status: 'disabled' });
     const otherSiteOnly = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
-    await getTestDb().update(organizationUsers).set({ siteIds: [otherSite.id] })
-      .where(and(eq(organizationUsers.userId, otherSiteOnly.id), eq(organizationUsers.orgId, f.orgId)));
+    await restrictToSites(otherSiteOnly.id, f.orgId, [otherSite.id]);
+    const noSites = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    await restrictToSites(noSites.id, f.orgId, []);
+    // Partner staff who also belong to the org: that membership's site
+    // allowlist is the one that applies, as in getUserPermissions.
+    const partnerWithRestrictedMembership = await seedPartnerMember(f.partnerId, [PERMISSIONS.PAM_APPROVE], 'all');
+    await assignUserToOrganization(partnerWithRestrictedMembership.id, f.orgId, (await orgRole(f.orgId, [])).id);
+    await restrictToSites(partnerWithRestrictedMembership.id, f.orgId, [otherSite.id]);
     const siblingOrg = await createOrganization({ partnerId: f.partnerId });
     const siblingOrgHolder = await seedMember(f.partnerId, siblingOrg.id, [PERMISSIONS.PAM_APPROVE]);
     const partnerSelectedElsewhere = await seedPartnerMember(f.partnerId, [PERMISSIONS.PAM_APPROVE], 'selected', [siblingOrg.id]);
@@ -255,14 +275,16 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     const otherPartnerOrgHolder = await seedMember(otherPartner.id, otherOrg.id, [PERMISSIONS.PAM_APPROVE]);
     const otherPartnerAdmin = await seedPartnerMember(otherPartner.id, [{ resource: '*', action: '*' }], 'all');
 
-    const told = [phoneless, withPhone, partnerAll, partnerSelectedCovering];
+    const told = [phoneless, withPhone, partnerAll, partnerSelectedCovering, deviceSiteOnly];
     const notTold = [
-      nonHolder, disabledHolder, otherSiteOnly, siblingOrgHolder,
+      nonHolder, disabledHolder, otherSiteOnly, noSites, partnerWithRestrictedMembership, siblingOrgHolder,
       partnerSelectedElsewhere, otherPartnerOrgHolder, otherPartnerAdmin,
     ];
 
     await submitElevation(f);
 
+    // The notices are written after the 201, in the background.
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(told.length), { timeout: 5_000, interval: 50 });
     const notices = await elevationNotices([...told, ...notTold].map((u) => u.id), f.deviceId);
     expect(notices.map((n) => n.userId).sort()).toEqual(told.map((u) => u.id).sort());
     for (const n of notices) {
@@ -276,18 +298,25 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     for (const notTo of notTold) expect(emailRecipients()).not.toContain(notTo.email);
   });
 
-  runDb('a second request from the same device in the window tells nobody again', async () => {
+  runDb('a request while an earlier one from the device is pending tells nobody; after a decision, the next one does', async () => {
     const f = await seedOrgWithDevice();
     const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
 
-    await submitElevation(f);
+    const first = await submitElevation(f);
     await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
-    await submitElevation(f);
-    // Give a stray fire-and-forget send a moment before asserting it is absent.
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    expect(await elevationNotices([holder.id], f.deviceId)).toHaveLength(1);
+    const second = await submitElevation(f);
+    expect(second).not.toBe(first);
+    // Give a stray background notice a moment before asserting it is absent.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([first]);
     expect(mail.sendEmail).toHaveBeenCalledTimes(1);
+
+    // Someone decides both; a new request from the device is announced again.
+    await getTestDb().update(elevationRequests).set({ status: 'denied', denialReason: 'test decision' })
+      .where(eq(elevationRequests.deviceId, f.deviceId));
+    const third = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, third].sort());
   });
 
   runDb('the email names the device and org, links to the requests tab, and leaks no request detail', async () => {
@@ -317,7 +346,8 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     try {
       await submitElevation(f);
       await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
-      expect(await elevationNotices([holder.id], f.deviceId)).toHaveLength(1);
+      await vi.waitFor(async () => expect(await elevationNotices([holder.id], f.deviceId)).toHaveLength(1),
+        { timeout: 5_000, interval: 50 });
     } finally {
       errors.mockRestore();
     }

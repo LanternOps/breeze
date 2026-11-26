@@ -155,7 +155,7 @@ The flagship PAM flow turns a standard Windows UAC consent prompt into a governe
 
 2. The Breeze agent observes the prompt and creates an **elevation request** describing the executable -- its path, signer, hash, and the requesting user.
 
-3. PAM evaluates the request. If a rule auto-approves or auto-denies it, the decision is instant. Otherwise the request becomes **pending** and is routed to an approver. Every user who holds `pam:approve` for the organization (and can see the device's site) gets a dashboard notification and an email naming the device and organization, with a link to the Requests tab. The email does not include the program, its command line or the requesting user. To avoid a flood, each person gets at most one notification and one email per device every 15 minutes.
+3. PAM evaluates the request. If a rule auto-approves or auto-denies it, the decision is instant. Otherwise the request becomes **pending** and is routed to an approver. Every user who holds `pam:approve` for the organization (and can see the device's site) gets a dashboard notification and an email naming the device and organization, with a link to the Requests tab. The email does not include the program, its command line or the requesting user. To avoid a flood, while an earlier request from the same device is still waiting, newer requests from it appear on the Requests tab without another notification or email.
 
 4. The approver makes the call from any of three surfaces:
    - The **Privileged Access console** in the web dashboard (Requests tab).
