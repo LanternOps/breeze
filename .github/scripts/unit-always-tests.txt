@@ -146,6 +146,7 @@ apps/api/src/__tests__/integration/reportRunsOwnerRls.integration.test.ts
 apps/api/src/__tests__/integration/ringAppRulesBackfill.integration.test.ts
 apps/api/src/__tests__/integration/ringThirdPartyBackfillMigration.integration.test.ts
 apps/api/src/__tests__/integration/roleInheritanceGainReport.integration.test.ts
+apps/api/src/__tests__/integration/securityIntegrationInactiveCredentialCleanup.integration.test.ts
 apps/api/src/__tests__/integration/securityQuarantineAuthority.integration.test.ts
 apps/api/src/__tests__/integration/sensitiveDataPoliciesPartnerRls.integration.test.ts
 apps/api/src/__tests__/integration/siteLocationColumns.integration.test.ts
