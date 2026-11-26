@@ -59,7 +59,10 @@ async function agentHash(type: string, text: string, image: Uint8Array = new Uin
 // change is applied through it) and only then yields once more.
 let current: ClipboardSync | null = null;
 const flush = async () => {
-  const inbound = () => (current as unknown as { inbound: Promise<unknown> } | null)?.inbound;
+  const sync = current as unknown as { inbound?: Promise<unknown> } | null;
+  // A renamed field must fail loudly, not quietly turn this back into a timer.
+  if (!sync || !('inbound' in sync)) throw new Error('flush(): ClipboardSync.inbound not found; update this helper');
+  const inbound = () => sync.inbound;
   for (let i = 0; i < 10; i++) {
     const seen = inbound();
     await seen;
