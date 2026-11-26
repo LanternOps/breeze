@@ -1,13 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  CheckCircle2,
-  Key,
-  Loader2,
-  Lock,
-  Plus,
-  RefreshCw,
-  XCircle,
-} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Key, Lock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
@@ -19,44 +11,30 @@ import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
-type KeyStatus = 'active' | 'rotated' | 'deactivated';
-type KeyType = 'AES-256' | 'RSA-2048';
-
+// Shape the API actually returns for GET /backup/encryption/keys.
 type EncryptionKey = {
   id: string;
   name: string;
-  keyType: KeyType;
-  status: KeyStatus;
-  keyHash?: string | null;
+  keyType: string;
+  isActive: boolean;
   createdAt: string;
   expiresAt?: string | null;
 };
 
-const statusBadge: Record<KeyStatus, { className: string; label: string }> = {
-  active: { className: 'bg-success/10 text-success', label: 'Active' },
-  rotated: { className: 'bg-muted text-muted-foreground', label: 'Rotated' },
-  deactivated: { className: 'bg-destructive/10 text-destructive', label: 'Deactivated' },
+const KEY_TYPE_LABELS: Record<string, string> = {
+  aes_256: 'AES-256',
+  rsa_2048: 'RSA-2048',
 };
 
 // ── Component ─────────────────────────────────────────────────────
 
+// Read-only on purpose: nothing consumes these keys yet, and the create,
+// rotate and deactivate requests cannot succeed, so none are offered.
 export default function EncryptionKeyList() {
   const { t } = useTranslation('backup');
   const [keys, setKeys] = useState<EncryptionKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-
-  // Create dialog state
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newKeyType, setNewKeyType] = useState<KeyType>('AES-256');
-  const [creating, setCreating] = useState(false);
-  const [createdKeyHash, setCreatedKeyHash] = useState<string | null>(null);
-
-  // Rotate confirmation
-  const rotateDialogRef = useRef<HTMLDialogElement>(null);
-  const [rotatingKeyId, setRotatingKeyId] = useState<string | null>(null);
-  const [rotateLoading, setRotateLoading] = useState(false);
 
   const fetchKeys = useCallback(async () => {
     try {
@@ -81,77 +59,6 @@ export default function EncryptionKeyList() {
     fetchKeys();
   }, [fetchKeys]);
 
-  const handleCreate = useCallback(async () => {
-    if (!newName.trim()) {
-      setError('Key name is required');
-      return;
-    }
-    setCreating(true);
-    setError(undefined);
-    setCreatedKeyHash(null);
-    try {
-      const response = await fetchWithAuth('/backup/encryption/keys', {
-        method: 'POST',
-        body: JSON.stringify({ name: newName, keyType: newKeyType }),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to create key'));
-      }
-      const payload = await response.json();
-      const created = payload?.data ?? payload ?? {};
-      setCreatedKeyHash(created.keyHash ?? null);
-      setNewName('');
-      await fetchKeys();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create key');
-    } finally {
-      setCreating(false);
-    }
-  }, [fetchKeys, newKeyType, newName]);
-
-  const handleRotateClick = useCallback((keyId: string) => {
-    setRotatingKeyId(keyId);
-    rotateDialogRef.current?.showModal();
-  }, []);
-
-  const handleRotateConfirm = useCallback(async () => {
-    if (!rotatingKeyId) return;
-    setRotateLoading(true);
-    try {
-      const response = await fetchWithAuth(`/backup/encryption/keys/${rotatingKeyId}/rotate`, {
-        method: 'POST',
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to rotate key'));
-      }
-      rotateDialogRef.current?.close();
-      await fetchKeys();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rotate key');
-    } finally {
-      setRotateLoading(false);
-      setRotatingKeyId(null);
-    }
-  }, [fetchKeys, rotatingKeyId]);
-
-  const handleDeactivate = useCallback(async (keyId: string) => {
-    try {
-      const response = await fetchWithAuth(`/backup/encryption/keys/${keyId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'deactivated' }),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to deactivate key'));
-      }
-      await fetchKeys();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to deactivate key');
-    }
-  }, [fetchKeys]);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -165,79 +72,19 @@ export default function EncryptionKeyList() {
 
   return (
     <div className="space-y-6">
-      <AlphaBadge variant="banner" disclaimer="Client-side encryption key management is in early access. Key creation and rotation are functional. Ensure you have secure backups of your encryption keys — lost keys cannot be recovered." />
+      <AlphaBadge variant="banner" disclaimer={t('encryptionKeyList.unavailableNotice')} />
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}
         </div>
       )}
 
-      {/* Create Key Section */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">
-        <div className="flex items-center justify-between">
-          <h3 className="flex items-center gap-2 font-semibold">
-            <Lock className="h-4 w-4" /> {t('encryptionKeyList.encryptionKeys')} </h3>
-          <button
-            type="button"
-            onClick={() => setCreateOpen(!createOpen)}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-3.5 w-3.5" /> {t('encryptionKeyList.createKey')} </button>
-        </div>
+        <h3 className="flex items-center gap-2 font-semibold">
+          <Lock className="h-4 w-4" /> {t('encryptionKeyList.encryptionKeys')}
+        </h3>
+        <p className="mt-2 text-sm text-muted-foreground">{t('encryptionKeyList.providerEncryptionNote')}</p>
 
-        {createOpen && (
-          <div className="mt-4 rounded-md border bg-muted/10 p-4 space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label htmlFor="enc-key-name" className="text-xs font-medium text-muted-foreground">{t('encryptionKeyList.keyName')}</label>
-                <input
-                  id="enc-key-name"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder={t('encryptionKeyList.eGProductionBackupKey')}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-                />
-              </div>
-              <div>
-                <label htmlFor="enc-key-type" className="text-xs font-medium text-muted-foreground">{t('encryptionKeyList.keyType')}</label>
-                <select
-                  id="enc-key-type"
-                  value={newKeyType}
-                  onChange={(e) => setNewKeyType(e.target.value as KeyType)}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-                >
-                  <option value="AES-256">{t('encryptionKeyList.aes256')}</option>
-                  <option value="RSA-2048">{t('encryptionKeyList.rsa2048')}</option>
-                </select>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleCreate}
-                disabled={creating}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                {creating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {t('encryptionKeyList.create')} </button>
-              <button
-                type="button"
-                onClick={() => { setCreateOpen(false); setCreatedKeyHash(null); }}
-                className="rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted"
-              >
-                {t('encryptionKeyList.cancel')} </button>
-            </div>
-            {createdKeyHash && (
-              <div className="rounded-md border border-success/40 bg-success/10 p-3">
-                <p className="text-xs font-medium text-success">{t('encryptionKeyList.keyCreatedSuccessfully')}</p>
-                <p className="mt-1 break-all font-mono text-xs text-foreground">{createdKeyHash}</p>
-                <p className="mt-1 text-[10px] text-muted-foreground">{t('encryptionKeyList.saveThisKeyHashSecurelyItWillNot')}</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Key Table */}
         {keys.length === 0 ? (
           <div className="mt-4 flex flex-col items-center py-8 text-center">
             <Key className="h-10 w-10 text-muted-foreground/40" />
@@ -252,79 +99,35 @@ export default function EncryptionKeyList() {
                   <th className="pb-2 pr-4 font-medium">{t('encryptionKeyList.type')}</th>
                   <th className="pb-2 pr-4 font-medium">{t('encryptionKeyList.status')}</th>
                   <th className="pb-2 pr-4 font-medium">{t('encryptionKeyList.created')}</th>
-                  <th className="pb-2 pr-4 font-medium">{t('encryptionKeyList.expires')}</th>
-                  <th className="pb-2 font-medium">{t('encryptionKeyList.actions')}</th>
+                  <th className="pb-2 font-medium">{t('encryptionKeyList.expires')}</th>
                 </tr>
               </thead>
               <tbody>
-                {keys.map((key) => {
-                  const badge = statusBadge[key.status] ?? statusBadge.active;
-                  return (
-                    <tr key={key.id} className="border-b last:border-0">
-                      <td className="py-2.5 pr-4 font-medium text-foreground">{key.name}</td>
-                      <td className="py-2.5 pr-4 font-mono text-xs text-muted-foreground">{key.keyType}</td>
-                      <td className="py-2.5 pr-4">
-                        <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', badge.className)}>
-                          {badge.label}
-                        </span>
-                      </td>
-                      <td className="py-2.5 pr-4 text-muted-foreground">{formatTime(key.createdAt)}</td>
-                      <td className="py-2.5 pr-4 text-muted-foreground">{formatTime(key.expiresAt)}</td>
-                      <td className="py-2.5">
-                        <div className="flex items-center gap-1">
-                          {key.status === 'active' && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleRotateClick(key.id)}
-                                className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                              >
-                                <RefreshCw className="h-3 w-3" /> {t('encryptionKeyList.rotate')} </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeactivate(key.id)}
-                                className="rounded-md border px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                              >
-                                {t('encryptionKeyList.deactivate')} </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {keys.map((key) => (
+                  <tr key={key.id} className="border-b last:border-0">
+                    <td className="py-2.5 pr-4 font-medium text-foreground">{key.name}</td>
+                    <td className="py-2.5 pr-4 font-mono text-xs text-muted-foreground">
+                      {KEY_TYPE_LABELS[key.keyType] ?? key.keyType}
+                    </td>
+                    <td className="py-2.5 pr-4">
+                      <span
+                        className={cn(
+                          'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
+                          key.isActive ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground',
+                        )}
+                      >
+                        {key.isActive ? t('encryptionKeyList.statusActive') : t('encryptionKeyList.statusInactive')}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">{formatTime(key.createdAt)}</td>
+                    <td className="py-2.5 text-muted-foreground">{formatTime(key.expiresAt)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         )}
       </div>
-
-      {/* Rotate Confirmation Dialog */}
-      <dialog
-        ref={rotateDialogRef}
-        className="rounded-lg border bg-card p-6 shadow-xl backdrop:bg-black/50"
-        onClose={() => setRotatingKeyId(null)}
-      >
-        <h3 className="text-lg font-semibold text-foreground">{t('encryptionKeyList.rotateEncryptionKey')}</h3>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {t('encryptionKeyList.thisWillGenerateANewKeyAndMark')} </p>
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => { rotateDialogRef.current?.close(); setRotatingKeyId(null); }}
-            className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted"
-          >
-            {t('encryptionKeyList.cancel')} </button>
-          <button
-            type="button"
-            onClick={handleRotateConfirm}
-            disabled={rotateLoading}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {rotateLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-            {t('encryptionKeyList.confirmRotate')} </button>
-        </div>
-      </dialog>
     </div>
   );
 }
