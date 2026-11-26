@@ -37,15 +37,37 @@
  * The writes below run in the caller's DB context. For a partner-scope caller
  * forced RLS fences them to that partner; for a system-scope caller the
  * explicit partner condition is the only fence.
+ *
+ * Write gate. The integration rows are partner-wide state: one connection
+ * serves every organization under the partner. Each exported function that
+ * writes takes the caller's auth and refuses, before any statement, a caller
+ * that fails canManagePartnerWidePolicies (a partner member with selected-org
+ * access, or an organization-scope user), with PartnerWideWriteDeniedError.
+ * The routes check the same capability first; this check keeps a future
+ * caller that forgets its own gate from clearing a partner's credentials.
  */
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransactionIfHeld, withSystemDbAccessContext } from '../db';
 import { huntressIntegrations, s1Integrations, s1OrgMappings } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import type { AuthContext } from '../middleware/auth';
+import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 
 export type DisconnectedIntegration = { id: string; partnerId: string; name: string };
 
-export async function disconnectS1Integration(partnerId: string): Promise<DisconnectedIntegration | null> {
+/** The part of the caller's auth the write gate reads. */
+export type IntegrationWriteAuth = Pick<AuthContext, 'scope' | 'partnerOrgAccess'>;
+
+function assertCanWritePartnerIntegration(auth: IntegrationWriteAuth): void {
+  if (!canManagePartnerWidePolicies(auth)) throw new PartnerWideWriteDeniedError();
+}
+
+/** Throws PartnerWideWriteDeniedError, before any write, unless the caller may manage partner-wide state. */
+export async function disconnectS1Integration(
+  auth: IntegrationWriteAuth,
+  partnerId: string,
+): Promise<DisconnectedIntegration | null> {
+  assertCanWritePartnerIntegration(auth);
   return withDbTransactionIfHeld(async () => {
     const now = new Date();
     const [row] = await db
@@ -57,12 +79,17 @@ export async function disconnectS1Integration(partnerId: string): Promise<Discon
 
     // Site registration tokens enroll agents into the vendor console. The
     // site → org assignments themselves are kept for a reconnect.
-    await clearS1SiteRegistrationTokens(row.id, partnerId);
+    await clearSiteRegistrationTokens(row.id, partnerId);
     return row;
   });
 }
 
-export async function disconnectHuntressIntegration(partnerId: string): Promise<DisconnectedIntegration | null> {
+/** Throws PartnerWideWriteDeniedError, before any write, unless the caller may manage partner-wide state. */
+export async function disconnectHuntressIntegration(
+  auth: IntegrationWriteAuth,
+  partnerId: string,
+): Promise<DisconnectedIntegration | null> {
+  assertCanWritePartnerIntegration(auth);
   const [row] = await db
     .update(huntressIntegrations)
     .set({
@@ -101,8 +128,20 @@ export async function writeOrActiveIndexConflict<T>(
  * no longer returns would otherwise keep its old token; the first sync after
  * the reconnect stores fresh ones. Runs after the integration row is updated,
  * so it locks integration then mappings, the same order as disconnect.
+ * Throws PartnerWideWriteDeniedError, before any write, unless the caller may
+ * manage partner-wide state.
  */
-export async function clearS1SiteRegistrationTokens(integrationId: string, partnerId: string): Promise<void> {
+export async function clearS1SiteRegistrationTokens(
+  auth: IntegrationWriteAuth,
+  integrationId: string,
+  partnerId: string,
+): Promise<void> {
+  assertCanWritePartnerIntegration(auth);
+  await clearSiteRegistrationTokens(integrationId, partnerId);
+}
+
+/** Ungated; reached only from the gated entry points above. */
+async function clearSiteRegistrationTokens(integrationId: string, partnerId: string): Promise<void> {
   await db
     .update(s1OrgMappings)
     .set({ registrationToken: null, updatedAt: new Date() })

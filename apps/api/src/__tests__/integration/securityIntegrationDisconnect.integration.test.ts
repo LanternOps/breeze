@@ -32,6 +32,12 @@ import { encryptSecret } from '../../services/secretCrypto';
 import { buildHuntressWebhookSignature } from '../../services/huntressClient';
 import { upsertDiscoveredSites } from '../../jobs/s1Sync';
 import { withSystemDbAccessContext } from '../../db';
+import {
+  clearS1SiteRegistrationTokens,
+  disconnectHuntressIntegration,
+  disconnectS1Integration,
+} from '../../services/securityIntegrationDisconnect';
+import { PartnerWideWriteDeniedError } from '../../services/partnerWideAccess';
 import { createAccessToken } from '../../services/jwt';
 import {
   assignUserToOrganization,
@@ -497,5 +503,69 @@ describe('disconnect blast radius and gates (#12691)', () => {
     const [rowA] = await (getTestDb() as any).select().from(s1Integrations).where(eq(s1Integrations.id, integration.id));
     expect(rowA.isActive).toBe(false);
     expect(rowA.apiTokenEncrypted).toBeNull();
+  });
+});
+
+describe('the disconnect service refuses a caller without full partner access by itself (#12691)', () => {
+  // Called directly, with no route in front and under system DB context, so
+  // neither a route gate nor RLS is the fence: only the service's own
+  // capability check stands between the caller and the partner's secrets.
+  const selectedMember = { scope: 'partner', partnerOrgAccess: 'selected' } as const;
+  const fullAdmin = { scope: 'partner', partnerOrgAccess: 'all' } as const;
+  const asSystem = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
+
+  it('SentinelOne: a selected-access partner member is refused and the row keeps its token and site tokens', async () => {
+    const { partnerA, integration } = await seedS1();
+    const tdb = getTestDb() as any;
+
+    await expect(asSystem(() => disconnectS1Integration(selectedMember, partnerA.id)))
+      .rejects.toThrow(PartnerWideWriteDeniedError);
+    await expect(asSystem(() => clearS1SiteRegistrationTokens(selectedMember, integration.id, partnerA.id)))
+      .rejects.toThrow(PartnerWideWriteDeniedError);
+
+    const [row] = await tdb.select().from(s1Integrations).where(eq(s1Integrations.id, integration.id));
+    expect(row.isActive).toBe(true);
+    expect(row.apiTokenEncrypted).not.toBeNull();
+    const mappings = await tdb.select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0].registrationToken).not.toBeNull();
+  });
+
+  it('SentinelOne control: a full partner admin through the same call disconnects', async () => {
+    const { partnerA, integration } = await seedS1();
+    const tdb = getTestDb() as any;
+
+    await expect(asSystem(() => disconnectS1Integration(fullAdmin, partnerA.id)))
+      .resolves.toMatchObject({ id: integration.id });
+
+    const [row] = await tdb.select().from(s1Integrations).where(eq(s1Integrations.id, integration.id));
+    expect(row.isActive).toBe(false);
+    expect(row.apiTokenEncrypted).toBeNull();
+    const [mapping] = await tdb.select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
+    expect(mapping.registrationToken).toBeNull();
+  });
+
+  it('Huntress: a selected-access partner member is refused and the row keeps every secret', async () => {
+    const { partnerA, integration } = await seedHuntress();
+
+    await expect(asSystem(() => disconnectHuntressIntegration(selectedMember, partnerA.id)))
+      .rejects.toThrow(PartnerWideWriteDeniedError);
+
+    const [row] = await (getTestDb() as any).select().from(huntressIntegrations).where(eq(huntressIntegrations.id, integration.id));
+    expect(row.isActive).toBe(true);
+    expect(row.apiKeyEncrypted).not.toBeNull();
+    expect(row.accountKeyEncrypted).not.toBeNull();
+    expect(row.webhookSecretEncrypted).not.toBeNull();
+  });
+
+  it('Huntress control: a full partner admin through the same call disconnects', async () => {
+    const { partnerA, integration } = await seedHuntress();
+
+    await expect(asSystem(() => disconnectHuntressIntegration(fullAdmin, partnerA.id)))
+      .resolves.toMatchObject({ id: integration.id });
+
+    const [row] = await (getTestDb() as any).select().from(huntressIntegrations).where(eq(huntressIntegrations.id, integration.id));
+    expect(row.isActive).toBe(false);
+    expect(row.apiKeyEncrypted).toBeNull();
   });
 });

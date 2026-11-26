@@ -34,7 +34,11 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/pe
 import { captureException } from '../services/sentry';
 import { escapeLike } from '../utils/sql';
 import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
-import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PartnerWideWriteDeniedError,
+} from '../services/partnerWideAccess';
 import { UUID_REGEX } from '../utils/uuid';
 import {
   activeIntegrationIds,
@@ -643,7 +647,15 @@ huntressRoutes.delete(
     const partnerResult = requirePartnerManager(auth, query.partnerId);
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
-    const integration = await disconnectHuntressIntegration(partnerResult.partnerId);
+    // The service checks the same capability before it writes; its refusal
+    // is thrown before any statement runs, so it is answered here as 403.
+    let integration: Awaited<ReturnType<typeof disconnectHuntressIntegration>>;
+    try {
+      integration = await disconnectHuntressIntegration(auth, partnerResult.partnerId);
+    } catch (error) {
+      if (error instanceof PartnerWideWriteDeniedError) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      throw error;
+    }
     if (!integration) {
       return c.json({ error: 'No connected Huntress integration' }, 404);
     }

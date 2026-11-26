@@ -175,6 +175,7 @@ import {
 } from '../services/sentinelOne/actions';
 import { encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import {
   activeIntegrationIds,
   disconnectS1Integration,
@@ -689,11 +690,22 @@ describe('sentinel one routes', () => {
       const res = await app.request('/s1/integration', { method: 'DELETE' });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ success: true, data: { id: INTEGRATION_ID, isActive: false } });
-      expect(disconnectS1Integration).toHaveBeenCalledWith(PARTNER_ID);
+      expect(disconnectS1Integration).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }),
+        PARTNER_ID,
+      );
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         action: 's1.integration.disconnect',
         resourceId: INTEGRATION_ID,
       }));
+    });
+
+    it("answers the service's own write-gate refusal as 403 and audits nothing", async () => {
+      vi.mocked(disconnectS1Integration).mockRejectedValueOnce(new PartnerWideWriteDeniedError());
+      const res = await app.request('/s1/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('answers 404 when nothing is connected', async () => {
@@ -751,7 +763,38 @@ describe('sentinel one routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ isActive: true, apiTokenEncrypted: 'enc:new-token' }));
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 's1.integration.reconnect' }));
-      expect(clearS1SiteRegistrationTokens).toHaveBeenCalledWith(INTEGRATION_ID, PARTNER_ID);
+      expect(clearS1SiteRegistrationTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }),
+        INTEGRATION_ID,
+        PARTNER_ID,
+      );
+    });
+
+    it("answers the token clear's own write-gate refusal as 403 and audits nothing", async () => {
+      mockSeenSelect([]);
+      vi.mocked(findReconnectableS1Integration).mockResolvedValueOnce({ id: INTEGRATION_ID });
+      vi.mocked(clearS1SiteRegistrationTokens).mockRejectedValueOnce(new PartnerWideWriteDeniedError());
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID, partnerId: PARTNER_ID, name: 'S1', managementUrl: 'https://example.sentinelone.net',
+              isActive: true, lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+              createdAt: new Date(), updatedAt: new Date(),
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'S1', managementUrl: 'https://example.sentinelone.net', apiToken: 'new-token' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('answers 409 when the reconnect update matches no row', async () => {

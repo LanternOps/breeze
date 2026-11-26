@@ -178,6 +178,7 @@ import { decryptForColumn } from '../services/secretCrypto';
 import { buildHuntressWebhookSignature } from '../services/huntressClient';
 import { huntressRoutes } from './huntress';
 import { writeRouteAudit } from '../services/auditEvents';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import {
   activeIntegrationIds,
   disconnectHuntressIntegration,
@@ -343,11 +344,22 @@ describe('huntress routes', () => {
       const res = await app.request('/huntress/integration', { method: 'DELETE' });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ success: true, data: { id: INTEGRATION, isActive: false } });
-      expect(disconnectHuntressIntegration).toHaveBeenCalledWith(PARTNER);
+      expect(disconnectHuntressIntegration).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }),
+        PARTNER,
+      );
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         action: 'huntress.integration.disconnect',
         resourceId: INTEGRATION,
       }));
+    });
+
+    it("answers the service's own write-gate refusal as 403 and audits nothing", async () => {
+      vi.mocked(disconnectHuntressIntegration).mockRejectedValueOnce(new PartnerWideWriteDeniedError());
+      const res = await app.request('/huntress/integration', { method: 'DELETE' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('answers 404 when nothing is connected', async () => {

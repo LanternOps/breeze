@@ -38,7 +38,11 @@ const S1_CONNECTED_CONCURRENTLY =
 // Any tenant-supplied URL pointing elsewhere is treated as SSRF. Shared with
 // the client's egress-time re-check so the allowlist has a single source of truth.
 import { S1_HOSTNAME_ALLOWLIST } from '../services/sentinelOne/constants';
-import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PartnerWideWriteDeniedError,
+} from '../services/partnerWideAccess';
 
 import { isUnassignedPoolOrgType, PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const sentinelOneRoutes = new Hono();
@@ -454,7 +458,7 @@ sentinelOneRoutes.post(
           ))
           .returning(returningColumns);
         if (rows.length > 0) {
-          await clearS1SiteRegistrationTokens(reconnectTarget.id, partnerResult.partnerId);
+          await clearS1SiteRegistrationTokens(auth, reconnectTarget.id, partnerResult.partnerId);
         }
         return rows;
       }
@@ -471,7 +475,15 @@ sentinelOneRoutes.post(
           updatedAt: now,
         })
         .returning(returningColumns);
+    }).catch((error: unknown) => {
+      // clearS1SiteRegistrationTokens checks the write capability itself. Its
+      // refusal rolls back the savepoint above, so nothing was saved.
+      if (error instanceof PartnerWideWriteDeniedError) return 'denied' as const;
+      throw error;
     });
+    if (saved === 'denied') {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
     if (saved === 'conflict') {
       return c.json({ error: S1_CONNECTED_CONCURRENTLY }, 409);
     }
@@ -557,7 +569,15 @@ sentinelOneRoutes.delete(
     const partnerResult = requirePartnerManager(auth, query.partnerId);
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
 
-    const integration = await disconnectS1Integration(partnerResult.partnerId);
+    // The service checks the same capability before it writes; its refusal
+    // is thrown before any statement runs, so it is answered here as 403.
+    let integration: Awaited<ReturnType<typeof disconnectS1Integration>>;
+    try {
+      integration = await disconnectS1Integration(auth, partnerResult.partnerId);
+    } catch (error) {
+      if (error instanceof PartnerWideWriteDeniedError) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      throw error;
+    }
     if (!integration) {
       return c.json({ error: 'No connected SentinelOne integration' }, 404);
     }
