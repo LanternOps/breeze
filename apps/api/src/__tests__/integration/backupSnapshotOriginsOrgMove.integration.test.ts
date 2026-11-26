@@ -43,6 +43,7 @@ import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
 import { authorizeExternalReference } from '../../services/recoveryDownloadService';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
+import { replayMigration } from './replayMigration';
 
 const MIGRATION = '2026-10-31-100700-backup-snapshot-file-index-org-move-reset.sql';
 const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
@@ -53,6 +54,12 @@ const adminSql = postgres(process.env.DATABASE_URL ?? '', {
   onnotice: (n) => { notices.push(String(n.message)); },
 });
 afterAll(async () => { await adminSql.end({ timeout: 5 }); });
+// The backfill case below replays MIGRATION raw (adminSql captures its NOTICEs),
+// which reverts breeze_backup_snapshot_file_index_tenancy_reset() to the
+// 2026-10-31 body. replayMigration re-applies every later definer (#11736's
+// delta reset), so suites after this one in the same process see the shipped
+// body.
+afterAll(async () => { await replayMigration(MIGRATION); });
 
 const PROVIDER_CONFIG = { path: '/tmp/breeze-6488-backups' };
 const STORAGE_IDENTITY = normalizeStorageIdentity('local', PROVIDER_CONFIG);
