@@ -152,7 +152,7 @@ func (c *Client) FetchConfig(ctx context.Context) (*CrawlConfig, error) {
 	}
 	defer resp.Body.Close()
 	sentinel, sentinelStatus := ErrModuleAbsent, http.StatusNotFound
-	if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusForbidden {
+	if isUnavailableStatus(resp.StatusCode) {
 		sentinel, sentinelStatus = ErrUnavailable, resp.StatusCode
 	}
 	if err := c.checkResponse(resp, sentinel, sentinelStatus); err != nil {

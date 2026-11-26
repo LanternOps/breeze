@@ -37,6 +37,25 @@ func TestAgentDrivesEverySteadyStateStream(t *testing.T) {
 	}
 }
 
+// #12713: the real agent backs off 30-60 min on a 503 or 403 from crawl-config;
+// the simulator must not keep polling at its 100 ms test cadence.
+func TestCrawlConfigBacksOffOnUnavailable(t *testing.T) {
+	for _, status := range []int{503, 403} {
+		f := newFakeAPI(t)
+		f.mu.Lock()
+		f.crawlStatus = status
+		f.mu.Unlock()
+		cfg := testConfig(f, t.TempDir())
+		id := f.preEnroll(0)
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*ms)
+		NewAgent(&cfg, newTestRecorder(), id, nil).Run(ctx)
+		cancel()
+		if got := f.count(RouteCrawlConfig); got != 1 {
+			t.Errorf("crawl-config %d must back off: got %d requests, want 1", status, got)
+		}
+	}
+}
+
 func TestAgentReenrollsWhenTheStoredTokenIs401(t *testing.T) {
 	f := newFakeAPI(t)
 	cfg := testConfig(f, t.TempDir())

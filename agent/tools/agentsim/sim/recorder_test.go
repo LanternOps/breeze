@@ -85,6 +85,18 @@ func TestRecorderFeedsTheTimelineOutsideTheSteadyWindow(t *testing.T) {
 	}
 }
 
+// httputil.Do returns a retryable 503 as an error with no response; the
+// recorded outcome must still see the 503 so crawl-config's counts as success.
+func TestOutcomeOfRetryableStatusError(t *testing.T) {
+	err := &httputil.RetryableStatusError{StatusCode: 503}
+	if got := outcomeOfResult(RouteCrawlConfig, nil, err); !got {
+		t.Error("crawl-config 503 from httputil.Do must count as success")
+	}
+	if got := outcomeOfResult(RouteHeartbeat, nil, err); got {
+		t.Error("heartbeat 503 must still be a failure")
+	}
+}
+
 func TestOutcomeFromResponse(t *testing.T) {
 	cases := []struct {
 		route  string
@@ -95,8 +107,10 @@ func TestOutcomeFromResponse(t *testing.T) {
 		{RouteHeartbeat, 200, nil, true},
 		{RouteHeartbeat, 503, nil, false},
 		{RouteHeartbeat, 0, errors.New("reset"), false},
-		{RouteCrawlConfig, 401, nil, true}, // workspace module off (README)
-		{RouteCrawlConfig, 404, nil, true},
+		{RouteCrawlConfig, 401, nil, false}, // the agent sends its ID in the path; a 401 is an auth failure
+		{RouteCrawlConfig, 404, nil, true},  // module not loaded
+		{RouteCrawlConfig, 503, nil, true},  // module loaded but disabled
+		{RouteCrawlConfig, 403, nil, false}, // device parked: not a healthy simulated agent
 		{RouteSoftware, 429, nil, false},
 	}
 	for _, c := range cases {

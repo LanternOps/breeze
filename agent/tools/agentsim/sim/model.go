@@ -14,8 +14,9 @@ func perMinuteOf(d time.Duration) float64 {
 // `now.Sub(last) > period` with `now` read after the heartbeat returns, so a
 // period that is a whole number of ticks fires on tick n or n+1 about equally
 // often: mean interval period + tick/2. crawlConfigAbsent is true when the
-// stack 404s crawl-config (workspace module not loaded), after which the
-// agent stops polling for six hours.
+// stack answers crawl-config only with back-off statuses (404 module not
+// loaded; 503 loaded but disabled), after which the agent stops polling for
+// 6 h (404) or 30-60 min (503/403).
 func ExpectedPerAgentMinute(c Cadence, crawlConfigAbsent bool) map[string]float64 {
 	gated := func(p time.Duration) float64 {
 		if p <= 0 || c.Heartbeat <= 0 {

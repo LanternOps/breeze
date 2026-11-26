@@ -207,13 +207,14 @@ func (r *Recorder) agentMinutes(end time.Time) (float64, int) {
 }
 
 // outcomeOK is whether one logical request (after the agent's retries)
-// succeeded. crawl-config 401/404 means the workspace module is off (README),
-// which the real agent treats as "back off", not as a failure.
+// succeeded. crawl-config 404 (module not loaded) and 503 (module loaded but
+// disabled) are answers the real agent backs off from, not failures. A 401 is
+// a failure: the agent sends its ID in the path, so it means a bad token.
 func outcomeOK(route string, status int, err error) bool {
 	if err != nil {
 		return false
 	}
-	if route == RouteCrawlConfig && (status == 401 || status == 404) {
+	if route == RouteCrawlConfig && (status == 404 || status == 503) {
 		return true
 	}
 	return status < 400

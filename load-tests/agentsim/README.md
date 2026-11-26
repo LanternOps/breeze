@@ -179,7 +179,7 @@ point is seconds from run start; latency is milliseconds.
 | `storm.steps[]` | Every action run, planned vs actual time, `ok` and output. `storm.stepsFailed` counts the failed ones |
 | `storm.events[].reconnect` | `baseline` (mean live sockets over the 60 s before the start), `trough`, `t50S`/`t90S`/`t99S` (seconds from the event end until live ≥ 50/90/99 % of baseline; null if never), `peakConnectsPerSecond`, `reconnectSpanS` and `peakToMean` (how the reconnects spread) |
 | `storm.events[].heartbeat` | p50/p95/p99/max per phase (`pre`, `storm`, `recovery`) with each phase's transport-error count next to it (latency cannot see a request that got no response), and `maxGapS` |
-| `storm.events[].errors` | Logical requests (after the agent's own retries) that still failed, over start → end + recovery; `lostPct`. `crawl-config` 401/404 count as success |
+| `storm.events[].errors` | Logical requests (after the agent's own retries) that still failed, over start → end + recovery; `lostPct`. `crawl-config` 404 and 503 count as success; a 401 is a failure |
 | `storm.events[].pool` | `minEffectiveRatio`, `maxWaiting`, `maxWedged`, `longestScrapeGapS`, and `recoveryS`: seconds from the end until the first sample with `effective == permits` and nothing wedged (null if never) |
 | `storm.gates[]`, `storm.pass` | One result per set gate per event (`value: null` when its data was never observed, which fails). `pass` is also false when a step failed, an event never ran, or an event is `truncated` (the run ended inside its recovery window): a fault that never fired is not a pass |
 
@@ -209,7 +209,7 @@ If `/metrics/scrape` is not reachable through the stack's base URL, pass
 |---|---|---|
 | `POST /agents/:id/heartbeat` | 60 s, first beat at a random point in the first interval | `internal/config` `DefaultHeartbeatIntervalSeconds`, `heartbeat.go Start()` |
 | `GET /agents/:id/unifi-collectors` | 30 s | `internal/unifi/collector.go` |
-| `GET /api/v1/workspace/agent/:id/crawl-config` (reported as `GET /workspace/agent/crawl-config`) | ~60 s ±10 %; 6 h after a 404 | `internal/workspaceindex` |
+| `GET /api/v1/workspace/agent/:id/crawl-config` (reported as `GET /workspace/agent/crawl-config`) | ~60 s ±10 %; 6 h after a 404; 30–60 min (or its `Retry-After`) after a 503 or 403 | `internal/workspaceindex` |
 | `POST /agents/:id/process-sample` | 180 s | `config.Default().ProcessSampleIntervalSeconds` |
 | `PUT security/status`, `PUT sessions` | tick-gated, 5 min | `heartbeat.go Start()` |
 | `PUT software, disks, network, connections, registry-state, config-state` | tick-gated, 15 min, concurrent | `sendInventory()` |
@@ -217,10 +217,22 @@ If `/metrics/scrape` is not reachable through the stack's base URL, pass
 | Agent WebSocket | control ping 54 s; pong to every app ping; reconnect as `reconnectLoop` | `internal/websocket/client.go` |
 | Command results | over the socket; `POST /commands/:id/result` without one | `heartbeat.go processCommand` |
 
-With the workspace module off (the wt-stack default) `crawl-config` answers
-`401` to an agent token, not `404`. The real agent only backs off on `404`, so
-it keeps polling every ~60 s and so does the simulator: the stream stays in the
-model (5.21 req/agent-min) and its 401s are exempt in `check-acceptance.sh`.
+`crawl-config` follows the real agent's back-off (the simulator calls
+`workspaceindex.ConfigPollBackoff`, so the waits cannot drift). A healthy stack
+answers it one of three ways, and `check-acceptance.sh` accepts exactly these:
+
+| Status | Stack state | Source |
+|---|---|---|
+| `404` | Workspace module not loaded (the wt-stack default): the extension gateway does not match the route and the API catch-all answers | `apps/api/src/extensions/gateway.ts` `dispatchAlias` falls through |
+| `200` | Module loaded and enabled (also with the crawl kill switch on: `enabled: false`) | `ee/workspace/src/routes/agent.ts` `/crawl-config` |
+| `503` | Module loaded but disabled | `apps/api/src/extensions/gateway.ts` `extensionDisabled` |
+
+The 404 and 503 answers take the stream out of the model (4.21 req/agent-min
+instead of 5.21), and both count as success in the report. A `401` is a failure:
+since #12690 the agent sends its ID in the path, so a 401 means a bad token, not
+a module that is off. A `403` (a device waiting in its partner's holding org)
+is also rejected: the agent backs off from it, but a healthy simulated agent
+should not be parked.
 
 Not modelled: daily hardware/patch/reliability uploads, `time-status`,
 `hardware-health`, `changes` (only when there are change records),

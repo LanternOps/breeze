@@ -298,7 +298,20 @@ test('check-acceptance.sh report: the allowance boundary is inclusive and scoped
   writeFileSync(file, JSON.stringify(rep));
   const r = spawnSync('bash', [ACCEPT, 'report', '--allow-non2xx', '20', file], { encoding: 'utf8', cwd: HERE });
   assert.notEqual(r.status, 0);
-  assert.match(r.stdout, /^FAIL {2}crawl-config answers only 200\/401\/404: 2 others$/m);
+  assert.match(r.stdout, /^FAIL {2}crawl-config answers only 200\/404\/503: 2 others$/m);
+});
+
+test('check-acceptance.sh report: crawl-config 401 fails, 404 and 503 pass', () => {
+  const run = (status) => {
+    const rep = JSON.parse(readFileSync(acceptanceReport(0), 'utf8'));
+    rep.routes[1].status = status;
+    const file = path.join(mkdtempSync(path.join(tmpdir(), 'accept-')), 'agentsim.json');
+    writeFileSync(file, JSON.stringify(rep));
+    return spawnSync('bash', [ACCEPT, 'report', file], { encoding: 'utf8', cwd: HERE });
+  };
+  assert.match(run({ 200: 1598, 401: 2 }).stdout, /^FAIL {2}crawl-config answers only 200\/404\/503: 2 others$/m);
+  assert.match(run({ 200: 1598, 403: 2 }).stdout, /^FAIL {2}crawl-config answers only 200\/404\/503: 2 others$/m);
+  assert.match(run({ 200: 1598, 404: 1, 503: 1 }).stdout, /^PASS {2}crawl-config answers only 200\/404\/503: 0 others$/m);
 });
 
 test('check-acceptance.sh report: a count over the allowance still fails', () => {

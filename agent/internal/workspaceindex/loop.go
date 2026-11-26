@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand/v2"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/breeze-rmm/agent/internal/audit"
+	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
@@ -426,6 +428,33 @@ func unavailableBackoff(retryAfter time.Duration) time.Duration {
 	base := min(max(retryAfter, unavailableRetryAfterFloor), unavailableRetryAfterCeiling)
 	jitter := time.Duration(rand.Int64N(int64(base/10) + 1))
 	return min(base+jitter, unavailableRetryAfterCeiling)
+}
+
+// isUnavailableStatus reports whether a crawl-config status is an
+// ErrUnavailable answer (see ErrUnavailable).
+func isUnavailableStatus(status int) bool {
+	return status == http.StatusServiceUnavailable || status == http.StatusForbidden
+}
+
+// ConfigPollRetryAfter reads a crawl-config answer's Retry-After the way the
+// client does (0 when absent, malformed or past; capped at the back-off ceiling).
+func ConfigPollRetryAfter(header http.Header) time.Duration {
+	return httputil.ParseRetryAfterCapped(header, time.Now(), unavailableRetryAfterCeiling)
+}
+
+// ConfigPollBackoff is how long the loop waits before its next crawl-config
+// poll after an answer with the given status; retryAfter is the server's hint
+// (0 when absent). ok is false when the status does not trigger a back-off (the
+// caller keeps its normal cadence). The load simulator calls this so its
+// polling cannot drift from the agent's.
+func ConfigPollBackoff(status int, retryAfter time.Duration) (wait time.Duration, ok bool) {
+	switch {
+	case status == http.StatusNotFound:
+		return moduleAbsentBackoff, true
+	case isUnavailableStatus(status):
+		return unavailableBackoff(retryAfter), true
+	}
+	return 0, false
 }
 
 func jitterPollInterval(seconds int) time.Duration {

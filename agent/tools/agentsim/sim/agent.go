@@ -18,9 +18,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/workspaceindex"
 )
 
-// crawlConfigAbsentBackoff mirrors workspaceindex/loop.go moduleAbsentBackoff.
-const crawlConfigAbsentBackoff = 6 * time.Hour
-
 // simulatedUptime is added to run time for the heartbeat's uptime field.
 const simulatedUptime = 72 * time.Hour
 
@@ -164,11 +161,28 @@ func (a *Agent) recordOutcome(ctx context.Context, route string, resp *http.Resp
 	if ctx.Err() != nil {
 		return
 	}
-	status := 0
+	a.rec.ObserveOutcome(route, time.Now(), outcomeOfResult(route, resp, err))
+}
+
+// outcomeOfResult is outcomeOK for what httputil.Do returned. Do reports a
+// retryable status (503) as an error with no response, so the status is read
+// back from that error; otherwise crawl-config's 503 would count as a failure.
+func outcomeOfResult(route string, resp *http.Response, err error) bool {
 	if resp != nil {
-		status = resp.StatusCode
+		return outcomeOK(route, resp.StatusCode, err)
 	}
-	a.rec.ObserveOutcome(route, time.Now(), outcomeOK(route, status, err))
+	if rse, ok := finalRetryableStatus(err); ok {
+		return outcomeOK(route, rse.StatusCode, nil)
+	}
+	return outcomeOK(route, 0, err)
+}
+
+// finalRetryableStatus returns err as the retryable-status answer httputil.Do
+// ended on. It does not search the chain: Do wraps an earlier 503 into a later
+// transport or context error, and that is not the server's final answer.
+func finalRetryableStatus(err error) (*httputil.RetryableStatusError, bool) {
+	rse, ok := err.(*httputil.RetryableStatusError) //nolint:errorlint // direct match on purpose, see above
+	return rse, ok
 }
 
 func (a *Agent) sendAsync(ctx context.Context, method, action string, payload any) {
@@ -350,8 +364,20 @@ func (a *Agent) crawlConfigLoop(ctx context.Context) {
 			return
 		}
 		resp, _, err := a.send(ctx, http.MethodGet, a.workspacePath("crawl-config"), nil)
-		if err == nil && resp.StatusCode == http.StatusNotFound {
-			wait = crawlConfigAbsentBackoff
+		// 404 (module absent), 503 and 403 back off exactly as the agent's
+		// loop does; the wait comes from the agent package itself. httputil.Do
+		// returns a retryable 503 as an error once its retries are spent.
+		status, hint := 0, time.Duration(0)
+		if err == nil {
+			status, hint = resp.StatusCode, workspaceindex.ConfigPollRetryAfter(resp.Header)
+		} else if rse, ok := finalRetryableStatus(err); ok {
+			// Known gap: httputil.Do caps this hint at 300 s and retries a 503
+			// before returning it, so the sim's 503 wait honours a shorter
+			// Retry-After than the agent's client does (which reads it up to 6 h).
+			status, hint = rse.StatusCode, rse.RetryAfter
+		}
+		if backoff, ok := workspaceindex.ConfigPollBackoff(status, hint); ok {
+			wait = backoff
 			continue
 		}
 		wait = a.jitter(period, 0.10)
