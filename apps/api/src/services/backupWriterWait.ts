@@ -29,6 +29,8 @@ export type WriterWaitSession = {
   createdAt: Date;
   urlHorizonAt: Date | null;
   deletingSince: Date | null;
+  readOnly: boolean;
+  resumedAt: Date | null;
 };
 
 export type WriterWaitMargins = {
@@ -55,14 +57,17 @@ export function computeWriterWaits(
       if (s.jobId !== jobId || !s.reservationSnapshotId) continue;
       if (!own || s.createdAt.getTime() > own.createdAt.getTime()) own = s;
     }
-    // Only a live session is waiting; a revoked newest one is not running.
-    if (!own || own.revokedAt) continue;
+    // Only a live session is waiting; a revoked newest one is not running,
+    // and a read-only completion session never uploads.
+    if (!own || own.revokedAt || own.readOnly) continue;
 
     let until = 0;
     for (const s of sessions) {
       if (s.id === own.id || s.reservationSnapshotId !== own.reservationSnapshotId) continue;
       if (s.urlHorizonAt) until = Math.max(until, s.urlHorizonAt.getTime() + margins.transferMarginMs);
-      if (s.deletingSince) until = Math.max(until, s.deletingSince.getTime() + margins.deleteSettleMs);
+      // The gate checks another session's in-flight delete only when a
+      // session resumes, so only a resumed session waits on it.
+      if (s.deletingSince && own.resumedAt) until = Math.max(until, s.deletingSince.getTime() + margins.deleteSettleMs);
     }
     if (until > now.getTime()) waits.set(jobId, new Date(until));
   }

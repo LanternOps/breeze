@@ -52,6 +52,8 @@ export async function loadJobWriterWaits(jobIds: string[], now: Date = new Date(
     createdAt: backupStorageSessions.createdAt,
     urlHorizonAt: backupStorageSessions.urlHorizonAt,
     deletingSince: backupStorageSessions.deletingSince,
+    readOnly: backupStorageSessions.readOnly,
+    resumedAt: backupStorageSessions.resumedAt,
   };
   const own = await db
     .select(columns)

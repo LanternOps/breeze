@@ -127,7 +127,11 @@ describe('writer wait (#12693)', () => {
   const base = { lastKeepaliveAt: iso(1000), resumedAt: null, transferredSize: 0, totalSize: null };
   const until = (msAhead: number) => new Date(NOW + msAhead).toISOString();
 
-  it('writerWaitRemainingMs: time left while a running job waits, rounded up to the minute is the UI job', () => {
+  it('deriveActivePhase: a pending job keeps its queue phase even with a wait time', () => {
+    expect(deriveActivePhase({ ...base, status: 'pending', lastKeepaliveAt: null, writerWaitUntil: until(60_000) }, NOW)).toBe('waiting_for_device');
+  });
+
+  it('writerWaitRemainingMs: milliseconds left while a running job waits', () => {
     expect(writerWaitRemainingMs({ status: 'running', writerWaitUntil: until(90_000) }, NOW)).toBe(90_000);
   });
 

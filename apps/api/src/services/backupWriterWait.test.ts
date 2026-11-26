@@ -14,6 +14,8 @@ function session(over: Partial<WriterWaitSession>): WriterWaitSession {
     createdAt: min(-1),
     urlHorizonAt: null,
     deletingSince: null,
+    readOnly: false,
+    resumedAt: null,
     ...over,
   };
 }
@@ -50,10 +52,58 @@ describe('computeWriterWaits', () => {
     expect(waits.size).toBe(0);
   });
 
-  it('waits out an in-flight delete through another session', () => {
-    // Delete marker 1 min ago + 5 min settle = 4 min left.
+  it('does not count a delete marker against a session that never resumed (the gate only checks it on resume)', () => {
     const waits = computeWriterWaits(
       [session({}), session({ id: 's-old', jobId: 'job-0', deletingSince: min(-1) })],
+      ['job-1'],
+      NOW,
+      OPTS,
+    );
+    expect(waits.size).toBe(0);
+  });
+
+  it('ignores a stale delete marker and a horizon that is exactly now', () => {
+    const waits = computeWriterWaits(
+      [
+        session({ resumedAt: min(-1) }),
+        session({ id: 's-a', jobId: 'job-0', deletingSince: min(-6) }),
+        session({ id: 's-b', jobId: 'job-0', urlHorizonAt: min(-15) }),
+      ],
+      ['job-1'],
+      NOW,
+      OPTS,
+    );
+    expect(waits.size).toBe(0);
+  });
+
+  it('skips a read-only completion session, which never uploads', () => {
+    const waits = computeWriterWaits(
+      [session({ readOnly: true }), session({ id: 's-old', jobId: 'job-0', urlHorizonAt: min(3) })],
+      ['job-1'],
+      NOW,
+      OPTS,
+    );
+    expect(waits.size).toBe(0);
+  });
+
+  it('answers several jobs in one call', () => {
+    const waits = computeWriterWaits(
+      [
+        session({}),
+        session({ id: 's-old', jobId: 'job-0', urlHorizonAt: min(3) }),
+        session({ id: 's-2', jobId: 'job-2', reservationSnapshotId: 'snap-2' }),
+      ],
+      ['job-1', 'job-2'],
+      NOW,
+      OPTS,
+    );
+    expect([...waits.keys()]).toEqual(['job-1']);
+  });
+
+  it('waits out an in-flight delete through another session on resume', () => {
+    // Delete marker 1 min ago + 5 min settle = 4 min left.
+    const waits = computeWriterWaits(
+      [session({ resumedAt: min(-1) }), session({ id: 's-old', jobId: 'job-0', deletingSince: min(-1) })],
       ['job-1'],
       NOW,
       OPTS,
@@ -64,7 +114,7 @@ describe('computeWriterWaits', () => {
   it('takes the later of the URL and delete horizons', () => {
     const waits = computeWriterWaits(
       [
-        session({}),
+        session({ resumedAt: min(-1) }),
         session({ id: 's-a', jobId: 'job-0', urlHorizonAt: min(3) }),
         session({ id: 's-b', jobId: 'job-0', deletingSince: min(-1) }),
       ],
