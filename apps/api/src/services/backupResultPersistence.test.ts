@@ -1613,6 +1613,88 @@ describe('backup result persistence', () => {
       expect(stampSet).toHaveBeenCalledWith(expect.objectContaining({ fileIndexStatus: 'agent' }));
     });
 
+    // #11736 step 2 (fact 6): this writer can run on a 'delta' snapshot that is
+    // not 'complete' (a refused re-hydration leaves it 'failed'). Its own rows
+    // are then the whole tree, so the format and checkpoint pointer must be
+    // reset in the same update, or the agent rows read as adds to the checkpoint.
+    it('inline agent rows on a delta snapshot reset it to rows format', async () => {
+      vi.mocked(db.update)
+        .mockReturnValueOnce(
+          chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any
+        )
+        .mockReturnValueOnce(
+          chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1', fileIndexStatus: 'failed' }]) as any
+        )
+        .mockReturnValue(chainMock([]) as any);
+      vi.mocked(db.select)
+        // existingSnapshot lookup -> update branch (same device, so not refused)
+        .mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' }]) as any)
+        .mockReturnValueOnce(
+          chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any
+        );
+      vi.mocked(db.insert).mockReturnValue(chainMock([]) as any);
+      vi.mocked(db.delete).mockReturnValueOnce(chainMock([]) as any);
+      vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+      vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+      vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        resultStatus: 'completed',
+        result: {
+          snapshot: {
+            id: 'provider-snap-1',
+            files: [{ sourcePath: '/a', backupPath: 'snapshots/provider-snap-1/files/a.gz', size: 1 }],
+          },
+        } as any,
+      });
+
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      const sets = vi.mocked(db.update).mock.results.map((r) => (r.value as { set?: ReturnType<typeof vi.fn> })?.set?.mock.calls[0]?.[0]);
+      // Later updates share one chain mock, so the same set call can appear twice.
+      const stamps = sets.filter((v) => v?.fileIndexStatus === 'agent');
+      expect(stamps.length).toBeGreaterThan(0);
+      for (const stamp of stamps) {
+        expect(stamp).toEqual({ fileIndexStatus: 'agent', fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+      }
+    });
+
+    it('an empty agent index on a delta snapshot still drops the checkpoint pointer', async () => {
+      vi.mocked(db.update)
+        .mockReturnValueOnce(
+          chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any
+        )
+        .mockReturnValueOnce(
+          chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1', fileIndexStatus: 'failed' }]) as any
+        )
+        .mockReturnValue(chainMock([]) as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([{ id: 'snapshot-db-1', deviceId: 'device-1', resultProvenance: 'agent_result' }]) as any)
+        .mockReturnValueOnce(
+          chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any
+        );
+      vi.mocked(db.delete).mockReturnValueOnce(chainMock([]) as any);
+      vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+      vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+      vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        resultStatus: 'completed',
+        result: { snapshot: { id: 'provider-snap-1', files: [] } } as any,
+      });
+
+      // The rows are gone; without the reset a 'delta' snapshot would read as
+      // the bare checkpoint. Scoped to delta rows, so a rows snapshot is not rewritten.
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      const sets = vi.mocked(db.update).mock.results.map((r) => (r.value as { set?: ReturnType<typeof vi.fn> })?.set?.mock.calls[0]?.[0]);
+      expect(sets).toContainEqual({ fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+    });
+
     it('enqueues file-index hydration when referencedFiles > 0 (non-S3 destination), after the context exits', async () => {
       vi.mocked(db.update)
         .mockReturnValueOnce(
