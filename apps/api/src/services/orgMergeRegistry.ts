@@ -943,6 +943,8 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_snapshot_id_reservations",
   "backup_snapshot_retirements",
   "backup_snapshots",
+  // Derived file-index checkpoint of a device's backups; moves with its snapshots (#11736).
+  "backup_tree_checkpoints",
   // Storage key history (and its revocation evidence) moves with the org.
   "backup_storage_credential_history",
   // Multipart uploads of write sessions travel with their session.

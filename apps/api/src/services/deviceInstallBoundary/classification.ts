@@ -133,6 +133,7 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
   backup_snapshots: history('snapshots (§5.4); pre-incarnation restores need approval'),
   backup_storage_session_uploads: history('aborted in storage by the janitor once the session is revoked'),
   backup_storage_sessions: handled('backup_recovery', 'open sessions are revoked'),
+  backup_tree_checkpoints: history('file-index checkpoint of the device\'s snapshots (#11736)'),
   backup_verifications: handled('backup_recovery', 'pending/running verifications fail'),
   bare_metal_recoveries: handled('backup_recovery', 'in-flight recoveries fail'),
   brain_device_context: history('AI memory notes'),

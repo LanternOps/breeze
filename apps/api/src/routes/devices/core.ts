@@ -260,7 +260,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_restore_authorizations', 'backup_sla_events', 'backup_snapshot_attestations', 'backup_snapshot_id_reservations',
-  'backup_snapshot_retirements', 'backup_snapshots', 'backup_storage_session_uploads', 'backup_storage_sessions',
+  'backup_snapshot_retirements', 'backup_snapshots', 'backup_storage_session_uploads', 'backup_storage_sessions', 'backup_tree_checkpoints',
   'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
@@ -423,6 +423,12 @@ export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // the next attachment report rebuilds the memberships in the target org. The BEFORE UPDATE OF org_id trigger
   // breeze_learned_networks_device_moved deletes them first; this loop is the fallback.
   'learned_network_devices',
+  // #11736: (config_id, org_id) names a SOURCE-org backup config, so a restamp would 23503; the device's moved
+  // snapshots re-hydrate and build a new checkpoint in the target org. The backup_snapshots tenancy reset trigger
+  // clears every snapshot pointer to the header when backup_snapshots is restamped (by the devices UPDATE's
+  // database cascade, before this delete loop runs), so the RESTRICT FK no longer applies. The header is also
+  // excluded from breeze_device_child_orgid_tables(), so the database never restamps it.
+  'backup_tree_checkpoints',
 ];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {
