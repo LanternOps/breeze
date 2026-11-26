@@ -1,6 +1,6 @@
 ---
 title: Encryption Key Management
-description: How backup data is actually encrypted at rest today (S3 server-side encryption), and the early-access client-managed key manager for a future client-side encryption model.
+description: How backup data is actually encrypted at rest today (S3 server-side encryption), and the read-only client-side key list (client-side encryption is not yet available).
 sidebar:
   order: 11
   label: "Encryption"
@@ -23,30 +23,22 @@ If you enable encryption on a **Local disk** destination, or on S3 without a rec
 
 ---
 
-## Encryption Keys Manager (Early Access)
+## Encryption Keys Page (Read-Only)
 
 Go to **Backup > Device Backup > Encryption** to see the key manager.
 
 <Aside type="caution">
-  This page is early access and is **not wired to any live backup data**. Creating, rotating, or deactivating a key here does not encrypt, protect, or otherwise affect any actual backup or snapshot today — the agent has no encryption capability of its own to apply these keys to. It exists ahead of a planned client-side (envelope) encryption model.
+  Client-side encryption keys are **not available yet**, and this page is **read-only**. Keys here are not used to encrypt, protect, or otherwise affect any actual backup or snapshot — the agent has no encryption capability of its own to apply them to. The page does not offer create, rotate, or deactivate actions; the key model is planned for a future release.
 </Aside>
 
-The key list shows:
+If any keys already exist for your organization, the list shows them read-only:
 - Key name
 - Key type (AES-256 or RSA-2048)
-- Status: **Active** (green), **Rotated** (gray), or **Deactivated** (red)
+- Status (the list shows active keys only)
 - Created date
 - Expiry date (if set)
 
-<Steps>
-1. Click **Create New Key**.
-2. Enter a descriptive name (e.g., "Production AES Key 2026").
-3. Select the key type (AES-256 or RSA-2048).
-4. Click **Create**.
-5. The key's fingerprint (SHA-256 hash) is displayed once, at creation time.
-</Steps>
-
-Keys can also be rotated (the old key moves to **Rotated**, a new one becomes **Active**) or deactivated. Rotation is manual only — there is no scheduled or automatic rotation.
+Backups are encrypted at rest by the storage provider today, where the destination supports it, as described above.
 
 ---
 
