@@ -31,11 +31,12 @@ import {
 import { encryptSecret } from '../../services/secretCrypto';
 import { buildHuntressWebhookSignature } from '../../services/huntressClient';
 import { upsertDiscoveredSites } from '../../jobs/s1Sync';
-import { withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import {
   clearS1SiteRegistrationTokens,
   disconnectHuntressIntegration,
   disconnectS1Integration,
+  writeOrActiveIndexConflict,
 } from '../../services/securityIntegrationDisconnect';
 import { PartnerWideWriteDeniedError } from '../../services/partnerWideAccess';
 import { createAccessToken } from '../../services/jwt';
@@ -543,6 +544,36 @@ describe('the disconnect service refuses a caller without full partner access by
     expect(row.apiTokenEncrypted).toBeNull();
     const [mapping] = await tdb.select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
     expect(mapping.registrationToken).toBeNull();
+  });
+
+  it('SentinelOne reconnect: a refused token clear rolls the reactivation back with it', async () => {
+    // The connect route runs the reactivation and the token clear in one
+    // savepoint (writeOrActiveIndexConflict). A refusal from the clear must
+    // undo the reactivation, not leave a live row with its old site tokens.
+    const { partnerA, integration } = await seedS1();
+    const tdb = getTestDb() as any;
+    await tdb.update(s1Integrations).set({ isActive: false }).where(eq(s1Integrations.id, integration.id));
+
+    await expect(asSystem(async () => {
+      try {
+        await writeOrActiveIndexConflict('s1_integrations_partner_active_idx', async () => {
+          await db.update(s1Integrations)
+            .set({ isActive: true, apiTokenEncrypted: encryptSecret('replacement-token') })
+            .where(eq(s1Integrations.id, integration.id));
+          await clearS1SiteRegistrationTokens(selectedMember, integration.id, partnerA.id);
+        });
+        return 'saved';
+      } catch (error) {
+        if (error instanceof PartnerWideWriteDeniedError) return 'denied';
+        throw error;
+      }
+    })).resolves.toBe('denied');
+
+    const [row] = await tdb.select().from(s1Integrations).where(eq(s1Integrations.id, integration.id));
+    expect(row.isActive).toBe(false);
+    expect(row.apiTokenEncrypted).toEqual(integration.apiTokenEncrypted);
+    const [mapping] = await tdb.select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
+    expect(mapping.registrationToken).not.toBeNull();
   });
 
   it('Huntress: a selected-access partner member is refused and the row keeps every secret', async () => {
