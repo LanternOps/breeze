@@ -484,6 +484,90 @@ describe('uploadPackageVersion', () => {
       }
     });
 
+    it('names the chunk step and HTTP 502 after a proxy 5xx exhausts the chunk retries', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+          if (url.endsWith('/versions/uploads')) return created();
+          if (init?.method === 'DELETE') return jsonResponse({}, true, 204);
+          return htmlResponse(502);
+        });
+        const outcome = uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta });
+        await vi.runAllTimersAsync();
+        const res = await outcome;
+        expect(res.status).toBe(502);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toMatch(/uploading the file/i);
+        expect(body.error).toContain('HTTP 502');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('names the create step when session create answers non-JSON', async () => {
+      fetchMock.mockResolvedValueOnce(htmlResponse(502));
+      const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta });
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/starting the upload/i);
+      expect(body.error).toContain('HTTP 502');
+    });
+
+    it('names the create step when session create rejects', async () => {
+      fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      await expect(
+        uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta }),
+      ).rejects.toThrow(/starting the upload.*Failed to fetch/i);
+    });
+
+    it('names the finalizing step when /complete rejects (timeout) and still releases the session', async () => {
+      fetchMock
+        .mockResolvedValueOnce(created())
+        .mockResolvedValueOnce(jsonResponse({ data: { bytesReceived: 10 } }))
+        .mockRejectedValueOnce(new DOMException('The operation timed out.', 'TimeoutError'))
+        .mockResolvedValueOnce(jsonResponse({}, true, 204));
+      await expect(
+        uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta }),
+      ).rejects.toThrow(/finali[sz]ing the upload.*timed out/i);
+      expect(fetchMock.mock.calls[3][1]!.method).toBe('DELETE');
+    });
+
+    it('synthesizes a reason for a 409 with an HTML body and no bytesReceived', async () => {
+      fetchMock
+        .mockResolvedValueOnce(created())
+        .mockResolvedValueOnce(htmlResponse(409))
+        .mockResolvedValueOnce(jsonResponse({}, true, 204));
+      const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toContain('HTTP 409');
+    });
+
+    it('passes through a {message}-only JSON failure and synthesizes for an empty JSON object', async () => {
+      fetchMock
+        .mockResolvedValueOnce(created())
+        .mockResolvedValueOnce(jsonResponse({ message: 'Quota exceeded' }, false, 413))
+        .mockResolvedValueOnce(jsonResponse({}, true, 204));
+      const passed = await uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta });
+      expect(await passed.json()).toEqual({ message: 'Quota exceeded' });
+
+      fetchMock.mockReset();
+      fetchMock
+        .mockResolvedValueOnce(created())
+        .mockResolvedValueOnce(jsonResponse({}, false, 413))
+        .mockResolvedValueOnce(jsonResponse({}, true, 204));
+      const synth = await uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta });
+      expect(((await synth.json()) as { error: string }).error).toContain('HTTP 413');
+    });
+
+    it('keeps a validation body that has details but no error key', async () => {
+      const payload = { details: { formErrors: [], fieldErrors: { version: ['Required'] } } };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(payload, false, 400));
+      const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file: makeFile(10), metadata: baseMeta });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(payload);
+    });
+
     it('does not wrap a caller abort', async () => {
       const controller = new AbortController();
       const abort = new DOMException('aborted', 'AbortError');

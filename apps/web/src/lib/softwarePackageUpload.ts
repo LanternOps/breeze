@@ -145,8 +145,10 @@ async function explainFailure(step: UploadStep, response: Response): Promise<Res
     // Not JSON (or unreadable): fall through to the synthesized reason.
   }
   if (body && typeof body === 'object') {
-    const { error, message } = body as { error?: unknown; message?: unknown };
-    if (error || message) return response;
+    // `details`/`issues`/`code` carry validation or machine-readable reasons that
+    // runAction knows how to render; replacing them would hide the real cause.
+    const reason = body as Record<string, unknown>;
+    if (reason.error || reason.message || reason.details || reason.issues || reason.code) return response;
   }
   return new Response(
     JSON.stringify({
