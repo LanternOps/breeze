@@ -67,6 +67,7 @@ function selectReturning(rows: unknown[]) {
     chain[method] = vi.fn().mockReturnValue(chain);
   }
   chain.limit = vi.fn().mockResolvedValue(rows);
+  chain.for = vi.fn().mockResolvedValue(rows);
   chain.then = (resolve: (value: unknown[]) => unknown) => resolve(rows);
   return chain;
 }
@@ -182,6 +183,7 @@ describe('upsertDiscoveredSites', () => {
   });
 
   it('encrypts the site registration token before storing it', async () => {
+    mockDb.select.mockReturnValueOnce(selectReturning([{ isActive: true }]));
     await upsertDiscoveredSites({
       integrationId: 'int-1',
       partnerId: 'partner-1',
@@ -197,6 +199,20 @@ describe('upsertDiscoveredSites', () => {
     expect(withToken!.registrationToken).toBe('enc:eyJ-raw-token');
     // Null token stays null (no spurious encryption).
     expect(withoutToken!.registrationToken).toBeNull();
+  });
+
+  it('stores no registration token once the integration is disconnected (#12691)', async () => {
+    // A sync that fetched tokens before the disconnect committed must not put
+    // them back after the disconnect cleared them.
+    mockDb.select.mockReturnValueOnce(selectReturning([{ isActive: false }]));
+    await upsertDiscoveredSites({
+      integrationId: 'int-1',
+      partnerId: 'partner-1',
+      sites: [{ siteId: 'site-123', siteName: 'Acme', count: 1, registrationToken: 'eyJ-raw-token' }],
+    });
+
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0]!.registrationToken).toBeNull();
   });
 
   it('is a no-op when there are no sites', async () => {
@@ -321,9 +337,10 @@ describe('C2 sync: unmapped agents are skipped (not written to a fallback org)',
     //  1. integration row
     //  2. reconcileProvisionalSiteMappings: provisional lookup for 'name:Mapped Site' → empty
     //  3. reconcileProvisionalSiteMappings: provisional lookup for 'name:Unmapped Site' → empty
-    //  4. mapSiteOrgIds: s1OrgMappings rows (site-mapped → org-1)
-    //  5. mapDeviceCandidatesByOrg: empty devices
-    //  6+. update s1Integrations lastSyncAt → handled by update mock
+    //  4. upsertDiscoveredSites: integration row lock (isActive)
+    //  5. mapSiteOrgIds: s1OrgMappings rows (site-mapped → org-1)
+    //  6. mapDeviceCandidatesByOrg: empty devices
+    //  7+. update s1Integrations lastSyncAt → handled by update mock
     mockDb.select
       .mockReturnValueOnce(
         selectReturning([{
@@ -338,6 +355,8 @@ describe('C2 sync: unmapped agents are skipped (not written to a fallback org)',
       // reconcileProvisionalSiteMappings: no provisional rows for either site
       .mockReturnValueOnce(selectReturning([]))
       .mockReturnValueOnce(selectReturning([]))
+      // upsertDiscoveredSites: integration row lock (still active)
+      .mockReturnValueOnce(selectReturning([{ isActive: true }]))
       // mapSiteOrgIds: one mapped org (site-mapped → org-1)
       .mockReturnValueOnce(
         selectReturning([{

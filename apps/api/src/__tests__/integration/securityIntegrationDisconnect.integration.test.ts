@@ -30,6 +30,8 @@ import {
 } from '../../db/schema';
 import { encryptSecret } from '../../services/secretCrypto';
 import { buildHuntressWebhookSignature } from '../../services/huntressClient';
+import { upsertDiscoveredSites } from '../../jobs/s1Sync';
+import { withSystemDbAccessContext } from '../../db';
 import { createAccessToken } from '../../services/jwt';
 import {
   assignUserToOrganization,
@@ -51,14 +53,21 @@ function buildApp(): Hono {
 
 const ALL = [{ resource: '*', action: '*' }];
 
-async function partnerAdminToken(partnerId: string): Promise<string> {
+async function partnerAdminToken(
+  partnerId: string,
+  opts: {
+    mfa?: boolean;
+    orgAccess?: 'all' | 'selected';
+    permissions?: Array<{ resource: string; action: string }>;
+  } = {},
+): Promise<string> {
   const role = await createRole({ scope: 'partner', partnerId });
-  await grantRolePermissions(role.id, ALL);
+  await grantRolePermissions(role.id, opts.permissions ?? ALL);
   const user = await createUser({ partnerId, orgId: null, email: `pa-${randomUUID().slice(0, 8)}@example.test` });
-  await assignUserToPartner(user.id, partnerId, role.id, 'all');
+  await assignUserToPartner(user.id, partnerId, role.id, opts.orgAccess ?? 'all');
   return createAccessToken({
     sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId,
-    scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    scope: 'partner', mfa: opts.mfa ?? true, aep: 1, mep: 1, sid: randomUUID(),
   });
 }
 
@@ -81,68 +90,78 @@ function call(app: Hono, token: string, method: string, path: string, body?: unk
   });
 }
 
-async function seedS1() {
+async function seedS1Partner(label: string) {
   const tdb = getTestDb() as any;
-  const partnerA = await createPartner();
-  const orgA = await createOrganization({ partnerId: partnerA.id });
-  const partnerB = await createPartner();
-  const orgB = await createOrganization({ partnerId: partnerB.id });
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
   const [integration] = await tdb.insert(s1Integrations).values({
-    partnerId: partnerA.id,
-    name: 'S1 A',
-    apiTokenEncrypted: encryptSecret('s1-token-a'),
+    partnerId: partner.id,
+    name: `S1 ${label}`,
+    apiTokenEncrypted: encryptSecret(`s1-token-${label}`),
     managementUrl: 'https://usea1-test.sentinelone.net',
     isActive: true,
   }).returning();
   await tdb.insert(s1OrgMappings).values({
     integrationId: integration.id,
-    partnerId: partnerA.id,
-    s1SiteId: 'site-a',
-    s1SiteName: 'Site A',
-    orgId: orgA.id,
-    registrationToken: encryptSecret('reg-token-a', { aad: 's1_org_mappings.registration_token' }),
+    partnerId: partner.id,
+    s1SiteId: `site-${label}`,
+    s1SiteName: `Site ${label}`,
+    orgId: org.id,
+    registrationToken: encryptSecret(`reg-token-${label}`, { aad: 's1_org_mappings.registration_token' }),
   });
   const [threat] = await tdb.insert(s1Threats).values({
-    orgId: orgA.id,
+    orgId: org.id,
     integrationId: integration.id,
-    s1ThreatId: 'threat-a',
+    s1ThreatId: `threat-${label}`,
     threatName: 'EICAR',
     status: 'active',
     detectedAt: new Date(),
   }).returning();
-  return { partnerA, orgA, partnerB, orgB, integration, threat };
+  return { partner, org, integration, threat };
 }
 
-async function seedHuntress() {
-  const tdb = getTestDb() as any;
-  const partnerA = await createPartner();
-  const orgA = await createOrganization({ partnerId: partnerA.id });
+async function seedS1() {
+  const a = await seedS1Partner('a');
   const partnerB = await createPartner();
+  const orgB = await createOrganization({ partnerId: partnerB.id });
+  return { partnerA: a.partner, orgA: a.org, partnerB, orgB, integration: a.integration, threat: a.threat };
+}
+
+async function seedHuntressPartner(label: string) {
+  const tdb = getTestDb() as any;
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
   const [integration] = await tdb.insert(huntressIntegrations).values({
-    partnerId: partnerA.id,
-    name: 'Huntress A',
-    apiKeyEncrypted: encryptSecret('hk-a'),
-    accountId: 'acct-a',
-    accountKeyEncrypted: encryptSecret('acct-key-a', { aad: 'huntress_integrations.account_key_encrypted' }),
-    webhookSecretEncrypted: encryptSecret('webhook-secret-a'),
+    partnerId: partner.id,
+    name: `Huntress ${label}`,
+    apiKeyEncrypted: encryptSecret(`hk-${label}`),
+    accountId: `acct-${label}`,
+    accountKeyEncrypted: encryptSecret(`acct-key-${label}`, { aad: 'huntress_integrations.account_key_encrypted' }),
+    webhookSecretEncrypted: encryptSecret(`webhook-secret-${label}`),
     isActive: true,
   }).returning();
   await tdb.insert(huntressOrgMappings).values({
     integrationId: integration.id,
-    partnerId: partnerA.id,
-    huntressOrgId: 'h-org-a',
-    huntressOrgName: 'Customer A',
-    orgId: orgA.id,
+    partnerId: partner.id,
+    huntressOrgId: `h-org-${label}`,
+    huntressOrgName: `Customer ${label}`,
+    orgId: org.id,
   });
   const [incident] = await tdb.insert(huntressIncidents).values({
-    orgId: orgA.id,
+    orgId: org.id,
     integrationId: integration.id,
-    huntressIncidentId: 'inc-a',
+    huntressIncidentId: `inc-${label}`,
     title: 'Footholds found',
     status: 'open',
     reportedAt: new Date(),
   }).returning();
-  return { partnerA, orgA, partnerB, integration, incident };
+  return { partner, org, integration, incident };
+}
+
+async function seedHuntress() {
+  const a = await seedHuntressPartner('a');
+  const partnerB = await createPartner();
+  return { partnerA: a.partner, orgA: a.org, partnerB, integration: a.integration, incident: a.incident };
 }
 
 function signedTestDelivery(app: Hono, integrationId: string, secret: string) {
@@ -249,6 +268,8 @@ describe('SentinelOne disconnect (#12691)', () => {
     expect(rows[0].apiTokenEncrypted).not.toBeNull();
     const [mapping] = await tdb.select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, integration.id));
     expect(mapping.orgId).toBe(orgA.id);
+    // The old site token is not revived; the next sync fetches a fresh one.
+    expect(mapping.registrationToken).toBeNull();
 
     const listed = await (await call(app, token, 'GET', '/s1/threats')).json();
     expect(listed.data.map((t: { id: string }) => t.id)).toEqual([threat.id]);
@@ -322,5 +343,159 @@ describe('Huntress disconnect (#12691)', () => {
     const rows = await (getTestDb() as any).select().from(huntressIntegrations).where(eq(huntressIntegrations.partnerId, partnerA.id));
     expect(rows).toHaveLength(1);
     expect(rows[0].isActive).toBe(true);
+    expect(rows[0].webhookSecretEncrypted).toBeNull();
+    expect(rows[0].accountKeyEncrypted).toBeNull();
+
+    // Active again, but the old signing secret is gone: its deliveries stay refused.
+    expect((await signedTestDelivery(app, integration.id, 'webhook-secret-a')).status).toBe(401);
+
+    // A secret entered on the reconnected integration works.
+    const withSecret = await call(app, token, 'POST', '/huntress/integration', { name: 'Huntress A again', webhookSecret: 'webhook-secret-new' });
+    expect(withSecret.status).toBe(200);
+    expect((await signedTestDelivery(app, integration.id, 'webhook-secret-new')).status).toBe(200);
+    expect((await signedTestDelivery(app, integration.id, 'webhook-secret-a')).status).toBe(401);
+  });
+});
+
+describe('disconnect blast radius and gates (#12691)', () => {
+  it('disconnecting partner A leaves partner B integrations and secrets untouched', async () => {
+    const app = buildApp();
+    const s1A = await seedS1Partner('a');
+    const s1B = await seedS1Partner('b');
+    const hA = await seedHuntressPartner('ha');
+    const hB = await seedHuntressPartner('hb');
+    const tdb = getTestDb() as any;
+
+    expect((await call(app, await partnerAdminToken(s1A.partner.id), 'DELETE', '/s1/integration')).status).toBe(200);
+    expect((await call(app, await partnerAdminToken(hA.partner.id), 'DELETE', '/huntress/integration')).status).toBe(200);
+
+    const [s1Row] = await tdb.select().from(s1Integrations).where(eq(s1Integrations.id, s1B.integration.id));
+    expect(s1Row.isActive).toBe(true);
+    expect(s1Row.apiTokenEncrypted).not.toBeNull();
+    const [s1Mapping] = await tdb.select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, s1B.integration.id));
+    expect(s1Mapping.registrationToken).not.toBeNull();
+    const [hRow] = await tdb.select().from(huntressIntegrations).where(eq(huntressIntegrations.id, hB.integration.id));
+    expect(hRow.isActive).toBe(true);
+    expect(hRow.apiKeyEncrypted).not.toBeNull();
+    expect(hRow.accountKeyEncrypted).not.toBeNull();
+    expect(hRow.webhookSecretEncrypted).not.toBeNull();
+  });
+
+  it('partner B never lists partner A disconnected history', async () => {
+    const app = buildApp();
+    const s1A = await seedS1Partner('a');
+    const s1B = await seedS1Partner('b');
+    const hA = await seedHuntressPartner('ha');
+    const hB = await seedHuntressPartner('hb');
+    expect((await call(app, await partnerAdminToken(s1A.partner.id), 'DELETE', '/s1/integration')).status).toBe(200);
+    expect((await call(app, await partnerAdminToken(hA.partner.id), 'DELETE', '/huntress/integration')).status).toBe(200);
+
+    const threats = await (await call(app, await partnerAdminToken(s1B.partner.id), 'GET', '/s1/threats')).json();
+    expect(threats.data.map((t: { id: string }) => t.id)).toEqual([s1B.threat.id]);
+    const incidents = await (await call(app, await partnerAdminToken(hB.partner.id), 'GET', '/huntress/incidents')).json();
+    expect(incidents.data.map((i: { id: string }) => i.id)).toEqual([hB.incident.id]);
+  });
+
+  it('labels history for an organization-scope reader too', async () => {
+    const app = buildApp();
+    const s1 = await seedS1Partner('a');
+    const h = await seedHuntressPartner('ha');
+    const s1OrgToken = await orgUserToken(s1.partner.id, s1.org.id);
+    const hOrgToken = await orgUserToken(h.partner.id, h.org.id);
+
+    const before = await (await call(app, s1OrgToken, 'GET', '/s1/threats')).json();
+    expect(before.data.map((t: any) => [t.id, t.integrationDisconnected])).toEqual([[s1.threat.id, false]]);
+
+    expect((await call(app, await partnerAdminToken(s1.partner.id), 'DELETE', '/s1/integration')).status).toBe(200);
+    expect((await call(app, await partnerAdminToken(h.partner.id), 'DELETE', '/huntress/integration')).status).toBe(200);
+
+    const s1Res = await call(app, s1OrgToken, 'GET', '/s1/threats');
+    expect(s1Res.status).toBe(200);
+    expect((await s1Res.json()).data.map((t: any) => [t.id, t.integrationDisconnected])).toEqual([[s1.threat.id, true]]);
+    const hRes = await call(app, hOrgToken, 'GET', '/huntress/incidents');
+    expect(hRes.status).toBe(200);
+    expect((await hRes.json()).data.map((i: any) => [i.id, i.integrationDisconnected])).toEqual([[h.incident.id, true]]);
+  });
+
+  it('after disconnect, manual sync and threat actions are refused cleanly (404, not 500)', async () => {
+    const app = buildApp();
+    const s1 = await seedS1Partner('a');
+    const h = await seedHuntressPartner('ha');
+    const s1Token = await partnerAdminToken(s1.partner.id);
+    const hToken = await partnerAdminToken(h.partner.id);
+    expect((await call(app, s1Token, 'DELETE', '/s1/integration')).status).toBe(200);
+    expect((await call(app, hToken, 'DELETE', '/huntress/integration')).status).toBe(200);
+
+    expect((await call(app, s1Token, 'POST', '/s1/sync', {})).status).toBe(404);
+    expect((await call(app, hToken, 'POST', '/huntress/sync', {})).status).toBe(404);
+    const action = await call(app, s1Token, 'POST', '/s1/threat-action', {
+      orgId: s1.org.id, action: 'quarantine', threatIds: [s1.threat.s1ThreatId],
+    });
+    expect(action.status).toBe(404);
+  });
+
+  it('a sync that fetched site tokens before the disconnect cannot write them back', async () => {
+    const app = buildApp();
+    const s1 = await seedS1Partner('a');
+    expect((await call(app, await partnerAdminToken(s1.partner.id), 'DELETE', '/s1/integration')).status).toBe(200);
+
+    await withSystemDbAccessContext(() => upsertDiscoveredSites({
+      integrationId: s1.integration.id,
+      partnerId: s1.partner.id,
+      sites: [
+        { siteId: 'site-a', siteName: 'Site a', count: 1, registrationToken: 'late-token' },
+        { siteId: 'site-new', siteName: 'New site', count: 1, registrationToken: 'late-token-2' },
+      ],
+    }));
+
+    const mappings = await (getTestDb() as any).select().from(s1OrgMappings).where(eq(s1OrgMappings.integrationId, s1.integration.id));
+    expect(mappings).toHaveLength(2);
+    expect(mappings.map((m: { registrationToken: string | null }) => m.registrationToken)).toEqual([null, null]);
+  });
+
+  it.each([
+    ['without MFA', { mfa: false }],
+    ['with selected-org partner access', { orgAccess: 'selected' as const }],
+    ['without organizations.write', { permissions: [{ resource: 'organizations', action: 'read' }, { resource: 'devices', action: 'read' }] }],
+  ])('a partner user %s cannot disconnect either integration, and nothing changes', async (_label, opts) => {
+    const app = buildApp();
+    const s1 = await seedS1Partner('a');
+    const tdb = getTestDb() as any;
+    const [huntress] = await tdb.insert(huntressIntegrations).values({
+      partnerId: s1.partner.id,
+      name: 'Huntress same partner',
+      apiKeyEncrypted: encryptSecret('hk-same'),
+      webhookSecretEncrypted: encryptSecret('webhook-secret-same'),
+      isActive: true,
+    }).returning();
+    const token = await partnerAdminToken(s1.partner.id, opts);
+
+    expect((await call(app, token, 'DELETE', '/s1/integration')).status).toBe(403);
+    expect((await call(app, token, 'DELETE', '/huntress/integration')).status).toBe(403);
+
+    const [s1Row] = await tdb.select().from(s1Integrations).where(eq(s1Integrations.id, s1.integration.id));
+    expect(s1Row.isActive).toBe(true);
+    expect(s1Row.apiTokenEncrypted).not.toBeNull();
+    const [hRow] = await tdb.select().from(huntressIntegrations).where(eq(huntressIntegrations.id, huntress.id));
+    expect(hRow.isActive).toBe(true);
+    expect(hRow.webhookSecretEncrypted).not.toBeNull();
+  });
+
+  it("connecting partner B creates its own row and never reactivates partner A's disconnected one", async () => {
+    const app = buildApp();
+    const { partnerA, partnerB, integration } = await seedS1();
+    expect((await call(app, await partnerAdminToken(partnerA.id), 'DELETE', '/s1/integration')).status).toBe(200);
+
+    const res = await call(app, await partnerAdminToken(partnerB.id), 'POST', '/s1/integration', {
+      name: 'S1 B', managementUrl: 'https://usea1-test.sentinelone.net', apiToken: 's1-token-b',
+    });
+    expect(res.status).toBe(201);
+    const created = (await res.json()).data;
+    expect(created.id).not.toBe(integration.id);
+    expect(created.partnerId).toBe(partnerB.id);
+
+    const [rowA] = await (getTestDb() as any).select().from(s1Integrations).where(eq(s1Integrations.id, integration.id));
+    expect(rowA.isActive).toBe(false);
+    expect(rowA.apiTokenEncrypted).toBeNull();
   });
 });

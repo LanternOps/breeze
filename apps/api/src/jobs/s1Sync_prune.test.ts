@@ -67,6 +67,7 @@ function selectReturning(rows: unknown[]) {
     chain[method] = vi.fn().mockReturnValue(chain);
   }
   chain.limit = vi.fn().mockResolvedValue(rows);
+  chain.for = vi.fn().mockResolvedValue(rows);
   chain.then = (resolve: (value: unknown[]) => unknown) => resolve(rows);
   return chain;
 }
@@ -135,6 +136,8 @@ function prime(integration: Record<string, unknown>) {
       apiTokenEncrypted: 'enc', isActive: true, lastSyncAt: null, lastFullAgentSyncAt: null, ...integration,
     }]))
     .mockReturnValueOnce(selectReturning([]))
+    // upsertDiscoveredSites locks the integration row and reads isActive.
+    .mockReturnValueOnce(selectReturning([{ isActive: true }]))
     .mockReturnValueOnce(selectReturning([{ s1SiteId: 'site-mapped', orgId: 'org-1' }]))
     .mockReturnValue(selectReturning([]));
 }

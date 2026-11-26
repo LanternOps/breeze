@@ -356,6 +356,8 @@ export default function SecurityIntegration() {
     } catch (err) {
       setDisconnectOpen(false);
       handleActionError(err, t("securityIntegration.failedToDisconnect"));
+      // A 404 means it was already disconnected elsewhere: show the real state.
+      void load();
     } finally {
       setDisconnecting(false);
     }

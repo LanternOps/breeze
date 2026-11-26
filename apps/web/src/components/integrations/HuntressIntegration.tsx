@@ -514,6 +514,8 @@ export default function HuntressIntegration() {
     } catch (err) {
       setDisconnectOpen(false);
       handleActionError(err, t("huntressIntegration.failedToDisconnect"));
+      // A 404 means it was already disconnected elsewhere: show the real state.
+      void load();
     } finally {
       setDisconnecting(false);
     }

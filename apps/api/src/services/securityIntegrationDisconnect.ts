@@ -5,13 +5,17 @@
  * Disconnect is soft. The integration row stays because synced agents,
  * threats, incidents and site/org mappings reference it, and history must stay
  * readable. What changes:
- *   - `is_active` goes false. Every sync worker, poller, manual sync, action
- *     dispatcher, installer resolver and the Huntress webhook already refuse an
- *     inactive integration.
+ *   - `is_active` goes false. The sync workers, the action poller, manual sync,
+ *     the installer resolvers and the Huntress webhook refuse an inactive
+ *     integration. S1 isolation and threat actions resolve their integration
+ *     through getActiveS1IntegrationForOrg, which returns only an active one;
+ *     the dispatchers behind it would also fail on the missing token.
  *   - Every stored secret on the row is set to NULL: the SentinelOne API token
  *     and each site's registration token; the Huntress API key, account key
- *     and webhook signing secret. A disconnected integration holds nothing
- *     that could reach the vendor or enroll an agent.
+ *     and webhook signing secret. A row disconnected here holds nothing that
+ *     could reach the vendor or enroll an agent. (A row deactivated before
+ *     #12691, through `isActive: false` on the connect route, may still hold
+ *     its secrets until it is reconnected; nothing reads them while inactive.)
  *
  * Reconnect rule: connecting the same provider again, while the partner has no
  * active integration, reactivates the partner's most recently disconnected row
@@ -20,9 +24,9 @@
  * never contended. A reconnect is treated like a first connect: every secret
  * must be supplied again; nothing stored on the old row is revived.
  *
- * The writes below run in the caller's DB context, so forced RLS fences them
- * to the caller's partner; the explicit partner condition is the app-layer
- * half of that fence.
+ * The writes below run in the caller's DB context. For a partner-scope caller
+ * forced RLS fences them to that partner; for a system-scope caller the
+ * explicit partner condition is the only fence.
  */
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransactionIfHeld, withSystemDbAccessContext } from '../db';

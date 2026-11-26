@@ -343,6 +343,20 @@ export async function upsertDiscoveredSites(params: {
 }): Promise<void> {
   if (params.sites.length === 0) return;
 
+  // A sync can fetch tokens just before the integration is disconnected. Lock
+  // the integration row until this transaction ends and store tokens only
+  // while it is active, so a disconnect either waits for this write and then
+  // clears it, or has already committed and no token is written (#12691).
+  // NO KEY UPDATE, not SHARE: the same transaction later updates this row
+  // (lastFullAgentSyncAt), and upgrading a share lock while a disconnect
+  // waits could deadlock.
+  const [integrationState] = await db
+    .select({ isActive: s1Integrations.isActive })
+    .from(s1Integrations)
+    .where(eq(s1Integrations.id, params.integrationId))
+    .for('no key update');
+  const storeTokens = integrationState?.isActive === true;
+
   const now = new Date();
   const values = params.sites.map((site) => ({
     integrationId: params.integrationId,
@@ -350,7 +364,7 @@ export async function upsertDiscoveredSites(params: {
     s1SiteId: site.siteId,
     s1SiteName: site.siteName ?? null,
     agentsCount: site.count,
-    registrationToken: site.registrationToken
+    registrationToken: storeTokens && site.registrationToken
       ? encryptSecret(site.registrationToken, { aad: 's1_org_mappings.registration_token' })
       : null,
     lastSeenAt: now,
