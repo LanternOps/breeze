@@ -46,6 +46,7 @@ import type { AuthContext } from '../../middleware/auth';
 import type { UserPermissions } from '../permissions';
 import { edrProviderLabel } from './providerKeys';
 import { edrSitePredicate, isSiteRestricted, type EdrSiteRestriction } from './readScope';
+import { activeIntegrationIdsOfReadableAgents, agentOfActiveIntegration } from '../securityIntegrationDisconnect';
 
 export const SYNC_HEALTH_PARTNER_ONLY_NOTE =
   'EDR sync health (stale, failed or unmapped vendor tenants) is visible to partner users only; '
@@ -457,16 +458,19 @@ function toLegacyCoverage(rows: ReadonlyArray<{ orgId: string; agents: number }>
 /**
  * Legacy integration agents in the caller's scope, one row per org (#10394).
  * Same org and site rules as `edr_endpoints`: a site-restricted caller counts
- * agents linked to an allowed device, plus never-linked ones. Partner/system
- * callers count only agents of an active integration (agent rows outlive a
- * disabled integration). Org tokens cannot read the partner-axis integration
- * row under RLS, so they count agent rows only, like the rest of the org-scope
- * read. Exported for the DB-less SQL tests.
+ * agents linked to an allowed device, plus never-linked ones. Every caller
+ * counts only agents of an active integration (agent rows outlive a
+ * disconnected one). Partner/system callers read the integration row in SQL.
+ * Org tokens cannot read the partner-axis integration row under RLS, so for
+ * them the caller passes `orgScopeActiveIntegrationIds`, from
+ * activeIntegrationIdsOfReadableAgents (#12726); absent, an org-scope read
+ * counts no agent. Exported for the DB-less SQL tests.
  */
 export function buildLegacyAgentCoverageQuery(
   scope: EdrReadScope,
   q: { orgId?: string },
   integration: EdrStatusIntegrationSummary['integration'],
+  orgScopeActiveIntegrationIds?: readonly string[],
 ) {
   const table = integration === 'huntress' ? huntressAgents : s1Agents;
   const conds: SQL[] = [];
@@ -481,12 +485,25 @@ export function buildLegacyAgentCoverageQuery(
   if (scope.auth.scope === 'partner' || scope.auth.scope === 'system') {
     const integrations = integration === 'huntress' ? huntressIntegrations : s1Integrations;
     conds.push(sql`exists (select 1 from ${integrations} i where i.id = ${table.integrationId} and i.is_active)`);
+  } else {
+    conds.push(agentOfActiveIntegration(table.integrationId, orgScopeActiveIntegrationIds ?? []));
   }
   return db
     .select({ orgId: table.orgId, agents: sql<number>`count(*)::int` })
     .from(table)
     .where(conds.length > 0 ? and(...conds) : undefined)
     .groupBy(table.orgId);
+}
+
+async function activeLegacyIntegrationIdsInScope(
+  scope: EdrReadScope,
+  q: { orgId?: string },
+): Promise<{ sentinelone: string[]; huntress: string[] }> {
+  const [sentinelone, huntress] = await Promise.all([
+    activeIntegrationIdsOfReadableAgents('sentinelone', edrOrgCondition(scope.auth, q.orgId, s1Agents.orgId)),
+    activeIntegrationIdsOfReadableAgents('huntress', edrOrgCondition(scope.auth, q.orgId, huntressAgents.orgId)),
+  ]);
+  return { sentinelone, huntress };
 }
 
 export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): Promise<EdrStatusSummary> {
@@ -503,6 +520,10 @@ export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): 
       : isNull(edrEndpoints.breezeDeviceId));
   }
   const detectionConds = buildDetectionConditions(scope, { orgId: q.orgId, status: 'open', limit: 1, offset: 0 });
+  // #12726: an org token cannot read the integration rows, so it learns which
+  // of its agents' integrations are still connected from a lookup limited to
+  // the agent rows it can read. Partner/system callers filter in SQL.
+  const orgScopeActive = syncHealthVisible ? null : await activeLegacyIntegrationIdsInScope(scope, q);
 
   const [endpointRows, detectionRows, s1Rows, huntressRows] = await Promise.all([
     db.select({
@@ -524,8 +545,8 @@ export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): 
       .from(edrDetections)
       .where(and(...detectionConds))
       .groupBy(edrDetections.provider, edrDetections.connectionId),
-    buildLegacyAgentCoverageQuery(scope, q, 'sentinelone'),
-    buildLegacyAgentCoverageQuery(scope, q, 'huntress'),
+    buildLegacyAgentCoverageQuery(scope, q, 'sentinelone', orgScopeActive?.sentinelone),
+    buildLegacyAgentCoverageQuery(scope, q, 'huntress', orgScopeActive?.huntress),
   ]);
 
   let connections: CoverageConnection[] = [];

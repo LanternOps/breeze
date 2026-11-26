@@ -46,9 +46,9 @@
  * The routes check the same capability first; this check keeps a future
  * caller that forgets its own gate from clearing a partner's credentials.
  */
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransactionIfHeld, withSystemDbAccessContext } from '../db';
-import { huntressIntegrations, s1Integrations, s1OrgMappings } from '../db/schema';
+import { huntressAgents, huntressIntegrations, s1Agents, s1Integrations, s1OrgMappings } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
@@ -199,4 +199,57 @@ export async function activeIntegrationIds(
     })
   );
   return new Set(rows.map((row) => row.id));
+}
+
+/**
+ * Current coverage from SentinelOne or Huntress agent rows (#12726).
+ *
+ * Agent rows outlive a disconnect, so a reader that treats them as "this
+ * device is protected" must first drop the rows of a disconnected
+ * integration. This reads the distinct integration ids of the agent rows that
+ * `where` selects IN THE CALLER'S DB CONTEXT (forced RLS fences that read to
+ * the caller's orgs), then asks activeIntegrationIds which of those are
+ * active. It can only answer about integrations behind agent rows the caller
+ * could already read, and returns nothing but those ids.
+ *
+ * Feed the result to agentOfActiveIntegration to filter the reader's own
+ * query, or test row membership with it. On the caller's connection it runs
+ * one plain SELECT and opens no transaction or savepoint, so it may sit beside
+ * sibling queries in a Promise.all.
+ */
+export async function activeIntegrationIdsOfReadableAgents(
+  vendor: 'sentinelone' | 'huntress',
+  where: SQL | undefined,
+): Promise<string[]> {
+  const table = vendor === 'sentinelone' ? s1Agents : huntressAgents;
+  const rows = await db
+    .selectDistinct({ integrationId: table.integrationId })
+    .from(table)
+    .where(where);
+  const active = await activeIntegrationIds(vendor, rows.map((row) => row.integrationId));
+  return [...active];
+}
+
+export type ActiveAgentIntegrationIds = { sentinelone: string[]; huntress: string[] };
+
+/**
+ * activeIntegrationIdsOfReadableAgents for both vendors, over one org's agent
+ * rows. For the org-scoped coverage readers (portal, posture evidence,
+ * reports).
+ */
+export async function activeAgentIntegrationIdsForOrg(orgId: string): Promise<ActiveAgentIntegrationIds> {
+  const [sentinelone, huntress] = await Promise.all([
+    activeIntegrationIdsOfReadableAgents('sentinelone', eq(s1Agents.orgId, orgId)),
+    activeIntegrationIdsOfReadableAgents('huntress', eq(huntressAgents.orgId, orgId)),
+  ]);
+  return { sentinelone, huntress };
+}
+
+/**
+ * SQL condition: this agent row's integration is one of `activeIds` (from
+ * activeIntegrationIdsOfReadableAgents). An empty list matches nothing, so a
+ * caller with no connected integration counts no agent.
+ */
+export function agentOfActiveIntegration(integrationIdColumn: SQLWrapper, activeIds: readonly string[]): SQL {
+  return activeIds.length > 0 ? inArray(integrationIdColumn, [...activeIds]) : sql`false`;
 }

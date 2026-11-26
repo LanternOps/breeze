@@ -48,6 +48,7 @@ import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
+import { activeIntegrationIds } from './securityIntegrationDisconnect';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import {
   CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck, deriveBackupHealth, saasWorkloadLabel,
@@ -493,15 +494,21 @@ export async function loadPostureEvidence(
 
   // 4 s1_agents, 5 huntress_agents
   const s1Rows = await db
-    .select({ deviceId: s1Agents.deviceId })
+    .select({ deviceId: s1Agents.deviceId, integrationId: s1Agents.integrationId })
     .from(s1Agents)
     .where(and(eq(s1Agents.orgId, orgId), inArray(s1Agents.deviceId, deviceIds)));
   const huntressRows = await db
-    .select({ deviceId: huntressAgents.deviceId })
+    .select({ deviceId: huntressAgents.deviceId, integrationId: huntressAgents.integrationId })
     .from(huntressAgents)
     .where(and(eq(huntressAgents.orgId, orgId), inArray(huntressAgents.deviceId, deviceIds)));
-  const s1Devices = new Set(s1Rows.map((r) => r.deviceId).filter(isString));
-  const huntressDevices = new Set(huntressRows.map((r) => r.deviceId).filter(isString));
+  // #12726: an agent of a disconnected integration is not managed protection.
+  // The lookup answers only for the integration ids on the rows just read.
+  const activeS1 = await activeIntegrationIds('sentinelone', s1Rows.map((r) => r.integrationId));
+  const activeHuntress = await activeIntegrationIds('huntress', huntressRows.map((r) => r.integrationId));
+  const s1Devices = new Set(s1Rows.filter((r) => activeS1.has(r.integrationId)).map((r) => r.deviceId).filter(isString));
+  const huntressDevices = new Set(
+    huntressRows.filter((r) => activeHuntress.has(r.integrationId)).map((r) => r.deviceId).filter(isString),
+  );
 
   // 6 device_patches pending + effective severity
   const patchRows = await db

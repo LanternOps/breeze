@@ -28,6 +28,7 @@ import {
 import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { resolveReadableToolOrgScope } from './aiToolWriteOrg';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
+import { activeIntegrationIds } from './securityIntegrationDisconnect';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -181,7 +182,14 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           })
           .from(huntressAgents)
           .innerJoin(huntressIntegrations, eq(huntressAgents.integrationId, huntressIntegrations.id))
-          .where(and(...agentScopedConditions, ...(conditions.length > 0 ? conditions : []))),
+          // #12726: the summary is current coverage, so a disconnected
+          // integration's agents are left out. Its own row below still
+          // reports them, labelled by isActive.
+          .where(and(
+            ...agentScopedConditions,
+            ...(conditions.length > 0 ? conditions : []),
+            eq(huntressIntegrations.isActive, true),
+          )),
         db
           .select({
             openIncidents: sql<number>`coalesce(sum(case when coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())}) then 1 else 0 end), 0)::int`,
@@ -523,6 +531,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
             lastSeenAt: huntressAgents.lastSeenAt,
             deviceId: huntressAgents.deviceId,
             deviceHostname: devices.hostname,
+            integrationId: huntressAgents.integrationId,
           })
           .from(huntressAgents)
           .leftJoin(devices, eq(huntressAgents.deviceId, devices.id))
@@ -536,8 +545,16 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           .where(where),
       ]);
 
+      // #12726: an agent synced from a disconnected integration is history,
+      // not current coverage. The lookup answers only for the integration ids
+      // on the rows just read (an org-scope caller cannot read that table).
+      const active = await activeIntegrationIds('huntress', rows.map((row) => row.integrationId));
       return JSON.stringify({
-        agents: rows.map((row) => ({ ...row, mapped: row.deviceId !== null })),
+        agents: rows.map(({ integrationId, ...row }) => ({
+          ...row,
+          mapped: row.deviceId !== null,
+          integrationActive: active.has(integrationId),
+        })),
         total: Number(countRow?.count ?? 0),
         limit,
         offset,
