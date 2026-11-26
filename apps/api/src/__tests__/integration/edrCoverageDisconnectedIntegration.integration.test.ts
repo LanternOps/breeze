@@ -256,16 +256,27 @@ describe('EDR status legacy coverage', () => {
 describe('Huntress AI tools', () => {
   runDb('get_huntress_status (partner): the summary counts only a connected integration\'s agents', async () => {
     const { a, b } = await seed();
+    for (const t of [a, b]) {
+      await admin().insert(huntressIncidents).values({
+        orgId: t.orgId, integrationId: t.huntressIntegrationId, huntressIncidentId: `inc-${randomUUID().slice(0, 8)}`,
+        title: 'Footholds found', status: 'open', severity: 'high', deviceId: t.deviceId, reportedAt: NOW,
+      });
+    }
     const rawA = await asCtx(a.partnerCtx, () => huntressTool('get_huntress_status')({}, authFor('partner', a)));
     const outA = JSON.parse(rawA);
-    expect(outA.summary).toMatchObject({ totalAgents: 0, mappedAgents: 0 });
-    // History stays visible and labelled: the row is there, marked inactive.
+    expect(outA.summary).toMatchObject({ totalAgents: 0, mappedAgents: 0, openIncidents: 0 });
+    // History stays visible and labelled: the integration's own row keeps its
+    // counts and is marked inactive.
     expect(outA.integrations).toEqual([
-      expect.objectContaining({ id: a.huntressIntegrationId, isActive: false }),
+      expect.objectContaining({
+        id: a.huntressIntegrationId,
+        isActive: false,
+        metrics: expect.objectContaining({ totalAgents: 1, openIncidents: 1 }),
+      }),
     ]);
 
     const rawB = await asCtx(b.partnerCtx, () => huntressTool('get_huntress_status')({}, authFor('partner', b)));
-    expect(JSON.parse(rawB).summary).toMatchObject({ totalAgents: 1, mappedAgents: 1 });
+    expect(JSON.parse(rawB).summary).toMatchObject({ totalAgents: 1, mappedAgents: 1, openIncidents: 1 });
   });
 
   runDb('get_huntress_agents (org and partner): each agent says whether its integration is disconnected', async () => {
