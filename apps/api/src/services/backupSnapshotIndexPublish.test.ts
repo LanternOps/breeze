@@ -28,7 +28,7 @@ const snapshotFields = {
   storageIdentity: 's3::bucket',
   backupType: 'file',
   keyLayout: 'legacy_flat',
-  keyPrefix: null,
+  keyPrefix: null as string | null,
 };
 
 const LINEAGE: LineageKey = lineageKeyOf(snapshotFields)!;
