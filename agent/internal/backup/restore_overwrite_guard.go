@@ -31,9 +31,11 @@ import (
 // volume root or an ancestor of the originals, a share naming this machine)
 // is not detected, with one exception on macOS: /System/Volumes/Data is
 // read as / there (withoutDarwinDataVolume). This is a deliberate limit:
-// recognising aliases needs file system identity checks, which cannot be
+// recognising aliases needs file system identity checks, which could not be
 // made to fail closed without opening paths the snapshot names or refusing
-// ordinary restores (resume, re-run into the same folder). See #12668.
+// some ordinary restores; see #12668 for the reasoning. A target typed as a
+// drive, share or mount-point root is gated by the server's root check, not
+// by this guard.
 
 // ResultCodeRestoreWouldOverwriteOriginals is RestoreResult.Code for a restore to
 // a target that was refused because entries would be written over the
