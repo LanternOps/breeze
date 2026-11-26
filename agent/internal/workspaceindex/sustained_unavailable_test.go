@@ -266,6 +266,10 @@ func TestStartLoopRestartsIndexingAfterSustainedUnavailable(t *testing.T) {
 	waitLoopCondition(t, func() bool { return l.server.runStarts.Load() == 2 }, "crawl restart after recovery")
 	waitLoopCondition(t, func() bool { return l.activationCount() == 2 }, "re-activation audit after recovery")
 
+	if got := l.deactivationReasons(); len(got) != 1 {
+		t.Fatalf("deactivation records after recovery = %q, want exactly one", got)
+	}
+
 	posts := l.server.eventPosts.Load()
 	l.touch(t, "after-recovery.txt")
 	waitLoopCondition(t, func() bool { return l.server.eventPosts.Load() > posts }, "watcher upload after recovery")
@@ -294,6 +298,22 @@ func TestStartLoopRecoveryResetsUnavailableState(t *testing.T) {
 	if got := recorder.snapshot(); !slices.Equal(got, want) {
 		t.Fatalf("back-off log levels after 503 → 200 → 503 = %v, want %v", got, want)
 	}
+}
+
+// Only consecutive refusals count: an error outside the unavailable set
+// between two 503s (here a 500, retried on the next tick) resets the count.
+func TestStartLoopOtherErrorBetweenRefusalsResetsTheCount(t *testing.T) {
+	l := startIndexingLoop(t, nil)
+
+	l.server.status.Store(http.StatusServiceUnavailable)
+	l.fetchAt(t, 2*time.Minute, 2)
+	l.server.status.Store(http.StatusInternalServerError)
+	erroredAt := 2*time.Minute + unavailableBackoffMax + time.Second
+	l.fetchAt(t, erroredAt, 3)
+	l.server.status.Store(http.StatusServiceUnavailable)
+	l.fetchAt(t, erroredAt+2*time.Second, 4)
+
+	l.assertStillIndexing(t, "after 503 → 500 → 503")
 }
 
 // A 404 after a 503 takes the 404 path: stop, record "module absent", and

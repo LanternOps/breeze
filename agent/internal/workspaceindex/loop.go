@@ -43,7 +43,8 @@ const (
 	// answers stop running crawls and watchers (#12727). The first refusal
 	// only backs off the poll, so a short proxy or deploy blip does not tear
 	// indexing down; if the poll after that back-off (30 to 60 minutes later
-	// without a Retry-After) is refused too, they are stopped.
+	// without a Retry-After, up to six hours with one) is refused too, they
+	// are stopped.
 	unavailableStopAfterRefusals = 2
 )
 
