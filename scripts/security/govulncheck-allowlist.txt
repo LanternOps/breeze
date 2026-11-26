@@ -15,3 +15,22 @@
 # entry and that guard's allowlist reference when a fixed go-smb2 ships.
 # Tracking: #2860
 GO-2026-5051
+
+# gorilla/websocket client mask key drawn from math/rand (GHSA-w67g-5rqw-f597).
+# Fixed in: no tagged release. The only fixed version is the untagged
+# pseudo-version v1.5.4-0.20240701034025-d67f41855da4, an unreleased upstream
+# commit that carries every change made since v1.5.3, so the agent does not
+# pin it. Mitigated by agent/internal/websocket/maskkey_rng_guard_test.go.
+# The advisory's weakness is a predictable math/rand stream. That guard fails
+# the agent Go test jobs in CI if the agent module brings the deterministic
+# source back: randautoseed=0 or randseednop=0 in go.mod, go.work or a
+# //go:debug directive; a `go` line or `godebug default` below go1.24; non-test
+# code that references math/rand.Seed or names either setting; or a top-level
+# stream that matches rand.NewSource(1). It guards a build property, not the
+# call site (conn.go newMaskKey), and does not cover a GODEBUG set in the agent
+# service's environment. Remove this entry when a tagged gorilla/websocket
+# release carries the fix and the agent upgrades to it.
+# Review by: 2027-02-23 (a reminder for reviewers; run-govulncheck.sh does not
+# enforce it).
+# Tracking: #12642
+GO-2026-6278
