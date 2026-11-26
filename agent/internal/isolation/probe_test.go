@@ -185,3 +185,25 @@ func TestDefaultVerifyURLIncludesEscapedAgentID(t *testing.T) {
 		}
 	}
 }
+
+// The fake dialer's drop must not wait on the wall clock: the probe measures
+// the dial with the real clock, so a harness that sleeps to the probe timeout
+// can read as "failed too late" on a loaded runner. With an hour-long timeout
+// a dialer that waits for the deadline would never return here.
+func TestFakeDialDropDoesNotWaitOnWallClock(t *testing.T) {
+	for _, mode := range []dialMode{dialDrop, dialDropUnattributed} {
+		iso, d := negHarness(mode)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = negativeProbe(ctx, d, iso, probeTarget, time.Hour)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("mode %d: fake dial blocked on the probe timeout instead of returning its recorded drop", mode)
+		}
+		cancel()
+	}
+}
