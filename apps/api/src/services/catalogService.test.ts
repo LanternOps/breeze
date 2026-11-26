@@ -478,7 +478,7 @@ describe('applyImportedPricing (#3775 review #9: importer duplicate-SKU recovery
     queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '18.50', costCurrency: 'EUR' }]); // item update
     queueResult([{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
     const res = await svc.applyImportedPricing(
-      { itemId: 'i1', sku: 'CFQ7' }, { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'EUR' }, actor);
+      { itemId: 'i1', sku: 'CFQ7', replacesSku: '{"sku":"CFQ7"}' }, { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'EUR' }, actor);
 
     expect(mock.for).toHaveBeenCalledWith('update');
     expect(mock.for.mock.invocationCallOrder[0]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
@@ -496,7 +496,8 @@ describe('applyImportedPricing (#3775 review #9: importer duplicate-SKU recovery
     queueResult([{ id: 'pr-usd', itemId: 'i1', currencyCode: 'USD', unitPrice: '22.00' }]);
     queueResult([{ id: 'i1', partnerId: 'p1', sku: '{"sku":"CFQ7"}', costBasis: '18.50', costCurrency: 'USD' }]);
     queueResult([{ currencyCode: 'USD', unitPrice: '22.00' }]);
-    const res = await svc.applyImportedPricing({ itemId: 'i1', sku: 'CFQ7' }, { unitPrice: 22, costBasis: 18.5, costCurrency: 'USD' }, actor);
+    const res = await svc.applyImportedPricing(
+      { itemId: 'i1', sku: 'CFQ7', replacesSku: '{"sku":"CFQ7"}' }, { unitPrice: 22, costBasis: 18.5, costCurrency: 'USD' }, actor);
 
     expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ costBasis: '18.50', costCurrency: 'USD' }));
     expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ sku: expect.anything() }));
@@ -510,10 +511,26 @@ describe('applyImportedPricing (#3775 review #9: importer duplicate-SKU recovery
     queueResult([]); // existing price-book codes (the SKU check would have consumed this)
     queueResult([{ id: 'pr-usd', itemId: 'i1', currencyCode: 'USD', unitPrice: '22.00' }]);
     queueResult([{ currencyCode: 'USD', unitPrice: '22.00' }]);
-    const res = await svc.applyImportedPricing({ itemId: 'i1', sku: null }, { unitPrice: 22 }, actor);
+    const res = await svc.applyImportedPricing({ itemId: 'i1', sku: null, replacesSku: null }, { unitPrice: 22 }, actor);
 
     expect(mock.update).not.toHaveBeenCalled();
     expect(res).toMatchObject({ id: 'i1', sku: 'KEEP' });
     expect(res.pricingApplied).toEqual({ added: ['USD'], preserved: [] });
+  });
+
+  it('by item id: a SKU the partner edited by hand is not the one to replace, so it stays while the feed cost and price still land', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'MY-CUSTOM', costBasis: '10.00', costCurrency: 'USD' }]); // lock by id
+    queueResult([{ currencyCode: 'USD' }]); // partner currency
+    queueResult([]); // existing price-book codes: none (a SKU check, had it run, would have read this as "CFQ7 is free")
+    queueResult([{ id: 'pr-eur', itemId: 'i1', currencyCode: 'EUR', unitPrice: '22.00' }]); // EUR upsert
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'MY-CUSTOM', costBasis: '18.50', costCurrency: 'EUR' }]); // cost update
+    queueResult([{ currencyCode: 'EUR', unitPrice: '22.00' }]);
+    const res = await svc.applyImportedPricing(
+      { itemId: 'i1', sku: 'CFQ7', replacesSku: '{"sku":"CFQ7"}' }, { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'EUR' }, actor);
+
+    expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ sku: expect.anything() }));
+    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ costBasis: '18.50', costCurrency: 'EUR' }));
+    expect(res).toMatchObject({ id: 'i1', sku: 'MY-CUSTOM', costBasis: '18.50' });
+    expect(res.pricingApplied).toEqual({ added: ['EUR'], preserved: [] });
   });
 });

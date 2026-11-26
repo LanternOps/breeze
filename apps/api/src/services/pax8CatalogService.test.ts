@@ -135,12 +135,14 @@ describe('importPax8CatalogItem', () => {
       catalog.push(created);
       return created;
     });
-    mocks.applyImportedPricing.mockImplementation(async (target: { itemId: string; sku: string | null }) => {
+    mocks.applyImportedPricing.mockImplementation(async (target: { itemId: string; sku: string | null; replacesSku: string | null }) => {
       const found = catalog.find((i) => i.id === target.itemId)!;
-      if (target.sku) found.sku = target.sku;
+      if (target.sku && found.sku === target.replacesSku) found.sku = target.sku;
       return found;
     });
-    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
+    // Pax8 sends both: the plain sku, and the JSON-string vendorSku the importer used before #12524.
+    const raw = { sku: 'CFQ7', vendorSku: '{"sku":"CFQ7"}' };
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw };
 
     await importPax8CatalogItem({ product, item: { name: product.name, sku: '{"sku":"CFQ7"}', unitPrice: 22 } }, actor, dbCtx);
     await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 25, sellCurrency: 'EUR' } }, actor, dbCtx);
@@ -148,7 +150,7 @@ describe('importPax8CatalogItem', () => {
     expect(catalog).toEqual([{ id: 'item-1', sku: 'CFQ7' }]);
     expect(mappedItemId).toBe('item-1');
     expect(mocks.applyImportedPricing).toHaveBeenCalledWith(
-      { itemId: 'item-1', sku: 'CFQ7' },
+      { itemId: 'item-1', sku: 'CFQ7', replacesSku: '{"sku":"CFQ7"}' },
       expect.objectContaining({ prices: [{ currencyCode: 'EUR', unitPrice: 25 }], costBasis: 18.5, costCurrency: 'USD' }),
       actor,
     );

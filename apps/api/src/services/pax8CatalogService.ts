@@ -203,14 +203,21 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
   return withDbAccessContext(dbCtx, async () => {
     // The mapping, not the SKU, identifies a product imported before: items from
     // before #12524 carry Pax8's JSON-string vendorSku as their SKU (#12527).
+    // Only that SKU, the raw vendorSku trimmed as the old importer stored it, is
+    // replaced; any other SKU on the item is the partner's and stays.
     const [mapping] = await db.select({ catalogItemId: pax8ProductMappings.catalogItemId })
       .from(pax8ProductMappings)
-      .where(and(eq(pax8ProductMappings.integrationId, integration.id), eq(pax8ProductMappings.pax8ProductId, product.pax8ProductId)))
+      .where(and(
+        eq(pax8ProductMappings.partnerId, integration.partnerId),
+        eq(pax8ProductMappings.integrationId, integration.id),
+        eq(pax8ProductMappings.pax8ProductId, product.pax8ProductId),
+      ))
       .limit(1);
+    const legacySku = typeof product.raw.vendorSku === 'string' ? product.raw.vendorSku.trim() : null;
     let created: Awaited<ReturnType<typeof createCatalogItem>>;
     try {
       created = mapping?.catalogItemId
-        ? await applyImportedPricing({ itemId: mapping.catalogItemId, sku: payload.sku ?? null }, payload, actor)
+        ? await applyImportedPricing({ itemId: mapping.catalogItemId, sku: payload.sku ?? null, replacesSku: legacySku }, payload, actor)
         : await createCatalogItem(payload, actor);
     } catch (err) {
       const sku = payload.sku;

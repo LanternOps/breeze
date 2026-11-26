@@ -392,16 +392,17 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
  * gap) leaves the stored cost untouched.
  *
  * The item is found by SKU, or by id when the importer already knows it (the
- * Pax8 product mapping, #12527). Found by id, the item also takes the imported
- * SKU, unless another of the partner's items holds it: then it keeps its own,
- * so the pricing still lands.
+ * Pax8 product mapping, #12527). Found by id, the item takes the imported SKU
+ * only while it still holds `replacesSku` (a SKU the importer itself once
+ * wrote) and no other of the partner's items holds the new one. Any other SKU,
+ * such as one the partner set by hand, stays, and the pricing still lands.
  *
  * Runs under the catalog-side lock order (item row FIRST, then price rows) and
  * returns the same item-plus-price-book shape createCatalogItem does, plus
  * `pricingApplied`.
  */
 export async function applyImportedPricing(
-  target: { sku: string } | { itemId: string; sku: string | null },
+  target: { sku: string } | { itemId: string; sku: string | null; replacesSku: string | null },
   input: Pick<CreateCatalogItemInput, 'unitPrice' | 'prices' | 'costBasis' | 'costCurrency' | 'markupPercent'>,
   actor: CatalogActor
 ) {
@@ -434,7 +435,8 @@ export async function applyImportedPricing(
     }
     // Pre-checked rather than left to the unique index, for the same reason as
     // updateCatalogItem: a raised violation aborts the caller's request transaction.
-    if (target.sku != null && target.sku !== existing.sku) {
+    if ('itemId' in target && target.sku != null && target.sku !== existing.sku
+      && target.replacesSku != null && existing.sku === target.replacesSku) {
       const [taken] = await tx.select({ id: catalogItems.id }).from(catalogItems)
         .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, target.sku), ne(catalogItems.id, existing.id)))
         .limit(1);

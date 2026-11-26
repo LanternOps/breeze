@@ -19,7 +19,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { catalogItems, catalogItemPrices } from '../../db/schema';
 import { pax8Integrations, pax8ProductMappings } from '../../db/schema/pax8';
 import { createPartner } from './db-utils';
-import { applyImportedPricing, createCatalogItem, type CatalogActor } from '../../services/catalogService';
+import { applyImportedPricing, createCatalogItem, updateCatalogItem, type CatalogActor } from '../../services/catalogService';
 import { importPax8CatalogItem, type Pax8ImportInput } from '../../services/pax8CatalogService';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -68,7 +68,7 @@ const reimport = (over: Partial<Pax8ImportInput['item']> = {}): Pax8ImportInput 
     billingTerm: 'Monthly',
     partnerBuyRate: '110.25',
     currency: 'CAD',
-    raw: {},
+    raw: { sku: REAL_SKU, vendorSku: JSON_SKU }, // the Pax8 record: before #12524 the importer stored its vendorSku
   },
   item: { name: 'Microsoft 365 Business Standard', sku: REAL_SKU, unitPrice: 95, sellCurrency: 'EUR', ...over },
   aiCleanup: false,
@@ -147,6 +147,21 @@ describe('Pax8 re-import (#12527, breeze_app, real DB)', () => {
     expect(await mappingsOf(fx)).toHaveLength(1);
   });
 
+  runDb('a SKU the partner edited by hand survives a re-import: one item, SKU kept, pricing still applied', async () => {
+    const fx = await seed();
+    const legacy = await seedLegacyMappedItem(fx);
+    await withDbAccessContext(fx.ctxA, () => updateCatalogItem(legacy.id, { sku: 'MY-CUSTOM' }, fx.actorA));
+
+    const result = await importPax8CatalogItem(reimport(), fx.actorA, fx.ctxA);
+
+    const items = await itemsOf(fx.partnerA.id);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: legacy.id, sku: 'MY-CUSTOM', costBasis: '110.25', costCurrency: 'CAD' });
+    expect(result).toMatchObject({ id: legacy.id, sku: 'MY-CUSTOM' });
+    expect(await pricesOf(legacy.id)).toEqual([['EUR', '95.00'], ['USD', '100.00']]);
+    expect((await mappingsOf(fx))[0]).toMatchObject({ catalogItemId: legacy.id });
+  });
+
   runDb('the real SKU is already held by another item of the partner: the mapped item keeps its SKU, pricing still lands, nothing aborts', async () => {
     const fx = await seed();
     const legacy = await seedLegacyMappedItem(fx);
@@ -177,7 +192,7 @@ describe('Pax8 re-import (#12527, breeze_app, real DB)', () => {
       let caught: unknown;
       let applied: Awaited<ReturnType<typeof applyImportedPricing>> | undefined;
       try {
-        applied = await applyImportedPricing({ itemId: legacy.id, sku: REAL_SKU }, { unitPrice: 95, costBasis: 70, costCurrency: 'USD' }, fx.actorA);
+        applied = await applyImportedPricing({ itemId: legacy.id, sku: REAL_SKU, replacesSku: JSON_SKU }, { unitPrice: 95, costBasis: 70, costCurrency: 'USD' }, fx.actorA);
       } catch (err) {
         caught = err;
       }
@@ -199,7 +214,7 @@ describe('Pax8 re-import (#12527, breeze_app, real DB)', () => {
     const pricesBefore = await pricesOf(itemB.id);
 
     await expect(withDbAccessContext(fx.ctxA, () =>
-      applyImportedPricing({ itemId: itemB.id, sku: 'STOLEN' }, { prices: [{ currencyCode: 'EUR', unitPrice: 1 }], costBasis: 1, costCurrency: 'USD' }, fx.actorA)))
+      applyImportedPricing({ itemId: itemB.id, sku: 'STOLEN', replacesSku: 'B-ONLY' }, { prices: [{ currencyCode: 'EUR', unitPrice: 1 }], costBasis: 1, costCurrency: 'USD' }, fx.actorA)))
       .rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
 
     expect(await itemById(itemB.id)).toEqual(before); // sku, cost and updatedAt all unchanged
