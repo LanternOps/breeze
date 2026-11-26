@@ -1267,3 +1267,47 @@ describe('DeviceInfoTab — control-plane block notice (#8868)', () => {
     expect(screen.queryByTestId('control-plane-block-notice')).toBeNull();
   });
 });
+
+// #12729 — plaintext server connection notice. The API sends
+// `plaintextServerConnection: { observedAt } | null`.
+describe('DeviceInfoTab — plaintext server connection notice (#12729)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function load(extra: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({ ...baseDeviceInfoPayload, ...extra });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  }
+
+  it('renders the warning with title and a docs link when the field is set', async () => {
+    load({ plaintextServerConnection: { observedAt: '2026-11-20T10:00:00Z' } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const el = await screen.findByTestId('plaintext-server-connection-notice');
+    expect(el.getAttribute('role')).toBe('status');
+    expect(el.textContent).toContain('Agent connection is not encrypted');
+    const link = el.querySelector('a');
+    expect(link?.getAttribute('href')).toMatch(/\/agents\/installation\/#configuration-file$/);
+  });
+
+  it('renders nothing when the field is null', async () => {
+    load({ plaintextServerConnection: null });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('plaintext-server-connection-notice')).toBeNull();
+  });
+
+  it('renders nothing when the field is absent', async () => {
+    load({});
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    expect(screen.queryByTestId('plaintext-server-connection-notice')).toBeNull();
+  });
+});

@@ -1491,6 +1491,11 @@
       "howToFix": "How to fix",
       "noDetail": "no detail"
     },
+    "plaintextServerConnection": {
+      "title": "Agent connection is not encrypted",
+      "message": "This agent connects to the server over plain http:// (an unencrypted WebSocket). Anyone on the network path between the device and the server can read and change its traffic, including the agent's credentials. Change the agent's server_url to the server's https:// address.",
+      "howToFix": "How to fix"
+    },
     "logShipping": {
       "label": "Log shipping",
       "state": {

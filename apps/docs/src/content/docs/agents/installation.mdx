@@ -392,3 +392,7 @@ auth_token: "brz_..."
 <Aside type="note" title="Redirects and the server URL">
   The agent, the watchdog and the helper processes send their token only to the `server_url` host and the configured backup server. A redirect on those requests is followed only to another path on the same host and port, or from `http://` to `https://` on the same host. A redirect to a different host (subdomains included), to another port on the same host, or from `https://` to `http://` is not followed; the request fails instead. If you move the API to a new hostname, update `server_url` or re-enroll the agents rather than redirecting the old hostname. Agent update files hosted on another origin, such as GitHub releases, are downloaded without the token.
 </Aside>
+
+<Aside type="caution" title="An http:// server URL is not encrypted">
+  An agent whose `server_url` starts with `http://` connects to the server over a plain, unencrypted WebSocket. Anyone on the network path between the device and the server can read and change that traffic, including the agent's token. The agent still connects, but it logs a warning once each time it starts, and the device's **Details** tab shows a notice. To clear it, serve the API at an `https://` address, then update `server_url` to that address or re-enroll the agent. `localhost`, `127.0.0.1` and `::1` do not trigger the warning, because that traffic does not leave the device; a private network address does.
+</Aside>

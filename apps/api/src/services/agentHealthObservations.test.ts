@@ -1,18 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { executeMock, runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(() => ({
+const { executeMock, selectMock, runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
+  selectMock: vi.fn(),
   runOutsideDbContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../db', () => ({
-  db: { execute: (...args: unknown[]) => executeMock(...args) },
+  db: {
+    execute: (...args: unknown[]) => executeMock(...args),
+    select: (...args: unknown[]) => selectMock(...args),
+  },
   runOutsideDbContext: runOutsideDbContextMock,
   withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
 
-import { recordAgentHealthObservation } from './agentHealthObservations';
+import {
+  derivePlaintextServerConnection,
+  readPlaintextServerConnection,
+  recordAgentHealthObservation,
+} from './agentHealthObservations';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -164,5 +172,77 @@ describe('recordAgentHealthObservation', () => {
       observation,
       receivedAt,
     })).resolves.toEqual({ observationId: OBSERVATION_ID, becameLatest: false });
+  });
+});
+
+// #12729 — the agent reports `server_connection: { state: 'warning', reason:
+// 'plaintext_websocket' }` when its server_url is http:// to a host that is
+// not the device itself (agent/internal/heartbeat/server_connection.go).
+describe('derivePlaintextServerConnection', () => {
+  const at = new Date('2026-11-20T10:00:00.000Z');
+
+  it('reports the plaintext connection with the observation time', () => {
+    expect(derivePlaintextServerConnection({ state: 'warning', reason: 'plaintext_websocket' }, at))
+      .toEqual({ observedAt: '2026-11-20T10:00:00.000Z' });
+  });
+
+  it.each([
+    ['a healthy component', { state: 'healthy' }],
+    ['a healthy component with an empty reason', { state: 'healthy', reason: '' }],
+    ['a warning with a different reason', { state: 'warning', reason: 'something_else' }],
+    ['an error state with the plaintext reason', { state: 'error', reason: 'plaintext_websocket' }],
+    ['no component (older agent)', null],
+    ['no component (undefined)', undefined],
+    ['a non-object component', 'plaintext_websocket'],
+  ])('returns null for %s', (_label, component) => {
+    expect(derivePlaintextServerConnection(component, at)).toBeNull();
+  });
+
+  it('returns null when the observation time is unusable', () => {
+    expect(derivePlaintextServerConnection({ state: 'warning', reason: 'plaintext_websocket' }, 'not-a-date')).toBeNull();
+  });
+});
+
+describe('readPlaintextServerConnection', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function selectReturning(rowsOut: unknown[]) {
+    const node: any = {
+      from: vi.fn(() => node),
+      innerJoin: vi.fn(() => node),
+      where: vi.fn(() => node),
+      limit: vi.fn(async () => rowsOut),
+    };
+    selectMock.mockReturnValue(node);
+    return node;
+  }
+
+  it('reads the latest observation for the device and derives the notice', async () => {
+    const node = selectReturning([{
+      schemaVersion: 1,
+      component: { state: 'warning', reason: 'plaintext_websocket' },
+      observedAt: new Date('2026-11-20T10:00:00.000Z'),
+    }]);
+
+    await expect(readPlaintextServerConnection({ id: DEVICE_ID, orgId: ORG_ID }))
+      .resolves.toEqual({ observedAt: '2026-11-20T10:00:00.000Z' });
+    expect(node.innerJoin).toHaveBeenCalledTimes(1);
+    expect(node.limit).toHaveBeenCalledWith(1);
+  });
+
+  it('returns null when the device has no observation', async () => {
+    selectReturning([]);
+    await expect(readPlaintextServerConnection({ id: DEVICE_ID, orgId: ORG_ID })).resolves.toBeNull();
+  });
+
+  it('returns null for an observation of an unknown schema version', async () => {
+    selectReturning([{
+      schemaVersion: 2,
+      component: { state: 'warning', reason: 'plaintext_websocket' },
+      observedAt: new Date('2026-11-20T10:00:00.000Z'),
+    }]);
+    await expect(readPlaintextServerConnection({ id: DEVICE_ID, orgId: ORG_ID })).resolves.toBeNull();
   });
 });

@@ -1491,6 +1491,11 @@
       "howToFix": "Cómo solucionarlo",
       "noDetail": "sin detalles"
     },
+    "plaintextServerConnection": {
+      "title": "La conexión del agente no está cifrada",
+      "message": "Este agente se conecta al servidor mediante http:// simple (un WebSocket sin cifrar). Cualquier persona en la ruta de red entre el dispositivo y el servidor puede leer y modificar su tráfico, incluidas las credenciales del agente. Cambie la server_url del agente a la dirección https:// del servidor.",
+      "howToFix": "Cómo solucionarlo"
+    },
     "logShipping": {
       "label": "Envío de registros",
       "state": {

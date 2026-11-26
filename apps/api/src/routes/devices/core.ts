@@ -123,6 +123,7 @@ import { deriveLogShipping } from '../../services/logShippingHealth';
 import { logsNotArriving as checkLogsNotArriving } from '../../services/logsNotArriving';
 import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
 import { deriveControlPlaneBlockListView, deriveControlPlaneBlockNotice } from '../../services/controlPlaneBlockHealth';
+import { readPlaintextServerConnection, type PlaintextServerConnectionNotice } from '../../services/agentHealthObservations';
 import { readPromptHostObservation } from '../../services/promptHostObservation';
 import { DEVICE_HARDWARE_READ_COLUMNS } from '../../services/deviceHardwareColumns';
 
@@ -1578,6 +1579,22 @@ coreRoutes.get(
       }
     }
 
+    // #12729 — the agent's own report that it reaches the server over plain
+    // http:// / ws:// to a non-loopback host (its server_connection health
+    // component). Read after the chokepoint above; observational, so a failure
+    // degrades to null, and the savepoint keeps a Postgres error from aborting
+    // the request transaction.
+    let plaintextServerConnection: PlaintextServerConnectionNotice | null = null;
+    try {
+      plaintextServerConnection = await withDbTransaction(() => readPlaintextServerConnection({
+        id: device.id,
+        orgId: device.orgId,
+      }));
+    } catch (err) {
+      captureException(err, c);
+      console.error(`[DeviceDetail] Failed to read server connection health for ${deviceId}:`, err);
+    }
+
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     // #10922: the tools the Connect menu may offer for this device, and the one
@@ -1636,6 +1653,7 @@ coreRoutes.get(
       // #8868 — derived notice only (clamped times, no server bookkeeping);
       // the raw control_plane_block* columns are not in PUBLIC_DEVICE_FIELDS.
       controlPlaneBlock: deriveControlPlaneBlockNotice(device, new Date()),
+      plaintextServerConnection,
       promptHost,
       wakeAvailability,
       hardware: hardware || null,

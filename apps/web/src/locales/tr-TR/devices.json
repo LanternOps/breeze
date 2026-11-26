@@ -1491,6 +1491,11 @@
       "howToFix": "Nasıl düzeltilir",
       "noDetail": "ayrıntı yok"
     },
+    "plaintextServerConnection": {
+      "title": "Aracı bağlantısı şifrelenmemiş",
+      "message": "Bu aracı, sunucuya düz http:// üzerinden (şifrelenmemiş bir WebSocket) bağlanıyor. Cihaz ile sunucu arasındaki ağ yolunda bulunan herkes, aracının kimlik bilgileri dahil trafiğini okuyabilir ve değiştirebilir. Aracının server_url değerini sunucunun https:// adresiyle değiştirin.",
+      "howToFix": "Nasıl düzeltilir"
+    },
     "logShipping": {
       "label": "Günlük gönderimi",
       "state": {

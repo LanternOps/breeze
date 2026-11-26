@@ -1491,6 +1491,11 @@
       "howToFix": "So beheben Sie das Problem",
       "noDetail": "keine Angabe"
     },
+    "plaintextServerConnection": {
+      "title": "Die Verbindung des Agents ist nicht verschlüsselt",
+      "message": "Dieser Agent verbindet sich über einfaches http:// (einen unverschlüsselten WebSocket) mit dem Server. Jeder auf dem Netzwerkpfad zwischen Gerät und Server kann den Datenverkehr einschließlich der Zugangsdaten des Agents mitlesen und verändern. Ändern Sie die server_url des Agents auf die https://-Adresse des Servers.",
+      "howToFix": "So beheben Sie das Problem"
+    },
     "logShipping": {
       "label": "Log-Übertragung",
       "state": {

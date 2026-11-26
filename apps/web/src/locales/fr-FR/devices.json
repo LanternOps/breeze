@@ -1491,6 +1491,11 @@
       "howToFix": "Comment corriger",
       "noDetail": "aucun détail"
     },
+    "plaintextServerConnection": {
+      "title": "La connexion de l'agent n'est pas chiffrée",
+      "message": "Cet agent se connecte au serveur en http:// simple (un WebSocket non chiffré). Toute personne située sur le chemin réseau entre l'appareil et le serveur peut lire et modifier son trafic, y compris les identifiants de l'agent. Remplacez la server_url de l'agent par l'adresse https:// du serveur.",
+      "howToFix": "Comment corriger"
+    },
     "logShipping": {
       "label": "Envoi des journaux",
       "state": {
