@@ -29,6 +29,36 @@ type RecoveryDownloadRow = Pick<
 >;
 
 /**
+ * Whether `key` is an object of the snapshot's file index, for a recovery
+ * download (authorizeExternalReference). Membership is read in one statement
+ * with the index state it was approved on: entries of an index being rebuilt,
+ * or rebuilt from other bytes since the caller checked it, never count.
+ * Exported, unexecuted, so a test can EXPLAIN this exact statement
+ * (backupSnapshotIndexPlans.integration.test.ts).
+ */
+export function referenceMembershipQuery(
+  snapshotDbId: string,
+  key: string,
+  boundDigest: string | null,
+  executor: Pick<typeof db, 'select'> = db,
+) {
+  const entries = snapshotIndexEntries(snapshotDbId);
+  return executor
+    .select({ backupPath: entries.backupPath })
+    .from(entries)
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+    .where(and(
+      eq(entries.backupPath, key),
+      // A content-less row (directory or symlink entry, #11235) names no
+      // object: its empty backup_path is never a key.
+      ne(entries.backupPath, ''),
+      boundIndexCondition(boundDigest),
+    ))
+    .limit(1);
+}
+
+/**
  * W09 (#6464) Task 6 — the download-time half of the exact-membership
  * contract. First confirms the TOKEN snapshot's file index is fully built
  * (`file_index_status = 'complete'` — an `agent`/`failed` index is
@@ -89,23 +119,7 @@ export async function authorizeExternalReference(
     return refuse('file index does not match the snapshot attestation');
   }
 
-  // Membership is read in one statement with the index state it was approved
-  // on: rows of an index being rebuilt, or rebuilt from other bytes since the
-  // check above, never count.
-  const entries = snapshotIndexEntries(args.snapshotDbId);
-  const [membership] = await dbHandle
-    .select({ backupPath: entries.backupPath })
-    .from(entries)
-    .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
-    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
-    .where(and(
-      eq(entries.backupPath, args.key),
-      // A content-less row (directory or symlink entry, #11235) names no
-      // object: its empty backup_path is never a key.
-      ne(entries.backupPath, ''),
-      boundIndexCondition(boundDigest),
-    ))
-    .limit(1);
+  const [membership] = await referenceMembershipQuery(args.snapshotDbId, args.key, boundDigest, dbHandle);
   if (!membership) {
     return refuse('key is not a member of the snapshot file index');
   }

@@ -7,17 +7,14 @@ import {
   backupTreeCheckpoints,
 } from '../db/schema/backup';
 
-// Aliased so a reader's own `backup_snapshots` (its index-state gate, or the
-// readiness probe's correlated `backup_snapshots.id`) never binds to the tables
-// named inside this derived table.
+// Every table inside this derived table is aliased (`sie_*`), so a reader's own
+// `backup_snapshots` (its index-state gate, or the readiness probe's
+// correlated `backup_snapshots.id`) never binds to one of them.
 const sieFile = alias(backupSnapshotFiles, 'sie_file');
-const sieTombstone = alias(backupSnapshotFiles, 'sie_tombstone');
-const sieSnapshot = alias(backupSnapshots, 'sie_snapshot');
-const sieCheckpoint = alias(backupTreeCheckpoints, 'sie_checkpoint');
 const sieEntry = alias(backupTreeCheckpointEntries, 'sie_entry');
 
-// An aliased table interpolated into `sql` renders as its alias alone, so the
-// FROM items of the raw subqueries below name the table and the alias.
+// FROM items of the raw subqueries: table plus alias, written out because an
+// aliased Drizzle table interpolated into `sql` renders as its alias alone.
 const sieSnapshotFrom = sql`${backupSnapshots} ${sql.identifier('sie_snapshot')}`;
 const sieCheckpointFrom = sql`${backupTreeCheckpoints} ${sql.identifier('sie_checkpoint')}`;
 const sieTombstoneFrom = sql`${backupSnapshotFiles} ${sql.identifier('sie_tombstone')}`;
@@ -108,24 +105,37 @@ function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
  */
 export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   const qb = new QueryBuilder();
-
-  const checkpointMatchesSnapshot = and(
-    eq(sieCheckpoint.id, sieSnapshot.fileIndexCheckpointId),
-    eq(sieCheckpoint.orgId, sieSnapshot.orgId),
-    eq(sieCheckpoint.deviceId, sieSnapshot.deviceId),
-  );
+  // The snapshot id inside raw SQL: a bound value, or the enclosing statement's
+  // column, qualified (see snapshotIdOutput).
+  const id = snapshotIdOutput(snapshotDbId);
+  const col = (table: string, column: string) => sql`${sql.identifier(table)}.${sql.identifier(column)}`;
+  const checkpointMatchesSnapshot = sql`${col('sie_checkpoint', 'id')} = ${col('sie_snapshot', 'file_index_checkpoint_id')}
+    AND ${col('sie_checkpoint', 'org_id')} = ${col('sie_snapshot', 'org_id')}
+    AND ${col('sie_checkpoint', 'device_id')} = ${col('sie_snapshot', 'device_id')}`;
+  // The checkpoint a delta snapshot reads: visible to the caller and of the
+  // snapshot's own org and device. NULL for a rows snapshot or an untrusted
+  // checkpoint (R3). Written with explicit identifiers, never Drizzle columns,
+  // because it is also rendered inside a select list.
+  const deltaCheckpointId = () => sql`(
+    SELECT ${col('sie_checkpoint', 'id')} FROM ${sieSnapshotFrom}
+    JOIN ${sieCheckpointFrom} ON ${checkpointMatchesSnapshot}
+    WHERE ${col('sie_snapshot', 'id')} = ${id} AND ${col('sie_snapshot', 'file_index_format')} = 'delta')`;
+  // Never NULL, so leg 1 always passes the planning equality below. A CASE,
+  // not COALESCE: under RLS the planner uses a filter as an index condition,
+  // or reasons from it about ordering, only if it cannot leak row values, and
+  // it counts CASE as safe but not COALESCE.
+  const checkpointKey = () => sql`(CASE WHEN ${deltaCheckpointId()} IS NULL THEN ${id}::uuid ELSE ${deltaCheckpointId()} END)`;
 
   // The two legs carry no WHERE of their own: Postgres flattens a UNION ALL
   // into an append relation only when no leg has one. Each leg instead
   // exposes the columns its filters need, with constants where a column does
-  // not apply (`leg`, the tombstone number, the checkpoint id and entry
-  // number), and the filters sit on the union below.
+  // not apply, and the filters sit on the union below.
   const ownRows = qb
     .select({
       leg: sql<number>`1`.as('leg'),
       snapshotDbId: sieFile.snapshotDbId,
       tombstoneOf: sieFile.checkpointEntryNo,
-      checkpointId: sql<string | null>`NULL::uuid`.as('checkpoint_id'),
+      checkpointId: sql<string>`${checkpointKey()}`.as('checkpoint_id'),
       entryNo: sql<number | null>`NULL::integer`.as('entry_no'),
       sourcePath: sieFile.sourcePath,
       backupPath: sieFile.backupPath,
@@ -138,9 +148,9 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   const checkpointEntries = qb
     .select({
       leg: sql<number>`2`.as('leg'),
-      snapshotDbId: sql<string>`${snapshotIdOutput(snapshotDbId)}::uuid`.as('snapshot_db_id'),
+      snapshotDbId: sql<string>`${id}::uuid`.as('snapshot_db_id'),
       tombstoneOf: sql<number | null>`NULL::integer`.as('checkpoint_entry_no'),
-      checkpointId: sql<string | null>`${sieEntry.checkpointId}`.as('checkpoint_id'),
+      checkpointId: sql<string>`${sieEntry.checkpointId}`.as('checkpoint_id'),
       entryNo: sql<number | null>`${sieEntry.entryNo}`.as('entry_no'),
       sourcePath: sieEntry.sourcePath,
       backupPath: sieEntry.backupPath,
@@ -153,14 +163,21 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   const u = ownRows.unionAll(checkpointEntries).as('sie_union');
   // Drizzle renders an aliased SQL field of a subquery by its bare name;
   // qualified here so a nested subquery can never capture it.
-  const unionColumn = (name: string) => sql`${sql.identifier('sie_union')}.${sql.identifier(name)}`;
+  const unionColumn = (name: string) => col('sie_union', name);
 
-  // Each filter below, copied onto a leg, folds to that leg's own condition:
-  // `leg` is a constant there, so the CASE keeps one branch, and in leg 2
-  // `snapshot_db_id = :id` and `checkpoint_entry_no IS NULL` are constant
-  // true. So leg 1 keeps snapshot_db_id = :id, checkpoint_entry_no IS NULL and
-  // the format gate, and leg 2 keeps checkpoint_id = (its checkpoint) and the
-  // tombstone anti-join: index conditions on each table.
+  // Each filter below, copied onto a leg, folds to that leg's own condition
+  // (`leg` is a constant there, so the CASE keeps one branch):
+  //
+  //  - leg 1: snapshot_db_id = :id and checkpoint_entry_no IS NULL (index
+  //    conditions), and the format gate, evaluated once;
+  //  - leg 2: checkpoint_id = (its checkpoint) and the tombstone anti-join.
+  //
+  // The CASE alone decides which rows are the tree. The equality on
+  // checkpoint_id is for the planner: a plain equality to a value is what
+  // tells it that leg 2's (checkpoint_id, source_path) and (checkpoint_id,
+  // backup_path) indexes return rows ordered by their second column, so pages
+  // merge both legs in order instead of sorting the checkpoint. In leg 1 it
+  // compares the same never-NULL value with itself.
   return qb
     .select({
       snapshotDbId: u.snapshotDbId,
@@ -174,21 +191,19 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
     .where(and(
       eq(u.snapshotDbId, snapshotDbId),
       isNull(u.tombstoneOf),
+      sql`${unionColumn('checkpoint_id')} = ${checkpointKey()}`,
       sql`CASE ${unionColumn('leg')}
         WHEN 1 THEN EXISTS (
           SELECT 1 FROM ${sieSnapshotFrom}
-          WHERE ${sieSnapshot.id} = ${snapshotDbId}
-            AND (${sieSnapshot.fileIndexFormat} = 'rows'
+          WHERE ${col('sie_snapshot', 'id')} = ${id}
+            AND (${col('sie_snapshot', 'file_index_format')} = 'rows'
                  OR EXISTS (SELECT 1 FROM ${sieCheckpointFrom} WHERE ${checkpointMatchesSnapshot})))
-        ELSE ${unionColumn('checkpoint_id')} = (
-            SELECT ${sieCheckpoint.id} FROM ${sieSnapshotFrom}
-            JOIN ${sieCheckpointFrom} ON ${checkpointMatchesSnapshot}
-            WHERE ${sieSnapshot.id} = ${snapshotDbId} AND ${sieSnapshot.fileIndexFormat} = 'delta')
+        ELSE ${deltaCheckpointId()} IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM ${sieTombstoneFrom}
-            WHERE ${sieTombstone.snapshotDbId} = ${snapshotDbId}
-              AND ${sieTombstone.sourcePath} = ${unionColumn('source_path')}
-              AND ${sieTombstone.checkpointEntryNo} = ${unionColumn('entry_no')})
+            WHERE ${col('sie_tombstone', 'snapshot_db_id')} = ${id}
+              AND ${col('sie_tombstone', 'source_path')} = ${unionColumn('source_path')}
+              AND ${col('sie_tombstone', 'checkpoint_entry_no')} = ${unionColumn('entry_no')})
       END`,
     ))
     .as('snapshot_index_entries');

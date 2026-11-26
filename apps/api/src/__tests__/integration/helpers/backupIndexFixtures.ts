@@ -187,6 +187,7 @@ export type PlanNode = {
   'Relation Name'?: string;
   'Index Name'?: string;
   Alias?: string;
+  'Parent Relationship'?: string;
   Plans?: PlanNode[];
 };
 
@@ -199,8 +200,18 @@ export type FlatPlanNode = PlanNode & { underSort: boolean };
  */
 export function flattenPlan(root: PlanNode): FlatPlanNode[] {
   const out: FlatPlanNode[] = [];
+  // A bitmap heap scan names its index on the Bitmap Index Scan beneath it.
+  // Subplans under it (an RLS policy, an anti-join) are not its index.
+  const bitmapIndexNames = (node: PlanNode): string[] => (node['Node Type'] === 'Bitmap Index Scan'
+    ? [node['Index Name'] ?? '']
+    : (node.Plans ?? [])
+      .filter((child) => child['Parent Relationship'] !== 'SubPlan' && child['Parent Relationship'] !== 'InitPlan')
+      .flatMap(bitmapIndexNames));
   const walk = (node: PlanNode, underSort: boolean) => {
-    out.push({ ...node, underSort });
+    const indexName = node['Node Type'] === 'Bitmap Heap Scan' && !node['Index Name']
+      ? bitmapIndexNames(node).join('+')
+      : node['Index Name'];
+    out.push({ ...node, ...(indexName ? { 'Index Name': indexName } : {}), underSort });
     const below = underSort || node['Node Type'] === 'Sort';
     for (const child of node.Plans ?? []) walk(child, below);
   };
