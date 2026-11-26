@@ -320,6 +320,7 @@ func TestFetchConfigClassifiesUnavailableAndParsesRetryAfter(t *testing.T) {
 		{name: "503 HTTP-date form", status: http.StatusServiceUnavailable, retryAfter: now.Add(2 * time.Hour).Format(http.TimeFormat), wantUnavailable: true, wantRetryAfter: 2 * time.Hour, tolerance: 5 * time.Second},
 		{name: "503 above ceiling", status: http.StatusServiceUnavailable, retryAfter: "86400", wantUnavailable: true, wantRetryAfter: unavailableRetryAfterCeiling},
 		{name: "503 malformed header", status: http.StatusServiceUnavailable, retryAfter: "later", wantUnavailable: true},
+		{name: "503 Retry-After 0 reads as the floor", status: http.StatusServiceUnavailable, retryAfter: "0", wantUnavailable: true, wantRetryAfter: unavailableRetryAfterFloor},
 		{name: "503 no header", status: http.StatusServiceUnavailable, wantUnavailable: true},
 		{name: "403 parked device", status: http.StatusForbidden, wantUnavailable: true},
 		{name: "500 is not unavailable", status: http.StatusInternalServerError},

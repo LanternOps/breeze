@@ -66,7 +66,8 @@ type HTTPError struct {
 	Body       string
 	// RetryAfter is the Retry-After (seconds or HTTP-date) of any non-2xx
 	// answer, capped at unavailableRetryAfterCeiling. Zero when absent,
-	// malformed, zero or past. Only the ErrUnavailable back-off reads it.
+	// malformed or past; "Retry-After: 0" reads as unavailableRetryAfterFloor
+	// (see parseConfigPollRetryAfter). Only the ErrUnavailable back-off reads it.
 	RetryAfter time.Duration
 }
 
@@ -369,7 +370,7 @@ func (c *Client) checkResponse(resp *http.Response, sentinel error, sentinelStat
 	httpErr := &HTTPError{
 		StatusCode: resp.StatusCode,
 		Body:       body,
-		RetryAfter: httputil.ParseRetryAfterCapped(resp.Header, time.Now(), unavailableRetryAfterCeiling),
+		RetryAfter: parseConfigPollRetryAfter(resp.Header, time.Now()),
 	}
 	if readErr != nil {
 		httpErr.Body = "unable to read error response"

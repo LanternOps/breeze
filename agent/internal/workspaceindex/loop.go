@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +38,13 @@ const (
 	// a Retry-After never parks the poll longer than a 404 already does.
 	unavailableRetryAfterFloor   = time.Minute
 	unavailableRetryAfterCeiling = moduleAbsentBackoff
+
+	// unavailableStopAfterRefusals is how many consecutive ErrUnavailable
+	// answers stop running crawls and watchers (#12727). The first refusal
+	// only backs off the poll, so a short proxy or deploy blip does not tear
+	// indexing down; if the poll after that back-off (30 to 60 minutes later
+	// without a Retry-After) is refused too, they are stopped.
+	unavailableStopAfterRefusals = 2
 )
 
 // indexingScopeSignature reduces the announced source set to a comparable
@@ -158,6 +166,9 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		// lastUnavailableStatus is the status of the previous fetch when it
 		// was ErrUnavailable, else 0; it keeps repeat back-off logs quiet.
 		lastUnavailableStatus := 0
+		// unavailableRefusals counts consecutive ErrUnavailable fetches; any
+		// other outcome resets it.
+		unavailableRefusals := 0
 		// auditedScope is the signature of the source set last announced by the
 		// consent signal (prominent log + device-audit event, #2425). Tracking
 		// the SCOPE rather than a mere on/off bool means a server that widens
@@ -337,6 +348,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 			config, err := deps.Client.FetchConfig(ctx)
 			if !errors.Is(err, ErrUnavailable) {
 				lastUnavailableStatus = 0
+				unavailableRefusals = 0
 			}
 			if err != nil {
 				if errors.Is(err, ErrModuleAbsent) {
@@ -346,9 +358,11 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 					return
 				}
 				if errors.Is(err, ErrUnavailable) {
-					// Leave running crawls and watchers alone: a 503 may be a
-					// brief proxy blip, and a crawl that gets the same answer
-					// fails on its own. Only the config poll slows down.
+					// The first refusal only slows the config poll: a 503 may
+					// be a brief proxy blip, and a crawl that gets the same
+					// answer fails on its own. A refusal that outlasts the
+					// back-off stops crawls and watchers as a 404 does, and a
+					// later successful fetch starts them again (#12727).
 					var retryAfter time.Duration
 					status := 0
 					if httpErr, ok := errors.AsType[*HTTPError](err); ok {
@@ -364,6 +378,11 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 					lastUnavailableStatus = status
 					logAt("workspace index unavailable; backing off config poll",
 						"status", status, "retryAfterHint", retryAfter, "retryIn", wait, "err", err)
+					unavailableRefusals++
+					if unavailableRefusals >= unavailableStopAfterRefusals {
+						markIndexingInactive(fmt.Sprintf("workspace index unavailable on server (HTTP %d)", status))
+						cancelActivity()
+					}
 					nextFetch = now.Add(wait)
 					return
 				}
@@ -437,9 +456,21 @@ func isUnavailableStatus(status int) bool {
 }
 
 // ConfigPollRetryAfter reads a crawl-config answer's Retry-After the way the
-// client does (0 when absent, malformed or past; capped at the back-off ceiling).
+// client does (see parseConfigPollRetryAfter).
 func ConfigPollRetryAfter(header http.Header) time.Duration {
-	return httputil.ParseRetryAfterCapped(header, time.Now(), unavailableRetryAfterCeiling)
+	return parseConfigPollRetryAfter(header, time.Now())
+}
+
+// parseConfigPollRetryAfter returns a non-2xx answer's Retry-After hint,
+// capped at the back-off ceiling; 0 means no hint (absent, malformed, negative
+// or a past date). "Retry-After: 0" is the shortest hint a server can send, so
+// it reads as the floor (retry in a minute), the same as a one-second hint,
+// and not as no hint, which would wait 30 to 60 minutes.
+func parseConfigPollRetryAfter(header http.Header, now time.Time) time.Duration {
+	if secs, err := strconv.Atoi(header.Get("Retry-After")); err == nil && secs == 0 {
+		return unavailableRetryAfterFloor
+	}
+	return httputil.ParseRetryAfterCapped(header, now, unavailableRetryAfterCeiling)
 }
 
 // ConfigPollBackoff is how long the loop waits before its next crawl-config
