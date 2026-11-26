@@ -44,9 +44,13 @@
 -- NULL everywhere). They are not added NOT VALID with a VALIDATE in the next file:
 -- integration replays follow constraint names into later files, and they refuse a
 -- `-- @no-transaction` follower. The two hot tables are altered first, before this
--- transaction holds any lock on devices or organizations, and lock_timeout bounds
+-- transaction requests any lock on devices or organizations, and lock_timeout bounds
 -- the wait for each lock: if a long transaction holds one, the file fails after 5 s
--- instead of queueing every reader behind it, and re-runs on next start.
+-- instead of queueing every reader behind it, and re-runs on next start. It bounds
+-- waits only: the locks taken are held until the file commits. A transaction that
+-- locks devices and then backup_snapshots (a device org move from another process)
+-- inside that short window can deadlock with this file; Postgres aborts one of the
+-- two, and either the move or the migration (re-run on next start) is retried.
 --
 -- Idempotent throughout (IF NOT EXISTS, guarded ADD CONSTRAINT, CREATE OR REPLACE,
 -- DROP ... IF EXISTS then CREATE). Writes no rows, so no breeze.scope election; the
@@ -56,7 +60,8 @@
 SET LOCAL lock_timeout = '5s';
 
 -- ---------------------------------------------------------------------------
--- 1. Columns on the existing hot tables (catalog-only; altered first)
+-- 1. The existing hot tables, altered first: columns (catalog-only) and two CHECKs
+--    (one scan of backup_snapshots each)
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.backup_snapshot_files ADD COLUMN IF NOT EXISTS checkpoint_entry_no integer;
 
@@ -253,15 +258,17 @@ END $$;
 -- delete then restored (backup_snapshot_files is FORCE ROW LEVEL SECURITY, which a
 -- definer is still bound by): the delete must not depend on what the mover's
 -- context can see. Shape copied from breeze_learned_networks_device_moved()
--- (2027-01-29-100000-learned-networks.sql). It deletes only rows of the snapshot
--- whose UPDATE fired it, which the mover could already update. A trigger function
--- cannot be called directly, so this widens nothing.
+-- (2027-01-29-100000-learned-networks.sql), with pg_catalog first in search_path so
+-- no object in public can shadow set_config()/current_setting(). It deletes only
+-- the file rows of the snapshot whose UPDATE fired it (an UPDATE that passed that
+-- snapshot's RLS). A trigger function cannot be called directly, so this widens
+-- nothing.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.breeze_backup_snapshot_file_index_tenancy_reset()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_catalog
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
   _prev_scope text;
@@ -350,7 +357,8 @@ CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
     -- statement. The app move deletes the device's headers after its snapshots
     -- are restamped (CORE_DEVICE_ORG_MOVE_DELETE_TABLES); on a raw UPDATE
     -- devices the header stays in the source org, unreferenced (the snapshot
-    -- tenancy reset clears every pointer to it), until checkpoint GC deletes it.
+    -- tenancy reset clears every pointer to it), until the checkpoint GC the
+    -- writer wave adds deletes it.
     -- A BEFORE UPDATE delete trigger on devices (the learned-networks shape)
     -- cannot work here: the snapshots still point at the header until their own
     -- restamp, and ON DELETE RESTRICT refuses the delete.

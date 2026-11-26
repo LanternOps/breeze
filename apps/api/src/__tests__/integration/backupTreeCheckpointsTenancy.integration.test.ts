@@ -23,7 +23,7 @@ import { FOREIGN_KEY_VIOLATION_SQLSTATES, isPgForeignKeyViolation } from '@breez
 import { closeDb, db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { backupConfigs, backupJobs } from '../../db/schema';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
-import { getTestDb } from './setup';
+import { getAppDb, getTestDb } from './setup';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
@@ -216,6 +216,55 @@ describe('backup_tree_checkpoints: tables, RLS and references (W2 Task 1)', () =
     expect(await entryCount(headerB)).toBe(3);
   });
 
+  it("breeze_app cannot update or delete another org's checkpoint or its entries", async () => {
+    const t = await tenant();
+    const headerB = await makeHeader(t.orgB, t.deviceB, t.configB);
+
+    const affected = await withDbAccessContext(orgContext(t.orgA), async () => ({
+      headerUpdate: (await db.execute(sql`
+        UPDATE backup_tree_checkpoints SET entry_count = 0 WHERE id = ${headerB}::uuid RETURNING id`)).length,
+      entryUpdate: (await db.execute(sql`
+        UPDATE backup_tree_checkpoint_entries SET backup_path = 'forged' WHERE checkpoint_id = ${headerB}::uuid RETURNING entry_no`)).length,
+      entryDelete: (await db.execute(sql`
+        DELETE FROM backup_tree_checkpoint_entries WHERE checkpoint_id = ${headerB}::uuid RETURNING entry_no`)).length,
+      headerDelete: (await db.execute(sql`
+        DELETE FROM backup_tree_checkpoints WHERE id = ${headerB}::uuid RETURNING id`)).length,
+    }));
+    expect(affected).toEqual({ headerUpdate: 0, entryUpdate: 0, entryDelete: 0, headerDelete: 0 });
+    const [kept] = await admin<{ entry_count: number }>(sql`
+      SELECT entry_count FROM backup_tree_checkpoints WHERE id = ${headerB}::uuid`);
+    expect(kept!.entry_count).toBe(3);
+    expect(await entryCount(headerB)).toBe(3);
+  });
+
+  it('a breeze_app connection with no access context sees no checkpoint or entry', async () => {
+    const t = await tenant();
+    const headerA = await makeHeader(t.orgA, t.deviceA, t.configA);
+    const app = getAppDb();
+    const headers = await app.execute(sql`SELECT id FROM backup_tree_checkpoints WHERE id = ${headerA}::uuid`);
+    const entries = await app.execute(sql`
+      SELECT entry_no FROM backup_tree_checkpoint_entries WHERE checkpoint_id = ${headerA}::uuid`);
+    expect(headers).toHaveLength(0);
+    expect(entries).toHaveLength(0);
+  });
+
+  it('the CHECK and UNIQUE constraints have the intended definitions', async () => {
+    const rows = await admin<{ conname: string; def: string }>(sql`
+      SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conname IN ('backup_snapshots_file_index_format_chk', 'backup_snapshots_file_index_checkpoint_chk',
+                         'backup_configs_id_org_uq', 'backup_tree_checkpoints_id_org_device_uq',
+                         'backup_tree_checkpoints_entry_count_chk')
+       ORDER BY conname`);
+    expect(Object.fromEntries(rows.map((r) => [r.conname, r.def]))).toEqual({
+      backup_configs_id_org_uq: 'UNIQUE (id, org_id)',
+      backup_snapshots_file_index_checkpoint_chk:
+        "CHECK (((file_index_format = 'delta'::text) = (file_index_checkpoint_id IS NOT NULL)))",
+      backup_snapshots_file_index_format_chk: "CHECK ((file_index_format = ANY (ARRAY['rows'::text, 'delta'::text])))",
+      backup_tree_checkpoints_entry_count_chk: 'CHECK ((entry_count >= 0))',
+      backup_tree_checkpoints_id_org_device_uq: 'UNIQUE (id, org_id, device_id)',
+    });
+  });
+
   it('a snapshot cannot point at a missing checkpoint', async () => {
     const t = await tenant();
     const snap = await makeSnapshot({ orgId: t.orgA, deviceId: t.deviceA, configId: t.configA });
@@ -321,19 +370,67 @@ describe('backup_tree_checkpoints: move and merge coherence (W2 Task 1b)', () =>
     expect(await entryCount(header)).toBe(3);
   });
 
-  it("moving a failed delta snapshot's org resets it the same way", async () => {
+  it.each(['failed', 'hydrating', 'agent', 'none'])(
+    "moving a delta snapshot in status '%s' resets it the same way, whatever the status",
+    async (status) => {
+      const t = await tenant();
+      const header = await makeHeader(t.orgA, t.deviceA, t.configA);
+      const snap = await makeSnapshot({
+        orgId: t.orgA, deviceId: t.deviceA, configId: t.configA, checkpointId: header, status,
+      });
+      await addDeltaRows(snap);
+
+      await moveSnapshotOrg(t, snap);
+
+      expect(await snapshotState(snap)).toMatchObject({
+        file_index_format: 'rows', file_index_checkpoint_id: null, file_index_status: 'none', files: 0,
+      });
+    },
+  );
+
+  it("resetting one delta snapshot leaves a sibling on the same checkpoint untouched", async () => {
     const t = await tenant();
     const header = await makeHeader(t.orgA, t.deviceA, t.configA);
-    const snap = await makeSnapshot({
-      orgId: t.orgA, deviceId: t.deviceA, configId: t.configA, checkpointId: header, status: 'failed',
+    const moved = await makeSnapshot({ orgId: t.orgA, deviceId: t.deviceA, configId: t.configA, checkpointId: header });
+    const sibling = await makeSnapshot({ orgId: t.orgA, deviceId: t.deviceA, configId: t.configA, checkpointId: header });
+    await addDeltaRows(moved);
+    await addDeltaRows(sibling);
+
+    await withDbAccessContext(orgContext(t.orgA), () => db.execute(sql`
+      UPDATE backup_snapshots SET device_id = ${t.deviceA2}::uuid WHERE id = ${moved}::uuid`));
+
+    expect(await snapshotState(moved)).toMatchObject({ file_index_format: 'rows', file_index_checkpoint_id: null, files: 0 });
+    expect(await snapshotState(sibling)).toMatchObject({
+      file_index_format: 'delta', file_index_checkpoint_id: header, file_index_status: 'complete', files: 2,
     });
+    expect(await entryCount(header)).toBe(3);
+  });
+
+  it("the reset restores the caller's scope: later statements in the transaction keep its RLS", async () => {
+    const t = await tenant();
+    const header = await makeHeader(t.orgA, t.deviceA, t.configA);
+    const snap = await makeSnapshot({ orgId: t.orgA, deviceId: t.deviceA, configId: t.configA, checkpointId: header });
     await addDeltaRows(snap);
-
-    await moveSnapshotOrg(t, snap);
-
-    expect(await snapshotState(snap)).toMatchObject({
-      file_index_format: 'rows', file_index_checkpoint_id: null, file_index_status: 'none', files: 0,
+    // A third org this caller cannot see.
+    const outsider = await createOrganization({ partnerId: (await createPartner()).id });
+    const outsiderSite = await createSite({ orgId: outsider.id });
+    const outsiderDevice = (await createDevice({ orgId: outsider.id, siteId: outsiderSite.id })).id;
+    const outsiderSnap = await makeSnapshot({
+      orgId: outsider.id, deviceId: outsiderDevice, configId: await makeConfig(outsider.id),
     });
+
+    const seen = await withDbAccessContext(partnerContext(t.partnerId, [t.orgA, t.orgB]), async () => {
+      const [before] = await db.execute<{ scope: string }>(sql`SELECT current_setting('breeze.scope', true) AS scope`);
+      await db.execute(sql`UPDATE backup_snapshots SET org_id = ${t.orgB}::uuid WHERE id = ${snap}::uuid`);
+      const [after] = await db.execute<{ scope: string }>(sql`SELECT current_setting('breeze.scope', true) AS scope`);
+      const hidden = await db.execute<{ id: string }>(sql`SELECT id FROM backup_snapshots WHERE id = ${outsiderSnap}::uuid`);
+      return { before: before!.scope, after: after!.scope, hidden: hidden.length };
+    });
+
+    expect(seen.before).toBe('partner');
+    expect(seen.after).toBe(seen.before);
+    expect(seen.hidden).toBe(0);
+    expect((await snapshotState(snap)).files).toBe(0);
   });
 
   it("changing only a delta snapshot's device resets it too", async () => {
@@ -376,12 +473,13 @@ describe('backup_tree_checkpoints: move and merge coherence (W2 Task 1b)', () =>
     });
   });
 
-  it('the tenancy reset runs as a SECURITY DEFINER with a pinned search_path', async () => {
+  it('the tenancy reset runs as a SECURITY DEFINER with pg_catalog first in a pinned search_path', async () => {
     const [fn] = await admin<{ prosecdef: boolean; proconfig: string[] | null }>(sql`
       SELECT p.prosecdef, p.proconfig FROM pg_proc p
        WHERE p.oid = 'public.breeze_backup_snapshot_file_index_tenancy_reset()'::regprocedure`);
     expect(fn!.prosecdef).toBe(true);
-    expect(fn!.proconfig ?? []).toContainEqual(expect.stringMatching(/^search_path=/));
+    // pg_catalog first: nothing created in public can shadow set_config()/current_setting() in a definer.
+    expect(fn!.proconfig ?? []).toContain('search_path=pg_catalog, public');
   });
 
   it('backup_tree_checkpoints is not in breeze_device_child_orgid_tables()', async () => {
@@ -440,6 +538,9 @@ describe('backup_tree_checkpoints: erasure, deletion, move and merge lifecycle (
     expect(await entryCount(header)).toBe(0);
   });
 
+  // Regression guard for the composite pointer FK: a cross-org pin is unseedable (refused below), so
+  // there is no org-A reference left that could block org B's erasure. If the FK ever lost org_id or
+  // device_id, the forge would succeed and RESTRICT would then block this erasure.
   it("org B's erasure is never blocked by a reference from org A", async () => {
     const t = await tenant();
     const headerB = await makeHeader(t.orgB, t.deviceB, t.configB);
@@ -505,7 +606,7 @@ describe('backup_tree_checkpoints: erasure, deletion, move and merge lifecycle (
     });
   });
 
-  it('a raw UPDATE devices SET org_id leaves no checkpoint readable in either org', async () => {
+  it('a raw UPDATE devices SET org_id leaves the header in the source org, unreferenced, and invisible to the target org', async () => {
     const t = await tenant();
     const { header, deltaSnap, rowsSnap } = await seedDevice(t);
 

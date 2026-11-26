@@ -9,7 +9,7 @@
 --   2. CREATE INDEX CONCURRENTLY backup_snapshots_file_index_checkpoint_idx, partial
 --      on a set pointer (added by 2027-01-31-120000-backup-tree-checkpoints.sql): it
 --      serves the ON DELETE RESTRICT check and checkpoint GC's "no snapshot
---      references it" probe. Nearly every row has no pointer.
+--      references it" probe. Most rows will never have a pointer.
 --
 -- Deploy note: each statement waits, without blocking writers, for every open
 -- transaction that touches its table. For the DROP that is backup_snapshot_files,
