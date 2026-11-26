@@ -342,11 +342,10 @@ describe('agentCommandResultValidation — trimming never loosens other checks',
 // a request may carry, which the helper echoes back unchanged.
 describe('agentCommandResultValidation — restoredTo', () => {
   it('accepts a restoredTo as long as the longest target path a request may carry', () => {
-    const r = restoreStructuredResultSchema.safeParse({
-      status: 'completed',
-      restoredTo: `D:\\${'r'.repeat(RESTORE_TARGET_PATH_MAX_LENGTH - 3)}`,
-    });
+    const restoredTo = `D:\\${'r'.repeat(RESTORE_TARGET_PATH_MAX_LENGTH - 3)}`;
+    const r = restoreStructuredResultSchema.safeParse({ status: 'completed', restoredTo });
     expect(r.success).toBe(true);
+    if (r.success) expect(r.data.restoredTo).toBe(restoredTo);
   });
 
   it('rejects a restoredTo that is not a string', () => {

@@ -74,11 +74,12 @@ type RestoreResult struct {
 	Warnings          []string `json:"warnings,omitempty"`
 	StagingDir        string   `json:"stagingDir,omitempty"`
 	// RestoredTo is the absolute folder the files were written under, each
-	// keeping its full original path beneath it: the TargetPath as given,
-	// or, with no TargetPath, the helper's staging folder
-	// (<work root>/restore-work/restored/<snapshot>), never the original locations
-	// (#12736). Empty when the run wrote nothing there (refused, or failed
-	// before the first write).
+	// keeping its full original path beneath it (#12736): the TargetPath as
+	// given (the volume root for an in-place restore), or, with no
+	// TargetPath, the helper's staging folder
+	// (<work root>/restore-work/restored/<snapshot>), which is never the
+	// original locations. Empty when the run reports no file restored
+	// (refused, or stopped before its first file).
 	RestoredTo string `json:"restoredTo,omitempty"`
 	Error      string `json:"error,omitempty"`
 	// Code is the stable code of the first integrity check that failed
