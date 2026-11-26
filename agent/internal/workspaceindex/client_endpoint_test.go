@@ -120,7 +120,7 @@ func TestDefaultEndpointBaseEscapesAgentID(t *testing.T) {
 }
 
 // An explicitly configured endpoint_base is used exactly as written: the
-// documented workaround (base already carrying the agent ID) must not get the
+// workaround from issue #12690 (a base already carrying the agent ID) must not get the
 // ID appended a second time, and a custom base must not be rewritten.
 func TestExplicitEndpointBaseIsUsedVerbatim(t *testing.T) {
 	cases := []struct {

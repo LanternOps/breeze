@@ -1107,18 +1107,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	} else if cfg.WorkspaceIndex.Enabled != nil && !*cfg.WorkspaceIndex.Enabled {
 		log.Debug("workspace indexing disabled by local configuration")
 	} else {
-		workspaceClient := workspaceindex.NewClient(workspaceindex.ClientConfig{
-			// URL provider, not a copied string — see the UniFi collector
-			// wiring above (#2423).
-			ServerURL: hb.ServerURL,
-			// The default base carries the agent ID; the extension gateway
-			// authenticates by that path segment (#12690).
-			AgentID:      cfg.AgentID,
-			EndpointBase: cfg.WorkspaceIndex.EndpointBase,
-			AuthToken:    secureToken,
-			HTTPClient:   newUnifiAPIClient(secureToken, tlsCfg),
-			AuthMonitor:  authMon,
-		})
+		// URL provider, not a copied string — see the UniFi collector wiring
+		// above (#2423). The agent ID builds the default base (#12690).
+		workspaceClient := workspaceindex.NewClient(workspaceIndexClientConfig(
+			cfg, hb.ServerURL, secureToken, newUnifiAPIClient(secureToken, tlsCfg), authMon))
 		var workspaceIndexCtx context.Context
 		workspaceIndexCtx, workspaceIndexCancel = context.WithCancel(context.Background())
 		workspaceIndexDeps := workspaceindex.Deps{Client: workspaceClient}

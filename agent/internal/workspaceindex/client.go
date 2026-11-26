@@ -73,12 +73,12 @@ type ClientConfig struct {
 	// cfg.ServerURL kept uploading to a dead primary for the process lifetime
 	// (#2423).
 	ServerURL func() string
-	// AgentID builds the default endpoint base. A copied string, like the
-	// UniFi collector and log shipper: the agent ID only changes on
-	// re-enrollment, which restarts the agent.
+	// AgentID builds the default endpoint base. A copied string, read once at
+	// startup like the UniFi collector, log shipper and WebSocket client do.
 	AgentID string
 	// EndpointBase, when set, is used as the whole base (it must already
-	// carry the agent ID). Empty means DefaultEndpointBase + "/" + AgentID.
+	// carry the agent ID). Empty means DefaultEndpointBase + "/" + AgentID;
+	// empty with no AgentID makes every call fail with ErrNoAgentID.
 	EndpointBase string
 	AuthToken    *secmem.SecureString
 	HTTPClient   *http.Client

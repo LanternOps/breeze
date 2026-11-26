@@ -301,6 +301,17 @@ describe('extension gateway + real agent auth on /api/v1/workspace/agent (#12690
     expect(handled).not.toHaveBeenCalled();
   });
 
+  it('control: a device lookup that ignored the agent ID would admit the flat path', async () => {
+    // Proves the flat-path 401s above come from the ID-keyed lookup, not from
+    // routing or the token: with the ID ignored, the same request is admitted.
+    mockDeviceLookup({ ignoreAgentId: true });
+    const app = makeApp();
+    const res = await request(app, 'GET', '/api/v1/workspace/agent/crawl-config');
+
+    expect(res.status).toBe(200);
+    expect(lookedUpAgentIds).toEqual(['crawl-config']);
+  });
+
   it('still authenticates before answering 503 when the extension is disabled', async () => {
     const isEnabled = vi.fn(async () => false);
     const app = makeApp(isEnabled);

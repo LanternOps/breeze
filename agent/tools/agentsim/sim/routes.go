@@ -43,6 +43,11 @@ func SteadyStateRoutes() []string {
 	return append(out, InventoryBatchRoutes...)
 }
 
+// workspaceActionRoots are the first path segments of the workspace-index
+// client's routes, so a flat (ID-less) workspace path is never mistaken for
+// one carrying an agent ID.
+var workspaceActionRoots = map[string]bool{"crawl-config": true, "runs": true, "sources": true}
+
 // RouteKey turns a request into its route template: ids become :id and
 // :commandId (the workspace agent ID is dropped), and the /api/v1 prefix is
 // dropped.
@@ -56,10 +61,11 @@ func RouteKey(method, path string) string {
 		}
 	case len(segs) >= 2 && segs[0] == "agent-ws":
 		segs[1] = ":id"
-	case len(segs) >= 4 && segs[0] == "workspace" && segs[1] == "agent":
+	case len(segs) >= 4 && segs[0] == "workspace" && segs[1] == "agent" && !workspaceActionRoots[segs[2]]:
 		// /workspace/agent/<agentId>/<action> (#12690): the agent ID is folded
 		// out, not templated, so the label stays the one the perf gate and
-		// stored reports already key on (RouteCrawlConfig).
+		// stored reports already key on (RouteCrawlConfig). A flat
+		// /workspace/agent/<action>/... path has no ID and is left as is.
 		segs = slices.Delete(segs, 2, 3)
 	}
 	return method + " /" + strings.Join(segs, "/")
