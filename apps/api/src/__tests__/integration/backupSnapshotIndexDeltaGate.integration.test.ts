@@ -32,6 +32,7 @@ import {
   resolveSelectedSnapshotPathsInDb,
   searchSnapshotFiles,
 } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
 import { authorizeExternalReference } from '../../services/recoveryDownloadService';
 import {
@@ -273,5 +274,34 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
     expect(read.count).toBe(3);
     // And the first snapshot still reads its own tree.
     expect((await withDbAccessContext(orgContext(l.t.orgId), () => readAll(l))).srv).toEqual(['a.txt 10', 'b.txt 21', 'd.txt 22']);
+  });
+
+  runDb('the readiness probe sees an empty delta as indexed, and one whose checkpoint is hidden as not', async () => {
+    const l = await seedLineage();
+    const unchangedId = `snapshot-20261111T000005Z-${randomBytes(6).toString('hex')}`;
+    const unchangedDbId = await insertSnapshotRow(l.t, unchangedId);
+    await seedDeltaIndex(unchangedDbId, l.checkpointId, l.checkpoint, l.checkpoint, sha(`manifest ${unchangedId}`));
+    // An empty delta stores no backup_snapshot_files row at all.
+    const own = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM backup_snapshot_files WHERE snapshot_db_id = ${unchangedDbId}
+    `)) as unknown as Array<{ n: number }>;
+    expect(own[0]!.n).toBe(0);
+    // 'hydrating' is the state where the entries alone decide: ready when there are any, building when not.
+    await getTestDb().execute(sql`
+      UPDATE backup_snapshots SET file_index_status = 'hydrating', file_index_hydrated_at = now(), file_count = NULL
+      WHERE id = ${unchangedDbId}
+    `);
+    expect((await withDbAccessContext(orgContext(l.t.orgId), () => readSnapshotIndexView(unchangedDbId, l.t.orgId)))?.view)
+      .toEqual({ state: 'ready' });
+
+    const other = await seedWriteTenant({ jobStatus: 'completed' });
+    const hidden = await inTamperedTransaction(
+      l.t.orgId,
+      async () => {
+        await db.execute(sql`UPDATE backup_tree_checkpoints SET org_id = ${other.orgId} WHERE id = ${l.checkpointId}`);
+      },
+      async () => (await readSnapshotIndexView(unchangedDbId, l.t.orgId))?.view,
+    );
+    expect(hidden).toEqual({ state: 'building' });
   });
 });
