@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentHealthObservationWireV1 } from '@breeze/shared';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { agentHealthObservations, deviceAgentHealthLatest } from '../db/schema';
 
 type ObservationRow = {
   id: string;
@@ -113,4 +114,68 @@ export async function recordAgentHealthObservation(input: {
       becameLatest: latest[0]?.observation_id === existing.id,
     };
   }));
+}
+
+/**
+ * #12729 — the agent health component an agent reports when its connection to
+ * the server is unencrypted (server_url is http:// or ws:// to a non-loopback
+ * host, so the WebSocket is plain ws://), and the reason it carries. The agent
+ * sends the component only in that case; an encrypted agent sends none.
+ * Kept in step with agent/internal/heartbeat/server_connection.go.
+ */
+export const AGENT_HEALTH_SERVER_CONNECTION_COMPONENT = 'server_connection';
+export const AGENT_HEALTH_PLAINTEXT_SERVER_CONNECTION = 'plaintext_websocket';
+
+export type PlaintextServerConnectionNotice = { observedAt: string };
+
+/**
+ * The device-detail notice for one stored server_connection component, or
+ * null. Only the exact (warning, plaintext_websocket) pair counts. A missing
+ * component (null: an encrypted connection, or an agent older than #12729)
+ * means no notice, and so does any other value.
+ */
+export function derivePlaintextServerConnection(
+  component: unknown,
+  observedAt: Date | string,
+): PlaintextServerConnectionNotice | null {
+  if (component === null || typeof component !== 'object') return null;
+  const { state, reason } = component as { state?: unknown; reason?: unknown };
+  if (state !== 'warning' || reason !== AGENT_HEALTH_PLAINTEXT_SERVER_CONNECTION) return null;
+  const at = new Date(observedAt);
+  if (Number.isNaN(at.getTime())) return null;
+  return { observedAt: at.toISOString() };
+}
+
+/**
+ * Reads the device's latest agent health observation and derives the
+ * plaintext-connection notice from it. Runs in the caller's DB context (both
+ * tables are org-scoped under RLS), so call it only after the device has
+ * passed the caller's org/site check.
+ */
+export async function readPlaintextServerConnection(
+  device: { id: string; orgId: string },
+): Promise<PlaintextServerConnectionNotice | null> {
+  const [row] = await db
+    .select({
+      schemaVersion: agentHealthObservations.schemaVersion,
+      component: sql<unknown>`${agentHealthObservations.components} -> ${AGENT_HEALTH_SERVER_CONNECTION_COMPONENT}::text`,
+      observedAt: agentHealthObservations.observedAt,
+    })
+    .from(deviceAgentHealthLatest)
+    .innerJoin(
+      agentHealthObservations,
+      and(
+        eq(agentHealthObservations.id, deviceAgentHealthLatest.observationId),
+        eq(agentHealthObservations.deviceId, deviceAgentHealthLatest.deviceId),
+        eq(agentHealthObservations.orgId, deviceAgentHealthLatest.orgId),
+      ),
+    )
+    .where(and(
+      eq(deviceAgentHealthLatest.deviceId, device.id),
+      eq(deviceAgentHealthLatest.orgId, device.orgId),
+    ))
+    .limit(1);
+
+  if (!row || row.schemaVersion !== 1) return null;
+  return derivePlaintextServerConnection(row.component, row.observedAt);
 }

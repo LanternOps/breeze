@@ -105,6 +105,11 @@ type DeviceInfo = {
     since: string | null;
   } | null;
   /**
+   * #12729: non-null when the agent reported connecting to the server over
+   * plain http:// / ws:// to a non-loopback host.
+   */
+  plaintextServerConnection?: { observedAt: string } | null;
+  /**
    * Control-plane block notice (#8868): a network filter, captive portal or
    * untrusted TLS interceptor answered in place of the server. Derived by the
    * API; null when there is nothing to show. `locationHost` / `certIssuer`
@@ -410,6 +415,40 @@ function ControlPlaneBlockNotice({ block }: { block: DeviceInfo["controlPlaneBlo
         className="text-primary underline"
       >
         {t("deviceInfoTab.controlPlaneBlock.howToFix")}
+      </a>
+    </div>
+  );
+}
+
+const PLAINTEXT_SERVER_CONNECTION_DOCS_URL = `${DOCS_BASE_URL}/agents/installation/#configuration-file`;
+
+/**
+ * Plaintext server connection notice (#12729): the agent reported that its
+ * server_url is http:// (a plain ws:// WebSocket) to a non-loopback host.
+ * Renders nothing when the API sends null/undefined.
+ */
+function PlaintextServerConnectionNotice({
+  connection,
+}: {
+  connection: DeviceInfo["plaintextServerConnection"];
+}) {
+  const { t } = useTranslation("devices");
+  if (!connection) return null;
+  return (
+    <div
+      data-testid="plaintext-server-connection-notice"
+      role="status"
+      className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
+    >
+      <p className="font-medium">{t("deviceInfoTab.plaintextServerConnection.title")}</p>
+      <p>{t("deviceInfoTab.plaintextServerConnection.message")}</p>
+      <a
+        href={PLAINTEXT_SERVER_CONNECTION_DOCS_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary underline"
+      >
+        {t("deviceInfoTab.plaintextServerConnection.howToFix")}
       </a>
     </div>
   );
@@ -1509,6 +1548,7 @@ export default function DeviceInfoTab({ deviceId, onSaved, onWarrantyChanged }: 
         ) : null}
         <WatchdogInstallNotice watchdogInstall={info?.watchdogInstall} />
         <ControlPlaneBlockNotice block={info?.controlPlaneBlock} />
+        <PlaintextServerConnectionNotice connection={info?.plaintextServerConnection} />
         <LogShippingRow logShipping={info?.logShipping} />
         {info?.logsNotArriving ? (
           <div className="flex justify-between py-2">

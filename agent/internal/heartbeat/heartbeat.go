@@ -5752,8 +5752,10 @@ func (h *Heartbeat) sendHeartbeat() {
 		updateRelocationFDAHealth(h.healthMon, defaultRelocationFDAProbe())
 	}
 
-	// Before the snapshot so this beat's control_plane component is current.
+	// Before the snapshot so this beat's control_plane and server_connection
+	// components are current.
 	echStatus := h.observeControlPlane()
+	h.observeServerConnection()
 
 	healthSnapshot := h.healthMon.Snapshot(health.SnapshotMetadata{
 		DeviceID:         h.config.DeviceID,

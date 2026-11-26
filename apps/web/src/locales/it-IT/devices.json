@@ -1491,6 +1491,11 @@
       "howToFix": "Come risolvere",
       "noDetail": "nessun dettaglio"
     },
+    "plaintextServerConnection": {
+      "title": "La connessione dell'agente non è crittografata",
+      "message": "Questo agente si connette al server tramite http:// semplice (un WebSocket non crittografato). Chiunque si trovi sul percorso di rete tra il dispositivo e il server può leggere e modificare il suo traffico, comprese le credenziali dell'agente. Cambia la server_url dell'agente con l'indirizzo https:// del server.",
+      "howToFix": "Come risolvere"
+    },
     "logShipping": {
       "label": "Invio dei log",
       "state": {

@@ -539,6 +539,9 @@ func (c *Client) connect() error {
 		return fmt.Errorf("auth token is nil or zeroed — cannot connect")
 	}
 
+	// Warn-only (#12729): the dial below is unchanged either way.
+	warnPlaintextDial(wsURL)
+
 	dialer := c.newDialer()
 	headers := http.Header{
 		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
