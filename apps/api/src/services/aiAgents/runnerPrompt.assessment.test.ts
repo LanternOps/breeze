@@ -55,7 +55,7 @@ function concern(overrides: Partial<Concern> = {}): Concern {
 
 function assessment(overrides: Partial<AgentRunAssessmentPromptContext> = {}): AgentRunAssessmentPromptContext {
   return {
-    org: { id: ORG_ID, name: 'Berthoud Vet Care' },
+    org: { id: ORG_ID, name: 'Example Org' },
     reason: { kind: 'tick' },
     threadSummary: 'Wisp picture · 1/1 orgs · 0 high / 1 medium / 0 low',
     openConcerns: [concern()],
@@ -553,7 +553,7 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     expect(p).toContain(`Organization id: ${ORG_ID}.`);
     expect(p).toContain(`subject { kind: 'org', id: '${ORG_ID}' }`);
     expect(p).toContain('<untrusted_data source="wisp-org-name">');
-    expect(p).toContain('Berthoud Vet Care');
+    expect(p).toContain('Example Org');
     expect(p.indexOf(`Organization id: ${ORG_ID}.`)).toBeLessThan(p.indexOf('- New problem worth tracking'));
     expect(p.indexOf('wisp-org-name')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
   });
