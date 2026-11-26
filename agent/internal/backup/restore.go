@@ -250,15 +250,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		for _, j := range snapshot.Junctions {
 			guard.noteOriginal(j.restorePath())
 		}
-		originals := func(yield func(string)) error {
-			if err := manifest.rescan(func(f *SnapshotFile) { yield(restoreSourcePath(*f)) }); err != nil {
-				return err
-			}
-			for _, j := range snapshot.Junctions {
-				yield(j.restorePath())
-			}
-			return nil
-		}
+		originals := manifestOriginals(manifest, snapshot.Junctions)
 		if refuseRestoreOverOriginals(guard, contentFiles, links, dirs, junctions, originals, result) {
 			return result, nil
 		}
@@ -638,6 +630,22 @@ func (m *retainedManifest) rescan(observe func(*SnapshotFile)) error {
 		return fmt.Errorf("decode manifest: %w", err)
 	}
 	return nil
+}
+
+// manifestOriginals is the originals guard's second pass over a restore's
+// snapshot (#12638): every file entry of the retained manifest, streamed
+// again from the verified file rather than held (#11234), then every
+// junction (the manifest's junction array, already in memory).
+func manifestOriginals(manifest *retainedManifest, junctions []SnapshotJunction) originalSource {
+	return func(yield func(string)) error {
+		if err := manifest.rescan(func(f *SnapshotFile) { yield(restoreSourcePath(*f)) }); err != nil {
+			return err
+		}
+		for _, j := range junctions {
+			yield(j.restorePath())
+		}
+		return nil
+	}
 }
 
 // release closes and removes the manifest file; later calls do nothing.
