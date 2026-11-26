@@ -85,6 +85,18 @@ func TestRecorderFeedsTheTimelineOutsideTheSteadyWindow(t *testing.T) {
 	}
 }
 
+// httputil.Do returns a retryable 503 as an error with no response; the
+// recorded outcome must still see the 503 so crawl-config's counts as success.
+func TestOutcomeOfRetryableStatusError(t *testing.T) {
+	err := &httputil.RetryableStatusError{StatusCode: 503}
+	if got := outcomeOfResult(RouteCrawlConfig, nil, err); !got {
+		t.Error("crawl-config 503 from httputil.Do must count as success")
+	}
+	if got := outcomeOfResult(RouteHeartbeat, nil, err); got {
+		t.Error("heartbeat 503 must still be a failure")
+	}
+}
+
 func TestOutcomeFromResponse(t *testing.T) {
 	cases := []struct {
 		route  string
