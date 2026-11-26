@@ -601,6 +601,7 @@ apps/api/src/services/partnerServicePrincipalScopes.test.ts
 apps/api/src/services/partnerTrust.sites.test.ts
 apps/api/src/services/partnerTrust.test.ts
 apps/api/src/services/pendingEmail.test.ts
+apps/api/src/services/policyAutomationEventTypes.contract.test.ts
 apps/api/src/services/policyEvaluationService.upsertSql.test.ts
 apps/api/src/services/portal/documentsReadModel.test.ts
 apps/api/src/services/portalDomainVerification/service.test.ts

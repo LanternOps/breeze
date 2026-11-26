@@ -9,6 +9,10 @@ export * from './permissions';
 // by api, agent helpers, and the web layer). See ./configFeatureTypes.ts (#2004).
 export * from './configFeatureTypes';
 
+// Event types a policy automation (and the AI tool that authors one) may offer;
+// published-only, contract-tested against the API publishers (#12710).
+export * from './policyAutomationEventTypes';
+
 // Canonical in-app notification types shared by API filters and web UI.
 export * from './notificationTypes';
 

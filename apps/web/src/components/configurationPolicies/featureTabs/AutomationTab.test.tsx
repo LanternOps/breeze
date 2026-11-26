@@ -382,4 +382,25 @@ describe('AutomationTab — event type list (#12700)', () => {
     expandRow();
     expect(within(eventSelect()).getAllByRole('option', { name: 'Device Offline' })).toHaveLength(1);
   });
+
+  // #12710: nothing publishes these two, so an automation on either never runs.
+  it('does not offer event types that nothing publishes', () => {
+    renderWithEvent('device.offline');
+    expandRow();
+    const values = within(eventSelect()).getAllByRole('option').map((o) => (o as HTMLOptionElement).value);
+    expect(values).toEqual(
+      expect.arrayContaining(['device.offline', 'device.online', 'device.enrolled', 'alert.triggered', 'alert.resolved']),
+    );
+    expect(values).not.toContain('compliance.failed');
+    expect(values).not.toContain('patch.available');
+  });
+
+  it('keeps a stored compliance.failed visible and saves it unchanged', async () => {
+    renderWithEvent('compliance.failed');
+    expandRow();
+    expect(eventSelect().value).toBe('compliance.failed');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock.mock.calls[0][1].inlineSettings.items[0].eventType).toBe('compliance.failed');
+  });
 });
