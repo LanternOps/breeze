@@ -3,7 +3,8 @@ title: Backup snapshot file index, checkpoint plus delta (#11736 step 2, waves W
 anchor_issue: 11736
 related: [11745, 11743, 11733, 11209, 11235, 6488, 6464]
 baseline_commit: 03c87b9794
-status: plan-draft
+status: in-progress
+tracking_issue: 12737
 ---
 
 # Backup Snapshot File Index: Checkpoint Plus Delta Implementation Plan
