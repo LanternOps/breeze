@@ -12,22 +12,26 @@ import "strings"
 // XMinioInvalidObjectName. Those files were never backed up on such a
 // store. The same holds for a directory name over 255 bytes, which Windows
 // allows (255 UTF-16 units can be up to 765 bytes of UTF-8), and for a
-// whole key over 1024 bytes, the limit S3, MinIO, Azure Blob and GCS share.
+// whole key over 1024 bytes (see maxObjectKeyBytes).
 //
 // Such a file is stored under longNameBackupPath instead: a fixed-length
 // hashed key, the same scheme as case twins (objectkey_casefold.go). The
 // manifest records each entry's exact key (SnapshotFile.BackupPath), and
 // restore, verify, GC and the API read that field rather than re-deriving
-// it; restore takes the file's name from SourcePath, never from the key.
+// it; restore takes the file's name from the entry's source path
+// (restoreSourcePath), never from the key.
 // So a snapshot written before this change restores exactly as before, and
 // every file whose natural key fits keeps that same key.
 
 const (
 	// maxObjectKeySegmentBytes is the longest key segment a filesystem-
-	// backed store accepts: NAME_MAX on ext4, XFS and APFS.
+	// backed store accepts: NAME_MAX (255 bytes) on ext4 and XFS. Other
+	// filesystems count characters or UTF-16 units, and 255 bytes is never
+	// more than 255 of either.
 	maxObjectKeySegmentBytes = 255
-	// maxObjectKeyBytes is the longest whole key S3-compatible stores,
-	// Azure Blob and GCS accept.
+	// maxObjectKeyBytes bounds the whole key: 1024 bytes on S3-compatible
+	// stores and GCS (Azure Blob counts 1024 characters, which 1024 bytes
+	// never exceeds).
 	maxObjectKeyBytes = 1024
 
 	// longNameDir is the directory under files/ holding objects whose

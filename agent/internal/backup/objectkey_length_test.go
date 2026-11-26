@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // segmentCappedProvider models an object store backed by a filesystem (MinIO
@@ -213,12 +215,70 @@ func TestObjectKeyFitsStore(t *testing.T) {
 		{prefix + "/path_0/" + strings.Repeat("é", 127) + ".gz", false}, // 257 bytes, 130 characters
 		{prefix + "/path_0/" + strings.Repeat("é", 128) + "/x.gz", false},
 		{prefix + "/" + strings.Repeat("d/", 600) + "x.gz", false}, // over 1024 bytes
+		{keyOfLength(prefix, 1024), true},
+		{keyOfLength(prefix, 1025), false},
 	}
 	for i, c := range cases {
 		if got := objectKeyFitsStore(c.key); got != c.fits {
 			t.Errorf("case %d (%d bytes): objectKeyFitsStore = %v, want %v", i, len(c.key), got, c.fits)
 		}
 	}
+}
+
+// keyOfLength builds a key of exactly n bytes whose segments all fit.
+func keyOfLength(prefix string, n int) string {
+	k := prefix
+	for len(k)+101 <= n {
+		k += "/" + strings.Repeat("s", 100)
+	}
+	return k + "/" + strings.Repeat("t", n-len(k)-1)
+}
+
+// plannedCappedProvider is a segment-capped store that also takes an upload
+// plan, the way a brokered writer authorizes keys ahead of the uploads.
+type plannedCappedProvider struct {
+	*segmentCappedProvider
+	planned []providers.PlannedUpload
+}
+
+func (p *plannedCappedProvider) PrepareUploads(entries []providers.PlannedUpload) {
+	p.planned = append(p.planned, entries...)
+}
+
+// The keys a brokered writer is told to expect up front must be exactly the
+// keys the upload loop then writes, long-name keys included.
+func TestCreateSnapshot_PlannedKeysMatchUploadedKeysForLongNames(t *testing.T) {
+	restoreDelay := setUploadRetryDelayForTest(0)
+	defer restoreDelay()
+
+	dir := t.TempDir()
+	mod := time.Unix(1_700_000_000, 0)
+	var files []backupFile
+	for i, name := range []string{strings.Repeat("a", 255), strings.Repeat("日", 85), "short.txt"} {
+		src := createTempFileIn(t, filepath.Join(dir, strings.Repeat("d", i+1)), "f", "bytes "+name)
+		files = append(files, backupFile{sourcePath: src, snapshotPath: "path_0/" + name, size: fileSize(t, src), modTime: mod})
+	}
+	provider := &plannedCappedProvider{segmentCappedProvider: newSegmentCappedProvider(255)}
+	snap, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if len(snap.UploadFailures) != 0 {
+		t.Fatalf("upload failures: %v", snap.UploadFailures)
+	}
+	planned := map[string]string{}
+	for _, e := range provider.planned {
+		planned[e.LocalPath] = e.Key
+	}
+	if len(planned) != len(files) {
+		t.Fatalf("planned %d uploads, want %d", len(planned), len(files))
+	}
+	for _, f := range snap.Files {
+		if got := planned[f.SourcePath]; got != f.BackupPath {
+			t.Errorf("%s: planned key %q, uploaded under %q", f.SourcePath, got, f.BackupPath)
+		}
+	}
+	assertEveryEntryRestoresItsOwnBytes(t, provider, snap)
 }
 
 // The bounded key for an overlong name is injective over snapshot paths and
