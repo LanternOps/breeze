@@ -1245,6 +1245,39 @@ export function getCurrentDbAccessContext(): DbAccessContext | undefined {
   return dbContextMetaStorage.getStore();
 }
 
+// Keyed by the outermost context's deferral list: one list per outermost
+// context, shared by joined inner contexts and savepoints, and new for every
+// top-level transaction. The WeakMap lets a settled context's memos go.
+const dbContextMemos = new WeakMap<AfterContextExitTask[], Map<symbol, Map<string, unknown>>>();
+
+/**
+ * A map that lives exactly as long as the OUTERMOST DB context in this async
+ * scope: one request transaction, or one job's system context. Joined inner
+ * contexts and savepoints see the same map; any other top-level context (the
+ * next request, or a nested escalation opened through runOutsideDbContext)
+ * gets a new one; outside any context this returns undefined. Use it to
+ * memoise a lookup within one request, never as a cache across requests.
+ *
+ * `namespace` keeps unrelated callers apart. A caller that changes the state
+ * its memo describes, inside the same context, must clear its own map.
+ */
+export function getDbContextMemo<V>(namespace: symbol): Map<string, V> | undefined {
+  if (!dbContextStorage.getStore()) return undefined;
+  const owner = afterContextExitStorage.getStore();
+  if (!owner) return undefined;
+  let byNamespace = dbContextMemos.get(owner);
+  if (!byNamespace) {
+    byNamespace = new Map();
+    dbContextMemos.set(owner, byNamespace);
+  }
+  let memo = byNamespace.get(namespace);
+  if (!memo) {
+    memo = new Map();
+    byNamespace.set(namespace, memo);
+  }
+  return memo as Map<string, V>;
+}
+
 export type RunOutsideDbContextFn = <T>(fn: () => T) => T;
 
 /**

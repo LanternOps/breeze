@@ -148,6 +148,7 @@ const CACHES: Record<string, Classification> = {
   // ── not-a-cache ────────────────────────────────────────────────────────────
   'apps/api/src/db/auditAdminPool.ts#cachedDb': { kind: 'not-a-cache', reason: SINGLETON },
   'apps/api/src/db/auditAdminPool.ts#cachedClient': { kind: 'not-a-cache', reason: SINGLETON },
+  'apps/api/src/db/index.ts#dbContextMemos': { kind: 'process-local', reason: 'per-transaction memo (getDbContextMemo): keyed by one outermost DB context and dropped with it, so it never outlives a request or crosses replicas' },
   'apps/api/src/services/email.ts#cachedService': { kind: 'not-a-cache', reason: SINGLETON },
   'apps/api/src/services/twilio.ts#cachedService': { kind: 'not-a-cache', reason: SINGLETON },
   'apps/api/src/services/stripeClient.ts#cached': { kind: 'not-a-cache', reason: SINGLETON },

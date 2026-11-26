@@ -364,6 +364,23 @@ describe('the shared lookup answers only from agent rows the caller can read', (
     expect(whileDisconnected).toEqual(whileConnected);
   });
 
+  runDb('a system-scope caller reads in place: it sees its own transaction\'s disconnect', async () => {
+    // Single tenant. A lookup on a second pooled connection could not see the
+    // uncommitted disconnect below; only a read on the caller's own
+    // connection can, so this pins "no additional context" on real Postgres.
+    const a = await seedTenant('a');
+    const seen = await asSystem(async () => {
+      const before = await activeAgentIntegrationIdsForOrg(a.orgId);
+      await db.update(s1Integrations).set({ isActive: false }).where(eq(s1Integrations.id, a.s1IntegrationId));
+      const after = (await activeAgentIntegrationIdsForOrg(a.orgId)).sentinelone;
+      return { before, after };
+    });
+    expect(seen).toEqual({
+      before: { sentinelone: [a.s1IntegrationId], huntress: [a.huntressIntegrationId] },
+      after: [],
+    });
+  });
+
   runDb('org and partner callers of partner A see their own integration go from active to absent', async () => {
     const a = await seedTenant('a');
     expect(await asCtx(a.orgCtx, () => activeAgentIntegrationIdsForOrg(a.orgId)))

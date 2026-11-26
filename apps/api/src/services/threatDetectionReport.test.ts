@@ -32,6 +32,7 @@ vi.mock('../db', () => ({
 import { db } from '../db';
 import type { OrgReportGenerationAuthority } from './siteScope';
 import { generateThreatDetectionReport } from './threatDetectionReport';
+import { activeAgentIntegrationIdsForOrg } from './securityIntegrationDisconnect';
 import type { ThreatDetectionSummary, ThreatIncidentRow } from '@breeze/shared';
 import type { EvidenceRunContext, ReportResult } from './reportGenerationService';
 
@@ -512,6 +513,14 @@ describe('generateThreatDetectionReport', () => {
     });
     const a = s.agentCoverage!;
     expect(a.devicesWithDetectionAgent! + a.devicesWithoutDetectionAgent!).toBe(a.breezeDevices);
+  });
+
+  it('asks the connected-integration lookup about SentinelOne agents only (#12726)', async () => {
+    vi.mocked(activeAgentIntegrationIdsForOrg).mockClear();
+    queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], [], [], []);
+    await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP);
+    // Huntress coverage is pinned to the connected integration row in SQL.
+    expect(vi.mocked(activeAgentIntegrationIdsForOrg).mock.calls).toEqual([[ORG_ID, ['sentinelone']]]);
   });
 
   it('pushes the managed-fleet and site predicates into the SentinelOne and EDR coverage queries', async () => {

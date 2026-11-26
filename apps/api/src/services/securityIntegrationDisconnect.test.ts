@@ -10,6 +10,8 @@ const { updateMock } = vi.hoisted(() => ({ updateMock: vi.fn() }));
 
 vi.mock('../db', () => ({
   db: { update: updateMock, select: vi.fn() },
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+  getDbContextMemo: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbTransactionIfHeld: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),

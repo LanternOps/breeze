@@ -256,7 +256,7 @@ async function otherDetectionAgentDeviceIds(
 ): Promise<{ sentinelone: string[]; edr: string[] }> {
   const ids = (rows: Array<{ deviceId: string | null }>) =>
     rows.map((r) => r.deviceId).filter((id): id is string => typeof id === 'string');
-  const activeS1 = (await activeAgentIntegrationIdsForOrg(orgId)).sentinelone;
+  const activeS1 = (await activeAgentIntegrationIdsForOrg(orgId, ['sentinelone'])).sentinelone;
   const s1Rows = await db
     .select({ deviceId: s1Agents.deviceId })
     .from(s1Agents)
