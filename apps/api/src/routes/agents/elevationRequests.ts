@@ -27,6 +27,7 @@ import { evaluatePamBridge, type PamBridgeVerdict } from '../../services/pamBrid
 import { evaluatePamRules, type PamRuleMatch } from '../../services/pamRuleEngine';
 import { publishEvent, type EventType } from '../../services/eventBus';
 import { resolveElevationApprovers } from '../../services/pamApprovers';
+import { notifyPendingElevation } from '../../services/pamElevationNotify';
 import {
   dispatchApprovalPushToTokens,
   getUserPushTokens,
@@ -199,7 +200,7 @@ async function resolvePamSupportName(orgId: string): Promise<string | null> {
  */
 async function fanOutMobileApprovals(args: {
   elevationRequestId: string;
-  device: { id: string; orgId: string; hostname: string };
+  device: { id: string; orgId: string; siteId: string | null; hostname: string };
   payload: ElevationRequestPayload;
   reason: string;
   bridgeVerdict: PamBridgeVerdict | null;
@@ -319,10 +320,14 @@ interface ApproverReach {
 }
 
 /**
- * #11231: a pending request that resolved no eligible approver otherwise
- * leaves no trace and sits unseen until the stale-pending expirer closes it.
- * Record it as one warn line and one audit event, both carrying why the list
- * was empty as counts.
+ * #11231: a pending request that resolved no eligible MOBILE approver: nobody
+ * was asked by push. Record it as one warn line and one audit event, both
+ * carrying why the list was empty as counts. `no_permission_holder` means
+ * nobody can decide it at all, so it sits unseen until the stale-pending
+ * expirer closes it. `no_notifying_device` means holders exist but none has a
+ * notifying phone; those holders are still told in-app and by email
+ * (services/pamElevationNotify.ts), so the event records a push gap, not an
+ * unannounced request.
  *
  * Not in any transaction of the request: `writeAuditEvent` persists on its own
  * pooled connection in a fresh system context (`persistAuditLog`) and is
@@ -840,7 +845,7 @@ elevationRequestsRoutes.post(
           mobileFanOut: decision.kind === 'pending'
             ? {
                 elevationRequestId: row.id,
-                device: { id: device.id, orgId: device.orgId, hostname: device.hostname },
+                device: { id: device.id, orgId: device.orgId, siteId: device.siteId ?? null, hostname: device.hostname },
                 payload,
                 reason,
                 bridgeVerdict,
@@ -891,6 +896,28 @@ elevationRequestsRoutes.post(
           `[ElevationRequests] mobile bridge failed for request=${ingest.mobileFanOut.elevationRequestId}:`,
           bridgeErr,
         );
+      }
+
+      // #11231: every permission holder hears about the request in-app and by
+      // email, phone or not. Separate from the mobile bridge above so neither
+      // one's failure silences the other; it writes on its own system context,
+      // so it can never roll back the approval rows. Emails go out in the
+      // background (`emailDelivery` never rejects); the 201 never waits on them.
+      try {
+        const { device } = ingest.mobileFanOut;
+        await notifyPendingElevation({
+          elevationRequestId: ingest.mobileFanOut.elevationRequestId,
+          orgId: device.orgId,
+          siteId: device.siteId,
+          deviceId: device.id,
+          deviceHostname: device.hostname,
+        });
+      } catch (notifyErr) {
+        console.error(
+          `[ElevationRequests] approver notification failed for request=${ingest.mobileFanOut.elevationRequestId}:`,
+          notifyErr,
+        );
+        captureException(notifyErr instanceof Error ? notifyErr : new Error(String(notifyErr)));
       }
     }
 

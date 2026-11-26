@@ -72,6 +72,7 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'staff.report_failure', params: { ...MESSAGE, purpose: 'staff.report_failure' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.access_review_notice', params: { ...MESSAGE, purpose: 'staff.access_review_notice' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.trust_access_request', params: { ...MESSAGE, purpose: 'staff.trust_access_request' }, expectedFrom: DEFAULT_FROM },
+  { name: 'staff.pam_elevation_request', params: { ...MESSAGE, purpose: 'staff.pam_elevation_request' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.connection_health_digest', params: { ...MESSAGE, purpose: 'staff.connection_health_digest' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.sending_domain_status', params: { ...MESSAGE, purpose: 'staff.sending_domain_status' }, expectedFrom: DEFAULT_FROM },
   // Portal registration W4 (#11381): Breeze tells the displaced partner's admins

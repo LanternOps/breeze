@@ -88,6 +88,9 @@ export const MAIL_PURPOSES = {
   // Trust Center gated documents (#8770 W02d): a requester confirmed a request; MSP staff review it.
   // Send site: services/trustPage/access/emails.ts.
   'staff.trust_access_request': { lane: 'platform' },
+  // PAM (#11231): a pending elevation request is waiting for a decision; every
+  // permission holder for the org is told. Send site: services/pamElevationNotify.ts.
+  'staff.pam_elevation_request': { lane: 'platform' },
   // Connection health daily digest to MSP staff and grant owners (spec 2026-10-15 §4).
   // Send site: services/connectionHealth/digest.ts.
   'staff.connection_health_digest': { lane: 'platform' },
