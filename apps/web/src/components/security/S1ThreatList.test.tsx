@@ -23,6 +23,7 @@ type ThreatFixture = {
   severity?: string | null;
   status: string;
   detectedAt?: string | null;
+  integrationDisconnected?: boolean;
 };
 
 function routeFetch(rows: ThreatFixture[] = [], total = rows.length) {
@@ -253,5 +254,46 @@ describe('S1ThreatList', () => {
 
     render(<S1ThreatList />);
     expect(await screen.findByTestId('s1-error')).toHaveTextContent('Server error');
+  });
+  it('badges rows from a disconnected integration and hides threat actions but keeps promote', async () => {
+    routeFetch([
+      {
+        id: 'td',
+        orgId: 'org-1',
+        deviceId: 'dev-1',
+        threatName: 'Old threat',
+        severity: 'high',
+        status: 'active',
+        integrationDisconnected: true,
+      },
+      {
+        id: 'tc',
+        orgId: 'org-1',
+        deviceId: 'dev-2',
+        threatName: 'Live threat',
+        severity: 'high',
+        status: 'active',
+        integrationDisconnected: false,
+      },
+    ]);
+
+    render(<S1ThreatList />);
+
+    for (const layout of ['responsive-table-desktop', 'responsive-table-cards']) {
+      const view = within(await screen.findByTestId(layout));
+      await waitFor(() => expect(view.getAllByText('Old threat')).toHaveLength(1));
+      const badges = view.getAllByTestId('s1-threat-disconnected-badge');
+      expect(badges).toHaveLength(1);
+      expect(badges[0]).toHaveTextContent('Disconnected integration');
+      expect(badges[0]).toHaveAttribute(
+        'title',
+        'Synced from an integration that is no longer connected',
+      );
+      expect(view.queryByTestId('s1-threat-kill-td')).toBeNull();
+      expect(view.queryByTestId('s1-threat-quarantine-td')).toBeNull();
+      expect(view.queryByTestId('s1-threat-rollback-td')).toBeNull();
+      expect(view.getByTestId('s1-promote-td')).toBeInTheDocument();
+      expect(view.getByTestId('s1-threat-quarantine-tc')).toBeInTheDocument();
+    }
   });
 });

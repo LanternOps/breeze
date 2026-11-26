@@ -214,7 +214,7 @@ The following SentinelOne operations require MFA verification before they can be
 
 | Operation | MFA Required |
 |-----------|-------------|
-| Create or update integration | Yes |
+| Create, update or disconnect integration | Yes |
 | Isolate / unisolate devices | Yes |
 | Execute threat actions (kill, quarantine, rollback) | Yes |
 | Trigger manual sync | No |
@@ -455,6 +455,24 @@ Sync jobs are processed through a background queue. If a sync fails (for example
 
 ---
 
+## Disconnecting SentinelOne or Huntress
+
+A partner admin can disconnect either integration with **Disconnect** on its tab in **Integrations**. It needs the same access as connecting: partner scope with access to all organizations, `orgs:write`, and MFA. Organization-scoped users cannot disconnect it.
+
+Disconnecting stops the integration and deletes its stored secrets:
+
+- Scheduled and manual syncs stop, and threat actions, isolation and agent deployment for that vendor stop working.
+- SentinelOne: the API token and every site registration token are deleted.
+- Huntress: the API key, account key and webhook signing secret are deleted, and the webhook receiver refuses its deliveries.
+
+Data already synced is kept: agents, threats or incidents, and the site or organization mappings. Threat and incident lists still show those rows and mark each one **Disconnected integration** (`integrationDisconnected: true` in the API).
+
+Connecting the same vendor again reattaches that history and the mappings, because Breeze reactivates the disconnected integration instead of creating a new one. Enter every key again; nothing deleted on disconnect comes back.
+
+The `isActive: false` field on `POST /integration` is refused. Use `DELETE /integration` to disconnect.
+
+---
+
 ## API Reference
 
 ### Huntress
@@ -466,6 +484,7 @@ All authenticated endpoints require `organization`, `partner`, or `system` scope
 | `POST` | `/webhook` | No (signature verified) | Receive Huntress webhook events |
 | `GET` | `/integration` | Yes | Get the Huntress integration for the current org |
 | `POST` | `/integration` | Yes + MFA | Create or update a Huntress integration |
+| `DELETE` | `/integration` | Yes + MFA (partner) | Disconnect the Huntress integration (keeps synced history) |
 | `POST` | `/sync` | Yes + MFA | Trigger a manual Huntress sync |
 | `GET` | `/status` | Yes | Get integration status and coverage summary |
 | `GET` | `/incidents` | Yes | List Huntress incidents with filters |
@@ -478,6 +497,7 @@ All endpoints require authentication. Credentials and mappings are managed at **
 |--------|------|------|-------------|
 | `GET` | `/integration` | Yes | Get the partner's SentinelOne integration |
 | `POST` | `/integration` | Yes + MFA (partner) | Create or update the SentinelOne integration |
+| `DELETE` | `/integration` | Yes + MFA (partner) | Disconnect the SentinelOne integration (keeps synced history) |
 | `GET` | `/status` | Yes | Get integration status and threat summary |
 | `GET` | `/threats` | Yes | List threats with filters |
 | `POST` | `/isolate` | Yes + MFA | Isolate or unisolate devices |

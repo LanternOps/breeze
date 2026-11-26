@@ -24,6 +24,7 @@ type IncidentFixture = {
   status: string;
   category?: string | null;
   reportedAt?: string | null;
+  integrationDisconnected?: boolean;
 };
 
 function routeFetch(rows: IncidentFixture[] = [], total = rows.length) {
@@ -130,5 +131,26 @@ describe('HuntressIncidentList', () => {
     expect((body as any).classification).toBe('huntress-incident');
     expect(navigateTo).toHaveBeenCalledWith('/incidents/inc-3');
     expect(navigateTo).not.toHaveBeenCalledWith('/devices/dev-3');
+  });
+  it('badges incidents from a disconnected integration in table and card layouts only', async () => {
+    routeFetch([
+      { id: 'd1', title: 'Old incident', status: 'open', integrationDisconnected: true },
+      { id: 'c1', title: 'Live incident', status: 'open', integrationDisconnected: false },
+    ]);
+
+    render(<HuntressIncidentList />);
+
+    for (const layout of ['responsive-table-desktop', 'responsive-table-cards']) {
+      const view = within(await screen.findByTestId(layout));
+      await waitFor(() => expect(view.getByText('Old incident')).toBeInTheDocument());
+      const badges = view.getAllByTestId('huntress-incident-disconnected-badge');
+      expect(badges).toHaveLength(1);
+      expect(badges[0]).toHaveTextContent('Disconnected integration');
+      expect(badges[0]).toHaveAttribute(
+        'title',
+        'Synced from an integration that is no longer connected',
+      );
+      expect(badges[0].parentElement).toHaveTextContent('Old incident');
+    }
   });
 });

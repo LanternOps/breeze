@@ -431,6 +431,12 @@
     "saveAndVerify": "Save & verify"
   },
   "huntressIntegration": {
+    "disconnect": "Disconnect",
+    "disconnectTitle": "Disconnect Huntress?",
+    "disconnectMessage": "Syncing stops, Huntress webhook deliveries are refused, and the stored API key, account key and webhook signing secret are deleted. Agents, incidents and organization mappings already synced are kept. If you connect Huntress again, they reattach and you enter the keys again.",
+    "disconnectConfirm": "Disconnect",
+    "integrationDisconnected": "Huntress disconnected",
+    "failedToDisconnect": "Failed to disconnect Huntress",
     "notConfigured": "Not configured ",
     "syncing": "Syncing ",
     "error": "Error ",
@@ -971,6 +977,12 @@
     "noProviderConfigured": "No accounting provider is configured on this instance."
   },
   "securityIntegration": {
+    "disconnect": "Disconnect",
+    "disconnectTitle": "Disconnect SentinelOne?",
+    "disconnectMessage": "Syncing stops, and the stored API token and site registration tokens are deleted. Agents, threats and site-to-organization mappings already synced are kept. If you connect SentinelOne again, they reattach and you enter a new API token.",
+    "disconnectConfirm": "Disconnect",
+    "integrationDisconnected": "SentinelOne disconnected",
+    "failedToDisconnect": "Failed to disconnect SentinelOne",
     "notConfigured": "Not configured ",
     "syncing": "Syncing ",
     "error": "Error ",

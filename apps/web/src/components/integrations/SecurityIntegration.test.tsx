@@ -104,6 +104,8 @@ function mockPartnerLoad(
         },
       });
     }
+    if (url === "/s1/integration" && init?.method === "DELETE")
+      return jsonResponse({ success: true, data: { id: "s1-1", isActive: false } });
     if (url === "/s1/sync" && init?.method === "POST")
       return jsonResponse({ queued: true });
     if (url === "/s1/integration") return jsonResponse({ data: integration });
@@ -448,5 +450,100 @@ describe("SecurityIntegration", () => {
     expect(screen.getByTestId("s1-save-message")).toHaveTextContent(
       "Invalid SentinelOne credentials",
     );
+  });
+  describe("disconnect", () => {
+    const deleteCalls = () =>
+      fetchWithAuth.mock.calls.filter(
+        ([url, init]) => url === "/s1/integration" && init?.method === "DELETE",
+      );
+
+    it("shows the Disconnect button only for a connected partner admin", async () => {
+      asPartnerAdmin();
+      mockPartnerLoad({ integration: null });
+      const { unmount } = render(<SecurityIntegration />);
+      await screen.findByTestId("s1-save");
+      expect(screen.queryByTestId("s1-disconnect")).not.toBeInTheDocument();
+      unmount();
+
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<SecurityIntegration />);
+      expect(await screen.findByTestId("s1-disconnect")).toBeInTheDocument();
+    });
+
+    it("hides Disconnect for an org-scope token", async () => {
+      asOrgUser();
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<SecurityIntegration />);
+      await screen.findByTestId("s1-panel");
+      expect(screen.queryByTestId("s1-disconnect")).not.toBeInTheDocument();
+    });
+
+    it("explains what stops and what is kept, and sends nothing on cancel", async () => {
+      asPartnerAdmin();
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<SecurityIntegration />);
+      fireEvent.click(await screen.findByTestId("s1-disconnect"));
+
+      expect(await screen.findByText("Disconnect SentinelOne?")).toBeInTheDocument();
+      expect(screen.getByText(/Syncing stops/)).toBeInTheDocument();
+      expect(screen.getByText(/already synced are kept/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() =>
+        expect(screen.queryByText("Disconnect SentinelOne?")).not.toBeInTheDocument(),
+      );
+      expect(deleteCalls()).toHaveLength(0);
+    });
+
+    it("sends DELETE /s1/integration on confirm, toasts and reloads", async () => {
+      asPartnerAdmin();
+      mockPartnerLoad({ integration: existingIntegration });
+      render(<SecurityIntegration />);
+      fireEvent.click(await screen.findByTestId("s1-disconnect"));
+      const loadsBefore = fetchWithAuth.mock.calls.filter(
+        ([url, init]) => url === "/s1/integration" && !init,
+      ).length;
+
+      fireEvent.click(await screen.findByTestId("s1-disconnect-confirm"));
+
+      await waitFor(() => expect(deleteCalls()).toHaveLength(1));
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "success", message: "SentinelOne disconnected" }),
+        ),
+      );
+      await waitFor(() =>
+        expect(
+          fetchWithAuth.mock.calls.filter(
+            ([url, init]) => url === "/s1/integration" && !init,
+          ).length,
+        ).toBeGreaterThan(loadsBefore),
+      );
+      await waitFor(() =>
+        expect(screen.queryByText("Disconnect SentinelOne?")).not.toBeInTheDocument(),
+      );
+    });
+
+    it("toasts the API error when disconnect fails", async () => {
+      asPartnerAdmin();
+      mockPartnerLoad({ integration: existingIntegration });
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/s1/integration" && init?.method === "DELETE")
+          return jsonResponse({ error: "No SentinelOne integration connected" }, 404);
+        return base(url, init);
+      });
+      render(<SecurityIntegration />);
+      fireEvent.click(await screen.findByTestId("s1-disconnect"));
+      fireEvent.click(await screen.findByTestId("s1-disconnect-confirm"));
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            message: "No SentinelOne integration connected",
+          }),
+        ),
+      );
+    });
   });
 });

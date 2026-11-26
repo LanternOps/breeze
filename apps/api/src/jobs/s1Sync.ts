@@ -331,6 +331,22 @@ export async function mapSiteOrgIds(integrationId: string): Promise<Map<string, 
 }
 
 /**
+ * Lock the integration row until the current transaction ends and return
+ * whether it is active (null when it does not exist). NO KEY UPDATE, not
+ * SHARE: the sync later updates this row (lastFullAgentSyncAt) in the same
+ * transaction, and upgrading a share lock while a disconnect waits could
+ * deadlock.
+ */
+async function lockIntegrationRow(integrationId: string): Promise<boolean | null> {
+  const [row] = await db
+    .select({ isActive: s1Integrations.isActive })
+    .from(s1Integrations)
+    .where(eq(s1Integrations.id, integrationId))
+    .for('no key update');
+  return row ? row.isActive : null;
+}
+
+/**
  * Upsert discovered sites (derived from the fetched agent list) into s1_org_mappings.
  * Sites are keyed on (integration_id, s1_site_id). On conflict, updates s1_site_name,
  * agents_count, and last_seen_at but DOES NOT overwrite a mapped org_id with null —
@@ -343,6 +359,14 @@ export async function upsertDiscoveredSites(params: {
 }): Promise<void> {
   if (params.sites.length === 0) return;
 
+  // A sync can fetch tokens just before the integration is disconnected. Lock
+  // the integration row until this transaction ends and store tokens only
+  // while it is active, so a disconnect either waits for this write and then
+  // clears it, or has already committed and no token is written (#12691).
+  // The sync already holds this lock in the same transaction (see
+  // syncAgentsForIntegration), so this adds no new wait; the read decides storeTokens.
+  const storeTokens = (await lockIntegrationRow(params.integrationId)) === true;
+
   const now = new Date();
   const values = params.sites.map((site) => ({
     integrationId: params.integrationId,
@@ -350,7 +374,7 @@ export async function upsertDiscoveredSites(params: {
     s1SiteId: site.siteId,
     s1SiteName: site.siteName ?? null,
     agentsCount: site.count,
-    registrationToken: site.registrationToken
+    registrationToken: storeTokens && site.registrationToken
       ? encryptSecret(site.registrationToken, { aad: 's1_org_mappings.registration_token' })
       : null,
     lastSeenAt: now,
@@ -541,6 +565,12 @@ async function syncAgentsForIntegration(
 
   // Phase 2 — all reconcile/mapping/upsert DB work runs in ONE short context.
   return runWithSystemDbAccess(async () => {
+  // Lock the integration row before writing any mapping row. Disconnect locks
+  // the integration first and its mappings second; taking the locks in the
+  // other order here deadlocked against it (#12691). The fetches above are
+  // done, so the lock is never held across a call to SentinelOne.
+  // upsertDiscoveredSites reads the state again under this lock.
+  await lockIntegrationRow(integration.id);
   // Derive distinct sites from the fetched agent list (skip agents with no siteId).
   const siteCountMap = new Map<string, { siteName: string | null; count: number }>();
   for (const agent of fetchedAgents) {
@@ -912,7 +942,8 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
       : { fetched: 0, upserted: 0, emitted: 0, emitFailures: 0, truncated: false };
 
     const wasTruncated = agentResult.truncated || threatResult.truncated;
-    // Final status write in its own SHORT context (#1896).
+    // Final status write in its own SHORT context (#1896). Only onto an active
+    // row: a disconnect that committed while this sync ran keeps its state (#12691).
     await runWithSystemDbAccess(() =>
       db
         .update(s1Integrations)
@@ -922,7 +953,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
           lastSyncError: wasTruncated ? 'Results were truncated due to pagination limits' : null,
           updatedAt: new Date()
         })
-        .where(eq(s1Integrations.id, integration.id))
+        .where(and(eq(s1Integrations.id, integration.id), eq(s1Integrations.isActive, true)))
     );
 
     return {
@@ -951,7 +982,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData) {
               lastSyncError: truncateError(error),
               updatedAt: new Date()
             })
-            .where(eq(s1Integrations.id, integration.id))
+            .where(and(eq(s1Integrations.id, integration.id), eq(s1Integrations.isActive, true)))
         )
       );
     } catch (dbError) {

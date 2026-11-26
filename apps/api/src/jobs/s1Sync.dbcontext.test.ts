@@ -27,7 +27,7 @@ function chain(result: unknown) {
   const c: Record<string, unknown> = {};
   for (const m of [
     'from', 'where', 'limit', 'values', 'returning',
-    'onConflictDoNothing', 'onConflictDoUpdate', 'innerJoin', 'leftJoin',
+    'onConflictDoNothing', 'onConflictDoUpdate', 'innerJoin', 'leftJoin', 'for',
   ]) {
     c[m] = vi.fn(() => c);
   }

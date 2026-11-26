@@ -21,7 +21,8 @@ export const huntressIntegrations = pgTable('huntress_integrations', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   legacyOrgId: uuid('org_id').references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
-  apiKeyEncrypted: text('api_key_encrypted').notNull(),
+  // NULL once the integration is disconnected (#12691).
+  apiKeyEncrypted: text('api_key_encrypted'),
   accountId: varchar('account_id', { length: 120 }),
   // The Huntress deployment Account Key (embedded in the installer download URL and
   // passed as /ACCT_KEY). Distinct from the API account_id; encrypted at rest.

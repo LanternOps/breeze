@@ -23,6 +23,8 @@ import { type Organization, useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { Trans, useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { runAction, handleActionError } from "../../lib/runAction";
 import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
 type Integration = {
@@ -227,6 +229,8 @@ export default function HuntressIntegration() {
 
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
   const [syncState, setSyncState] = useState<SyncState>({ status: "idle" });
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [mappingSaving, setMappingSaving] = useState<Record<string, boolean>>(
     {},
   );
@@ -483,6 +487,37 @@ export default function HuntressIntegration() {
             ? err.message
             : t("huntressIntegration.networkError"),
       });
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!isPartnerAdmin) return;
+    setDisconnecting(true);
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth("/huntress/integration", { method: "DELETE" }),
+        errorFallback: t("huntressIntegration.failedToDisconnect"),
+        successMessage: t("huntressIntegration.integrationDisconnected"),
+      });
+      setDisconnectOpen(false);
+      setName("");
+      setApiKey("");
+      setApiSecret("");
+      setAccountId("");
+      setAccountKey("");
+      setWebhookSecret("");
+      setGeneratedSecretNotice(false);
+      setSaveState({ status: "idle" });
+      setSyncState({ status: "idle" });
+      await load();
+    } catch (err) {
+      setDisconnectOpen(false);
+      handleActionError(err, t("huntressIntegration.failedToDisconnect"));
+      // A 404 means it was already disconnected elsewhere: show the real state.
+      void load();
+    } finally {
+      setDisconnecting(false);
     }
   };
 
@@ -879,6 +914,17 @@ export default function HuntressIntegration() {
                   <RefreshCw className="h-4 w-4" />
                 )}
                 {t("huntressIntegration.syncNow")}
+              </button>
+            )}
+            {integration && (
+              <button
+                type="button"
+                onClick={() => setDisconnectOpen(true)}
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive hover:bg-destructive/10"
+                data-testid="huntress-disconnect"
+              >
+                <Unplug className="h-4 w-4" />
+                {t("huntressIntegration.disconnect")}
               </button>
             )}
             {saveState.message && (
@@ -1331,6 +1377,18 @@ export default function HuntressIntegration() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={disconnectOpen}
+        onClose={() => setDisconnectOpen(false)}
+        onConfirm={() => void handleDisconnect()}
+        title={t("huntressIntegration.disconnectTitle")}
+        message={t("huntressIntegration.disconnectMessage")}
+        confirmLabel={t("huntressIntegration.disconnectConfirm")}
+        variant="destructive"
+        isLoading={disconnecting}
+        confirmTestId="huntress-disconnect-confirm"
+      />
     </div>
   );
 }

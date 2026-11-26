@@ -389,6 +389,8 @@
     "unknown": "Bilinmiyor"
   },
   "securityHuntressIncidentList": {
+    "disconnectedIntegration": "Bağlantısı kesilmiş entegrasyon",
+    "disconnectedIntegrationTooltip": "Artık bağlı olmayan bir entegrasyondan eşitlendi",
     "actions": "Eylemler",
     "all": "hepsi",
     "allSeverities": "Tüm önem dereceleri",
@@ -524,6 +526,8 @@
     "thisAccessHasBeenRecordedInThe": "Bu erişim denetim takibine kaydedildi."
   },
   "securityS1ThreatList": {
+    "disconnectedIntegration": "Bağlantısı kesilmiş entegrasyon",
+    "disconnectedIntegrationTooltip": "Artık bağlı olmayan bir entegrasyondan eşitlendi",
     "actions": "Eylemler",
     "active": "Aktif",
     "all": "hepsi",

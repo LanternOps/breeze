@@ -452,6 +452,12 @@
     "saveAndVerify": "Guardar y verificar"
   },
   "huntressIntegration": {
+    "disconnect": "Desconectar",
+    "disconnectTitle": "¿Desconectar Huntress?",
+    "disconnectMessage": "La sincronización se detiene, se rechazan las entregas de webhooks de Huntress y se eliminan la clave de API, la clave de cuenta y el secreto de firma del webhook almacenados. Los agentes, los incidentes y las asignaciones de organización ya sincronizados se conservan. Si vuelve a conectar Huntress, se reasocian y usted ingresa las claves de nuevo.",
+    "disconnectConfirm": "Desconectar",
+    "integrationDisconnected": "Huntress desconectado",
+    "failedToDisconnect": "No se pudo desconectar Huntress",
     "notConfigured": "No configurado",
     "syncing": "Sincronizando ",
     "error": "Error",
@@ -992,6 +998,12 @@
     "noProviderConfigured": "No hay ningún proveedor de contabilidad configurado en esta instancia."
   },
   "securityIntegration": {
+    "disconnect": "Desconectar",
+    "disconnectTitle": "¿Desconectar SentinelOne?",
+    "disconnectMessage": "La sincronización se detiene y se eliminan el token de API almacenado y los tokens de registro de sitio. Los agentes, las amenazas y las asignaciones de sitio a organización ya sincronizados se conservan. Si vuelve a conectar SentinelOne, se reasocian y usted ingresa un nuevo token de API.",
+    "disconnectConfirm": "Desconectar",
+    "integrationDisconnected": "SentinelOne desconectado",
+    "failedToDisconnect": "No se pudo desconectar SentinelOne",
     "notConfigured": "No configurado",
     "syncing": "Sincronizando ",
     "error": "Error",

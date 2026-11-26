@@ -21,7 +21,8 @@ export const s1Integrations = pgTable('s1_integrations', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   legacyOrgId: uuid('org_id').references(() => organizations.id),
   name: varchar('name', { length: 200 }).notNull(),
-  apiTokenEncrypted: text('api_token_encrypted').notNull(),
+  // NULL once the integration is disconnected (#12691).
+  apiTokenEncrypted: text('api_token_encrypted'),
   managementUrl: text('management_url').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   lastSyncAt: timestamp('last_sync_at'),
