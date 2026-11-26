@@ -53,8 +53,23 @@ async function agentHash(type: string, text: string, image: Uint8Array = new Uin
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Remote content is fingerprinted (crypto.subtle, async) before it is applied.
-const flush = () => new Promise<void>((r) => setTimeout(r, 15));
+// Remote content is fingerprinted (crypto.subtle, async) before it is applied,
+// and how long that takes depends on the runner. A fixed timer raced it on a
+// loaded CI host, so flush() drains the sync's inbound chain (every remote
+// change is applied through it) and only then yields once more.
+let current: ClipboardSync | null = null;
+const flush = async () => {
+  const sync = current as unknown as { inbound?: Promise<unknown> } | null;
+  // A renamed field must fail loudly, not quietly turn this back into a timer.
+  if (!sync || !('inbound' in sync)) throw new Error('flush(): ClipboardSync.inbound not found; update this helper');
+  const inbound = () => sync.inbound;
+  for (let i = 0; i < 10; i++) {
+    const seen = inbound();
+    await seen;
+    if (inbound() === seen) break;
+  }
+  await new Promise<void>((r) => setTimeout(r, 0));
+};
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const W4A_STATUS = {
@@ -89,6 +104,7 @@ function setup(opts: {
     onChange,
     timings: { legacyAckMs: 30, ackMs: 60, bufferWaitMs: 80, pollMs: 2, copySettleMs: opts.copySettleMs ?? 200 },
   });
+  current = sync;
   if (opts.status !== null) channel.deliver(opts.status ?? W4A_STATUS);
   return {
     channel, io, sync, onChange,
