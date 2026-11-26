@@ -9,9 +9,16 @@ import (
 	"io"
 )
 
-// oem_update_release (#11065 W06): hand a vendor tool's own update schedule
-// back. The API queues it when a device stops resolving to an enabled lane;
-// the agent restores only what its takeover changed (takeover.go).
+// oem_update_release (#11065 W06) asks the agent to hand a vendor tool's own
+// update schedule back. The API queues it when a device stops resolving to an
+// enabled lane.
+//
+// No lane takes a vendor schedule over any more (#12267): the Dell takeover was
+// dropped because its settings export is refused under every agent-owned folder
+// and an import cannot put the original schedule back exactly. So every
+// release answers nothing_to_restore and runs no tool. The command stays so the
+// API can clear a takeover state an older agent reported. Restored and failed
+// stay in the contract for those agents.
 
 // Release outcomes, mirroring oemUpdateReleaseResultSchema.
 const (
@@ -33,7 +40,7 @@ type ReleaseResult struct {
 }
 
 // Acked: the schedule is Breeze's no longer, so the API can clear its
-// takeover state. A failure keeps the record for the next release.
+// takeover state.
 func (r ReleaseResult) Acked() bool {
 	return r.Outcome == ReleaseRestored || r.Outcome == ReleaseNothingToRestore
 }
@@ -100,46 +107,27 @@ func ParseReleaseRequest(raw []byte) (ReleaseRequest, error) {
 	return req, nil
 }
 
-// Release restores the lane's vendor schedule. It never runs beside a vendor
-// update run (the same lock), and every tool process is verified first.
-func Release(ctx context.Context, req ReleaseRequest, lane Lane, deps Deps) ReleaseResult {
-	fail := func(code string, err error) ReleaseResult {
-		if err != nil {
-			log.Warn("vendor schedule release failed", "lane", req.Lane, "errorCode", code, "error", err.Error())
-		}
-		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseFailed, ErrorCode: strPtr(code)}
-	}
+// Release answers a schedule release. No lane writes a vendor schedule, so
+// there is never anything to hand back: it runs no tool and writes nothing,
+// and acks so the API clears its takeover state.
+//
+// An ownership record an older agent's takeover left in the store is neither
+// acted on nor removed, but it is logged: the tool's schedule may still be the
+// one that takeover set, and once the API clears its state nothing else says so.
+func Release(_ context.Context, req ReleaseRequest, lane Lane, deps Deps) ReleaseResult {
 	if !IsLane(req.Lane) || lane == nil || lane.ID() != req.Lane {
-		return fail("invalid_request", errors.New("lane does not match the request"))
+		log.Warn("vendor schedule release refused: lane does not match the request", "lane", req.Lane)
+		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseFailed, ErrorCode: new("invalid_request")}
 	}
-	tk, ok := lane.(LaneTakeover)
-	if !ok {
-		// A lane that never takes a schedule over has none to hand back.
-		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseNothingToRestore}
+	if deps.Store != nil {
+		if _, err := deps.Store.ReadFile(legacyTakeoverRecordName(req.Lane)); err == nil {
+			log.Warn("an older agent's vendor schedule takeover record is present; Breeze no longer restores it, so check the tool's own schedule by hand",
+				"lane", req.Lane, "record", legacyTakeoverRecordName(req.Lane))
+		}
 	}
-	if deps.Store == nil || deps.Exec == nil || deps.Verifier == nil {
-		return fail("deps_missing", errors.New("release needs a store, an exec and a verifier"))
-	}
-	elevated := deps.Elevated
-	if elevated == nil {
-		elevated = isElevated
-	}
-	if !elevated() {
-		return fail("not_elevated", errNotElevated)
-	}
-	unlock, err := AcquireRunLock(deps.Store)
-	if err != nil {
-		return fail("run_in_flight", err)
-	}
-	defer unlock()
-
-	err = tk.Restore(ctx, VerifiedExec(deps.Exec, deps.Verifier, lane.Allow()), deps.Store)
-	switch {
-	case err == nil:
-		log.Info("vendor schedule handed back", "lane", req.Lane)
-		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseRestored}
-	case errors.Is(err, ErrNothingToRestore):
-		return ReleaseResult{Lane: req.Lane, Outcome: ReleaseNothingToRestore}
-	}
-	return fail(codeOr(err, "restore_failed"), err)
+	return ReleaseResult{Lane: req.Lane, Outcome: ReleaseNothingToRestore}
 }
+
+// legacyTakeoverRecordName is where agents before #12267 kept a lane's
+// takeover ownership record.
+func legacyTakeoverRecordName(lane string) string { return lane + "-takeover.json" }

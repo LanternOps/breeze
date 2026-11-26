@@ -17,6 +17,7 @@ Scope:
 - Servers, virtual machines and devices from a maker with no lane are not covered, and read **Not managed**. Quick Support devices are left out of the view.
 - There is no per-update approval. You choose categories per maker. For Surface, HP and Lenovo you can block individual update IDs by listing them in the policy.
 - Dell does not support blocking individual updates. Dell Command | Update offers another package for the same component when one is blocked, so a policy cannot list blocked IDs for Dell. To stop Dell updates, turn off the category or the maker. A policy saved with Dell blocked IDs before this rule sends no Dell runs (its devices read **Not managed**) until it is saved without them.
+- Breeze does not change a vendor tool's own update schedule or settings. If Dell Command | Update has its own automatic updates turned on, it can still install updates on its own schedule beside Breeze's runs. Set it to manual updates on devices Breeze manages. Breeze does not yet check this setting.
 
 <Aside type="caution">
 **Availability.** A maker's lane opens only after Breeze has validated that vendor's tool in a lab. Today every lane is closed, so real devices read **Not managed** or **Not supported**. This page describes how the feature behaves once lanes open.
@@ -98,7 +99,7 @@ Vendor updates use the normal [alerts](/features/alerts/) machinery. An organiza
 | `Vendor update: device overdue` | A device reads Overdue. Raised once per monthly occurrence, even if a technician closes the alert. An alert still open from an earlier month stands in for a new one. | A run finishes after the alert, or the device leaves management. A kill switch or a closed gate leaves it open. |
 | `Vendor update: run failing` | A device reads Failing, the last catch-up night for this month's occurrence has passed, and its last run was that occurrence's scheduled run. Raised once per monthly occurrence, even if a technician closes the alert. It never fires while a retry is possible, or when the last run was **Run vendor updates**. A device with all 3 attempts used reads Overdue and raises the overdue rule instead. | A run finishes after the alert, the next month's occurrence starts, or the device leaves management. A kill switch or a closed gate leaves it open. |
 | `Vendor update: restart overdue` | A device reads Restart overdue. Raised once per owed restart. | The device is no longer Restart overdue. |
-| `Vendor update: schedule not handed back` | No policy runs vendor updates on the device any more, and giving the vendor tool's own schedule back failed 3 times. | The handback goes through. |
+| `Vendor update: schedule not handed back` | No policy runs vendor updates on the device any more, and giving the vendor tool's own schedule back failed 3 times. Current agents never change that schedule, so this can only come from an older agent. | The handback goes through. |
 | `Vendor update: device did not come back` | A device has not checked in after a BIOS or firmware update started, past its return deadline. It may be at a BitLocker recovery prompt or a failed flash. | The device checks in again. |
 | `Vendor update: BitLocker still suspended` | BitLocker protection did not come back after a vendor update and its restart. | BitLocker protection is back on. |
 

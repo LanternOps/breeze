@@ -19,7 +19,8 @@ import (
 // DCU refuses any -outputLog, -report or -exportSettings path under
 // ProgramData, Program Files or Windows (exit 107, "reserved folder"), which is
 // where every agent-owned directory lives. So the lane writes nothing: it reads
-// the tool's stdout, bounded, as untrusted text.
+// the tool's stdout, bounded, as untrusted text. It never runs /configure, so
+// the tool's own schedule and settings are never read or changed (#12267).
 
 const dotnetDesktopRuntime = "dotnet_desktop_runtime"
 

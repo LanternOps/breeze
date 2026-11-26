@@ -51,7 +51,7 @@ This feature makes that the managed default for a fleet and removes the login fr
 | No daytime installs or wake timers; laptops that miss every night show as Overdue | Todd |
 | Buy used test units for Surface, HP and Lenovo BIOS and firmware testing | Todd |
 | **HP, Lenovo and Surface BIOS and firmware stay off until a lab leg passes on that vendor** | My call; Todd has no experience with these vendors, and the docs below are weak or conflicting |
-| Breeze triggers each run; the vendor tool's own scheduler is turned off | My call (§4.2) |
+| Breeze triggers each run; the vendor tool's own scheduler is turned off (amended by #12267: Breeze no longer touches it; see §4.2) | My call (§4.2) |
 | The agent makes sure the tool is present as part of the run; no generated software policy | My call (§4.4) |
 | The tool never reboots itself; Breeze's reboot path does. If Dell can't flash BIOS that way, Dell BIOS stays off until the lifecycle is revised | My call (§4.5), after advisor review |
 | One owner per update class, for Breeze patch jobs only and only where the vendor lane is really delivering. Native Windows Update isn't touched | My call (§4.6), after advisor review |
@@ -127,6 +127,8 @@ DCU can schedule itself (`-scheduleMonthly=third,Wed,01:00`, vendor doc), which 
 - Breeze needs the result, a central way to stop runs, and reboots through its own safety rails.
 
 The cost is that a device must be online with a running agent during the window.
+
+> **Amended 2026-11-25 (#12267): the takeover is dropped.** The W10 lab (#12262) showed DCU refuses `-exportSettings` under every agent-owned folder (exit 107), and that importing a default-valued export does not reset `ScheduleMode`, so a release could not restore the original schedule exactly. The agent now never reads or writes the tool's schedule or settings, a scheduled run behaves like Run Now, every result reports `takeover: not_attempted`, and a release always answers `nothing_to_restore`. The owner's decision is to require the tool to be in manual-updates mode and report a lane state when it is not. That check is **not built yet**: no capture shows a way to read the schedule mode without writing anything. The paragraphs below describe the original design.
 
 **Taking over and handing back the vendor schedule.** Only a *scheduled* run takes over. Before the first one on a device, the agent saves the tool's settings (`-exportSettings` on Dell) in its own protected directory, then runs `dcu-cli /configure -scheduleManual -updatesNotification=disable` and re-asserts it on later runs. This stops double runs on machines already configured by hand. Policy-controlled settings can make this a no-op (vendor doc), so the agent checks the result.
 

@@ -71,7 +71,9 @@ const (
 	SkipPower           = "power"
 )
 
-// Takeover values. W02 never takes over a vendor schedule (W06 adds it).
+// Takeover values, mirroring the wire enum. No lane takes a vendor schedule over
+// (#12267), so the agent reports only not_attempted; ok and policy_locked stay
+// valid for results from older agents.
 const (
 	TakeoverOK           = "ok"
 	TakeoverPolicyLocked = "policy_locked"

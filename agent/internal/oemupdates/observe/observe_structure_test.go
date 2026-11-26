@@ -16,8 +16,8 @@ import (
 
 const modulePrefix = "github.com/breeze-rmm/agent/internal/"
 
-// rootPackage is the oemupdates root: fetch, install, runner, marker, lock and
-// takeover. Matched exactly: bitlockerguard and observe share its prefix.
+// rootPackage is the oemupdates root: fetch, install, runner, marker and lock.
+// Matched exactly: bitlockerguard and observe share its prefix.
 const rootPackage = modulePrefix + "oemupdates"
 
 // forbiddenDirect may not be imported by this package at all.
