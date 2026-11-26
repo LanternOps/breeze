@@ -1,8 +1,9 @@
 /**
  * PAM mobile bridge (#1254) — eligible-approver resolution.
  *
- * Given an org, returns the distinct set of user ids who may approve a
- * uac_intercept elevation on their phone: a user is eligible iff
+ * Given an org, resolves the distinct user ids who may approve a
+ * uac_intercept elevation on their phone, plus the counts behind that list
+ * (`ElevationApproverResolution`): a user is eligible iff
  *   1. their account is active (users.status = 'active'), AND
  *   2. their role in (or covering) the org grants PAM_APPROVE
  *      (pam:approve — fix/pam-dedicated-permissions; previously
@@ -42,7 +43,8 @@ import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
  *   "no permission holder" (candidates 0) apart from "holders, but none with a
  *   notifying phone" (candidates > 0, withDevice 0).
  *
- * Counts only, never identities: callers log and audit these.
+ * `candidates` and `withDevice` are counts, safe to log and audit;
+ * `approverIds` are identities and must not be logged or audited.
  */
 export interface ElevationApproverResolution {
   approverIds: string[];

@@ -1170,6 +1170,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
       expect(noApproverAudits()).toEqual([expect.objectContaining({
         orgId: 'org-1',
         actorType: 'agent',
+        actorId: 'agent-123',
         resourceType: 'elevation_request',
         resourceId: 'req-uuid',
         details: {

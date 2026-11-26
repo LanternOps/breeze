@@ -193,8 +193,9 @@ async function resolvePamSupportName(orgId: string): Promise<string | null> {
  * deferred to #1150).
  *
  * Returns the approver counts the resolver saw, so the caller can record a
- * request that reached nobody (#11231). `withDevice === 0` means no approver
- * was asked at all.
+ * request that resolved no eligible approver (#11231): `withDevice === 0`.
+ * Approvers that resolved but whose approval insert or push then failed are
+ * logged per approver above and below, not counted here.
  */
 async function fanOutMobileApprovals(args: {
   elevationRequestId: string;
@@ -324,12 +325,17 @@ interface ApproverReach {
  * was empty as counts.
  *
  * Not in any transaction of the request: `writeAuditEvent` persists on its own
- * pooled connection in a fresh system context (`persistAuditLog`), is
- * fire-and-forget, and never rejects (a failed write goes to the audit retry
- * queue). It runs after the fan-out's system context has closed, so it never
- * holds a second connection beside that one, and it cannot fail the agent's
- * 201 or roll back anything the fan-out wrote. The warn line is written first,
- * so the condition is visible even if the audit row is eventually dropped.
+ * pooled connection in a fresh system context (`persistAuditLog`) and is
+ * fire-and-forget. The write itself never rejects (a failed write goes to the
+ * audit retry queue); a synchronous failure building the audit params would
+ * throw, and the caller's bridge try/catch keeps that from failing the 201.
+ * It runs after the fan-out's system context has closed, so it never holds a
+ * second connection beside that one or rolls back anything the fan-out wrote.
+ * The warn line is written first, so the condition is visible even if the
+ * audit row is eventually dropped.
+ *
+ * Scope: only an empty resolution. A request whose resolved approvers all
+ * failed at insert or push is not recorded here (see fanOutMobileApprovals).
  */
 function recordNoApproverReached(
   c: Parameters<typeof writeAuditEvent>[0],
