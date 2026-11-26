@@ -175,6 +175,32 @@ func TestStartLoopOtherErrorsStillRetryNextTick(t *testing.T) {
 	waitLoopCondition(t, func() bool { return responder.fetches.Load() >= 2 }, "retry on the next tick")
 }
 
+// ConfigPollBackoff is the status-to-wait mapping other callers (the load
+// simulator) reuse so they cannot drift from the loop.
+func TestConfigPollBackoff(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		if _, ok := ConfigPollBackoff(status, 0); ok {
+			t.Fatalf("%d must not back off", status)
+		}
+	}
+	if d, ok := ConfigPollBackoff(http.StatusNotFound, 0); !ok || d != moduleAbsentBackoff {
+		t.Fatalf("404 = %v,%v, want %v,true", d, ok, moduleAbsentBackoff)
+	}
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusForbidden} {
+		d, ok := ConfigPollBackoff(status, 0)
+		if !ok || d < unavailableBackoffMin || d > unavailableBackoffMax {
+			t.Fatalf("%d = %v,%v, want within [%v, %v]", status, d, ok, unavailableBackoffMin, unavailableBackoffMax)
+		}
+	}
+	hint := ConfigPollRetryAfter(http.Header{"Retry-After": {"86400"}})
+	if hint != moduleAbsentBackoff {
+		t.Fatalf("ConfigPollRetryAfter(24h) = %v, want the %v ceiling", hint, moduleAbsentBackoff)
+	}
+	if d, _ := ConfigPollBackoff(http.StatusServiceUnavailable, hint); d != moduleAbsentBackoff {
+		t.Fatalf("Retry-After above the ceiling = %v, want %v", d, moduleAbsentBackoff)
+	}
+}
+
 func TestUnavailableBackoffWithoutRetryAfterIsJitteredWithinWindow(t *testing.T) {
 	seen := map[time.Duration]bool{}
 	for range 2000 {

@@ -29,6 +29,7 @@ type fakeAPI struct {
 	mu          sync.Mutex
 	counts      map[string]int
 	crawlPaths  []string          // raw request paths that keyed to RouteCrawlConfig
+	crawlStatus int               // crawl-config answer; 0 = 404 (module not loaded)
 	tokens      map[string]string // agentId -> bearer token
 	devices     map[string]string // deviceId -> agentId
 	sockets     map[string]*fakeSocket
@@ -125,7 +126,14 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(route, "POST /devices/"):
 		f.dispatch(w, r)
 	case route == RouteCrawlConfig:
-		http.NotFound(w, r) // workspace module not loaded
+		f.mu.Lock()
+		status := f.crawlStatus
+		f.mu.Unlock()
+		if status == 0 {
+			http.NotFound(w, r) // workspace module not loaded
+			return
+		}
+		writeJSON(w, status, map[string]any{"error": "crawl-config test answer"})
 	case route == RouteWSUpgrade:
 		f.upgrade(w, r)
 	case !f.authorized(r):

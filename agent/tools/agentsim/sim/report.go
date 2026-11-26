@@ -2,11 +2,12 @@ package sim
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/workspaceindex"
 )
 
 // ReportSchema identifies the run-report format W0c's perf workflow reads.
@@ -147,17 +148,21 @@ func perAgentMinute(n uint64, minutes float64) float64 {
 	return float64(n) / minutes
 }
 
-// onlyNotFound is true when a route was answered and every answer was 404.
-func onlyNotFound(counts map[int]uint64) bool {
-	if counts[http.StatusNotFound] == 0 {
-		return false
-	}
+// onlyBackedOff is true when a route was answered and every answer was one the
+// agent backs off from: 404 (module not loaded), or 503/403 (see
+// workspaceindex.ConfigPollBackoff).
+func onlyBackedOff(counts map[int]uint64) bool {
+	answered := false
 	for code, c := range counts {
-		if c > 0 && code != http.StatusNotFound {
+		if c == 0 {
+			continue
+		}
+		if _, backsOff := workspaceindex.ConfigPollBackoff(code, 0); !backsOff {
 			return false
 		}
+		answered = true
 	}
-	return true
+	return answered
 }
 
 type routeSnapshot struct {
@@ -184,7 +189,7 @@ func (r *Recorder) snapshotRoutes() map[string]routeSnapshot {
 // storm is nil for a plain run.
 func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int, storm *StormInputs) Report {
 	routes := rec.snapshotRoutes()
-	model := ExpectedPerAgentMinute(cfg.Cadence, onlyNotFound(routes[RouteCrawlConfig].statusTotal))
+	model := ExpectedPerAgentMinute(cfg.Cadence, onlyBackedOff(routes[RouteCrawlConfig].statusTotal))
 	minutes, onlineAtOpen := rec.agentMinutes(ended)
 
 	windowEnd := rec.WindowClose

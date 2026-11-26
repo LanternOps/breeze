@@ -3,6 +3,7 @@ package sim
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"math/rand/v2"
@@ -17,9 +18,6 @@ import (
 	agentws "github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workspaceindex"
 )
-
-// crawlConfigAbsentBackoff mirrors workspaceindex/loop.go moduleAbsentBackoff.
-const crawlConfigAbsentBackoff = 6 * time.Hour
 
 // simulatedUptime is added to run time for the heartbeat's uptime field.
 const simulatedUptime = 72 * time.Hour
@@ -350,8 +348,17 @@ func (a *Agent) crawlConfigLoop(ctx context.Context) {
 			return
 		}
 		resp, _, err := a.send(ctx, http.MethodGet, a.workspacePath("crawl-config"), nil)
-		if err == nil && resp.StatusCode == http.StatusNotFound {
-			wait = crawlConfigAbsentBackoff
+		// 404 (module absent), 503 and 403 back off exactly as the agent's
+		// loop does; the wait comes from the agent package itself. httputil.Do
+		// returns a retryable 503 as an error once its retries are spent.
+		status, hint := 0, time.Duration(0)
+		if err == nil {
+			status, hint = resp.StatusCode, workspaceindex.ConfigPollRetryAfter(resp.Header)
+		} else if rse, ok := errors.AsType[*httputil.RetryableStatusError](err); ok {
+			status, hint = rse.StatusCode, rse.RetryAfter
+		}
+		if backoff, ok := workspaceindex.ConfigPollBackoff(status, hint); ok {
+			wait = backoff
 			continue
 		}
 		wait = a.jitter(period, 0.10)

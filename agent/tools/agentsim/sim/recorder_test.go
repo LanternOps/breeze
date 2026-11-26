@@ -95,8 +95,10 @@ func TestOutcomeFromResponse(t *testing.T) {
 		{RouteHeartbeat, 200, nil, true},
 		{RouteHeartbeat, 503, nil, false},
 		{RouteHeartbeat, 0, errors.New("reset"), false},
-		{RouteCrawlConfig, 401, nil, true}, // workspace module off (README)
-		{RouteCrawlConfig, 404, nil, true},
+		{RouteCrawlConfig, 401, nil, false}, // the agent sends its ID in the path; a 401 is an auth failure
+		{RouteCrawlConfig, 404, nil, true},  // module not loaded
+		{RouteCrawlConfig, 503, nil, true},  // module loaded but disabled
+		{RouteCrawlConfig, 403, nil, false}, // device parked: not a healthy simulated agent
 		{RouteSoftware, 429, nil, false},
 	}
 	for _, c := range cases {

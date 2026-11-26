@@ -64,6 +64,19 @@ func TestBuildReportRatesAndDeviation(t *testing.T) {
 	}
 }
 
+// A loaded-but-disabled workspace module answers 503 and the agent backs off
+// from it, so the model must expect no crawl-config traffic then either.
+func TestBuildReportExpectsNoCrawlConfigWhenOnlyBackOffAnswers(t *testing.T) {
+	t0 := time.Now()
+	rec := NewRecorder("run-503", t0, t0, t0.Add(10*time.Minute))
+	rec.AgentOnline(0, t0)
+	rec.ObserveHTTP(RouteCrawlConfig, true, t0, time.Millisecond, 503, nil)
+	r := BuildReport(rec, validConfig(), t0.Add(10*time.Minute), 1, nil)
+	if math.Abs(r.Totals.ExpectedRequestsPerAgentMinute-4.2131) > 0.001 {
+		t.Fatalf("expected total %.4f, want 4.2131", r.Totals.ExpectedRequestsPerAgentMinute)
+	}
+}
+
 func TestBuildReportWithNoAgentMinutesHasZeroRates(t *testing.T) {
 	t0 := time.Now()
 	rec := NewRecorder("run-2", t0, t0.Add(time.Hour), t0.Add(2*time.Hour)) // window never opened

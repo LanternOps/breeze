@@ -65,8 +65,10 @@ report)
   NOTE=""; [ "$ALLOW_SET" -eq 1 ] && NOTE=" (relaxed allowance: $ALLOW)"
   [ "$BAD" -le "$ALLOW" ] && r=ok || r=bad; check "$r" "non-2xx outside crawl-config: $BAD$NOTE"
   CRAWL="$(jq '[.routes[] | select(.route == "GET /workspace/agent/crawl-config") | (.status // {}) | to_entries[]
-               | select(.key | test("^(200|401|404)$") | not) | .value] | add // 0' "$R")"
-  [ "$CRAWL" -eq 0 ] && r=ok || r=bad; check "$r" "crawl-config answers only 200/401/404: $CRAWL others"
+               | select(.key | test("^(200|404|503)$") | not) | .value] | add // 0' "$R")"
+  # 200 module on, 404 module not loaded, 503 loaded but disabled. 401 (bad
+  # token) and 403 (device parked) are failures; see load-tests/agentsim/README.md.
+  [ "$CRAWL" -eq 0 ] && r=ok || r=bad; check "$r" "crawl-config answers only 200/404/503: $CRAWL others"
   TE="$(jq .totals.transportErrors "$R")"; [ "$TE" -eq 0 ] && r=ok || r=bad; check "$r" "transport errors: $TE"
   jq -e --argjson n "$N" '.agents.started == $n and .ws.connects >= $n' "$R" >/dev/null && r=ok || r=bad
   check "$r" "agents started $(jq .agents.started "$R")/$N, ws connects $(jq .ws.connects "$R")"
