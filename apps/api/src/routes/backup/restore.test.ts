@@ -1038,6 +1038,43 @@ describe('restore routes', () => {
     });
   });
 
+  // #12736: a restore with no target path lands in the helper's staging
+  // folder; the response names it rather than leaving `targetPath: null`.
+  it('reports the folder the device wrote the files under', async () => {
+    const row = (result: Record<string, unknown>) => ({
+      id: 'restore-4',
+      snapshotId: 'snap-1',
+      deviceId: 'device-1',
+      restoreType: 'full',
+      selectedPaths: [],
+      status: 'completed',
+      targetPath: null,
+      startedAt: new Date('2026-04-01T00:00:00Z'),
+      completedAt: new Date('2026-04-01T00:05:00Z'),
+      restoredSize: 10,
+      restoredFiles: 1,
+      targetConfig: { result: { commandType: 'backup_restore', status: 'completed', ...result } },
+      commandId: 'cmd-4',
+      createdAt: new Date('2026-04-01T00:00:00Z'),
+      updatedAt: new Date('2026-04-01T00:05:00Z'),
+    });
+    const staging = '/var/lib/breeze/backup/restore-work/restored/snap-1';
+
+    selectMock.mockReturnValueOnce(chainMock([row({ restoredTo: staging })]));
+    const reported = await (await app.request('/restore/restore-4', { method: 'GET' })).json();
+    expect(reported.data.targetPath).toBeNull();
+    expect(reported.data.restoredTo).toBe(staging);
+
+    // An older helper does not report it.
+    selectMock.mockReturnValueOnce(chainMock([row({})]));
+    const older = await (await app.request('/restore/restore-4', { method: 'GET' })).json();
+    expect(older.data.restoredTo).toBeNull();
+
+    selectMock.mockReturnValueOnce(chainMock([row({ restoredTo: 7 })]));
+    const malformed = await (await app.request('/restore/restore-4', { method: 'GET' })).json();
+    expect(malformed.data.restoredTo).toBeNull();
+  });
+
   it('does not present warnings on a completed restore as an error summary', async () => {
     const row = (status: string) => ({
       id: 'restore-3',

@@ -85,6 +85,8 @@ export function buildRestoreResultMetadata(
     'filesNotAttempted',
     'failedFiles',
     'stagingDir',
+    // backup_restore: the folder the files were written under (#12736).
+    'restoredTo',
     'stateApplied',
     'driversInjected',
     'validated',

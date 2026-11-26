@@ -557,6 +557,7 @@
     "commandTarget": "Comando / destino",
     "command": "Comando:",
     "targetPath": "Caminho de destino:",
+    "restoredTo": "Arquivos gravados em:",
     "completed": "Concluído:",
     "noRestoreHistoryYetStartARestoreTo": "Ainda não há histórico de restauração. Inicie uma restauração para carregar os detalhes do resultado em tempo real aqui.",
     "recentRestoreHistory": "Histórico de restauração recente",

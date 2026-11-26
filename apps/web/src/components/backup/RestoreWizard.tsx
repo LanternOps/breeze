@@ -75,6 +75,9 @@ type RestoreJob = {
   selectedPaths?: string[];
   status: string;
   targetPath?: string | null;
+  // The folder the device wrote the files under (#12736); null from a
+  // helper that predates it, or before the device reports.
+  restoredTo?: string | null;
   createdAt: string;
   startedAt?: string | null;
   completedAt?: string | null;
@@ -1070,6 +1073,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                       {latestKnownRestore.deviceName ?? t('restoreWizard.unknownDevice')} · {restoreKindLabel(latestKnownRestore)}
                     </p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? t('restoreWizard.stagingFolder')}</p>
+                    {latestKnownRestore.restoredTo ? (
+                      <p data-testid="restore-job-restored-to" className="mt-1 break-all text-xs text-foreground">
+                        {t('restoreWizard.restoredTo')} {latestKnownRestore.restoredTo}
+                      </p>
+                    ) : null}
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
                     {latestKnownRestore.commandId ? (
                       <details className="mt-2 text-xs text-muted-foreground">

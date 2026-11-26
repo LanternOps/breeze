@@ -992,6 +992,8 @@ No payload parameters. Stops the currently running backup job.
 
 Unlike `backup_test_restore`, `backup_restore` writes to `targetPath` (or its staging folder) rather than a managed temp directory. With `allowOverwriteOriginals` and the volume root as `targetPath`, it puts files back in place.
 
+The result's `restoredTo` field is the absolute folder the files were written under: `targetPath` as sent, or the staging folder when the payload had none. It is absent when no file was restored (a refused restore, or one that stopped before its first file); a run that stops part way still sends it. A backup helper that predates the field does not send it.
+
 ```json
 {
   "action": "backup_restore",

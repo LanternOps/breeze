@@ -557,6 +557,7 @@
     "commandTarget": "Befehl / Ziel",
     "command": "Befehl:",
     "targetPath": "Zielpfad:",
+    "restoredTo": "Dateien geschrieben nach:",
     "completed": "Abgeschlossen:",
     "noRestoreHistoryYetStartARestoreTo": "Noch kein Wiederherstellungsverlauf. Starten Sie hier eine Wiederherstellung, um Live-Ergebnisdetails zu laden.",
     "recentRestoreHistory": "Aktueller Wiederherstellungsverlauf",
