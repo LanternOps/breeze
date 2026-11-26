@@ -53,6 +53,7 @@ apps/api/src/__tests__/integration/backupKeyPrefixSchema.integration.test.ts
 apps/api/src/__tests__/integration/backupProfilesPartnerRls.integration.test.ts
 apps/api/src/__tests__/integration/backupSnapshotIdReservations.integration.test.ts
 apps/api/src/__tests__/integration/backupSnapshotOriginsOrgMove.integration.test.ts
+apps/api/src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts
 apps/api/src/__tests__/integration/billedSourceLineageMigration.integration.test.ts
 apps/api/src/__tests__/integration/builtInAlertRuleUniqueness.integration.test.ts
 apps/api/src/__tests__/integration/businessCalendarsPartnerRls.integration.test.ts

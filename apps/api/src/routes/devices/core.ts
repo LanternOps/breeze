@@ -424,10 +424,10 @@ export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // breeze_learned_networks_device_moved deletes them first; this loop is the fallback.
   'learned_network_devices',
   // #11736: (config_id, org_id) names a SOURCE-org backup config, so a restamp would 23503; the device's moved
-  // snapshots re-hydrate and build a new checkpoint in the target org. The backup_snapshots tenancy reset trigger
-  // clears every snapshot pointer to the header when backup_snapshots is restamped (by the devices UPDATE's
-  // database cascade, before this delete loop runs), so the RESTRICT FK no longer applies. The header is also
-  // excluded from breeze_device_child_orgid_tables(), so the database never restamps it.
+  // snapshots re-hydrate and build a new checkpoint in the target org. The header is excluded from
+  // breeze_device_child_orgid_tables(), so the database never restamps it. The AFTER UPDATE OF org_id trigger
+  // breeze_device_moved_backup_tree_checkpoints deletes it once the devices UPDATE's database cascade has
+  // restamped backup_snapshots (whose tenancy reset clears every pointer to it), so this loop is the fallback.
   'backup_tree_checkpoints',
 ];
 

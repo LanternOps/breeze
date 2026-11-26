@@ -410,12 +410,15 @@ export const backupJobs = pgTable(
  * backup lineage of one device, shared by that lineage's `delta` snapshots.
  * Derived data, rebuildable from the source manifest. Tenancy shape 1 (direct
  * org_id). Migration 2027-01-31-120000-backup-tree-checkpoints.sql also owns
- * DEFERRABLE INITIALLY IMMEDIATE on the composite FKs, which Drizzle cannot
- * declare.
+ * the composite FKs' deferral (config: DEFERRABLE INITIALLY IMMEDIATE; device:
+ * DEFERRABLE INITIALLY DEFERRED), which Drizzle cannot declare.
  *
  * On a device org move the header is deleted, not restamped:
- * backup_tree_checkpoints_config_org_fk names a SOURCE-org config
- * (CORE_DEVICE_ORG_MOVE_DELETE_TABLES).
+ * backup_tree_checkpoints_config_org_fk names a SOURCE-org config. The AFTER
+ * UPDATE OF org_id trigger breeze_device_moved_backup_tree_checkpoints deletes
+ * it on every move path; CORE_DEVICE_ORG_MOVE_DELETE_TABLES is the app's
+ * fallback. backup_tree_checkpoints_device_org_fk pins the header's org to its
+ * device's org and deletes the header with its device.
  */
 export const backupTreeCheckpoints = pgTable(
   'backup_tree_checkpoints',
@@ -424,9 +427,8 @@ export const backupTreeCheckpoints = pgTable(
     orgId: uuid('org_id')
       .notNull()
       .references(() => organizations.id),
-    deviceId: uuid('device_id')
-      .notNull()
-      .references(() => devices.id),
+    // FK: backup_tree_checkpoints_device_org_fk below (composite, with org_id).
+    deviceId: uuid('device_id').notNull(),
     configId: uuid('config_id').notNull(),
     // Lineage key (R5), with org, device and config.
     storageIdentity: text('storage_identity').notNull(),
@@ -455,6 +457,11 @@ export const backupTreeCheckpoints = pgTable(
       name: 'backup_tree_checkpoints_config_org_fk',
       columns: [table.configId, table.orgId],
       foreignColumns: [backupConfigs.id, backupConfigs.orgId],
+    }).onDelete('cascade'),
+    deviceOrgFk: foreignKey({
+      name: 'backup_tree_checkpoints_device_org_fk',
+      columns: [table.deviceId, table.orgId],
+      foreignColumns: [devices.id, devices.orgId],
     }).onDelete('cascade'),
   })
 );

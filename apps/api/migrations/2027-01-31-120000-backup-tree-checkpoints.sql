@@ -27,35 +27,74 @@
 -- reference, or pin through ON DELETE RESTRICT, another org's or another device's
 -- checkpoint. The header names its backup config through (config_id, org_id), so
 -- a header cannot be restamped into another org while its config stays behind.
--- Both composite FKs are DEFERRABLE INITIALLY IMMEDIATE (org merge repoints the
--- header, its config and its snapshots in separate statements under SET
--- CONSTRAINTS ALL DEFERRED). RESTRICT itself is never deferred, which is the point.
+-- Both are DEFERRABLE INITIALLY IMMEDIATE (org merge repoints the header, its
+-- config and its snapshots in separate statements under SET CONSTRAINTS ALL
+-- DEFERRED). RESTRICT itself is never deferred, which is the point.
 --
--- On a device org move the header is deleted, not restamped (the app's move-delete
--- list), and the moved delta snapshots fall back to 'rows' with no rows and
--- re-hydrate on next use. Section 4 below makes the database do the snapshot half
--- on every path that changes a snapshot's org or device.
+-- The header names its device through (device_id, org_id) -> devices (id, org_id),
+-- so its org is always its device's org, and ON DELETE CASCADE: a header never
+-- blocks deleting its device (a device delete or another org's erasure). This one
+-- is DEFERRABLE INITIALLY DEFERRED, like device_external_links_device_org_fk: a
+-- device org UPDATE is checked at commit, after the trigger in section 6 has
+-- deleted the device's headers. INITIALLY IMMEDIATE cannot work: the FK's own
+-- check on devices is an AFTER ROW trigger whose name (RI_ConstraintTrigger_...)
+-- sorts before every breeze_* trigger, so it runs at the end of the devices UPDATE,
+-- before any AFTER trigger could delete the headers, and refuses the move.
+--
+-- Device org move: the header is deleted, not restamped, and the moved delta
+-- snapshots fall back to 'rows' with no rows and re-hydrate on next use. Section 4
+-- makes the database reset the snapshots on every path that changes a snapshot's
+-- org or device; section 6 deletes the headers on every path that changes a
+-- device's org (the app move, a raw UPDATE devices), except an org merge, which
+-- repoints them.
+--
+-- Deleting a device with its snapshots and headers in one statement: no FK into
+-- backup_snapshots cascades from devices (its device, org and config FKs are all
+-- NO ACTION), so a cascade from devices never has to delete a snapshot. A header
+-- reaches the pointer FK's RESTRICT check only once its snapshots are already
+-- gone (the earlier statements of the same delete), or while one still names it,
+-- in which case the snapshot's own NO ACTION device FK would refuse that delete
+-- anyway. RESTRICT reports 23001 on Postgres 18 and 23503 before;
+-- FOREIGN_KEY_VIOLATION_SQLSTATES matches both.
 --
 -- LOCKS
 -- -----
--- The new columns are nullable or carry a constant default, so adding them does not
--- rewrite either table. Adding the three backup_snapshots constraints scans
--- backup_snapshots once each under the ALTER's lock; every row passes ('rows' and
--- NULL everywhere). They are not added NOT VALID with a VALIDATE in the next file:
--- integration replays follow constraint names into later files, and they refuse a
--- `-- @no-transaction` follower. The two hot tables are altered first, before this
--- transaction requests any lock on devices or organizations, and lock_timeout bounds
--- the wait for each lock: if a long transaction holds one, the file fails after 5 s
--- instead of queueing every reader behind it, and re-runs on next start. It bounds
--- waits only: the locks taken are held until the file commits. A transaction that
--- locks devices and then backup_snapshots (a device org move from another process)
--- inside that short window can deadlock with this file; Postgres aborts one of the
--- two, and either the move or the migration (re-run on next start) is retried.
+-- One transaction; every lock is held until it commits. In order:
+--   1. backup_snapshot_files, ACCESS EXCLUSIVE: ADD COLUMN, catalog-only (nullable,
+--      no default), no scan.
+--   2. backup_snapshots, ACCESS EXCLUSIVE (blocks its readers and writers until
+--      commit): two ADD COLUMNs, catalog-only (nullable, or a constant default: no
+--      rewrite), then the two CHECKs, one full scan each.
+--   3. The two new tables: no lock on an existing table.
+--   4. The snapshot pointer FK: SHARE ROW EXCLUSIVE on the new header table, and a
+--      third full scan of backup_snapshots to validate it (every pointer is NULL,
+--      so every row passes; MATCH SIMPLE).
+--   5. RLS, grants and functions: no lock on an existing table.
+--   6. Last: backup_configs ACCESS EXCLUSIVE (its UNIQUE (id, org_id), an index
+--      build over that small table); then SHARE ROW EXCLUSIVE on organizations and
+--      on devices for the header's FKs (validated against the empty header, no
+--      scan of either) and for the trigger on devices.
+-- So devices and organizations writes are blocked only for the last few
+-- statements and the commit, not across the backup_snapshots scans, and
+-- backup_configs readers likewise. Readers of devices and organizations are never
+-- blocked (SHARE ROW EXCLUSIVE does not conflict with ACCESS SHARE).
 --
--- Idempotent throughout (IF NOT EXISTS, guarded ADD CONSTRAINT, CREATE OR REPLACE,
--- DROP ... IF EXISTS then CREATE). Writes no rows, so no breeze.scope election; the
--- trigger body in section 4 elects system scope in-body and restores the caller's.
--- No inner BEGIN/COMMIT.
+-- The three backup_snapshots constraints are not added NOT VALID with a VALIDATE in
+-- the next file: integration replays follow constraint names into later files, and
+-- they refuse a `-- @no-transaction` follower.
+--
+-- lock_timeout bounds each wait: if a long transaction holds one of these tables,
+-- the file fails after 5 s instead of queueing every later reader behind it, and
+-- re-runs on next start. It bounds waits only, not holds. A transaction that has
+-- written devices, organizations or backup_configs and then needs backup_snapshots
+-- (a device org move from another process restamps snapshots) can deadlock with
+-- step 6; Postgres aborts one of the two, and either the move or the migration
+-- (re-run on next start) is retried.
+--
+-- Idempotent throughout (IF NOT EXISTS, guarded ADD CONSTRAINT and CREATE TRIGGER,
+-- CREATE OR REPLACE, DROP POLICY IF EXISTS then CREATE). Writes no rows, so no
+-- breeze.scope election; the trigger bodies in sections 4 and 6 elect system scope
+-- in-body and restore the caller's. No inner BEGIN/COMMIT.
 
 SET LOCAL lock_timeout = '5s';
 
@@ -79,19 +118,14 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ---------------------------------------------------------------------------
--- 2. backup_configs (id, org_id): the header's config FK target
--- ---------------------------------------------------------------------------
-DO $$ BEGIN
-  ALTER TABLE public.backup_configs ADD CONSTRAINT backup_configs_id_org_uq UNIQUE (id, org_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
-
--- ---------------------------------------------------------------------------
--- 3. The checkpoint tables
+-- 2. The checkpoint tables. The header's FKs to organizations, devices and
+--    backup_configs are added in section 6, so this transaction locks those
+--    tables only at its end.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.backup_tree_checkpoints (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id uuid NOT NULL REFERENCES public.organizations(id),
-  device_id uuid NOT NULL REFERENCES public.devices(id),
+  org_id uuid NOT NULL,
+  device_id uuid NOT NULL,
   config_id uuid NOT NULL,
   -- Lineage key (R5): with org, device and config, the snapshots that may share
   -- this checkpoint. Copied from the source snapshot at publish.
@@ -107,9 +141,7 @@ CREATE TABLE IF NOT EXISTS public.backup_tree_checkpoints (
   created_at timestamptz NOT NULL DEFAULT now(),
   last_referenced_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT backup_tree_checkpoints_id_org_device_uq UNIQUE (id, org_id, device_id),
-  CONSTRAINT backup_tree_checkpoints_entry_count_chk CHECK (entry_count >= 0),
-  CONSTRAINT backup_tree_checkpoints_config_org_fk FOREIGN KEY (config_id, org_id)
-    REFERENCES public.backup_configs (id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+  CONSTRAINT backup_tree_checkpoints_entry_count_chk CHECK (entry_count >= 0)
 );
 
 CREATE INDEX IF NOT EXISTS backup_tree_checkpoints_lineage_idx
@@ -136,6 +168,9 @@ CREATE INDEX IF NOT EXISTS backup_tree_checkpoint_entries_checkpoint_source_idx
 CREATE INDEX IF NOT EXISTS backup_tree_checkpoint_entries_checkpoint_backup_path_idx
   ON public.backup_tree_checkpoint_entries (checkpoint_id, backup_path);
 
+-- ---------------------------------------------------------------------------
+-- 3. The snapshot pointer FK, RLS, grants and the analyze function
+-- ---------------------------------------------------------------------------
 -- A snapshot pins its checkpoint (R4): RESTRICT, no reference count. Composite so
 -- the pointer can only name a checkpoint of the snapshot's own org and device.
 -- MATCH SIMPLE (the default): a NULL pointer is never checked.
@@ -247,22 +282,25 @@ END $$;
 -- provenance pinned to the old org/device is re-verified before it authorizes again.
 --
 -- New: a 'delta' snapshot's tree depends on a checkpoint of its OLD org and device,
--- which a move deletes (or, on a raw UPDATE devices, leaves behind unreferenced).
+-- which a device move deletes (section 6) and an org merge leaves unreferenced.
 -- In the same row update the snapshot becomes 'rows' with a NULL pointer and status
 -- 'none' whatever its old status, and its backup_snapshot_files rows (adds and
 -- tombstones, which without the checkpoint would read as a partial tree) are
 -- deleted. It re-hydrates on next use. Because the new pointer is NULL, the
--- composite pointer FK is never checked mid-move (MATCH SIMPLE).
+-- composite pointer FK is never checked mid-move (MATCH SIMPLE). This function
+-- never deletes a checkpoint header; section 6's trigger and the app's move-delete
+-- list do.
 --
--- SECURITY DEFINER with a pinned search_path, and system scope elected around the
--- delete then restored (backup_snapshot_files is FORCE ROW LEVEL SECURITY, which a
--- definer is still bound by): the delete must not depend on what the mover's
--- context can see. Shape copied from breeze_learned_networks_device_moved()
--- (2027-01-29-100000-learned-networks.sql), with pg_catalog first in search_path so
--- no object in public can shadow set_config()/current_setting(). It deletes only
--- the file rows of the snapshot whose UPDATE fired it (an UPDATE that passed that
--- snapshot's RLS). A trigger function cannot be called directly, so this widens
--- nothing.
+-- System scope is elected around the delete and then restored, so the delete sees
+-- every file row of the snapshot whatever the mover's context can see
+-- (backup_snapshot_files is FORCE ROW LEVEL SECURITY, which binds a definer too).
+-- SECURITY DEFINER, with a pinned search_path, makes the delete independent of the
+-- mover's own privileges on backup_snapshot_files. Shape copied from
+-- breeze_learned_networks_device_moved() (2027-01-29-100000-learned-networks.sql),
+-- with pg_catalog first in search_path so no object in public can shadow
+-- set_config()/current_setting(). It deletes only the file rows of the snapshot
+-- whose UPDATE fired it (an UPDATE that passed that snapshot's RLS). A trigger
+-- function cannot be called directly, so this widens nothing.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.breeze_backup_snapshot_file_index_tenancy_reset()
 RETURNS trigger
@@ -283,7 +321,7 @@ BEGIN
     NEW.file_index_status := 'none';
     _prev_scope := current_setting('breeze.scope', true);
     PERFORM set_config('breeze.scope', 'system', true);
-    DELETE FROM public.backup_snapshot_files WHERE snapshot_db_id = NEW.id;
+    DELETE FROM public.backup_snapshot_files WHERE snapshot_db_id = OLD.id;
     PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
   END IF;
 
@@ -354,14 +392,13 @@ CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
     -- exactly those, and the guard re-anchors them into the new epoch.
     -- backup_tree_checkpoints (#11736): (config_id, org_id) names a SOURCE-org
     -- backup config, so a restamp here would 23503 at the end of this
-    -- statement. The app move deletes the device's headers after its snapshots
-    -- are restamped (CORE_DEVICE_ORG_MOVE_DELETE_TABLES); on a raw UPDATE
-    -- devices the header stays in the source org, unreferenced (the snapshot
-    -- tenancy reset clears every pointer to it), until the checkpoint GC the
-    -- writer wave adds deletes it.
-    -- A BEFORE UPDATE delete trigger on devices (the learned-networks shape)
-    -- cannot work here: the snapshots still point at the header until their own
-    -- restamp, and ON DELETE RESTRICT refuses the delete.
+    -- statement. Instead the AFTER UPDATE OF org_id trigger
+    -- breeze_device_moved_backup_tree_checkpoints (2027-01-31-120000) deletes the
+    -- device's headers once this loop has restamped its snapshots (the snapshot
+    -- tenancy reset clears every pointer to them); the app move's delete list
+    -- (CORE_DEVICE_ORG_MOVE_DELETE_TABLES) is the fallback. A BEFORE UPDATE
+    -- delete (the learned-networks shape) cannot work: the snapshots still point
+    -- at the header until their own restamp, and ON DELETE RESTRICT refuses it.
     AND t.relname NOT IN (
       'ai_agent_runs',
       'ai_operator_tasks',
@@ -388,3 +425,99 @@ CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
         AND NOT a.attisdropped AND a.atttypid = 'uuid'::regtype
     );
 $$;
+
+-- ---------------------------------------------------------------------------
+-- 6. Last, so the locks they take on existing tables are held only briefly
+--    (see LOCKS): the header's FKs to backup_configs, organizations and devices,
+--    and the device-move trigger.
+-- ---------------------------------------------------------------------------
+DO $$ BEGIN
+  ALTER TABLE public.backup_configs ADD CONSTRAINT backup_configs_id_org_uq UNIQUE (id, org_id);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE public.backup_tree_checkpoints ADD CONSTRAINT backup_tree_checkpoints_config_org_fk
+    FOREIGN KEY (config_id, org_id) REFERENCES public.backup_configs (id, org_id)
+    ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE public.backup_tree_checkpoints ADD CONSTRAINT backup_tree_checkpoints_org_id_fkey
+    FOREIGN KEY (org_id) REFERENCES public.organizations (id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Target: devices_id_org_id_uniq (2026-07-23-partner-export-material-state-hardening.sql).
+-- ON DELETE CASCADE (an action, never deferred): the header is derived, rebuildable
+-- data, and must not block deleting its device. INITIALLY DEFERRED: see COHERENCE.
+-- The lineage index (device_id, ...) serves the cascade's lookup by device.
+DO $$ BEGIN
+  ALTER TABLE public.backup_tree_checkpoints ADD CONSTRAINT backup_tree_checkpoints_device_org_fk
+    FOREIGN KEY (device_id, org_id) REFERENCES public.devices (id, org_id)
+    ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Device org move: delete the device's checkpoint headers (their entries cascade).
+-- AFTER UPDATE OF org_id on devices, named to sort after breeze_cascade_device_org_id:
+-- AFTER ROW triggers on one event fire in name order, and that restamp's UPDATE of
+-- backup_snapshots is what clears every pointer to these headers (section 4), so
+-- RESTRICT no longer applies. It runs on every path that changes a device's org: the
+-- app move (whose delete list then matches nothing) and a raw UPDATE devices.
+--
+-- Only headers still in another org and named by no snapshot are deleted. A header
+-- some snapshot still names stays, and backup_tree_checkpoints_device_org_fk then
+-- refuses the move at commit, rather than this trigger failing with RESTRICT.
+--
+-- Skipped while the source org is fenced for a merge: the merge repoints the headers
+-- with the org (orgMergeRegistry REPOINT_TABLES) under deferred constraints, as
+-- breeze_learned_networks_device_moved() skips. A forged 'merging' status only keeps
+-- the headers, and the device FK then refuses the move at commit.
+--
+-- SECURITY DEFINER with in-body system scope, saved and restored, so the delete does
+-- not depend on the mover's RLS context or privileges. It deletes only rows of the
+-- device whose UPDATE fired it. Trigger-only; it cannot be called directly.
+CREATE OR REPLACE FUNCTION public.breeze_backup_tree_checkpoints_device_moved()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  IF NOT EXISTS (
+    SELECT 1 FROM public.organizations o WHERE o.id = OLD.org_id AND o.status::text = 'merging'
+  ) THEN
+    DELETE FROM public.backup_tree_checkpoints c
+     WHERE c.device_id = OLD.id
+       AND c.org_id IS DISTINCT FROM NEW.org_id
+       AND NOT EXISTS (
+         SELECT 1 FROM public.backup_snapshots s WHERE s.file_index_checkpoint_id = c.id
+       );
+  END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  RETURN NULL;
+END;
+$$;
+
+COMMENT ON FUNCTION public.breeze_backup_tree_checkpoints_device_moved() IS
+  '#11736: after a device''s org_id changes (outside an org merge), deletes its unreferenced backup_tree_checkpoints left in another org; entries cascade.';
+
+REVOKE ALL ON FUNCTION public.breeze_backup_tree_checkpoints_device_moved() FROM PUBLIC;
+
+-- Guarded CREATE, not DROP TRIGGER IF EXISTS: DROP TRIGGER takes ACCESS EXCLUSIVE on
+-- devices (blocking its readers) even when the trigger does not exist; CREATE
+-- TRIGGER takes SHARE ROW EXCLUSIVE, which this transaction already holds.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+     WHERE tgrelid = 'public.devices'::regclass
+       AND tgname = 'breeze_device_moved_backup_tree_checkpoints'
+       AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER breeze_device_moved_backup_tree_checkpoints
+      AFTER UPDATE OF org_id ON public.devices FOR EACH ROW
+      WHEN (NEW.org_id IS DISTINCT FROM OLD.org_id)
+      EXECUTE FUNCTION public.breeze_backup_tree_checkpoints_device_moved();
+  END IF;
+END $$;

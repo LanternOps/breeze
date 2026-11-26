@@ -12,18 +12,28 @@
 --      references it" probe. Most rows will never have a pointer.
 --
 -- Deploy note: each statement waits, without blocking writers, for every open
--- transaction that touches its table. For the DROP that is backup_snapshot_files,
--- the largest table, including a long file-index hydration.
+-- transaction that touches its table. For the first DROP that is
+-- backup_snapshot_files, the largest table, including a long file-index hydration.
 --
--- Idempotent: IF [NOT] EXISTS on both statements. A failed CONCURRENTLY build
--- leaves an INVALID index that IF NOT EXISTS would then skip, so the final DO block
--- raises instead of letting the file be recorded as applied; an operator must DROP
--- INDEX CONCURRENTLY it and restart (same contract as
--- 2026-12-17-100300-time-entries-contract-line.sql).
+-- Re-runnable after a failure. autoMigrate records this file only once every
+-- statement has succeeded, so after any failure the whole file runs again on next
+-- start:
+--   - A failed DROP INDEX CONCURRENTLY can leave backup_snapshot_files_snapshot_idx
+--     behind, INVALID; the same statement completes the drop on the re-run.
+--   - A failed CREATE INDEX CONCURRENTLY leaves an INVALID
+--     backup_snapshots_file_index_checkpoint_idx, which IF NOT EXISTS would then
+--     skip. So that index is dropped first, unconditionally: nothing names it before
+--     this file, so dropping and rebuilding it loses nothing, and the build reads
+--     only rows with a pointer (none until the writer wave). A re-run therefore
+--     drops and rebuilds it; the end state is the same.
+-- The final DO block is a backstop: it raises if the index is still INVALID, so the
+-- file is never recorded as applied over a broken index.
 --
 -- No row is written, so no system-scope election is needed.
 
 DROP INDEX CONCURRENTLY IF EXISTS public.backup_snapshot_files_snapshot_idx;
+
+DROP INDEX CONCURRENTLY IF EXISTS public.backup_snapshots_file_index_checkpoint_idx;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS backup_snapshots_file_index_checkpoint_idx
   ON public.backup_snapshots (file_index_checkpoint_id) WHERE file_index_checkpoint_id IS NOT NULL;
@@ -38,6 +48,6 @@ BEGIN
        AND c.relname = 'backup_snapshots_file_index_checkpoint_idx'
        AND NOT i.indisvalid
   ) THEN
-    RAISE EXCEPTION 'backup_snapshots_file_index_checkpoint_idx build left an INVALID index — DROP INDEX CONCURRENTLY it and re-apply this migration';
+    RAISE EXCEPTION 'backup_snapshots_file_index_checkpoint_idx is INVALID after its build; the next start re-runs this file, which drops and rebuilds it';
   END IF;
 END $$;
