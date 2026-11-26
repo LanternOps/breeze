@@ -180,7 +180,7 @@ func TestOldServerBeatNeverParks(t *testing.T) {
 	rs := newRouteServer(t)
 	rs.answer("/api/v1/agents/agent-1/heartbeat", beatBody(false))
 	h, st, rc := parkedTestHeartbeat(t, rs)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if !h.postHeartbeat(h.serverURL(), &HeartbeatPayload{Status: "ok"}) {
 			t.Fatal("beat failed")
 		}
@@ -294,7 +294,7 @@ func TestParkedRefusalAgainstOldServerDoesNotFlap(t *testing.T) {
 	if calls, _ := rc.snapshot(); calls != 1 {
 		t.Fatalf("resume calls = %d, want 1", calls)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = h.sendInventoryData("software", map[string]any{}, "software")
 		h.postHeartbeat(h.serverURL(), &HeartbeatPayload{Status: "ok"})
 	}
@@ -309,7 +309,8 @@ func TestParkedRefusalAgainstOldServerDoesNotFlap(t *testing.T) {
 func TestParkedSelfRenewIsHourly(t *testing.T) {
 	h := &Heartbeat{}
 	now := time.Now()
-	if !h.parkedSelfRenewAllowed(now) || !h.parkedSelfRenewAllowed(now) {
+	first, second := h.parkedSelfRenewAllowed(now), h.parkedSelfRenewAllowed(now)
+	if !first || !second {
 		t.Fatal("a heartbeat without a parked state must never throttle renewal")
 	}
 	h.parkedState = parked.New()

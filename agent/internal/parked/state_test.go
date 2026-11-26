@@ -234,7 +234,7 @@ func TestTransportNotesRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if s.Parked() {
 		t.Fatal("an unrelated 403 parked the device")
 	}
@@ -244,7 +244,7 @@ func TestTransportNotesRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !s.Parked() {
 		t.Fatal("the parked refusal did not park the device")
 	}

@@ -92,7 +92,7 @@ func TestShipperParkedHoldIsBounded(t *testing.T) {
 	t.Cleanup(s.Stop)
 
 	total := defaultMaxBatchSize + defaultBufferSize + 25
-	for i := 0; i < total; i++ {
+	for range total {
 		s.Enqueue(makeEntries(1)[0])
 	}
 	fireTick(t, f)
