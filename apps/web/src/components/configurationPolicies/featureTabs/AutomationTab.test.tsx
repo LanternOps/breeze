@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AutomationTab from './AutomationTab';
@@ -314,5 +314,72 @@ describe('AutomationTab — read-only viewer (#12469)', () => {
       />,
     );
     expect(screen.queryByDisplayValue('Run Script')).toBeNull();
+  });
+});
+
+describe('AutomationTab — event type list (#12700)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+    vi.clearAllMocks();
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: CATALOG }));
+  });
+
+  const renderWithEvent = (eventType: string) =>
+    render(
+      <AutomationTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'automation',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'On event',
+                enabled: true,
+                triggerType: 'event',
+                eventType,
+                actions: [{ type: 'send_notification', channelId: '', message: 'x' }],
+                onFailure: 'stop',
+              },
+            ],
+          },
+        } as never}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+
+  const expandRow = () => {
+    const collapsed = screen.queryAllByRole('button', { expanded: false });
+    if (collapsed.length > 0) fireEvent.click(collapsed[0]);
+  };
+
+  const eventSelect = () =>
+    screen
+      .getAllByRole('combobox')
+      .find((el) => within(el).queryByRole('option', { name: 'Device enrolled' })) as HTMLSelectElement;
+
+  it('offers Device enrolled', () => {
+    renderWithEvent('device.enrolled');
+    expandRow();
+    expect(eventSelect().value).toBe('device.enrolled');
+  });
+
+  it('keeps a stored event type the list lacks selectable and saves it unchanged', async () => {
+    renderWithEvent('script.completed');
+    expandRow();
+    expect(eventSelect().value).toBe('script.completed');
+    expect(within(eventSelect()).getByRole('option', { name: 'script.completed' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock.mock.calls[0][1].inlineSettings.items[0].eventType).toBe('script.completed');
+  });
+
+  it('adds no extra option for a type the list already offers', () => {
+    renderWithEvent('device.offline');
+    expandRow();
+    expect(within(eventSelect()).getAllByRole('option', { name: 'Device Offline' })).toHaveLength(1);
   });
 });

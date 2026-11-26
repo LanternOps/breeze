@@ -13,7 +13,7 @@ import AutomationForm, { getEventTypeOptions } from './AutomationForm';
 const identity = ((k: string) => k) as unknown as Parameters<typeof getEventTypeOptions>[0];
 
 describe('getEventTypeOptions', () => {
-  it('offers every event type the server publishes for automations', () => {
+  it('offers the device lifecycle events (guards the named set, not full server parity)', () => {
     const values = getEventTypeOptions(identity).map((o) => o.value);
     expect(values).toEqual(expect.arrayContaining(['device.enrolled', 'device.online', 'device.offline']));
   });
