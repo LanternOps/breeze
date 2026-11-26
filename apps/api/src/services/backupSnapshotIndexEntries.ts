@@ -20,10 +20,10 @@ const sieCheckpointFrom = sql`${backupTreeCheckpoints} ${sql.identifier('sie_che
 const sieTombstoneFrom = sql`${backupSnapshotFiles} ${sql.identifier('sie_tombstone')}`;
 
 /**
- * `snapshotDbId` as an output column. Drizzle renders a column inside a
- * single-table select list without its table name, which would bind a
- * correlated `backup_snapshots.id` to the entries table, so a column is
- * qualified by hand.
+ * `snapshotDbId` for use inside raw SQL. Drizzle renders a column inside a
+ * single-table select list unqualified, so a correlated `backup_snapshots.id`
+ * would resolve against a table inside this derived table instead of the
+ * enclosing statement. A column is therefore qualified by hand.
  */
 function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
   if (is(snapshotDbId, Column)) {
@@ -33,7 +33,9 @@ function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
 }
 
 /**
- * The one read path to a snapshot's file-index entries (#11736).
+ * The one read path to a snapshot's file-index entries (#11736). The R, D
+ * labels below refer to
+ * docs/superpowers/plans/backup/2026-11-25-backup-snapshot-index-checkpoint-delta.md.
  *
  * Every reader of a snapshot's tree selects from this source instead of from
  * `backup_snapshot_files` or `backup_tree_checkpoint_entries`. That covers
@@ -53,18 +55,21 @@ function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
  *     never an entry. For a `delta` snapshot they are its adds: the entries its
  *     checkpoint lacks.
  *  2. For a `delta` snapshot only, its checkpoint's entries, minus each one
- *     this snapshot tombstones (a `backup_snapshot_files` row naming that
- *     `entry_no`). Tombstones of other snapshots sharing the checkpoint do not
- *     apply.
+ *     this snapshot tombstones: a `backup_snapshot_files` row of this snapshot
+ *     naming that `entry_no`, with the entry's `source_path` copied (D1; the
+ *     path lets the anti-join use the (snapshot_db_id, source_path) index, so
+ *     the publisher must copy it from the entry). Tombstones of other
+ *     snapshots sharing the checkpoint do not apply.
  *
  * R3: a delta snapshot reads as its tree only when its checkpoint header is
  * visible to the caller and names the snapshot's own org and device. Otherwise
- * both legs are empty: leg 1's gate requires that header, and leg 2's
- * checkpoint id resolves to NULL. RLS on both checkpoint tables runs in the
- * caller's context, so a header the caller cannot see counts as absent. The
- * schema's composite pointer FK already refuses a mismatched header at rest;
- * this check covers the deferred-constraint window of an org merge. So the
- * result is never only the adds.
+ * both legs are empty: leg 1's format gate requires that header, and leg 2's
+ * gate (that checkpoint resolves to a non-NULL id) fails. RLS on both
+ * checkpoint tables runs in the caller's context, so a header the caller
+ * cannot see counts as absent. The schema's composite pointer FK already
+ * refuses a mismatched header at rest; this check covers the
+ * deferred-constraint window of an org merge, and system scope, where RLS
+ * hides nothing. So the result is never only the adds.
  *
  * The format is decided in SQL inside the reader's own statement, with the
  * reader's index-state gate, never by a separate pre-read.
@@ -72,16 +77,16 @@ function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
  * Plan shape (pinned by backupSnapshotIndexPlans.integration.test.ts and
  * backupSnapshotFilesStatistics.integration.test.ts):
  *
- *  - Postgres flattens a UNION ALL into an append relation, so the outer
- *    filters, ordering and keyset bounds reach each leg's indexes, only when
- *    no leg has a WHERE of its own. So the legs have none: each exposes the
- *    columns its filters need (constants where they do not apply), and every
- *    filter sits on the union. Copied onto a leg, each filter folds to that
- *    leg's own condition, so leg 1 reads (snapshot_db_id, source_path) or
- *    (snapshot_db_id, backup_path), and leg 2 reads (checkpoint_id,
- *    source_path) or (checkpoint_id, backup_path), as index ranges merged in
- *    order. A leg with a WHERE would be planned on its own, and a keyset page
- *    would sort the whole snapshot.
+ *  - Postgres (16, checked) pulls a UNION ALL leg up into an append relation,
+ *    where the outer filters, ordering and keyset bounds reach its indexes,
+ *    only when the leg has no WHERE of its own; a leg with one is planned on
+ *    its own, and a keyset page sorted the whole snapshot. So the legs have
+ *    none: each exposes the columns its filters need (constants where they do
+ *    not apply), and every filter sits on the union. Copied onto a leg, each
+ *    filter folds to that leg's own condition, so leg 1 reads
+ *    (snapshot_db_id, source_path) or (snapshot_db_id, backup_path), and
+ *    leg 2 reads (checkpoint_id, source_path) or (checkpoint_id,
+ *    backup_path), as index ranges merged in order.
  *  - Leg 2 finds its checkpoint with an uncorrelated scalar subquery when
  *    `snapshotDbId` is a value. Postgres runs it once (an InitPlan), so the
  *    entries scan has a constant leading key and comes back ordered by
@@ -115,19 +120,23 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   // The checkpoint a delta snapshot reads: visible to the caller and of the
   // snapshot's own org and device. NULL for a rows snapshot or an untrusted
   // checkpoint (R3). Written with explicit identifiers, never Drizzle columns,
-  // because it is also rendered inside a select list.
+  // because it is also rendered inside a select list (see snapshotIdOutput).
   const deltaCheckpointId = () => sql`(
     SELECT ${col('sie_checkpoint', 'id')} FROM ${sieSnapshotFrom}
     JOIN ${sieCheckpointFrom} ON ${checkpointMatchesSnapshot}
     WHERE ${col('sie_snapshot', 'id')} = ${id} AND ${col('sie_snapshot', 'file_index_format')} = 'delta')`;
-  // Never NULL, so leg 1 always passes the planning equality below. A CASE,
-  // not COALESCE: under RLS the planner uses a filter as an index condition,
-  // or reasons from it about ordering, only if it cannot leak row values, and
-  // it counts CASE as safe but not COALESCE.
+  // The value both legs' `checkpoint_id` is compared with (the planning
+  // equality below): the delta checkpoint, else the snapshot's own id, which
+  // no checkpoint entry carries. Never NULL, so in leg 1, whose column is this
+  // same expression, the equality always holds. A CASE, not COALESCE: under
+  // RLS the planner turns a filter into an index condition, or reasons from it
+  // about ordering, only if the filter is leakproof, and it treats a CASE of
+  // leakproof parts as leakproof but never a COALESCE. With COALESCE the
+  // selection page sorts the whole checkpoint
+  // (backupSnapshotIndexPlans.integration.test.ts).
   const checkpointKey = () => sql`(CASE WHEN ${deltaCheckpointId()} IS NULL THEN ${id}::uuid ELSE ${deltaCheckpointId()} END)`;
 
-  // The two legs carry no WHERE of their own: Postgres flattens a UNION ALL
-  // into an append relation only when no leg has one. Each leg instead
+  // The legs carry no WHERE of their own (see "Plan shape" above). Each
   // exposes the columns its filters need, with constants where a column does
   // not apply, and the filters sit on the union below.
   const ownRows = qb
@@ -165,19 +174,23 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   // qualified here so a nested subquery can never capture it.
   const unionColumn = (name: string) => col('sie_union', name);
 
-  // Each filter below, copied onto a leg, folds to that leg's own condition
-  // (`leg` is a constant there, so the CASE keeps one branch):
+  // Each filter below, copied onto a leg, folds to that leg's own condition.
+  // In leg 2 `snapshot_db_id` is :id and `checkpoint_entry_no` is NULL, so
+  // those two filters are constant true there; `leg` is a constant in each
+  // leg, so the CASE keeps one branch:
   //
-  //  - leg 1: snapshot_db_id = :id and checkpoint_entry_no IS NULL (index
-  //    conditions), and the format gate, evaluated once;
-  //  - leg 2: checkpoint_id = (its checkpoint) and the tombstone anti-join.
+  //  - leg 1: snapshot_db_id = :id (an index condition), checkpoint_entry_no
+  //    IS NULL (a row filter) and the format gate (evaluated once);
+  //  - leg 2: checkpoint_id = checkpointKey (an index condition), the gate
+  //    that a trusted delta checkpoint exists (evaluated once), and the
+  //    tombstone anti-join.
   //
-  // The CASE alone decides which rows are the tree. The equality on
-  // checkpoint_id is for the planner: a plain equality to a value is what
-  // tells it that leg 2's (checkpoint_id, source_path) and (checkpoint_id,
-  // backup_path) indexes return rows ordered by their second column, so pages
-  // merge both legs in order instead of sorting the checkpoint. In leg 1 it
-  // compares the same never-NULL value with itself.
+  // The filters other than the checkpoint_id equality decide which rows are
+  // the tree. The equality is for the planner: a plain equality to a value is
+  // what tells it that leg 2's (checkpoint_id, source_path) and
+  // (checkpoint_id, backup_path) indexes return rows ordered by their second
+  // column, so pages merge both legs in order instead of sorting the
+  // checkpoint.
   return qb
     .select({
       snapshotDbId: u.snapshotDbId,

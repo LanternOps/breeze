@@ -10,8 +10,10 @@
  *    checkpoint entry its tree lacks.
  *
  * Everything is written on the admin connection, bypassing RLS, so a test
- * controls the stored state exactly. The publisher that writes these rows in
- * production lives elsewhere; these helpers only reproduce its output.
+ * controls the stored state exactly. They reproduce the stored shape the
+ * production publisher writes (D1, D2 of
+ * docs/superpowers/plans/backup/2026-11-25-backup-snapshot-index-checkpoint-delta.md),
+ * not its code.
  */
 import { sql } from 'drizzle-orm';
 import type { SnapshotEntryKind } from '../../../db/schema/backup';

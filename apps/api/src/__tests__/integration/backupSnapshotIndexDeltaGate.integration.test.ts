@@ -25,7 +25,13 @@ import './setup';
 import { createHash, randomBytes } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { db, withDbAccessContext, withResolvedDbAccessContext } from '../../db';
+import {
+  db,
+  systemDbAccessContext,
+  withDbAccessContext,
+  withResolvedDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
 import {
   listSnapshotDirectory,
   readableSnapshotSourcePaths,
@@ -121,10 +127,14 @@ async function seedLineage(t?: WriteTenant): Promise<Lineage> {
 async function readAll(l: Lineage, snapshotDbId = l.deltaDbId, digest = l.deltaDigest) {
   const browse = async (segments: string[]) => (await listSnapshotDirectory({ snapshotDbId, segments, limit: 100 }))
     .entries.map((e) => (e.type === 'directory' ? `${e.name}/ (${e.fileCount})` : `${e.name} ${e.sizeBytes}`));
-  const authorize = async (k: string, originSnapshotId: string) => (await authorizeExternalReference(db, {
-    tokenId: 'token-11736-gate', snapshotDbId, key: k, originSnapshotId,
-    orgId: l.t.orgId, deviceId: l.t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
-  })).ok;
+  // `true`, or the refusal reason, so a refusal is pinned to the membership read.
+  const authorize = async (k: string, originSnapshotId: string) => {
+    const r = await authorizeExternalReference(db, {
+      tokenId: 'token-11736-gate', snapshotDbId, key: k, originSnapshotId,
+      orgId: l.t.orgId, deviceId: l.t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
+    });
+    return r.ok ? true : r.reason;
+  };
   return {
     root: await browse([]),
     srv: await browse(['srv']),
@@ -140,6 +150,8 @@ async function readAll(l: Lineage, snapshotDbId = l.deltaDbId, digest = l.deltaD
   };
 }
 
+const NOT_MEMBER = 'key is not a member of the snapshot file index';
+
 const EMPTY = {
   root: [],
   srv: [],
@@ -149,20 +161,20 @@ const EMPTY = {
   selectB: { ok: false, reason: 'no_readable_index' },
   count: 0,
   keys: [],
-  authorizeAdd: false,
-  authorizeCheckpointEntry: false,
-  authorizeReplaced: false,
+  authorizeAdd: NOT_MEMBER,
+  authorizeCheckpointEntry: NOT_MEMBER,
+  authorizeReplaced: NOT_MEMBER,
 };
 
 class Rollback extends Error {}
 
 /**
  * Runs `tamper` in system scope with every deferrable constraint deferred,
- * then `read` in org `orgId`'s request context on the same transaction, then
- * rolls it all back. Returns what `read` returned.
+ * then `read` on the same transaction in `context` (an org's request context,
+ * or system scope), then rolls it all back. Returns what `read` returned.
  */
 async function inTamperedTransaction<T>(
-  orgId: string,
+  context: DbAccessContext,
   tamper: () => Promise<void>,
   read: () => Promise<T>,
 ): Promise<T> {
@@ -171,7 +183,7 @@ async function inTamperedTransaction<T>(
     async () => {
       await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
       await tamper();
-      return { context: orgContext(orgId), value: null };
+      return { context, value: null };
     },
     async () => {
       out = await read();
@@ -199,7 +211,7 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
       keys: [key(l.fullId, 'a'), key(l.incId, 'b'), key(l.incId, 'd')].sort(),
       authorizeAdd: true,
       authorizeCheckpointEntry: true,
-      authorizeReplaced: false,
+      authorizeReplaced: NOT_MEMBER,
     });
   });
 
@@ -207,7 +219,7 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
     const l = await seedLineage();
     const other = await seedWriteTenant({ jobStatus: 'completed' });
     const result = await inTamperedTransaction(
-      l.t.orgId,
+      orgContext(l.t.orgId),
       async () => {
         await db.execute(sql`UPDATE backup_tree_checkpoints SET org_id = ${other.orgId} WHERE id = ${l.checkpointId}`);
       },
@@ -226,7 +238,7 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
     const l = await seedLineage();
     const otherDevice = await seedWriteDevice(l.t.orgId, l.t.siteId);
     const result = await inTamperedTransaction(
-      l.t.orgId,
+      orgContext(l.t.orgId),
       async () => {
         await db.execute(sql`UPDATE backup_tree_checkpoints SET device_id = ${otherDevice} WHERE id = ${l.checkpointId}`);
       },
@@ -246,17 +258,19 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
     const dbId = await insertSnapshotRow(t, s);
     const digest = sha(`manifest ${s}`);
     await seedRowsIndex(dbId, [dir('/srv'), file('/srv/a.txt', s, 'a', 10)], digest);
+    // A tombstone row naming a real object key: never an entry, never a grant.
     await getTestDb().execute(sql`
       INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path, checkpoint_entry_no)
-      VALUES (${dbId}, '/srv/stray.txt', '', 1)
+      VALUES (${dbId}, '/srv/stray.txt', ${key(s, 'stray')}, 1)
     `);
     const read = await withDbAccessContext(orgContext(t.orgId), async () => ({
       srv: (await listSnapshotDirectory({ snapshotDbId: dbId, segments: ['srv'], limit: 100 })).entries.map((e) => e.name),
       search: (await searchSnapshotFiles({ snapshotDbId: dbId, query: 'stray', limit: 10, after: null })).entries,
       selectable: await readableSnapshotSourcePaths(dbId),
       count: await drizzleBrokeredReadStore.countIndexedFiles(dbId),
+      keys: [...await drizzleBrokeredReadStore.filterIndexedKeys(dbId, [key(s, 'a'), key(s, 'stray')], digest)],
     }));
-    expect(read).toEqual({ srv: ['a.txt'], search: [], selectable: ['/srv', '/srv/a.txt'], count: 1 });
+    expect(read).toEqual({ srv: ['a.txt'], search: [], selectable: ['/srv', '/srv/a.txt'], count: 1, keys: [key(s, 'a')] });
   });
 
   runDb('a tombstone in one snapshot never hides an entry in another snapshot of the same checkpoint', async () => {
@@ -296,12 +310,118 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
 
     const other = await seedWriteTenant({ jobStatus: 'completed' });
     const hidden = await inTamperedTransaction(
-      l.t.orgId,
+      orgContext(l.t.orgId),
       async () => {
         await db.execute(sql`UPDATE backup_tree_checkpoints SET org_id = ${other.orgId} WHERE id = ${l.checkpointId}`);
       },
       async () => (await readSnapshotIndexView(unchangedDbId, l.t.orgId))?.view,
     );
     expect(hidden).toEqual({ state: 'building' });
+  });
+
+  runDb('in system scope, a delta snapshot whose visible checkpoint names another org reads as empty', async () => {
+    const l = await seedLineage();
+    const other = await seedWriteTenant({ jobStatus: 'completed' });
+    const result = await inTamperedTransaction(
+      systemDbAccessContext('backupSnapshotIndexDeltaGate.test'),
+      async () => {
+        await db.execute(sql`UPDATE backup_tree_checkpoints SET org_id = ${other.orgId} WHERE id = ${l.checkpointId}`);
+      },
+      async () => {
+        // System scope sees every header: only the read layer's org check can refuse it.
+        expect(await headerVisible(l.checkpointId)).toBe(1);
+        return readAll(l);
+      },
+    );
+    expect(result).toEqual(EMPTY);
+    // The same snapshot reads its full tree in system scope when the checkpoint matches.
+    expect((await withDbAccessContext(systemDbAccessContext('backupSnapshotIndexDeltaGate.test'), () => readAll(l))).srv)
+      .toEqual(['a.txt 10', 'b.txt 21', 'd.txt 22']);
+  });
+
+  runDb('a tombstone hides only the checkpoint entry it numbers, even among entries with the same path', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const run = randomBytes(6).toString('hex');
+    const fullId = `snapshot-20261111T000001Z-${run}`;
+    const incId = `snapshot-20261111T000002Z-${run}`;
+    // Two entries for one path (a manifest does not make source_path unique), different objects.
+    const first = { ...file('/srv/x.txt', fullId, 'x-one', 10) };
+    const second = { ...file('/srv/x.txt', fullId, 'x-two', 10) };
+    const checkpoint = [dir('/srv'), first, second];
+    const checkpointId = await seedCheckpoint(
+      { orgId: t.orgId, deviceId: t.deviceId, configId: t.configId, storageIdentity: WRITE_IDENTITY },
+      checkpoint,
+    );
+    const dbId = await insertSnapshotRow(t, incId);
+    const digest = sha(`manifest ${incId}`);
+    const diff = await seedDeltaIndex(dbId, checkpointId, checkpoint, [dir('/srv'), first], digest);
+    expect(diff).toEqual({ adds: [], tombstones: [{ entryNo: 3, sourcePath: '/srv/x.txt' }] });
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_origins (snapshot_db_id, origin_snapshot_id, origin_org_id, origin_device_id,
+        origin_storage_identity, provenance, object_count)
+      VALUES (${dbId}, ${fullId}, ${t.orgId}, ${t.deviceId}, ${WRITE_IDENTITY}, 'live', 1)
+    `);
+    const read = await withDbAccessContext(orgContext(t.orgId), async () => {
+      const authorize = async (k: string) => {
+        const r = await authorizeExternalReference(db, {
+          tokenId: 'token-11736-gate', snapshotDbId: dbId, key: k, originSnapshotId: fullId,
+          orgId: t.orgId, deviceId: t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
+        });
+        return r.ok ? true : r.reason;
+      };
+      return {
+        search: (await searchSnapshotFiles({ snapshotDbId: dbId, query: 'x.txt', limit: 10, after: null })).entries.map((e) => e.path),
+        count: await drizzleBrokeredReadStore.countIndexedFiles(dbId),
+        keys: [...await drizzleBrokeredReadStore.filterIndexedKeys(dbId, [first.backupPath, second.backupPath], digest)],
+        authorizeKept: await authorize(first.backupPath),
+        authorizeTombstoned: await authorize(second.backupPath),
+      };
+    });
+    expect(read).toEqual({
+      search: ['/srv/x.txt'],
+      count: 1,
+      keys: [first.backupPath],
+      authorizeKept: true,
+      authorizeTombstoned: NOT_MEMBER,
+    });
+  });
+
+  runDb('a tombstone row that carries an object key is never an entry or a grant of a delta snapshot', async () => {
+    const l = await seedLineage();
+    // gone.txt (checkpoint entry 4) is already tombstoned by the fixture. A second tombstone row for
+    // it, written with the object's key instead of '', must not bring the key back.
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path, checkpoint_entry_no)
+      VALUES (${l.deltaDbId}, '/srv/gone.txt', ${key(l.fullId, 'gone')}, 4)
+    `);
+    const read = await withDbAccessContext(orgContext(l.t.orgId), async () => {
+      const r = await authorizeExternalReference(db, {
+        tokenId: 'token-11736-gate', snapshotDbId: l.deltaDbId, key: key(l.fullId, 'gone'), originSnapshotId: l.fullId,
+        orgId: l.t.orgId, deviceId: l.t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
+      });
+      return {
+        all: await readAll(l),
+        authorizeGone: r.ok ? true : r.reason,
+      };
+    });
+    expect(read.all.srv).toEqual(['a.txt 10', 'b.txt 21', 'd.txt 22']);
+    expect(read.all.count).toBe(3);
+    expect(read.all.keys).not.toContain(key(l.fullId, 'gone'));
+    expect(read.authorizeGone).toBe(NOT_MEMBER);
+  });
+
+  runDb('the readiness probe sees a delta that tombstones every entry as not indexed', async () => {
+    const l = await seedLineage();
+    const emptiedId = `snapshot-20261111T000006Z-${randomBytes(6).toString('hex')}`;
+    const emptiedDbId = await insertSnapshotRow(l.t, emptiedId);
+    const diff = await seedDeltaIndex(emptiedDbId, l.checkpointId, l.checkpoint, [], sha(`manifest ${emptiedId}`));
+    // It stores rows (one tombstone per entry), yet its tree is empty.
+    expect([diff.adds.length, diff.tombstones.length]).toEqual([0, l.checkpoint.length]);
+    await getTestDb().execute(sql`
+      UPDATE backup_snapshots SET file_index_status = 'hydrating', file_index_hydrated_at = now(), file_count = NULL
+      WHERE id = ${emptiedDbId}
+    `);
+    expect((await withDbAccessContext(orgContext(l.t.orgId), () => readSnapshotIndexView(emptiedDbId, l.t.orgId)))?.view)
+      .toEqual({ state: 'building' });
   });
 });

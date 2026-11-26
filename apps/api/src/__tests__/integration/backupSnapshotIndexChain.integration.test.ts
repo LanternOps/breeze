@@ -2,11 +2,10 @@
  * #11736: what every reader of a snapshot's file index returns, for a full
  * snapshot followed by incrementals that replace, delete and re-add entries.
  *
- * The contract the storage change in #11736 step 2 has to keep. Today each
- * snapshot's tree is stored whole; step 2 stores an incremental as
- * differences against a shared checkpoint. Whatever the storage, every
- * snapshot below must browse, search, select, count and authorize exactly its
- * own tree:
+ * The contract both storage formats keep: a snapshot's tree stored whole
+ * (`rows`), or stored as differences against a shared checkpoint (`delta`,
+ * #11736 step 2). Whatever the storage, every snapshot below must browse,
+ * search, select, count and authorize exactly its own tree:
  *
  *  - a replaced file is listed at its new size and authorizes only its new
  *    object, never the one it replaced (a stale entry must not authorize);

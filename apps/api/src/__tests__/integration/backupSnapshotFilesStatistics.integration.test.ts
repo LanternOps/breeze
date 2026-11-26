@@ -215,9 +215,9 @@ describe('hydration refreshes statistics after a large publish (#11209)', () => 
     expect(freshPlan).toContain('"Index Name":"backup_snapshot_files_snapshot_source_idx"');
     expect(freshPlan).toContain('"Node Type":"Index Scan"');
     // No Sort over this snapshot's rows: they come back ordered from the
-    // index. The read layer's checkpoint leg (#11736 step 2) may be planned
-    // under a Sort of its own; for a rows snapshot it resolves no checkpoint
-    // and reads nothing.
+    // index. The read layer's checkpoint leg (#11736 step 2) is in the plan
+    // too, possibly under a Sort of its own; for a rows snapshot its one-time
+    // gate is false, so it is never executed.
     const nodes = flattenPlan((JSON.parse(freshPlan) as Array<{ Plan: PlanNode }>)[0]!.Plan);
     const rowScans = scansOf(nodes, 'sie_file');
     expect(rowScans.map((n) => [n['Index Name'], n.underSort])).toEqual([['backup_snapshot_files_snapshot_source_idx', false]]);

@@ -1,7 +1,7 @@
 /**
- * #11736 step 2 (R7): the plans of the three statements that read a snapshot's
- * tree a page or a key at a time, in both storage formats, before any writer
- * produces a delta snapshot.
+ * #11736 step 2: the plans of the three statements that read a snapshot's
+ * tree a page or a key at a time, in both storage formats (R7 of
+ * docs/superpowers/plans/backup/2026-11-25-backup-snapshot-index-checkpoint-delta.md).
  *
  *  - the selective-restore keyset page (readableSourcePathPageQuery);
  *  - brokered key membership (indexedKeysQuery, behind filterIndexedKeys);

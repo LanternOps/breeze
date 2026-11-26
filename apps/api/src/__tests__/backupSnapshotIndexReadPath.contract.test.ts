@@ -51,10 +51,9 @@ const ALLOWLIST: Readonly<Record<string, string>> = {
 };
 
 /**
- * Exempt in advance: the checkpoint publisher and GC (#11736 step 2) are
- * written in a separate change that does not edit this file. The existence
- * check below covers only ALLOWLIST; an entry here can move there once its
- * file exists.
+ * Writers exempted by path before their files exist: the checkpoint publisher
+ * and GC (#11736 step 2). The existence check below covers only ALLOWLIST.
+ * When one of these files is added, move its entry to ALLOWLIST.
  */
 const PENDING_ALLOWLIST: Readonly<Record<string, string>> = {
   'apps/api/src/services/backupSnapshotIndexPublish.ts':
