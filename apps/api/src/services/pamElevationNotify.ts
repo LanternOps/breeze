@@ -5,84 +5,137 @@
  * those who have the app; before this, a permission holder without a paired
  * phone was told nothing and the request expired unseen.
  *
- * Recipients: the users `resolveUsersWithPermissionForOrg` returns for
- * `pam:approve` on the request's org (org members whose role grants it, plus
- * partner staff of the owning partner whose org access covers the org, all
- * active), narrowed to org members whose site allowlist covers the device's
- * site. The narrowing only removes people: a member restricted to other sites
- * cannot open or decide the request (routes/pam.ts checks `canAccessSite`), so
- * they are not sent its device and org name either.
+ * Recipients (resolveElevationNoticeAudience): the users who hold
+ * `pam:approve` for the request's org: org members whose role grants it, and
+ * partner staff of the owning partner whose role grants it and whose org
+ * access covers the org, all active. A user who also has an org membership is
+ * judged by that membership alone (org membership wins, as in
+ * getUserPermissions): its role must grant the permission and its site
+ * allowlist must cover the device's site. These checks only remove people:
+ * someone who cannot decide the request (routes/pam.ts) is not sent its
+ * device and org name either.
  *
- * Throttle: a request is announced unless an EARLIER request from the same
- * device is still pending and was created within the last
- * PAM_ELEVATION_NOTIFY_WINDOW_MINUTES (the pending TTL). That earlier
- * request's notice already sent everyone to the Requests tab, where the new
- * one is listed too, so a device raising many requests produces one notice and
- * one email per person until someone decides or the earlier request expires.
- * A request raised after the earlier one was decided is announced again.
- * "Earlier" is ordered by (created_at, id), so of two requests racing each
- * other exactly one is announced, never neither. Each announced request writes
- * one in-app notice per person (dedupe key per request, so a repeated call
- * writes nothing twice), and the email goes to each person whose notice this
- * call created. A person whose in-app write failed is still emailed, so one
- * channel failing never silences the other; the earlier-pending rule bounds
- * that path too.
+ * Announce rule. The endpoint agent controls when requests are filed, so the
+ * rule bounds how often it can make the platform write to people:
+ *   1. Only a uac_intercept request that is still `pending` when the notifier
+ *      runs is announced.
+ *   2. Per-device cooldown: the request is not announced when another
+ *      uac_intercept request from the same device and org, created within the
+ *      last PAM_ELEVATION_NOTIFY_COOLDOWN_MINUTES, was announced and no person
+ *      has approved or denied it. What the device did with that request
+ *      (left it pending, withdrew it, let it expire) does not matter; a
+ *      person's decision on it ends the cooldown early. "Announced" is read
+ *      from durable state, the announced request's own in-app notice rows,
+ *      so a request whose notifier never ran, threw, or found nobody to tell
+ *      never suppresses another, and neither does a request of another flow.
+ *      Suppressed requests are listed on the Requests tab the announced
+ *      notice points to.
+ *   3. Per-recipient email ceiling: a person who has received
+ *      PAM_ELEVATION_EMAILS_PER_RECIPIENT_PER_HOUR elevation notices in the
+ *      last hour still gets the in-app notice, but no email, and a warn line
+ *      records the counts. This bounds a mass event across many devices of
+ *      one org, which the per-device cooldown cannot.
+ * Decisions for one device are serialized by a transaction-scoped advisory
+ * lock taken before rule 1 is read, and the notices commit before the lock is
+ * released. So of requests from one device racing each other, the first to
+ * take the lock is announced and the others read its committed notices and
+ * are not: one announcement, never none. If every in-app write of the first
+ * fails, it leaves no notice and the next one is announced too; the rule errs
+ * towards telling people. (Ordering by created_at could not promise any of
+ * this: created_at is the inserting transaction's start time, not its commit
+ * order.)
+ *
+ * Writes: one in-app notice per person (dedupe key per request, so a repeated
+ * call writes nothing twice), then an email to each person whose notice this
+ * call created and who is under the ceiling. A person whose in-app write
+ * failed is still emailed when under the ceiling, so one failed channel never
+ * silences the other; such a send has no notice row, so it is not counted
+ * towards the ceiling or the cooldown.
  *
  * Content: device hostname and org name only. No executable path, command line
- * or requesting username: those are in the PAM page, behind sign-in.
+ * or requesting username: those are on the PAM page, behind sign-in. The
+ * hostname is chosen by the agent: the email carries only its first DNS label
+ * reduced to letters, digits, '-' and '_' (emailDeviceLabel), so it holds no
+ * dot, colon, slash or '@' and no mail client can turn it into a link or an
+ * address; the HTML is escaped as well. The in-app notice keeps the full
+ * hostname, rendered as text.
  *
  * Best-effort throughout. The caller runs this after the elevation row has
  * committed and after the mobile fan-out, and never fails the agent's request
  * on it.
  */
 
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
-import { elevationRequests, organizations, organizationUsers, users } from '../db/schema';
+import { runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { getEmailService } from './email';
 import { escapeHtml, renderButton, renderLayout, renderParagraph } from './emailLayout';
-import { PERMISSIONS } from './permissions';
+import {
+  countRecentElevationNotices,
+  deviceAnnouncedWithin,
+  type ElevationNoticeRecipient,
+  lockDeviceAnnouncements,
+  pamElevationNotifyDedupeKey,
+  readElevationRequestState,
+  readOrgName,
+  resolveElevationNoticeAudience,
+} from './pamElevationNotifyQueries';
 import { captureException } from './sentry';
-import { normalizeSiteAllowlist } from './siteAllowlist';
 import { createNotification } from './userNotifications';
-import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
+
+export { pamElevationNotifyDedupeKey };
 
 /**
- * How far back an earlier pending request from the same device suppresses the
- * announcement of a newer one. Matches PAM_PENDING_REQUEST_TTL_MINUTES.
+ * After an announcement, further requests from the device are not announced
+ * for this long. Matches PAM_PENDING_REQUEST_TTL_MINUTES, so the cooldown ends
+ * when the announced request would have expired.
  */
-export const PAM_ELEVATION_NOTIFY_WINDOW_MINUTES = 15;
+export const PAM_ELEVATION_NOTIFY_COOLDOWN_MINUTES = 15;
+
+/**
+ * Elevation emails one person may receive in an hour. The per-device cooldown
+ * already limits one device to 4 an hour, so 12 is three devices at their
+ * fastest, or one every five minutes on average: enough to follow a busy
+ * morning by email. Past it, the bell and the Requests tab show every request
+ * and further email adds noise, not information.
+ */
+export const PAM_ELEVATION_EMAILS_PER_RECIPIENT_PER_HOUR = 12;
 
 /** Where a permission holder decides a pending request on the web. */
 export const PAM_REQUESTS_PATH = '/pam#requests';
 
 const MAIL_PURPOSE = 'staff.pam_elevation_request' as const;
 
-/** The in-app dedupe key: one notice per person and request. */
-export function pamElevationNotifyDedupeKey(elevationRequestId: string): string {
-  return `pam-elevation:${elevationRequestId}`;
-}
-
 function dashboardBase(): string {
   return (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/+$/, '');
 }
 
-/** Hostnames come from the agent: keep them to one printable line in a subject. */
+/** Keep a value to one printable line (no control characters), at most `max` code points. */
 function oneLine(value: string, max: number): string {
   // eslint-disable-next-line no-control-regex
   return Array.from(value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim()).slice(0, max).join('');
 }
 
+/**
+ * The hostname as the email shows it: its first DNS label, reduced to
+ * letters, digits, '-' and '_' (at most 63). With no dot, colon, slash or
+ * '@' left, no mail client can read it as a URL, a domain or an address,
+ * whatever the agent reported. A Windows computer name is a single label, so
+ * it is usually shown in full.
+ */
+export function emailDeviceLabel(hostname: string): string {
+  const first = hostname.trim().split('.')[0] ?? '';
+  return Array.from(first.replace(/[^\p{L}\p{N}_-]+/gu, '')).slice(0, 63).join('');
+}
+
 export interface PendingElevationEmail { subject: string; html: string; text: string }
 
 export function buildPendingElevationEmail(p: { deviceName: string; orgName: string; reviewUrl: string }): PendingElevationEmail {
-  const device = oneLine(p.deviceName, 120) || 'a device';
+  const device = emailDeviceLabel(p.deviceName) || 'a device';
   const org = oneLine(p.orgName, 120);
   const lead = org
     ? `An elevation request from ${device} (${org}) is waiting for a decision.`
     : `An elevation request from ${device} is waiting for a decision.`;
-  const note = `A request nobody decides expires after ${PAM_ELEVATION_NOTIFY_WINDOW_MINUTES} minutes. `
-    + 'Further requests from this device while this one is waiting are listed there without another email.';
+  const note = `A request nobody decides expires after ${PAM_ELEVATION_NOTIFY_COOLDOWN_MINUTES} minutes. `
+    + `Further requests from this device in the next ${PAM_ELEVATION_NOTIFY_COOLDOWN_MINUTES} minutes are listed there without another email.`;
   return {
     subject: `Elevation request waiting: ${device}`,
     html: renderLayout({
@@ -106,62 +159,21 @@ export interface PendingElevationNotifyArgs {
   now?: Date;
 }
 
+export type PendingElevationSkip = 'not_pending' | 'not_uac_request' | 'device_cooldown';
+
 export interface PendingElevationNotifyResult {
-  /** Set when nobody was notified because an earlier request from the device is still pending. */
-  skipped: 'earlier_request_pending' | null;
-  /** Permission holders who may decide this request (0 when skipped). */
+  /** Why nobody was notified, when the announce rule said not to. */
+  skipped: PendingElevationSkip | null;
+  /** People who may decide this request (0 when skipped). */
   recipients: number;
   /** In-app notices created by this call (0 for a person this request already told). */
   inAppCreated: number;
   /** Recipients whose in-app write failed. */
   inAppFailed: number;
+  /** Recipients given the in-app notice only, because they reached the hourly email ceiling. */
+  emailCeilingReached: number;
   /** Settles when the emails have been handed off; never rejects. */
   emailDelivery: Promise<{ sent: number; failed: number }>;
-}
-
-interface Recipient { id: string; email: string }
-
-/**
- * Narrow permission holders to those who can see the device's site. A user
- * with an org membership in this org takes that membership's site allowlist
- * (org membership wins over partner membership in getUserPermissions); a NULL
- * allowlist is unrestricted. Partner staff have no site allowlist.
- */
-async function holdersWhoCanSeeSite(orgId: string, siteId: string | null, holderIds: string[]): Promise<string[]> {
-  if (!siteId || holderIds.length === 0) return holderIds;
-  const memberships = await db
-    .select({ userId: organizationUsers.userId, siteIds: organizationUsers.siteIds })
-    .from(organizationUsers)
-    .where(and(eq(organizationUsers.orgId, orgId), inArray(organizationUsers.userId, holderIds)));
-  const blocked = new Set<string>();
-  for (const m of memberships) {
-    const allowed = normalizeSiteAllowlist(m.siteIds ?? undefined);
-    if (allowed !== undefined && !allowed.includes(siteId)) blocked.add(m.userId);
-  }
-  return holderIds.filter((id) => !blocked.has(id));
-}
-
-/**
- * True when another request from the device, ordered before this one by
- * (created_at, id), is still pending and was created within the window. A
- * missing row for `elevationRequestId` compares as NULL, so it never suppresses.
- */
-async function earlierRequestStillPending(args: {
-  orgId: string; deviceId: string; elevationRequestId: string; now: Date;
-}): Promise<boolean> {
-  const since = new Date(args.now.getTime() - PAM_ELEVATION_NOTIFY_WINDOW_MINUTES * 60_000);
-  const rows = await db
-    .select({ id: elevationRequests.id })
-    .from(elevationRequests)
-    .where(and(
-      eq(elevationRequests.orgId, args.orgId),
-      eq(elevationRequests.deviceId, args.deviceId),
-      eq(elevationRequests.status, 'pending'),
-      gte(elevationRequests.createdAt, since),
-      sql`(${elevationRequests.createdAt}, ${elevationRequests.id}) < (SELECT r.created_at, r.id FROM elevation_requests r WHERE r.id = ${args.elevationRequestId})`,
-    ))
-    .limit(1);
-  return rows.length > 0;
 }
 
 /** The SQLSTATE or error name only: a query or mail error can carry bound values or addresses. */
@@ -170,7 +182,7 @@ function errorCode(err: unknown): string {
   return String(cause?.code ?? code ?? name ?? 'unknown');
 }
 
-async function sendEmails(recipients: Recipient[], mail: PendingElevationEmail, elevationRequestId: string) {
+async function sendEmails(recipients: ElevationNoticeRecipient[], mail: PendingElevationEmail, elevationRequestId: string) {
   let sent = 0;
   let failed = 0;
   const service = getEmailService();
@@ -195,54 +207,59 @@ async function sendEmails(recipients: Recipient[], mail: PendingElevationEmail, 
 }
 
 /**
- * Notify the permission holders for a new pending elevation request. All
- * reads and the in-app writes run in one system context opened outside any
- * caller context (the cross-user insert needs system scope, and a bare system
- * wrapper inside a request context is a passthrough). Emails are sent after
- * that context closes, in the background: `emailDelivery` reports how they
- * went and never rejects.
+ * Notify the people who may decide a new pending elevation request, under the
+ * announce rule above. The lock, all reads and the in-app writes run in one
+ * system context opened outside any caller context (the cross-user insert
+ * needs system scope, and a bare system wrapper inside a request context is a
+ * passthrough). Emails are sent after that context commits, in the
+ * background: `emailDelivery` reports how they went and never rejects.
  *
- * Throws only if a lookup itself fails; the caller catches that.
+ * Throws only if the lock or a lookup itself fails; the caller catches that.
  */
 export async function notifyPendingElevation(args: PendingElevationNotifyArgs): Promise<PendingElevationNotifyResult> {
   const { elevationRequestId, orgId, siteId, deviceId, deviceHostname } = args;
   const now = args.now ?? new Date();
   const dedupeKey = pamElevationNotifyDedupeKey(elevationRequestId);
   const none = {
-    recipients: [] as Recipient[], toEmail: [] as Recipient[], orgName: '', inAppCreated: 0, inAppFailed: 0,
+    recipients: [] as ElevationNoticeRecipient[], toEmail: [] as ElevationNoticeRecipient[], orgName: '',
+    inAppCreated: 0, inAppFailed: 0, emailCeilingReached: 0,
   };
 
-  const { skipped, recipients, toEmail, orgName, inAppCreated, inAppFailed } = await runOutsideDbContext(() =>
+  const { skipped, recipients, toEmail, orgName, inAppCreated, inAppFailed, emailCeilingReached } = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      if (await earlierRequestStillPending({ orgId, deviceId, elevationRequestId, now })) {
-        return { ...none, skipped: 'earlier_request_pending' as const };
-      }
-      const holderIds = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.PAM_APPROVE);
-      const ids = await holdersWhoCanSeeSite(orgId, siteId, holderIds);
-      const people = ids.length === 0 ? [] : await db
-        .select({ id: users.id, email: users.email })
-        .from(users)
-        .where(and(inArray(users.id, ids), eq(users.status, 'active')));
+      await lockDeviceAnnouncements(deviceId);
+
+      const request = await readElevationRequestState({ elevationRequestId, orgId, deviceId });
+      if (!request || request.status !== 'pending') return { ...none, skipped: 'not_pending' as const };
+      if (request.flowType !== 'uac_intercept') return { ...none, skipped: 'not_uac_request' as const };
+
+      const audience = await resolveElevationNoticeAudience(orgId, siteId);
+      const people = audience.people;
       if (people.length === 0) {
         // Nobody who can decide this request can be told. Counts only. With
-        // holders but none left after the site narrowing, the mobile side may
-        // have audited `no_notifying_device`; this line is what says the
+        // holders but none left after the membership checks, the mobile side
+        // may have audited `no_notifying_device`; this line is what says the
         // request was not announced at all.
         console.warn('[PamElevationNotify] pending elevation has no one to notify', {
           elevationRequestId,
           orgId,
-          permissionHolders: holderIds.length,
-          withSiteAccess: ids.length,
+          permissionHolders: audience.permissionHolders,
+          withSiteAccess: audience.withAccess,
         });
         return { ...none, skipped: null };
       }
-      const [orgRow] = await db
-        .select({ name: organizations.name })
-        .from(organizations)
-        .where(eq(organizations.id, orgId))
-        .limit(1);
-      const name = orgRow?.name ?? '';
 
+      const peopleIds = people.map((p) => p.id);
+      const cooldownSince = new Date(now.getTime() - PAM_ELEVATION_NOTIFY_COOLDOWN_MINUTES * 60_000);
+      if (await deviceAnnouncedWithin({ orgId, deviceId, elevationRequestId, recipientIds: peopleIds, since: cooldownSince })) {
+        return { ...none, skipped: 'device_cooldown' as const };
+      }
+
+      // Read before this call's own notices are written, so they are not counted.
+      const recentNotices = await countRecentElevationNotices(peopleIds, new Date(now.getTime() - 60 * 60_000));
+      const underCeiling = (id: string) => (recentNotices.get(id) ?? 0) < PAM_ELEVATION_EMAILS_PER_RECIPIENT_PER_HOUR;
+
+      const name = await readOrgName(orgId);
       const title = 'Elevation request waiting';
       const device = oneLine(deviceHostname, 120) || 'a device';
       const org = oneLine(name, 120);
@@ -250,9 +267,14 @@ export async function notifyPendingElevation(args: PendingElevationNotifyArgs): 
         ? `An elevation request from ${device} (${org}) is waiting for a decision.`
         : `An elevation request from ${device} is waiting for a decision.`;
 
-      const emailTo: Recipient[] = [];
+      const emailTo: ElevationNoticeRecipient[] = [];
       let created = 0;
       let failed = 0;
+      let overCeiling = 0;
+      const queueEmail = (person: ElevationNoticeRecipient) => {
+        if (underCeiling(person.id)) emailTo.push(person);
+        else overCeiling++;
+      };
       for (const person of people) {
         try {
           // A savepoint, so one recipient's failed insert leaves the others and
@@ -270,19 +292,29 @@ export async function notifyPendingElevation(args: PendingElevationNotifyArgs): 
           }));
           if (id) {
             created++;
-            emailTo.push(person);
+            queueEmail(person);
           }
         } catch (err) {
           failed++;
-          emailTo.push(person);
+          queueEmail(person);
           console.error(
             `[PamElevationNotify] in-app notice failed for user=${person.id} elevation=${elevationRequestId}: ${errorCode(err)}`,
           );
           captureException(err instanceof Error ? err : new Error(String(err)));
         }
       }
+      if (overCeiling > 0) {
+        console.warn('[PamElevationNotify] email ceiling reached; in-app notice only', {
+          elevationRequestId,
+          orgId,
+          recipients: people.length,
+          overCeiling,
+          ceilingPerHour: PAM_ELEVATION_EMAILS_PER_RECIPIENT_PER_HOUR,
+        });
+      }
       return {
-        skipped: null, recipients: people, toEmail: emailTo, orgName: name, inAppCreated: created, inAppFailed: failed,
+        skipped: null, recipients: people, toEmail: emailTo, orgName: name,
+        inAppCreated: created, inAppFailed: failed, emailCeilingReached: overCeiling,
       };
     }),
   );
@@ -305,5 +337,7 @@ export async function notifyPendingElevation(args: PendingElevationNotifyArgs): 
       });
   }
 
-  return { skipped, recipients: recipients.length, inAppCreated, inAppFailed, emailDelivery };
+  return {
+    skipped, recipients: recipients.length, inAppCreated, inAppFailed, emailCeilingReached, emailDelivery,
+  };
 }

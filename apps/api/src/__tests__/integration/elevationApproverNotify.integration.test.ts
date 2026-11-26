@@ -10,9 +10,17 @@
  *   - never a user of another partner, a partner member whose org access does
  *     not cover the org, a member of a sibling org, a member restricted to
  *     other sites, a disabled account, or a member without the permission;
- *   - a second request from the same device while the first is still pending
- *     notifies nobody again; once the first is decided, the next request is
- *     announced again;
+ *   - per-device cooldown: after a request is announced, the device's next
+ *     requests are not announced for 15 minutes, whatever the device did with
+ *     the announced one (still pending, withdrawn, expired); a human decision
+ *     on the announced request ends the cooldown early;
+ *   - only an announced uac_intercept request starts a cooldown: a pending
+ *     request of another flow, or an earlier request that was never announced,
+ *     never silences a new one;
+ *   - per-recipient ceiling: past 12 announcements in an hour, a holder still
+ *     gets the in-app notice but no email;
+ *   - partner staff whose org membership role lacks the permission are not
+ *     told (org membership wins, as in getUserPermissions);
  *   - the email names the device and org and links to the PAM requests tab,
  *     and carries no executable path, command line or requesting username.
  */
@@ -54,6 +62,8 @@ import {
   devices, elevationRequests, mobileDevices, organizationUsers, partnerUsers, userNotifications,
 } from '../../db/schema';
 import { elevationRequestsRoutes } from '../../routes/agents/elevationRequests';
+import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
+import { pamElevationNotifyDedupeKey } from '../../services/pamElevationNotify';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   assignUserToOrganization,
@@ -227,6 +237,45 @@ function emailRecipients(): string[] {
   return mail.sendEmail.mock.calls.flatMap(([p]) => (Array.isArray(p.to) ? p.to : [p.to]));
 }
 
+/** Give a stray background notice a moment before asserting it is absent. */
+function settle(ms = 500): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The end user declined the request on the device (#8971). */
+async function withdrawOnDevice(id: string) {
+  await getTestDb().update(elevationRequests)
+    .set({ status: 'withdrawn', withdrawnAt: new Date(), withdrawnReason: 'user_denied' })
+    .where(eq(elevationRequests.id, id));
+}
+
+/** Move every request on the device `minutes` into the past. */
+async function ageRequests(deviceId: string, minutes: number) {
+  await getTestDb().update(elevationRequests)
+    .set({ createdAt: sql`${elevationRequests.createdAt} - make_interval(mins => ${minutes}::int)` })
+    .where(eq(elevationRequests.deviceId, deviceId));
+}
+
+/** A pending request written straight to the table, so no notifier ran for it. */
+async function seedPendingRow(
+  f: Fixture,
+  opts: { flowType: 'uac_intercept' | 'tech_jit_admin'; subjectUserId?: string },
+): Promise<string> {
+  const [row] = await getTestDb().insert(elevationRequests).values({
+    orgId: f.orgId,
+    siteId: f.siteId,
+    partnerId: f.partnerId,
+    deviceId: f.deviceId,
+    deviceEpoch: currentOwnershipEpochSql(f.deviceId),
+    flowType: opts.flowType,
+    subjectUserId: opts.subjectUserId,
+    subjectUsername: 'WS\\enduser',
+    reason: 'seeded without the notifier',
+    ...(opts.flowType === 'uac_intercept' ? { targetExecutablePath: 'C:\\Temp\\seeded.exe' } : {}),
+  }).returning({ id: elevationRequests.id });
+  return row!.id;
+}
+
 describe('pending elevation notifies every permission holder (real PostgreSQL)', () => {
   beforeEach(() => {
     flags.pamEnabled = true;
@@ -298,7 +347,7 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     for (const notTo of notTold) expect(emailRecipients()).not.toContain(notTo.email);
   });
 
-  runDb('a request while an earlier one from the device is pending tells nobody; after a decision, the next one does', async () => {
+  runDb('a request while an announced one from the device is pending tells nobody; after a human decision, the next one does', async () => {
     const f = await seedOrgWithDevice();
     const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
 
@@ -306,17 +355,139 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
     const second = await submitElevation(f);
     expect(second).not.toBe(first);
-    // Give a stray background notice a moment before asserting it is absent.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await settle();
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([first]);
     expect(mail.sendEmail).toHaveBeenCalledTimes(1);
 
-    // Someone decides both; a new request from the device is announced again.
-    await getTestDb().update(elevationRequests).set({ status: 'denied', denialReason: 'test decision' })
-      .where(eq(elevationRequests.deviceId, f.deviceId));
+    // A person decides the announced request; a new request is announced again.
+    await getTestDb().update(elevationRequests)
+      .set({ status: 'denied', denialReason: 'test decision', deniedByUserId: holder.id })
+      .where(eq(elevationRequests.id, first));
     const third = await submitElevation(f);
     await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, third].sort());
+  });
+
+  runDb('withdrawing the announced request and filing again does not announce again inside the cooldown', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+
+    const first = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    await withdrawOnDevice(first);
+    const second = await submitElevation(f);
+    await settle();
+    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([first]);
+
+    // Nor after the system expires the requests: an expiry is not a decision.
+    await getTestDb().update(elevationRequests).set({ status: 'expired', expiredAt: new Date() })
+      .where(eq(elevationRequests.id, second));
+    await submitElevation(f);
+    await settle();
+    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
+
+    // Once the announced request is older than the cooldown, the next one is announced.
+    await ageRequests(f.deviceId, 16);
+    const fourth = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, fourth].sort());
+  });
+
+  runDb('a pending request of another flow on the device does not silence a UAC request', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    await seedPendingRow(f, { flowType: 'tech_jit_admin', subjectUserId: holder.id });
+
+    const id = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([id]);
+  });
+
+  runDb('an earlier pending UAC request that was never announced does not silence a new one', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    // Written without the notifier: as if its notifier threw or the process restarted.
+    await seedPendingRow(f, { flowType: 'uac_intercept' });
+
+    const id = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([id]);
+  });
+
+  runDb('after overlapping requests expire and the cooldown passes, a new request is announced', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+
+    const first = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    await submitElevation(f);
+    await settle();
+    await getTestDb().update(elevationRequests).set({ status: 'expired', expiredAt: new Date() })
+      .where(eq(elevationRequests.deviceId, f.deviceId));
+    await ageRequests(f.deviceId, 16);
+
+    const third = await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, third].sort());
+  });
+
+  runDb('two requests racing from one device announce exactly one of them', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+
+    const ids = await Promise.all([submitElevation(f), submitElevation(f)]);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    await settle();
+    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
+    const notices = await elevationNotices([holder.id], f.deviceId);
+    expect(notices).toHaveLength(1);
+    expect(ids).toContain(noticeRequestId(notices[0]!));
+  });
+
+  runDb('past the hourly ceiling a holder gets the in-app notice but no email, and the skip is logged', async () => {
+    const f = await seedOrgWithDevice();
+    const busy = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    const quiet = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    // Twelve announcements to `busy` in the last hour, about other devices.
+    await getTestDb().insert(userNotifications).values(Array.from({ length: 12 }, () => ({
+      userId: busy.id,
+      orgId: f.orgId,
+      type: 'approval' as const,
+      title: 'Elevation request waiting',
+      dedupeKey: pamElevationNotifyDedupeKey(randomUUID()),
+    })));
+    const warn = vi.spyOn(console, 'warn');
+    try {
+      const id = await submitElevation(f);
+      await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+      await settle();
+      expect(emailRecipients()).toEqual([quiet.email]);
+      expect((await elevationNotices([busy.id, quiet.id], f.deviceId)).map((n) => n.userId).sort())
+        .toEqual([busy.id, quiet.id].sort());
+      expect(warn).toHaveBeenCalledWith('[PamElevationNotify] email ceiling reached; in-app notice only', {
+        elevationRequestId: id, orgId: f.orgId, recipients: 2, overCeiling: 1, ceilingPerHour: 12,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  runDb('partner staff whose org membership role lacks pam:approve are not told', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    const partnerWithWeakMembership = await seedPartnerMember(f.partnerId, [PERMISSIONS.PAM_APPROVE], 'all');
+    // Unrestricted sites: only the membership's role excludes this user.
+    await assignUserToOrganization(
+      partnerWithWeakMembership.id, f.orgId, (await orgRole(f.orgId, [PERMISSIONS.DEVICES_EXECUTE])).id,
+    );
+
+    await submitElevation(f);
+    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    await settle();
+    expect(emailRecipients()).toEqual([holder.email]);
+    expect((await elevationNotices([holder.id, partnerWithWeakMembership.id], f.deviceId)).map((n) => n.userId))
+      .toEqual([holder.id]);
   });
 
   runDb('the email names the device and org, links to the requests tab, and leaks no request detail', async () => {
