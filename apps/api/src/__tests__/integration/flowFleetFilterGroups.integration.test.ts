@@ -331,24 +331,25 @@ describe('a group named by a fleetFilter resolves from its definition (#12418 W0
     expect(await resolve(ids[0]!)).toEqual(set(win1)); // control
   }, 60_000);
 
-  // #12656: the statement that restores the timeout after the last read runs
-  // under the limit that read had, and can be cancelled itself.
-  runDb('a save whose timeout restore is cancelled is refused, not an error', async () => {
+  // #12656 / #12715: the statement that restores the timeout after the last
+  // read runs under the limit that read had. Every read finished, so the check
+  // stands: the restore calls no function a search_path could slow down.
+  runDb('a save whose reads finished passes its group check when only the restore would be slow', async () => {
     const g = await group({ filterConditions: all(rule('osType', 'equals', 'windows')) });
     await withSlowTimeoutRestore(async (slow) => {
       hook.afterLoad = (executor) => slow(executor as ReturnType<typeof getTestDb>);
-      expect(await groupIssues([g, g])).toEqual(timedOut(2));
+      expect(await groupIssues([g, g])).toEqual([]);
       expect(hook.loads).toBe(1);
     });
     hook.afterLoad = undefined;
     expect(await groupIssues([g, g])).toEqual([]); // control
   }, 60_000);
 
-  runDb('a step whose timeout restore is cancelled is refused at resolve, not an error', async () => {
+  runDb('a step whose reads finished resolves its group when only the restore would be slow', async () => {
     const g = await group({ filterConditions: all(rule('osType', 'equals', 'windows')) });
     await withSlowTimeoutRestore(async (slow) => {
       hook.afterLoad = (executor) => slow(executor as ReturnType<typeof getTestDb>);
-      expect(await resolve(g)).toMatchObject({ kind: 'outcome', outcome: { code: 'targets_unresolvable', message: GROUP_CHECK_TIMEOUT_PROBLEM } });
+      expect(await resolve(g)).toEqual(set(win1, win2));
       expect(hook.loads).toBe(1);
     });
     hook.afterLoad = undefined;

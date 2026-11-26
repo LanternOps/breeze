@@ -446,19 +446,45 @@ describe('get_fleet_device_stats statement bound against real Postgres (#12655 S
     });
   });
 
-  // #12656: the restore runs under whatever limit `run` left behind.
-  runDb('a cancelled restore is a timeout, and the request transaction keeps its own settings and stays usable', async () => {
+  // #12656 / #12715: the restore runs under whatever limit `run` left behind.
+  // Every read finished, so the check stands: the restore calls no function a
+  // search_path could slow down.
+  runDb('a check whose reads finished stands when only the restore would be slow, and the request keeps its own limit', async () => {
+    await withSlowTimeoutRestore(async (slow) => {
+      await withDbAccessContext(ctxFor(f.auth.org), async () => {
+        // A limit of the request's own, so its restore is visible.
+        await db.execute(sql`select set_config('statement_timeout', '7s', true)`);
+        const outcome = await withFilterStatementTimeout(async (tx) => {
+          await tx.execute(sql`select set_config('statement_timeout', '50ms', true)`);
+          const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.id, f.w1));
+          await slow(tx);
+          return row!.n;
+        }).then((n) => n, (error: unknown) => error);
+        expect(outcome).toBe(1);
+        expect(await currentTimeout()).toBe('7s');
+        const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.id, f.w1));
+        expect(row!.n).toBe(1);
+      });
+    });
+  });
+
+  // `slow` changes the search_path before the read: the refusal rolls that
+  // back too, and nothing is restored by hand on the way out.
+  runDb('a read that times out is still refused, and the request keeps its own limit and search_path', async () => {
     await withSlowTimeoutRestore(async (slow) => {
       await withDbAccessContext(ctxFor(f.auth.org), async () => {
         const searchPath = async () => JSON.stringify(await db.execute(sql`select current_setting('search_path') as v`));
-        const before = [await currentTimeout(), await searchPath()];
+        await db.execute(sql`select set_config('statement_timeout', '7s', true)`);
+        const before = await searchPath();
         const outcome = await withFilterStatementTimeout(async (tx) => {
-          await tx.execute(sql`select set_config('statement_timeout', '50ms', true)`);
           await slow(tx);
-        }).then(() => 'resolved', (error: unknown) => error);
+          await tx.execute(sql`select pg_catalog.set_config('statement_timeout', '50ms', true)`);
+          await tx.execute(sql`select pg_catalog.pg_sleep(2)`);
+          return 'passed';
+        }).then((v) => v, (error: unknown) => error);
         expect(outcome).toBeInstanceOf(FilterQueryTimeoutError);
         expect(pgErrorCode((outcome as Error).cause)).toBe('57014');
-        expect([await currentTimeout(), await searchPath()]).toEqual(before);
+        expect([await currentTimeout(), await searchPath()]).toEqual(['7s', before]);
         const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.id, f.w1));
         expect(row!.n).toBe(1);
       });
