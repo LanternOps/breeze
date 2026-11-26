@@ -45,8 +45,11 @@ var (
 	// minute: any 503 (typically the module is loaded but disabled, or a
 	// proxy is shedding load) or any 403 (typically the device is parked,
 	// quarantined or draining). The loop backs off instead of asking again
-	// each minute, so a device whose state is cleared may wait up to that
-	// back-off before indexing resumes (#12713). A 401 is not in this set; it
+	// each minute (#12713). The first refusal leaves running crawls and
+	// watchers alone; a later consecutive refusal stops them once the run of
+	// refusals is at least 30 minutes old (#12727, unavailableStopGrace).
+	// Either way, a device whose state is cleared may wait up to that
+	// back-off before indexing resumes. A 401 is not in this set; it
 	// stays an auth failure on the shared monitor.
 	ErrUnavailable = errors.New("workspace index unavailable")
 	// ErrNoServerURL names a wiring bug — the ServerURL provider is unset or
@@ -65,8 +68,9 @@ type HTTPError struct {
 	StatusCode int
 	Body       string
 	// RetryAfter is the Retry-After (seconds or HTTP-date) of any non-2xx
-	// answer, capped at unavailableRetryAfterCeiling. Zero when absent,
-	// malformed, zero or past. Only the ErrUnavailable back-off reads it.
+	// answer, capped at unavailableRetryAfterCeiling. Zero means no hint:
+	// absent, malformed, negative or past. "Retry-After: 0" reads as unavailableRetryAfterFloor
+	// (see parseConfigPollRetryAfter). Only the ErrUnavailable back-off reads it.
 	RetryAfter time.Duration
 }
 
@@ -369,7 +373,7 @@ func (c *Client) checkResponse(resp *http.Response, sentinel error, sentinelStat
 	httpErr := &HTTPError{
 		StatusCode: resp.StatusCode,
 		Body:       body,
-		RetryAfter: httputil.ParseRetryAfterCapped(resp.Header, time.Now(), unavailableRetryAfterCeiling),
+		RetryAfter: parseConfigPollRetryAfter(resp.Header, time.Now()),
 	}
 	if readErr != nil {
 		httpErr.Body = "unable to read error response"

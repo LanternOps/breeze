@@ -373,7 +373,9 @@ func (a *Agent) crawlConfigLoop(ctx context.Context) {
 		} else if rse, ok := finalRetryableStatus(err); ok {
 			// Known gap: httputil.Do caps this hint at 300 s and retries a 503
 			// before returning it, so the sim's 503 wait honours a shorter
-			// Retry-After than the agent's client does (which reads it up to 6 h).
+			// Retry-After than the agent's client does (which reads it up to 6 h),
+			// and reads "Retry-After: 0" as no hint (30-60 min) where the agent
+			// reads it as the one-minute floor.
 			status, hint = rse.StatusCode, rse.RetryAfter
 		}
 		if backoff, ok := workspaceindex.ConfigPollBackoff(status, hint); ok {

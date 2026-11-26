@@ -40,11 +40,12 @@ func parseRetryAfter(h http.Header, now time.Time) time.Duration {
 		if secs <= 0 {
 			return 0
 		}
-		d := time.Duration(secs) * time.Second
-		if d > retryAfterMaxCap {
+		// Compare before multiplying: a huge value would overflow
+		// time.Duration and wrap negative (same form as httputil).
+		if time.Duration(secs) > retryAfterMaxCap/time.Second {
 			return retryAfterMaxCap
 		}
-		return d
+		return time.Duration(secs) * time.Second
 	}
 
 	if t, err := http.ParseTime(raw); err == nil {

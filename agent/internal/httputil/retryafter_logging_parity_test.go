@@ -34,6 +34,10 @@ func TestParseRetryAfterParityTable(t *testing.T) {
 		{"thirty", "30", 30 * time.Second},
 		{"at cap", "300", 300 * time.Second},
 		{"over cap", "99999", 300 * time.Second},
+		// Large enough that secs * time.Second overflows int64 and wraps
+		// negative: the cap must be compared before multiplying.
+		{"overflows a duration", "9223372037", 300 * time.Second},
+		{"max int64 seconds", "9223372036854775807", 300 * time.Second},
 		{"http-date 90s ahead", now.Add(90 * time.Second).Format(http.TimeFormat), 90 * time.Second},
 		{"http-date in the past", now.Add(-time.Hour).Format(http.TimeFormat), 0},
 	}
