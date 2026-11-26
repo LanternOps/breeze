@@ -74,7 +74,9 @@ vi.mock('../../services/pamApprovers', async (importOriginal) => {
   return {
     ...actual,
     resolveElevationApprovers: async (orgId: string) =>
-      faults.approvers ?? actual.resolveElevationApprovers(orgId),
+      faults.approvers
+        ? { approverIds: faults.approvers, candidates: faults.approvers.length, withDevice: faults.approvers.length }
+        : actual.resolveElevationApprovers(orgId),
   };
 });
 

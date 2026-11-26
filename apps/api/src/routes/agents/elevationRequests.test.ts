@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
 vi.mock('../../db', () => ({
@@ -71,6 +71,10 @@ const bridgeMocks = vi.hoisted(() => ({
 vi.mock('../../services/pamApprovers', () => ({
   resolveElevationApprovers: bridgeMocks.resolveElevationApprovers,
 }));
+/** What resolveElevationApprovers returns: the approvers plus the counts behind them. */
+function approverResolution(approverIds: string[], candidates = approverIds.length) {
+  return { approverIds, candidates, withDevice: approverIds.length };
+}
 vi.mock('../../services/expoPush', () => ({
   getUserPushTokens: bridgeMocks.getUserPushTokens,
   dispatchApprovalPushToTokens: bridgeMocks.dispatchApprovalPushToTokens,
@@ -256,7 +260,7 @@ describe('agent elevation-requests ingestion route', () => {
     pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
     pamMocks.publishEvent.mockResolvedValue('evt-1');
     // Default: no eligible approvers -> mobile bridge is a no-op.
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([]));
     bridgeMocks.getUserPushTokens.mockResolvedValue([]);
     bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ insert: db.insert }));
@@ -440,7 +444,10 @@ describe('agent elevation-requests ingestion route', () => {
         clientIp: '203.0.113.7',
       }),
     );
-    expect(vi.mocked(writeAuditEvent)).toHaveBeenCalledOnce();
+    const submits = vi.mocked(writeAuditEvent).mock.calls.filter(
+      ([, event]) => event.action === 'agent.elevation_request.submit',
+    );
+    expect(submits).toHaveLength(1);
   });
 
   it('returns 404 when the agent_id does not match any device', async () => {
@@ -614,7 +621,7 @@ describe('ingest decisioning (#1163)', () => {
     mockSelects([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }]);
     pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
     pamMocks.publishEvent.mockResolvedValue('evt-1');
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([]));
     bridgeMocks.getUserPushTokens.mockResolvedValue([]);
     bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
   });
@@ -1067,7 +1074,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
   }
 
   it('pending uac_intercept fans out one approval per approver + pushes', async () => {
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a', 'user-b']);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution(['user-a', 'user-b']));
     const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
 
     const res = await post(buildApp());
@@ -1100,7 +1107,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
       policyId: 'pol-2',
       auditMatches: [],
     });
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a']);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution(['user-a']));
     happyPathInsert([{ id: 'req-auto', status: 'auto_approved' }]);
 
     const res = await post(buildApp());
@@ -1114,7 +1121,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
       policyId: 'pol-1',
       auditMatches: [],
     });
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a']);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution(['user-a']));
     happyPathInsert([{ id: 'req-deny', status: 'denied' }]);
 
     const res = await post(buildApp());
@@ -1131,8 +1138,126 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
     expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
   });
 
+  describe('a pending request that reaches no approver (#11231)', () => {
+    let warn: MockInstance<typeof console.warn>;
+    let error: MockInstance<typeof console.error>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+      error.mockRestore();
+      vi.mocked(writeAuditEvent).mockReset();
+    });
+
+    const noApproverAudits = () => vi.mocked(writeAuditEvent).mock.calls
+      .map(([, event]) => event)
+      .filter((event) => event.action === 'agent.elevation_request.no_approver');
+    const noApproverWarnings = () => warn.mock.calls
+      .filter(([message]) => message === '[ElevationRequests] pending elevation reached no approver')
+      .map(([, fields]) => fields);
+    const bridgeFailures = () => error.mock.calls
+      .filter(([message]) => String(message).includes('mobile bridge failed'));
+
+    it('nobody holds pam:approve: audited and logged as no_permission_holder with zero counts', async () => {
+      bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([], 0));
+      const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+      const res = await post(buildApp());
+      expect(res.status).toBe(201);
+      expect(approvalValueCalls(values)).toHaveLength(0);
+      expect(noApproverAudits()).toEqual([expect.objectContaining({
+        orgId: 'org-1',
+        actorType: 'agent',
+        actorId: 'agent-123',
+        resourceType: 'elevation_request',
+        resourceId: 'req-uuid',
+        details: {
+          flow_type: 'uac_intercept',
+          reason: 'no_permission_holder',
+          permission_holders: 0,
+          with_notifying_device: 0,
+        },
+      })]);
+      expect(noApproverWarnings()).toEqual([{
+        elevationRequestId: 'req-uuid',
+        orgId: 'org-1',
+        reason: 'no_permission_holder',
+        permissionHolders: 0,
+        withNotifyingDevice: 0,
+      }]);
+      expect(bridgeFailures()).toEqual([]);
+    });
+
+    it('holders without a notifying phone: audited and logged as no_notifying_device with the holder count', async () => {
+      bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([], 3));
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+      const res = await post(buildApp());
+      expect(res.status).toBe(201);
+      expect(noApproverAudits()).toEqual([expect.objectContaining({
+        resourceId: 'req-uuid',
+        details: {
+          flow_type: 'uac_intercept',
+          reason: 'no_notifying_device',
+          permission_holders: 3,
+          with_notifying_device: 0,
+        },
+      })]);
+      expect(noApproverWarnings()).toEqual([expect.objectContaining({
+        reason: 'no_notifying_device',
+        permissionHolders: 3,
+        withNotifyingDevice: 0,
+      })]);
+      expect(bridgeFailures()).toEqual([]);
+    });
+
+    it('carries no identities: no username, path or command line in the audit details or the log line', async () => {
+      bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([], 1));
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+      await post(buildApp());
+      const recorded = JSON.stringify([noApproverAudits(), noApproverWarnings()]);
+      expect(recorded).not.toContain('alice');
+      expect(recorded).not.toContain('mmc.exe');
+    });
+
+    it('a request that reached an approver records nothing', async () => {
+      bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution(['user-a'], 4));
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+      const res = await post(buildApp());
+      expect(res.status).toBe(201);
+      expect(noApproverAudits()).toEqual([]);
+      expect(noApproverWarnings()).toEqual([]);
+    });
+
+    it('a resolver failure is a bridge failure, not an empty approver list', async () => {
+      bridgeMocks.resolveElevationApprovers.mockRejectedValue(new Error('db down'));
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+      const res = await post(buildApp());
+      expect(res.status).toBe(201);
+      expect(noApproverAudits()).toEqual([]);
+      expect(bridgeFailures()).toHaveLength(1);
+    });
+
+    it('an audit write that throws does not fail the agent request', async () => {
+      bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([], 0));
+      vi.mocked(writeAuditEvent).mockImplementation((_c, event) => {
+        if (event.action === 'agent.elevation_request.no_approver') throw new Error('audit down');
+      });
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+
+      const res = await post(buildApp());
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
+    });
+  });
+
   it('a failing push does not abort the remaining approvers', async () => {
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a', 'user-b']);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution(['user-a', 'user-b']));
     bridgeMocks.dispatchApprovalPushToTokens.mockRejectedValueOnce(new Error('push 500'));
     const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
 
@@ -1161,7 +1286,7 @@ describe('elevation-requests ingest #1105 context discipline (#6130)', () => {
     mockSelects([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }]);
     pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
     pamMocks.publishEvent.mockResolvedValue('evt-1');
-    bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
+    bridgeMocks.resolveElevationApprovers.mockResolvedValue(approverResolution([]));
     bridgeMocks.getUserPushTokens.mockResolvedValue([]);
     bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ insert: db.insert }));

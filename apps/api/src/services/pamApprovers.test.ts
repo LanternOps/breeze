@@ -57,12 +57,12 @@ describe('resolveElevationApprovers', () => {
     expect(resolveUsersWithPermissionForOrgMock).not.toHaveBeenCalledWith('org-1', PERMISSIONS.DEVICES_EXECUTE);
   });
 
-  it('returns [] without querying mobile devices when nobody holds pam:approve (e.g. an org of technicians only)', async () => {
+  it('returns no approvers and zero counts, without querying mobile devices, when nobody holds pam:approve (e.g. an org of technicians only)', async () => {
     resolveUsersWithPermissionForOrgMock.mockResolvedValue([]);
 
     const result = await resolveElevationApprovers('org-1');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ approverIds: [], candidates: 0, withDevice: 0 });
     expect(db.select).not.toHaveBeenCalled();
   });
 
@@ -72,7 +72,16 @@ describe('resolveElevationApprovers', () => {
 
     const result = await resolveElevationApprovers('org-1');
 
-    expect(result).toEqual(['u-admin']);
+    expect(result).toEqual({ approverIds: ['u-admin'], candidates: 2, withDevice: 1 });
+  });
+
+  it('counts holders without a notifying phone apart from nobody holding the permission (#11231)', async () => {
+    resolveUsersWithPermissionForOrgMock.mockResolvedValue(['u-admin-no-phone', 'u-admin-muted']);
+    queueMobileSelect([]);
+
+    const result = await resolveElevationApprovers('org-1');
+
+    expect(result).toEqual({ approverIds: [], candidates: 2, withDevice: 0 });
   });
 
   it('deduplicates the mobile-device result', async () => {
@@ -81,7 +90,7 @@ describe('resolveElevationApprovers', () => {
 
     const result = await resolveElevationApprovers('org-1');
 
-    expect(result).toEqual(['u-admin']);
+    expect(result).toEqual({ approverIds: ['u-admin'], candidates: 1, withDevice: 1 });
   });
 
   it('an Org Technician holding devices:execute but not pam:approve is never a candidate (enforced by resolveUsersWithPermissionForOrg, which this delegates to)', async () => {
@@ -92,6 +101,6 @@ describe('resolveElevationApprovers', () => {
 
     const result = await resolveElevationApprovers('org-technicians-only');
 
-    expect(result).toEqual([]);
+    expect(result.approverIds).toEqual([]);
   });
 });
