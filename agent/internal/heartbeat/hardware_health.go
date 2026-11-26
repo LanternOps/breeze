@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"math/rand/v2"
 	"strconv"
 	"time"
 
@@ -85,7 +86,15 @@ func (h *Heartbeat) startHardwareHealth() {
 		select {
 		case <-h.hwContext.Done():
 			return
-		case now := <-timer.C:
+		case <-timer.C:
+			// #8318 D-1a: a parked device cannot submit hardware health
+			// (the route is outside the allow-list), so the first run waits
+			// for assignment. hwStarted is set only when it runs, so the
+			// periodic cycle starts with it.
+			if !h.waitHardwareHealthUntilAssigned(rand.Float64, time.After) {
+				return
+			}
+			now := time.Now()
 			h.mu.Lock()
 			tiers := h.hardwareTiersLocked(now, true)
 			h.mu.Unlock()

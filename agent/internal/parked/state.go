@@ -44,6 +44,11 @@ import (
 // PARKED_DEVICE_REFUSAL), including the WebSocket upgrade.
 const RefusalCode = "device_pending_assignment"
 
+// RefusalHeader names the same refusal on an answer that cannot carry a body:
+// a refused WebSocket upgrade, which the server writes as a bare status line
+// (Content-Length: 0) with this header set to RefusalCode.
+const RefusalHeader = "X-Breeze-Refusal"
+
 // Source names the signal that entered the parked state.
 type Source string
 
@@ -262,11 +267,18 @@ func IsRefusalBody(body []byte) bool {
 	return parsed.Error == RefusalCode
 }
 
-// IsRefusal reports whether resp is a 403 carrying the parked refusal. It
-// reads at most 1 KiB of the body and puts it back, so the caller can still
-// read the whole body afterwards.
+// IsRefusal reports whether resp is a 403 carrying the parked refusal, either
+// as RefusalHeader (the WebSocket upgrade) or as the JSON body (every REST
+// route). It reads at most 1 KiB of the body and puts it back, so the caller
+// can still read the whole body afterwards.
 func IsRefusal(resp *http.Response) bool {
-	if resp == nil || resp.StatusCode != http.StatusForbidden || resp.Body == nil {
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+	if resp.Header.Get(RefusalHeader) == RefusalCode {
+		return true
+	}
+	if resp.Body == nil {
 		return false
 	}
 	peeked, err := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBody))

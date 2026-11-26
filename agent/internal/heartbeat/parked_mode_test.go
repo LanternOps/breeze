@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -321,5 +322,57 @@ func TestParkedSelfRenewIsHourly(t *testing.T) {
 	}
 	if !h.parkedSelfRenewAllowed(now.Add(61 * time.Minute)) {
 		t.Fatal("parked renewal after the hour refused")
+	}
+}
+
+// The first hardware-health run waits while parked (its route is outside the
+// allow-list), runs after the startup stagger once assigned, and gives up on
+// shutdown.
+func TestHardwareHealthFirstRunWaitsForAssignment(t *testing.T) {
+	stagger := make(chan time.Time)
+	var asked time.Duration
+	after := func(d time.Duration) <-chan time.Time { asked = d; return stagger }
+	half := func() float64 { return 0.5 }
+
+	// Not parked: no wait, no stagger.
+	h := &Heartbeat{parkedState: parked.New()}
+	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
+	defer h.hwCancel()
+	if !h.waitHardwareHealthUntilAssigned(half, after) {
+		t.Fatal("an unparked device waited")
+	}
+	if asked != 0 {
+		t.Fatalf("stagger asked for an unparked device (%v)", asked)
+	}
+
+	// Parked: blocks until assignment, then waits the stagger.
+	h.parkedState.ObserveBeat(true)
+	done := make(chan bool, 1)
+	go func() { done <- h.waitHardwareHealthUntilAssigned(half, after) }()
+	select {
+	case <-done:
+		t.Fatal("returned while still parked")
+	case <-time.After(50 * time.Millisecond):
+	}
+	h.parkedState.ObserveBeat(false)
+	stagger <- time.Now()
+	if !<-done {
+		t.Fatal("returned false after assignment")
+	}
+	if want := startupStaggerWindow / 2; asked != want {
+		t.Fatalf("stagger = %v, want %v", asked, want)
+	}
+
+	// Shutdown while parked: returns false.
+	h.parkedState.ObserveBeat(true)
+	go func() { done <- h.waitHardwareHealthUntilAssigned(half, after) }()
+	h.hwCancel()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("returned true on shutdown")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not return on shutdown")
 	}
 }

@@ -173,6 +173,30 @@ func TestIsRefusalBody(t *testing.T) {
 	}
 }
 
+// The WebSocket upgrade refusal has no body: the header alone is the signal,
+// and only on a 403 with exactly RefusalCode.
+func TestIsRefusalReadsTheHeader(t *testing.T) {
+	mk := func(status int, value string) *http.Response {
+		h := http.Header{}
+		if value != "" {
+			h.Set(RefusalHeader, value)
+		}
+		return &http.Response{StatusCode: status, Header: h, Body: http.NoBody}
+	}
+	if !IsRefusal(mk(http.StatusForbidden, RefusalCode)) {
+		t.Fatal("IsRefusal = false for a 403 with the refusal header and no body")
+	}
+	if IsRefusal(mk(http.StatusUnauthorized, RefusalCode)) {
+		t.Fatal("a 401 with the header counted as the parked refusal")
+	}
+	if IsRefusal(mk(http.StatusForbidden, "something_else")) {
+		t.Fatal("another header value counted as the parked refusal")
+	}
+	if IsRefusal(mk(http.StatusForbidden, "")) {
+		t.Fatal("a bare 403 counted as the parked refusal")
+	}
+}
+
 func TestIsRefusalKeepsTheBodyReadable(t *testing.T) {
 	body := `{"error":"device_pending_assignment"}`
 	resp := &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(body))}

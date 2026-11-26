@@ -11,10 +11,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/parked"
 )
 
+// refuseParked answers as the API does on the wire: @hono/node-ws writes a
+// refused upgrade as a bare status line (Content-Length: 0) and forwards only
+// the allow-listed refusal header, so no body reaches the agent.
 func refuseParked(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(parked.RefusalHeader, parked.RefusalCode)
+	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(http.StatusForbidden)
-	_, _ = io.WriteString(w, `{"error":"device_pending_assignment"}`)
 }
 
 // #8318 D-1a: a parked refusal parks the state and the loop stops dialing

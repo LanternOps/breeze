@@ -202,6 +202,36 @@ var startParkedResume = func(h *Heartbeat, tasks []startupTask) {
 	h.staggerStartup(tasks, startupStaggerWindow, rand.Float64, time.After)
 }
 
+// waitHardwareHealthUntilAssigned blocks the first hardware-health run while
+// the device is parked. It returns at once when the device is not parked, and
+// false when the heartbeat shuts down while waiting. After a wait it adds the
+// startup stagger, so a bulk assignment does not collect and submit on every
+// device in the same second.
+func (h *Heartbeat) waitHardwareHealthUntilAssigned(rnd func() float64, after func(time.Duration) <-chan time.Time) bool {
+	waited := false
+	for {
+		changed := h.parkedState.Changed() // before isParked: a change in between is not missed
+		if !h.isParked() {
+			break
+		}
+		waited = true
+		select {
+		case <-h.hwContext.Done():
+			return false
+		case <-changed:
+		}
+	}
+	if !waited {
+		return true
+	}
+	select {
+	case <-h.hwContext.Done():
+		return false
+	case <-after(time.Duration(rnd() * float64(startupStaggerWindow))):
+		return true
+	}
+}
+
 // parkedSelfRenewAllowed rate-limits a self-initiated renewal of a
 // certificate that has not expired yet while the device is parked; see
 // parkedSelfRenewInterval. Always true when not parked.
