@@ -1138,6 +1138,7 @@
       "pam_rule": "Regla de PAM",
       "pam_signer_group": "Grupo de firmantes de PAM",
       "partner": "Socio",
+      "partner_deploy_key": "Clave de implementación del socio",
       "partner_entitlement": "Derecho del socio",
       "partner_export": "Exportación del socio",
       "partner_login_branding": "Marca de inicio de sesión del socio",

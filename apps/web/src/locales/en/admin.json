@@ -1138,6 +1138,7 @@
       "pam_rule": "PAM rule",
       "pam_signer_group": "PAM signer group",
       "partner": "Partner",
+      "partner_deploy_key": "Partner deploy key",
       "partner_entitlement": "Partner entitlement",
       "partner_export": "Partner export",
       "partner_login_branding": "Partner sign-in branding",
