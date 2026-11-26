@@ -1018,13 +1018,18 @@ export async function withFilterStatementTimeout<T>(
   return db.transaction(async (tx) => {
     // Whole milliseconds (`pg_settings` reports this setting in its base unit),
     // so the restore below can carry it as an integer literal.
-    const previousMs = readPriorMs(await tx.execute(
+    const previousResult = await tx.execute(
       sql`select setting::bigint as prior_ms from pg_catalog.pg_settings where name = 'statement_timeout'`
-    ));
+    );
+    const previousMs = readPriorMs(previousResult);
     // Nothing to put back means no way to keep the promise below: refuse
     // before any read rather than leave the bound, or no bound, in force.
     if (previousMs === null) {
-      throw new Error('withFilterStatementTimeout: could not read the statement_timeout to restore');
+      const rows = Array.isArray(previousResult) ? previousResult : (previousResult as { rows?: unknown[] }).rows;
+      const got = (rows?.[0] as { prior_ms?: unknown } | undefined)?.prior_ms;
+      throw new Error(
+        `withFilterStatementTimeout: could not read the statement_timeout to restore (got ${rows ? `${typeof got} ${String(got)}` : 'no rows'})`
+      );
     }
     await tx.execute(
       sql`select set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`
@@ -1041,8 +1046,8 @@ export async function withFilterStatementTimeout<T>(
       //     prepare) as Parse/Describe/Flush, waits for the reply, then sends
       //     Bind/Execute, and the server's statement timer runs across that
       //     wait, so an event-loop stall here cancelled it. Without parameters
-      //     it is one simple-protocol Query message, which the server finishes
-      //     without waiting on the client.
+      //     it is one simple-protocol Query message, which the server parses
+      //     and executes with no client round trip in between.
       //   - no function: `set_config` resolves through the search_path `run`
       //     may have changed; `SET` does not.
       // `previousMs` is an integer that readPriorMs range-checked, so the literal

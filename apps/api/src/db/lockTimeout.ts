@@ -14,7 +14,7 @@ const PG_MAX_TIMEOUT_MS = 2147483647;
  * Handles BOTH supported shapes: a postgres-js `Result` (array-like) and a
  * node-postgres `{ rows: [...] }`. Accepting only the array made a perfectly
  * readable node-pg result look "unrecoverable", which matters because the
- * catalog caller THROWS on null — it would have turned a parseable result into
+ * catalog caller (and `withFilterStatementTimeout`) THROWS on null — it would have turned a parseable result into
  * a 500. The device-deletion suite already exercises the `{rows}` shape.
  *
  * Returns null when the value is absent, not a whole number, or outside the

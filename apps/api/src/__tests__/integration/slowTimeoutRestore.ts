@@ -9,8 +9,9 @@ interface Executor { execute: (query: SQL) => PromiseLike<unknown> }
  * transaction take 2 s, so a restore of `statement_timeout` made that way would
  * outrun the limit in force and Postgres itself would cancel it (#12656). Call
  * `slow` inside the bounded callback, after its last read: it puts a schema
- * holding a slow `set_config` ahead of `pg_catalog` on that transaction's
- * search_path, armed for one call. Other settings, and the calls after that
+ * holding a slow `set_config` first on that transaction's search_path, armed
+ * by a transaction-local setting and disarmed by its first `statement_timeout`
+ * call (a rollback reverts both). Other settings, and the calls after that
  * one, go through untouched, so statements after a check that stood are not
  * slowed. `withFilterStatementTimeout` restores the limit with `SET LOCAL`,
  * which calls no function, so it must not be slowed by this (#12715).

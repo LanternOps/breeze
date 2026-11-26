@@ -468,7 +468,9 @@ describe('get_fleet_device_stats statement bound against real Postgres (#12655 S
     });
   });
 
-  runDb('a read that times out is still refused when the restore would be slow too', async () => {
+  // `slow` changes the search_path before the read: the refusal rolls that
+  // back too, and nothing is restored by hand on the way out.
+  runDb('a read that times out is still refused, and the request keeps its own limit and search_path', async () => {
     await withSlowTimeoutRestore(async (slow) => {
       await withDbAccessContext(ctxFor(f.auth.org), async () => {
         const searchPath = async () => JSON.stringify(await db.execute(sql`select current_setting('search_path') as v`));

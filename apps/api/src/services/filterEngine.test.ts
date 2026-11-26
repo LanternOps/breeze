@@ -757,6 +757,16 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     expect(executions.at(-1)?.params).toEqual([]);
   };
 
+  it('restores a prior limit of 0 (none) as 0', async () => {
+    dbMock.executeRows = [{ prior_ms: '0' }];
+
+    await evaluateFilter(matchesFilter, { orgId: 'org-1' });
+
+    const last = renderedExecutions().at(-1);
+    expect(last?.sql).toBe('SET LOCAL statement_timeout = 0');
+    expect(last?.params).toEqual([]);
+  });
+
   it.each([
     ['no row', []],
     ['a value that is not whole milliseconds', [{ prior_ms: '2s' }]],
