@@ -85,6 +85,7 @@
     "eventTypes": {
       "deviceOnline": "Gerät online",
       "deviceOffline": "Gerät offline",
+      "deviceEnrolled": "Gerät registriert",
       "alertTriggered": "Alarm ausgelöst",
       "alertResolved": "Warnung behoben",
       "scriptCompleted": "Skript abgeschlossen",

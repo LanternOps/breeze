@@ -140,6 +140,7 @@
         "weeklySunday": "Haftalık (Pazar)",
         "deviceOffline": "Cihaz Çevrimdışı",
         "deviceOnline": "Cihaz Çevrimiçi",
+        "deviceEnrolled": "Cihaz kaydedildi",
         "alertTriggered": "Uyarı Tetiklendi",
         "alertResolved": "Uyarı Çözümlendi",
         "complianceFailed": "Uyumluluk Başarısız",

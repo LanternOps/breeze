@@ -140,6 +140,7 @@
         "weeklySunday": "Wöchentlich (Sonntag)",
         "deviceOffline": "Gerät offline",
         "deviceOnline": "Gerät online",
+        "deviceEnrolled": "Gerät registriert",
         "alertTriggered": "Alarm ausgelöst",
         "alertResolved": "Warnung behoben",
         "complianceFailed": "Compliance fehlgeschlagen",

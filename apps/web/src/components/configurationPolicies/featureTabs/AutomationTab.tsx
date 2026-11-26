@@ -160,6 +160,10 @@ const eventTypes = [
     labelKey: "configurationPolicies.featureTabs.automationTab.deviceOnline",
   },
   {
+    value: "device.enrolled",
+    labelKey: "configurationPolicies.featureTabs.automationTab.deviceEnrolled",
+  },
+  {
     value: "alert.triggered",
     labelKey: "configurationPolicies.featureTabs.automationTab.alertTriggered",
   },
@@ -616,6 +620,12 @@ export default function AutomationTab({
                             "policies:configurationPolicies.featureTabs.automationTab.selectEvent",
                           )}
                         </option>
+                        {item.eventType &&
+                          !eventTypes.some((e) => e.value === item.eventType) && (
+                            <option value={item.eventType}>
+                              {item.eventType}
+                            </option>
+                          )}
                         {eventTypes.map((e) => (
                           <option key={e.value} value={e.value}>
                             {t(/* i18n-dynamic */ e.labelKey)}

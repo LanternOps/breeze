@@ -140,6 +140,7 @@
         "weeklySunday": "Weekly (Sunday)",
         "deviceOffline": "Device Offline",
         "deviceOnline": "Device Online",
+        "deviceEnrolled": "Device enrolled",
         "alertTriggered": "Alert Triggered",
         "alertResolved": "Alert Resolved",
         "complianceFailed": "Compliance Failed",
