@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TopologyAlertStreak } from '@breeze/shared';
-import { advanceTopologyAlertStreak, type TopologyMonitoringEvent } from './monitoringAssessment';
+import { advanceTopologyAlertStreak, runToMonitoringEvent, type TopologyMonitoringEvent } from './monitoringAssessment';
 
 const hex = (c: string) => c.repeat(64);
 const emptyStreak: TopologyAlertStreak = {
@@ -15,7 +15,7 @@ function result(assessment: TopologyMonitoringEvent['assessment'], overrides: Pa
   return {
     kind: 'scheduled_result', policyRevision: '4', contextKey: 'default', family: 'ipv4',
     scheduledFor: new Date(Date.UTC(2026, 8, 15, 0, slot * 5)).toISOString(), occurrenceKey: hex(String(slot % 10)),
-    continuityKey: hex('c'), coverage: 'complete', freshness: 'fresh', assessment, runId: null, originDeviceId: null, originAgentId: null, reason: null,
+    continuityKey: hex('c'), coverage: 'complete', freshness: 'fresh', assessment, runId: null, originDeviceId: null, originAgentId: null, interfaceId: null, interfaceEpoch: null, reason: null,
     ...overrides,
   };
 }
@@ -92,5 +92,26 @@ describe('advanceTopologyAlertStreak (M3 Task 8)', () => {
   it('ignores on-demand results', () => {
     const old = { ...emptyStreak, consecutiveFailures: 2 };
     expect(advanceTopologyAlertStreak(old, result('failed_check', { kind: 'on_demand_result' }), policy)).toEqual({ streak: old, action: 'none' });
+  });
+});
+
+describe('runToMonitoringEvent interface provenance', () => {
+  const origin = (overrides: Record<string, unknown>) => ({ deviceId: 'dev-1', agentId: 'agent-1', ...overrides });
+  const run = (originSnapshot: Record<string, unknown>) => ({
+    id: 'run-1', state: 'completed', policyId: 'pol-1', policyRevision: 4n, scheduledContextKey: 'default', scheduledFamily: 'ipv4',
+    scheduledFor: new Date('2026-10-01T00:00:00Z'), occurrenceKey: hex('a'), coverage: 'complete', assessment: 'failed_check',
+    finishedAt: new Date('2026-10-01T00:00:10Z'), deadline: new Date('2026-10-01T00:01:00Z'), failureReason: null, originSnapshot,
+  }) as unknown as Parameters<typeof runToMonitoringEvent>[0];
+
+  it('carries the origin interface id and epoch', () => {
+    const event = runToMonitoringEvent(run(origin({ interfaceId: 'if-1', interfaceEpoch: 'gen:1' })));
+    expect(event.interfaceId).toBe('if-1');
+    expect(event.interfaceEpoch).toBe('gen:1');
+  });
+
+  it('carries null for an origin without a single interface (ECMP)', () => {
+    const event = runToMonitoringEvent(run(origin({ interfaceId: null, interfaceEpoch: null })));
+    expect(event.interfaceId).toBeNull();
+    expect(event.interfaceEpoch).toBeNull();
   });
 });
