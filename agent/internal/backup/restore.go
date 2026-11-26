@@ -73,7 +73,14 @@ type RestoreResult struct {
 	FilesNotAttempted int      `json:"filesNotAttempted,omitempty"`
 	Warnings          []string `json:"warnings,omitempty"`
 	StagingDir        string   `json:"stagingDir,omitempty"`
-	Error             string   `json:"error,omitempty"`
+	// RestoredTo is the absolute folder the files were written under, each
+	// keeping its full original path beneath it: the TargetPath as given,
+	// or, with no TargetPath, the helper's staging folder
+	// (<work root>/restore-work/restored/<snapshot>), never the original locations
+	// (#12736). Empty when the run wrote nothing there (refused, or failed
+	// before the first write).
+	RestoredTo string `json:"restoredTo,omitempty"`
+	Error      string `json:"error,omitempty"`
 	// Code is the stable code of the first integrity check that failed
 	// (integrity_mismatch, missing_checksum, …), set only when the command
 	// carried an integrity expectation, unless the run ended because its
@@ -138,6 +145,15 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	result := &RestoreResult{SnapshotID: cfg.SnapshotID}
+	// Name where the files went whenever any were written, on every return
+	// path below (completed, partial, cancelled, storage session lost):
+	// without it a restore with no TargetPath reads as "completed" with
+	// nothing saying the files are in the staging folder (#12736).
+	defer func() {
+		if result.FilesRestored > 0 {
+			result.RestoredTo = targetBase
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}

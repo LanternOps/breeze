@@ -56,9 +56,9 @@ This page lists all backup API endpoints for teams building integrations or auto
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/backup/restore` | Initiate a restore (`snapshotId`, optional `deviceId`, `targetPath`, `allowOverwriteOriginals` — required for a volume-root `targetPath`) |
+| POST | `/backup/restore` | Initiate a restore (`snapshotId`, optional `deviceId`, `targetPath`, `allowOverwriteOriginals` — required for a volume-root `targetPath`). Without `targetPath`, files go to a staging folder in the Breeze agent's data directory, **not** to their original locations; to restore in place, send the files' volume root as `targetPath` with `allowOverwriteOriginals: true` |
 | GET | `/backup/restore` | List restore jobs (filter: `deviceId`, `snapshotId`, `status`, `from`, `to`) |
-| GET | `/backup/restore/:id` | Get a single restore job with status and result details |
+| GET | `/backup/restore/:id` | Get a single restore job with status and result details. `restoredTo` is the folder the device wrote the files under (the staging folder when `targetPath` is `null`); it is `null` until the device reports it, and from a backup component that predates it |
 
 ---
 

@@ -716,6 +716,13 @@ function toRestoreResponse(row: typeof restoreJobs.$inferSelect) {
     selectedPaths: row.selectedPaths ?? [],
     status: row.status,
     targetPath: row.targetPath ?? null,
+    // #12736: the folder the device wrote the files under, each keeping its
+    // full original path beneath it — with no targetPath, the backup
+    // helper's staging folder, never the original locations. Null until the
+    // device reports it, and from a helper that predates the field.
+    restoredTo: typeof resultDetails?.restoredTo === 'string' && resultDetails.restoredTo.trim()
+      ? resultDetails.restoredTo
+      : null,
     createdAt: row.createdAt.toISOString(),
     startedAt: row.startedAt?.toISOString() ?? null,
     completedAt: row.completedAt?.toISOString() ?? null,

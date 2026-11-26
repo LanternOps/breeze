@@ -557,6 +557,7 @@
     "commandTarget": "Comando / destinazione",
     "command": "Comando:",
     "targetPath": "Percorso destinazione:",
+    "restoredTo": "File scritti in:",
     "completed": "Completato:",
     "noRestoreHistoryYetStartARestoreTo": "Nessuna cronologia di ripristino. Avvia un ripristino per caricare qui i dettagli del risultato in tempo reale.",
     "recentRestoreHistory": "Cronologia ripristini recente",

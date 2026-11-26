@@ -557,6 +557,7 @@
     "commandTarget": "Komut / hedef",
     "command": "Komut:",
     "targetPath": "Hedef yolu:",
+    "restoredTo": "Dosyaların yazıldığı yer:",
     "completed": "Tamamlandı:",
     "noRestoreHistoryYetStartARestoreTo": "Henüz geri yükleme geçmişi yok. Canlı sonuç ayrıntılarını buraya yüklemek için bir geri yükleme başlatın.",
     "recentRestoreHistory": "Son geri yükleme geçmişi",

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  RESTORE_TARGET_PATH_MAX_LENGTH,
   topologyDiagnosticCommandSchema,
   topologyDiagnosticResultSchema,
 } from '@breeze/shared';
@@ -295,6 +296,10 @@ const restoreStructuredResultObject = z.object({
   warnings: warningListSchema.optional(),
   error: z.string().max(CRITICAL_RESULT_ERROR_MAX_CHARS).optional(),
   stagingDir: z.string().max(4096).optional(),
+  // backup_restore (#12736): the folder the files were written under — the
+  // request's targetPath as sent, or the helper's staging folder when the
+  // request had none. Bounded like that targetPath.
+  restoredTo: z.string().max(RESTORE_TARGET_PATH_MAX_LENGTH).optional(),
   stateApplied: z.boolean().optional(),
   driversInjected: z.number().int().nonnegative().optional(),
   validated: z.boolean().optional(),

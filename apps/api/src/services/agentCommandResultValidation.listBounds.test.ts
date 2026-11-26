@@ -15,6 +15,7 @@ import {
   RESTORE_QUARANTINED_PATHS_MAX,
 } from './agentCommandResultValidation';
 import { MAX_COMMAND_RESULT_BYTES } from '../routes/agents/schemas';
+import { RESTORE_TARGET_PATH_MAX_LENGTH } from '@breeze/shared';
 
 // Agents already in the field do not bound verify / test-restore / restore
 // lists to the server's limits. One entry over a list limit, or a body over the
@@ -334,5 +335,28 @@ describe('agentCommandResultValidation — trimming never loosens other checks',
       commandId: 'cmd-same-doc', status: 'completed', stdout, result,
     });
     expect(validated!.structuredResult.filesFailed).toBe(12_000);
+  });
+});
+
+// #12736: the folder a file restore wrote under. Bounded like the target path
+// a request may carry, which the helper echoes back unchanged.
+describe('agentCommandResultValidation — restoredTo', () => {
+  it('accepts a restoredTo as long as the longest target path a request may carry', () => {
+    const r = restoreStructuredResultSchema.safeParse({
+      status: 'completed',
+      restoredTo: `D:\\${'r'.repeat(RESTORE_TARGET_PATH_MAX_LENGTH - 3)}`,
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects a restoredTo that is not a string', () => {
+    expect(restoreStructuredResultSchema.safeParse({ status: 'completed', restoredTo: 7 }).success).toBe(false);
+  });
+
+  it('rejects a restoredTo longer than any target path a request may carry', () => {
+    expect(restoreStructuredResultSchema.safeParse({
+      status: 'completed',
+      restoredTo: 'r'.repeat(RESTORE_TARGET_PATH_MAX_LENGTH + 1),
+    }).success).toBe(false);
   });
 });

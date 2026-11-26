@@ -747,7 +747,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         properties: {
           snapshotId: { type: 'string', description: 'Snapshot UUID (required)' },
           deviceId: { type: 'string', description: 'Target device UUID (required)' },
-          targetPath: { type: 'string', maxLength: 4096, description: 'Destination folder for restore (optional; a volume root such as C:\\ or / is refused)' },
+          targetPath: { type: 'string', maxLength: 4096, description: 'Destination folder (optional; a volume root such as C:\\ or / is refused). Omit for a staging folder on the device, not the original locations' },
           selectedPaths: {
             type: 'array',
             items: { type: 'string' },

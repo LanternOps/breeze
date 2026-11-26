@@ -375,6 +375,45 @@ describe('RestoreWizard', () => {
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Command ID copied' }));
   });
 
+  // #12736: a restore with no target path lands in the agent's staging
+  // folder; the panel names the folder the device reported.
+  it('shows the folder the device wrote the files under (#12736)', async () => {
+    const staging = 'C:\\ProgramData\\Breeze\\data\\backup\\restore-work\\restored\\snap-1';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', restoreType: 'full', status: 'completed',
+          targetPath: null, restoredTo: staging,
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z',
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    expect(screen.getByTestId('restore-job-restored-to').textContent).toBe(`Files written to: ${staging}`);
+  });
+
+  it('names no folder when the device did not report one (#12736)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', restoreType: 'full', status: 'completed',
+          targetPath: null, restoredTo: null,
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z',
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    expect(screen.queryByTestId('restore-job-restored-to')).toBeNull();
+  });
+
   it('toasts an error when the command id cannot be copied (#9626)', async () => {
     const writeText = vi.fn(async () => { throw new Error('denied'); });
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });

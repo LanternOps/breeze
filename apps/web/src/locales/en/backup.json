@@ -557,6 +557,7 @@
     "commandTarget": "Command / target",
     "command": "Command:",
     "targetPath": "Target path:",
+    "restoredTo": "Files written to:",
     "completed": "Completed:",
     "noRestoreHistoryYetStartARestoreTo": "No restore history yet. Start a restore to load live result details here.",
     "recentRestoreHistory": "Recent restore history",

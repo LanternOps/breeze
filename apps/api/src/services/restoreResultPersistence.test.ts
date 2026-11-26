@@ -116,6 +116,21 @@ describe('restore result persistence', () => {
     });
   });
 
+  // #12736: where the files were written, so a restore with no target path
+  // does not read as "completed" without saying they are in the staging folder.
+  it('keeps the folder a file restore wrote under', () => {
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      {
+        status: 'completed',
+        filesRestored: 3,
+        restoredTo: 'C:\\ProgramData\\Breeze\\data\\backup\\restore-work\\restored\\snap-1',
+      },
+    );
+    expect(metadata.restoredTo).toBe('C:\\ProgramData\\Breeze\\data\\backup\\restore-work\\restored\\snap-1');
+  });
+
   it('bounds an unvalidated restricted-descriptor path list before persisting it', () => {
     const paths = Array.from({ length: 1_000 }, (_, i) => `/data/file_${i}`);
     const metadata = buildRestoreResultMetadata(
