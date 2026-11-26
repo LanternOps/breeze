@@ -142,6 +142,7 @@ const DEVICE_FILES = [...FILES, ...walk(join(SRC, 'jobs')).map(rel)];
 /** Ephemeral-only filters where a parked device cannot appear, or must. */
 const EPHEMERAL_ONLY: Record<string, string> = {
   'routes/agents/enrollment.ts': 'enrollment identity match for a new agent; deploy-key enrollment owns its own admission',
+  'routes/agents/enrollmentDeployKey.ts': 'deploy-key enrollment identity match: the lookup is scoped to the partner\'s holding org and site, so it selects parked rows on purpose and never a customer row',
   'routes/partnerApi/deviceStatus.ts': 'partner API reach (partnerApiAuth) never includes the holding org; same org set as /devices',
   'routes/partnerApi/devices.ts': 'partner API reach (partnerApiAuth) never includes the holding org',
   'routes/portal/assets.ts': 'portal users belong to one customer org, never a holding org',
@@ -205,8 +206,11 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * 85 → 86 (#12369 W03a): services/learnedNetworks/eligibility.ts, guarded
  * discovery agent eligibility (notParkedDeviceCondition() beside the filter in
  * each of its three queries; a parkedFanoutModules entry).
+ * 86 → 87 (#8318 wave D-1): routes/agents/enrollmentDeployKey.ts, the
+ * deploy-key enrollment's hostname-collision lookup, scoped to the holding
+ * org itself (EPHEMERAL_ONLY).
  */
-const EPHEMERAL_DISCOVERED_FILES = 86;
+const EPHEMERAL_DISCOVERED_FILES = 87;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

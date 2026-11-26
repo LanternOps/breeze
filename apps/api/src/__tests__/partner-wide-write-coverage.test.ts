@@ -321,6 +321,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // unassigned-device holding org (an org-axis container). It writes no
   // partner-owned config row, and its callers (deploy-key minting) are
   // full-partner-admin surfaces gated at the route.
+  'routes/agents/enrollmentDeployKey.ts': 'deploy-key enrollment (#8318 wave D-1): an agent with no user behind it, authenticated by the deploy key itself; claims one use of that key (partner_deploy_keys usage/last-use columns) and writes its `enrolled` ledger row, in system scope, for the key\'s own partner only. Managing keys is gated in services/deployKeys/manage.ts on canManagePartnerWidePolicies',
   'services/unassignedPool/parkedExpiry.ts': 'expired/purged holding-area ledger rows, written by the scheduled expiry and purge jobs (system) and by the expire-by-key incident action, whose route resolves the partner through canManagePartnerWidePolicies',
   'services/unassignedPool/poolOrg.ts': 'holding-org provisioning creates an org-axis container (same class as quickSupportOrg.ts)',
   // #8318 wave 1b — reinstall reattach. device_reattach_intents and

@@ -2,18 +2,15 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { createHash, timingSafeEqual } from 'crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   devices,
-  deviceHardware,
-  deviceNetwork,
   enrollmentKeys,
   organizations,
   partners,
   supportSessions,
 } from '../../db/schema';
-import { CLEARED_AGENT_CREDENTIALS, collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
+import { collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
@@ -22,8 +19,18 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { enrollSchema } from './schemas';
-import { normalizeRebindProtocolVersion } from '../../services/deviceReattach/protocol';
-import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
+import { issueMtlsCertForDevice } from './helpers';
+import {
+  collidingDeviceColumns,
+  findAuthenticatedCollider,
+  freshDeviceValues,
+  getProvidedExistingDeviceToken,
+  mintEnrollmentCredentials,
+  reenrollDeviceSet,
+  timingSafeStringEqual,
+  writeEnrollmentInventory,
+} from './enrollmentDeviceWrite';
+import { hasDeployKeyPrefix } from '../../services/deployKeys/keyFormat';
 import { buildEnrollmentResponseBody } from './enrollmentResponse';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -55,7 +62,6 @@ import {
   admitPartnerDeviceCapacity,
   PartnerDeviceCapacityError,
 } from '../../services/partnerDeviceCapacity';
-import { markTopologyIdentityDirty } from '../../services/topology/identityDirty';
 import { applyOrgDefaultDeviceGroup } from '../../services/enrollmentDefaultGroup';
 import { lockPartnerExportOrg } from '../../db/partnerExportLock';
 import { isTransientLockError, pgErrorCode, retryOnTransientLockError } from '../../utils/pgErrors';
@@ -69,37 +75,9 @@ function getProvidedEnrollmentSecret(c: any, data: { enrollmentSecret?: string }
   return (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
 }
 
-function getProvidedExistingDeviceToken(c: any): string {
-  const explicit = c.req.header('x-agent-reenrollment-token')?.trim();
-  if (explicit) {
-    return explicit;
-  }
-
-  const authorization = c.req.header('authorization')?.trim() ?? '';
-  const match = authorization.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() ?? '';
-}
-
-function timingSafeStringEqual(left: string, right: string): boolean {
-  const leftBuf = Buffer.from(left);
-  const rightBuf = Buffer.from(right);
-  return leftBuf.length === rightBuf.length && timingSafeEqual(leftBuf, rightBuf);
-}
-
 export function getGlobalEnrollmentSecret(): string | null {
   const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET?.trim() ?? '';
   return configuredSecret.length > 0 ? configuredSecret : null;
-}
-
-function tokenHashMatches(storedHash: string | null | undefined, presentedToken: string, now: Date, expiresAt?: Date | null): boolean {
-  if (!storedHash || !presentedToken) {
-    return false;
-  }
-  if (expiresAt && expiresAt <= now) {
-    return false;
-  }
-  const presentedHash = createHash('sha256').update(presentedToken).digest('hex');
-  return timingSafeStringEqual(storedHash, presentedHash);
 }
 
 enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
@@ -131,6 +109,22 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       errorMessage: 'Agent enrollment rate limit exceeded',
     });
     return c.json({ error: 'Enrollment rate limit exceeded' }, 429);
+  }
+
+  // #8318 wave D-1 — a holding-area deploy key (`bdk_` prefix) takes its own
+  // branch (routes/agents/enrollmentDeployKey.ts) BEFORE any org-key lookup:
+  // the device is parked in its partner's hidden holding org and nothing
+  // more. User decision (2026-11-25): a deploy key SKIPS the enrollment-secret
+  // gate below (per-key secret, AGENT_ENROLLMENT_SECRET and the production
+  // "no secret configured" 403). The key lives in an image treated as public
+  // (spec §10.5), so a global secret would leak with it and a per-key secret
+  // would add nothing; the controls sit after parking instead (source CIDRs,
+  // per-key and per-partner rate buckets and caps, eligibility, and a human
+  // assigning the device). Loaded on demand so the org-key path below, and
+  // the suites that mock its dependencies, are untouched.
+  if (hasDeployKeyPrefix(data.enrollmentKey)) {
+    const { enrollWithDeployKey } = await import('./enrollmentDeployKey');
+    return enrollWithDeployKey(c, data, { enrollmentIp });
   }
 
   // Try the primary pepper first, then any legacy fallback peppers (APP_ENCRYPTION_KEY,
@@ -451,44 +445,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       deviceLimitPartnerId = org.partnerId;
     }
 
-    const agentId = generateAgentId();
-    const apiKey = generateApiKey();
-    const watchdogApiKey = generateApiKey();
-    const helperApiKey = generateApiKey();
-    const tokenIssuedAt = new Date();
-    // Agent bearer tokens are high-entropy random values; we store only a SHA-256 hash and never persist
-    // the plaintext token.
-    // lgtm[js/insufficient-password-hash]
-    const tokenHash = createHash('sha256').update(apiKey).digest('hex');
-    // lgtm[js/insufficient-password-hash]
-    const watchdogTokenHash = createHash('sha256').update(watchdogApiKey).digest('hex');
-    // lgtm[js/insufficient-password-hash]
-    const helperTokenHash = createHash('sha256').update(helperApiKey).digest('hex');
+    const credentials = mintEnrollmentCredentials();
+    const { agentId, apiKey, watchdogApiKey, helperApiKey } = credentials;
 
     // #2764: every colliding row, oldest first — not `.limit(1)`. Collisions
     // are no longer refused, so more than one row can legitimately share a
     // hostname and the audit trail must name all of them. Ordering makes the
     // selection deterministic (the old `.limit(1)` was not).
     const collidingDevices = await db
-      .select({
-        id: devices.id,
-        agentId: devices.agentId,
-        status: devices.status,
-        agentTokenHash: devices.agentTokenHash,
-        previousTokenHash: devices.previousTokenHash,
-        previousTokenExpiresAt: devices.previousTokenExpiresAt,
-        pendingTokenHash: devices.pendingTokenHash,
-        // #8318 §6.4: re-enroll revokes EVERY hash of the row it rewrites —
-        // watchdog and helper, current, previous and pending — not the agent
-        // hashes alone.
-        watchdogTokenHash: devices.watchdogTokenHash,
-        previousWatchdogTokenHash: devices.previousWatchdogTokenHash,
-        pendingWatchdogTokenHash: devices.pendingWatchdogTokenHash,
-        helperTokenHash: devices.helperTokenHash,
-        previousHelperTokenHash: devices.previousHelperTokenHash,
-        pendingHelperTokenHash: devices.pendingHelperTokenHash,
-        agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
-      })
+      .select(collidingDeviceColumns())
       .from(devices)
       .where(
         and(
@@ -515,19 +480,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // and mint yet another fresh row on every reinstall — an unbounded device-
     // row leak on the exact path this feature exists to make idempotent.
     // A suspended row can never authenticate (suspension binds its credential).
-    const authenticatedDevice = presentedExistingDeviceToken
-      ? collidingDevices.find(
-          (candidate) =>
-            !candidate.agentTokenSuspendedAt &&
-            (tokenHashMatches(candidate.agentTokenHash, presentedExistingDeviceToken, enrollNow) ||
-              tokenHashMatches(
-                candidate.previousTokenHash,
-                presentedExistingDeviceToken,
-                enrollNow,
-                candidate.previousTokenExpiresAt,
-              ))
-        )
-      : undefined;
+    const authenticatedDevice = findAuthenticatedCollider(collidingDevices, presentedExistingDeviceToken, enrollNow);
 
     // The row this enrollment is measured against: the one the agent proved
     // possession of, else the ONLINE collider (the live lookalike an operator
@@ -872,55 +825,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         // own-device-row-allowlisted: reenroll-matched-row-agent-id
         [dev] = await tx
           .update(devices)
-          .set({
-            // A full credential reset: every credential column starts from
-            // "none" (the one shared set, so a future credential column cannot
-            // survive), then the new install's current set is written. Issue
-            // #2621: that includes any staged rotation, which would otherwise
-            // keep authenticating and be promoted over the fresh credentials.
-            ...CLEARED_AGENT_CREDENTIALS,
-            agentId: agentId,
-            enrollmentIp,
-            agentTokenHash: tokenHash,
-            watchdogTokenHash,
-            helperTokenHash,
-            osType: data.osType,
-            osVersion: data.osVersion,
-            architecture: data.architecture,
-            agentVersion: data.agentVersion,
-            tokenIssuedAt,
-            watchdogTokenIssuedAt: tokenIssuedAt,
-            helperTokenIssuedAt: tokenIssuedAt,
-            deviceRole: data.deviceRole || 'unknown',
-            deviceRoleSource: 'auto',
-            isVirtual: data.isVirtual ?? false,
-            virtualizationPlatform: data.virtualizationPlatform ?? null,
-            // #8318 §6.2: re-enroll is a new install, so its declared rebind
-            // capability is rewritten (not blindly reset to 0).
-            rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
-            // A new install: what the previous one reported about its backup
-            // helper no longer holds. Backups and restores for this device
-            // wait for the new install's first heartbeat, as for a new device.
-            backupReadProtocolVersion: null,
-            backupIntegrityProtocolVersion: null,
-            backupWriteProtocolVersion: null,
-            // #8318 §6.4 / §5.7 (review of wave 1b-1): the claims the previous
-            // install stamped belong to it, as at a reattach confirm's
-            // boundary (deviceInstallBoundary/handlers/deviceRow.ts). Left
-            // set, the once-per-install edition-migration claim kept
-            // auto-migration off for the new install with nothing logged,
-            // and the old install's uninstall intent stayed armed for the
-            // reaper until the new install's first beat — no longer covered
-            // by the migration-window exemption once that claim is gone.
-            editionMigrationDispatchedAt: null,
-            uninstallIntentAt: null,
-            // #8318 wave T2: a new install on this row. The TPM key baseline
-            // stays (device_hardware), but a proof the previous install made
-            // is not this one's (services/deviceReattach/evidence.ts).
-            installEnrolledAt: tokenIssuedAt,
-            status: 'pending',
-            updatedAt: new Date(),
-          })
+          .set(reenrollDeviceSet({ data, credentials, enrollmentIp }))
           .where(and(eq(devices.id, existingDevice.id), eq(devices.agentId, existingDevice.agentId)))
           .returning();
         if (!dev) {
@@ -951,28 +856,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         [dev] = await tx
           .insert(devices)
           .values({
-            orgId: key.orgId,
-            siteId: siteId,
-            agentId: agentId,
-            agentTokenHash: tokenHash,
-            watchdogTokenHash,
-            helperTokenHash,
-            hostname: data.hostname,
-            enrollmentIp,
-            osType: data.osType,
-            osVersion: data.osVersion,
-            architecture: data.architecture,
-            agentVersion: data.agentVersion,
-            tokenIssuedAt,
-            watchdogTokenIssuedAt: tokenIssuedAt,
-            helperTokenIssuedAt: tokenIssuedAt,
-            deviceRole: data.deviceRole || 'unknown',
-            deviceRoleSource: 'auto',
-            isVirtual: data.isVirtual ?? false,
-            virtualizationPlatform: data.virtualizationPlatform ?? null,
-            // #8318 §6.2: a new install is what a reattach makes the source.
-            rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
-            status: 'pending',
+            ...freshDeviceValues({ data, credentials, enrollmentIp, orgId: key.orgId, siteId }),
             isEphemeral: isSupportEnrollment,
             // #2764: forensic + UI linkage back to the row this enrollment may
             // be replacing. Set on the collision path only — the decom bypass
@@ -1017,74 +901,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           );
       }
 
-      if (data.hardwareInfo) {
-        await tx
-          .insert(deviceHardware)
-          .values({
-            deviceId: dev.id,
-            orgId: dev.orgId,
-            cpuModel: data.hardwareInfo.cpuModel,
-            cpuCores: data.hardwareInfo.cpuCores,
-            cpuThreads: data.hardwareInfo.cpuThreads,
-            ramTotalMb: data.hardwareInfo.ramTotalMb,
-            diskTotalGb: data.hardwareInfo.diskTotalGb,
-            gpuModel: data.hardwareInfo.gpuModel,
-            serialNumber: data.hardwareInfo.serialNumber,
-            productSku: data.hardwareInfo.productSku,
-            manufacturer: data.hardwareInfo.manufacturer,
-            model: data.hardwareInfo.model,
-            motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
-            motherboardProduct: data.hardwareInfo.motherboardProduct,
-            motherboardVersion: data.hardwareInfo.motherboardVersion,
-            biosVersion: data.hardwareInfo.biosVersion,
-            // #8318 §7.2: normalized by the schema; undefined (not sent) is
-            // skipped, null (rejected) is stored as NULL.
-            systemUuid: data.hardwareInfo.systemUuid
-          })
-          .onConflictDoUpdate({
-            target: deviceHardware.deviceId,
-            set: {
-              cpuModel: data.hardwareInfo.cpuModel,
-              cpuCores: data.hardwareInfo.cpuCores,
-              cpuThreads: data.hardwareInfo.cpuThreads,
-              ramTotalMb: data.hardwareInfo.ramTotalMb,
-              diskTotalGb: data.hardwareInfo.diskTotalGb,
-              gpuModel: data.hardwareInfo.gpuModel,
-              serialNumber: data.hardwareInfo.serialNumber,
-              productSku: data.hardwareInfo.productSku,
-              manufacturer: data.hardwareInfo.manufacturer,
-              model: data.hardwareInfo.model,
-              motherboardManufacturer: data.hardwareInfo.motherboardManufacturer,
-              motherboardProduct: data.hardwareInfo.motherboardProduct,
-              motherboardVersion: data.hardwareInfo.motherboardVersion,
-              biosVersion: data.hardwareInfo.biosVersion,
-              systemUuid: data.hardwareInfo.systemUuid,
-              updatedAt: new Date()
-            }
-          });
-      }
-
-      if (data.networkInfo && data.networkInfo.length > 0) {
-        await tx.delete(deviceNetwork).where(eq(deviceNetwork.deviceId, dev.id));
-        for (const nic of data.networkInfo) {
-          await tx
-            .insert(deviceNetwork)
-            .values({
-              deviceId: dev.id,
-              orgId: dev.orgId,
-              interfaceName: nic.name,
-              macAddress: nic.mac,
-              ipAddress: nic.ip,
-              ipType: nic.ip?.includes(':') ? 'ipv6' : 'ipv4',
-              isPrimary: nic.isPrimary ?? false
-            });
-        }
-        // M2 D15.2/D16: NIC MACs are the physical topology publisher's trusted
-        // MAC binding source. A re-enrolled (in-place) device may have new NICs
-        // that the next inventory report will then see as unchanged, so mark
-        // here; a fresh row has no topology binding yet.
-        if (!insertFreshRow) await markTopologyIdentityDirty(tx, { orgId: dev.orgId, siteId: dev.siteId });
-      }
+      await writeEnrollmentInventory(tx, dev, data, { freshRow: insertFreshRow });
 
       // #946: consume the enrollment key ONLY after the device row has
       // been successfully written. We re-apply the validity conditions

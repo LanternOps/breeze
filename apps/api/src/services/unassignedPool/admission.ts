@@ -80,3 +80,53 @@ export async function admitParkedEnrollment(
   await declareParkedDeviceAdmission(tx);
   return { parkedCount };
 }
+
+/** One deploy key already holds its `max_parked` devices in the holding area. */
+export class DeployKeyParkedCapReachedError extends Error {
+  constructor(readonly deployKeyId: string, readonly parkedCount: number, readonly maxParked: number) {
+    super(`This deploy key already has ${parkedCount} devices waiting for assignment (limit ${maxParked})`);
+    this.name = 'DeployKeyParkedCapReachedError';
+  }
+}
+
+/**
+ * Devices one deploy key holds parked right now: live (not decommissioned)
+ * devices of the holding org whose LATEST `enrolled` ledger row names the key.
+ * A device re-enrolled in place with another key counts for that key only.
+ * `excludeDeviceId` leaves out the row an in-place re-enrollment rewrites.
+ */
+export async function countDevicesParkedByDeployKey(
+  tx: ParkedAdmissionTx,
+  input: { holdingOrgId: string; deployKeyId: string; excludeDeviceId?: string },
+): Promise<number> {
+  const [row] = await tx
+    .select({ count: sql<number>`count(*)` })
+    .from(devices)
+    .where(and(
+      eq(devices.orgId, input.holdingOrgId),
+      ne(devices.status, 'decommissioned'),
+      input.excludeDeviceId ? ne(devices.id, input.excludeDeviceId) : undefined,
+      sql`(SELECT e.deploy_key_id FROM device_pool_assignment_events e
+            WHERE e.device_id = ${devices.id} AND e.event_type = 'enrolled'
+            ORDER BY e.created_at DESC, e.id DESC LIMIT 1) = ${input.deployKeyId}::uuid`,
+    ));
+  return Number(row?.count ?? 0);
+}
+
+/**
+ * The per-key half of a deploy-key admission (#8318 wave D-1, spec §10.2):
+ * refuses when the key already holds `maxParked` devices. Call it on the
+ * caller's transaction AFTER the holding-area lock (admitParkedEnrollment, or
+ * lockPartnerHoldingArea for an in-place re-enrollment) and after locking the
+ * key row, so the count cannot go stale before the device write commits.
+ */
+export async function admitDeployKeyParkedCapacity(
+  tx: ParkedAdmissionTx,
+  input: { holdingOrgId: string; deployKeyId: string; maxParked: number; excludeDeviceId?: string },
+): Promise<{ parkedByKey: number }> {
+  const parkedByKey = await countDevicesParkedByDeployKey(tx, input);
+  if (parkedByKey >= input.maxParked) {
+    throw new DeployKeyParkedCapReachedError(input.deployKeyId, parkedByKey, input.maxParked);
+  }
+  return { parkedByKey };
+}
