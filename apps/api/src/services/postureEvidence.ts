@@ -48,7 +48,7 @@ import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
-import { activeIntegrationIds } from './securityIntegrationDisconnect';
+import { activeIntegrationIdsByVendor } from './securityIntegrationDisconnect';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import {
   CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck, deriveBackupHealth, saasWorkloadLabel,
@@ -503,11 +503,15 @@ export async function loadPostureEvidence(
     .where(and(eq(huntressAgents.orgId, orgId), inArray(huntressAgents.deviceId, deviceIds)));
   // #12726: an agent of a disconnected integration is not managed protection.
   // The lookup answers only for the integration ids on the rows just read.
-  const activeS1 = await activeIntegrationIds('sentinelone', s1Rows.map((r) => r.integrationId));
-  const activeHuntress = await activeIntegrationIds('huntress', huntressRows.map((r) => r.integrationId));
-  const s1Devices = new Set(s1Rows.filter((r) => activeS1.has(r.integrationId)).map((r) => r.deviceId).filter(isString));
+  const active = await activeIntegrationIdsByVendor({
+    sentinelone: s1Rows.map((r) => r.integrationId),
+    huntress: huntressRows.map((r) => r.integrationId),
+  });
+  const s1Devices = new Set(
+    s1Rows.filter((r) => active.sentinelone.has(r.integrationId)).map((r) => r.deviceId).filter(isString),
+  );
   const huntressDevices = new Set(
-    huntressRows.filter((r) => activeHuntress.has(r.integrationId)).map((r) => r.deviceId).filter(isString),
+    huntressRows.filter((r) => active.huntress.has(r.integrationId)).map((r) => r.deviceId).filter(isString),
   );
 
   // 6 device_patches pending + effective severity

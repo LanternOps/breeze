@@ -462,9 +462,9 @@ function toLegacyCoverage(rows: ReadonlyArray<{ orgId: string; agents: number }>
  * counts only agents of an active integration (agent rows outlive a
  * disconnected one). Partner/system callers read the integration row in SQL.
  * Org tokens cannot read the partner-axis integration row under RLS, so for
- * them the caller passes `orgScopeActiveIntegrationIds`, from
- * activeIntegrationIdsOfReadableAgents (#12726); absent, an org-scope read
- * counts no agent. Exported for the DB-less SQL tests.
+ * them the caller must pass `orgScopeActiveIntegrationIds`, from
+ * activeIntegrationIdsOfReadableAgents (#12726); an org-scope call without it
+ * throws. An empty list counts no agent. Exported for the DB-less SQL tests.
  */
 export function buildLegacyAgentCoverageQuery(
   scope: EdrReadScope,
@@ -486,7 +486,11 @@ export function buildLegacyAgentCoverageQuery(
     const integrations = integration === 'huntress' ? huntressIntegrations : s1Integrations;
     conds.push(sql`exists (select 1 from ${integrations} i where i.id = ${table.integrationId} and i.is_active)`);
   } else {
-    conds.push(agentOfActiveIntegration(table.integrationId, orgScopeActiveIntegrationIds ?? []));
+    // Missing ids are a wiring bug, not "no coverage": fail loudly.
+    if (!orgScopeActiveIntegrationIds) {
+      throw new Error('buildLegacyAgentCoverageQuery: an organization-scope read needs orgScopeActiveIntegrationIds');
+    }
+    conds.push(agentOfActiveIntegration(table.integrationId, orgScopeActiveIntegrationIds));
   }
   return db
     .select({ orgId: table.orgId, agents: sql<number>`count(*)::int` })
@@ -499,11 +503,10 @@ async function activeLegacyIntegrationIdsInScope(
   scope: EdrReadScope,
   q: { orgId?: string },
 ): Promise<{ sentinelone: string[]; huntress: string[] }> {
-  const [sentinelone, huntress] = await Promise.all([
-    activeIntegrationIdsOfReadableAgents('sentinelone', edrOrgCondition(scope.auth, q.orgId, s1Agents.orgId)),
-    activeIntegrationIdsOfReadableAgents('huntress', edrOrgCondition(scope.auth, q.orgId, huntressAgents.orgId)),
-  ]);
-  return { sentinelone, huntress };
+  return activeIntegrationIdsOfReadableAgents({
+    sentinelone: edrOrgCondition(scope.auth, q.orgId, s1Agents.orgId),
+    huntress: edrOrgCondition(scope.auth, q.orgId, huntressAgents.orgId),
+  });
 }
 
 export async function getEdrStatus(scope: EdrReadScope, q: { orgId?: string }): Promise<EdrStatusSummary> {

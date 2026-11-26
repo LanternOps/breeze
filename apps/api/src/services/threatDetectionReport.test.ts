@@ -6,7 +6,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./securityIntegrationDisconnect', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./securityIntegrationDisconnect')>()),
   activeIntegrationIds: vi.fn(async (_vendor: string, ids: readonly string[]) => new Set(ids)),
-  activeIntegrationIdsOfReadableAgents: vi.fn(async () => ['connected-integration']),
+  activeIntegrationIdsByVendor: vi.fn(async (ids: { sentinelone?: readonly string[]; huntress?: readonly string[] }) => ({
+    sentinelone: new Set(ids.sentinelone ?? []),
+    huntress: new Set(ids.huntress ?? []),
+  })),
+  activeIntegrationIdsOfReadableAgents: vi.fn(async () => ({
+    sentinelone: ['connected-integration'],
+    huntress: ['connected-integration'],
+  })),
   activeAgentIntegrationIdsForOrg: vi.fn(async () => ({
     sentinelone: ['connected-integration'],
     huntress: ['connected-integration'],

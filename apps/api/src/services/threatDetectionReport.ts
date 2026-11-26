@@ -74,7 +74,7 @@ import {
 } from './reportGenerationService';
 import type { OrgReportGenerationAuthority } from './siteScope';
 import { resolveAdHocEvidenceWindow } from './reportDateRange';
-import { activeIntegrationIdsOfReadableAgents, agentOfActiveIntegration } from './securityIntegrationDisconnect';
+import { activeAgentIntegrationIdsForOrg, agentOfActiveIntegration } from './securityIntegrationDisconnect';
 
 /** A sync older than this makes the source `stale`: the artifact still prints
  *  what it holds, but says plainly that anything after the last sync is not in
@@ -256,7 +256,7 @@ async function otherDetectionAgentDeviceIds(
 ): Promise<{ sentinelone: string[]; edr: string[] }> {
   const ids = (rows: Array<{ deviceId: string | null }>) =>
     rows.map((r) => r.deviceId).filter((id): id is string => typeof id === 'string');
-  const activeS1 = await activeIntegrationIdsOfReadableAgents('sentinelone', eq(s1Agents.orgId, orgId));
+  const activeS1 = (await activeAgentIntegrationIdsForOrg(orgId)).sentinelone;
   const s1Rows = await db
     .select({ deviceId: s1Agents.deviceId })
     .from(s1Agents)
@@ -544,8 +544,8 @@ export async function generateThreatDetectionReport(
   // Its OWN site predicates, joined through devices. A Huntress agent with no
   // matched Breeze device cannot be site-scoped, so under a restricted
   // authority it is not counted — the same unattributable rule as incidents.
-  // Only the connected integration's agents (#12726): rows of an older,
-  // disconnected integration row are not current coverage.
+  // Huntress: only the connected integration's agents (#12726). Rows left by
+  // an older, disconnected integration are not current coverage.
   const agentConditions = [eq(huntressAgents.orgId, orgId), eq(huntressAgents.integrationId, integration.id)];
   // A retired (decommissioned) Breeze device is not part of the managed fleet;
   // an agent with no matched Breeze device stays countable (unattributable).

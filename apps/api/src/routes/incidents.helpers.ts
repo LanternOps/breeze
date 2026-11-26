@@ -7,7 +7,7 @@ import { db } from '../db';
 import { incidents, huntressIncidents, s1Threats, edrDetections, type IncidentTimelineEntry } from '../db/schema';
 import { isEdrProviderKey, type EdrProviderKey } from '../services/edrProviders/providerKeys';
 import { edrSitePredicate } from '../services/edrProviders/readScope';
-import { activeIntegrationIds } from '../services/securityIntegrationDisconnect';
+import { activeIntegrationIdsByVendor } from '../services/securityIntegrationDisconnect';
 import type { AuthContext } from '../middleware/auth';
 import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import {
@@ -475,12 +475,14 @@ export async function buildIncidentFeed(
   // connected. The lookup answers only for ids on the rows just read.
   const integrationIdsOf = (leg: 'huntress' | 's1') =>
     rows.filter((r) => r.source === leg && r.integrationId).map((r) => r.integrationId as string);
-  const activeHuntress = await activeIntegrationIds('huntress', integrationIdsOf('huntress'));
-  const activeS1 = await activeIntegrationIds('sentinelone', integrationIdsOf('s1'));
+  const active = await activeIntegrationIdsByVendor({
+    huntress: integrationIdsOf('huntress'),
+    sentinelone: integrationIdsOf('s1'),
+  });
   const integrationDisconnected = (source: IncidentFeedSource, integrationId: string | null): boolean => {
     if (!integrationId) return false;
-    if (source === 'huntress') return !activeHuntress.has(integrationId);
-    if (source === 's1') return !activeS1.has(integrationId);
+    if (source === 'huntress') return !active.huntress.has(integrationId);
+    if (source === 's1') return !active.sentinelone.has(integrationId);
     return false;
   };
 

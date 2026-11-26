@@ -183,8 +183,9 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           .from(huntressAgents)
           .innerJoin(huntressIntegrations, eq(huntressAgents.integrationId, huntressIntegrations.id))
           // #12726: the summary is the current state, so a disconnected
-          // integration's agents and open incidents are left out of it. Its
-          // own row below still reports them, labelled by isActive.
+          // integration's agents and open incidents are left out of it. The
+          // integration's own entry in `integrations` still reports them,
+          // labelled by isActive.
           .where(and(
             ...agentScopedConditions,
             ...(conditions.length > 0 ? conditions : []),

@@ -9,10 +9,12 @@
  * the state through a system-context lookup that only answers for integration
  * ids taken from agent rows the caller already read.
  *
- * Every fixture has two partners. Partner A's integrations are disconnected;
- * partner B's stay connected, so a reader that drops every agent fails the
- * "B still covered" half, and partner B's results must not move when A's
- * state changes.
+ * The reader tests use two partners: partner A's integrations are
+ * disconnected and partner B's stay connected, so a reader that drops every
+ * agent fails the "B still covered" half, and partner B's results must not
+ * move when A's state changes. The mixed-vendor tests disconnect one vendor
+ * and keep the other, so a reader that swaps the vendors fails. Single-tenant
+ * cases say so inline.
  *
  * Run (needs `pnpm test-stack up`):
  *   cd apps/api && npx vitest run --config vitest.integration.config.ts \
@@ -343,10 +345,10 @@ describe('the shared lookup answers only from agent rows the caller can read', (
     const b = await seedTenant('b');
     const probeFromB = async () => ({
       // Partner B, and org B's portal user, aim the lookup at org A's rows and at every row.
-      partnerAimed: await asCtx(b.partnerCtx, () => activeIntegrationIdsOfReadableAgents('sentinelone', eq(s1Agents.orgId, a.orgId))),
-      partnerAll: await asCtx(b.partnerCtx, () => activeIntegrationIdsOfReadableAgents('huntress', undefined)),
+      partnerAimed: await asCtx(b.partnerCtx, () => activeIntegrationIdsOfReadableAgents({ sentinelone: eq(s1Agents.orgId, a.orgId), huntress: eq(huntressAgents.orgId, a.orgId) })),
+      partnerAll: await asCtx(b.partnerCtx, () => activeIntegrationIdsOfReadableAgents({ sentinelone: undefined, huntress: undefined })),
       portalAimed: await asCtx(b.portalCtx, () => activeAgentIntegrationIdsForOrg(a.orgId)),
-      portalAll: await asCtx(b.portalCtx, () => activeIntegrationIdsOfReadableAgents('sentinelone', undefined)),
+      portalAll: await asCtx(b.portalCtx, () => activeIntegrationIdsOfReadableAgents({ sentinelone: undefined, huntress: undefined })),
     });
 
     const whileConnected = await probeFromB();
@@ -354,10 +356,10 @@ describe('the shared lookup answers only from agent rows the caller can read', (
     const whileDisconnected = await probeFromB();
 
     expect(whileConnected).toEqual({
-      partnerAimed: [],
-      partnerAll: [b.huntressIntegrationId],
+      partnerAimed: { sentinelone: [], huntress: [] },
+      partnerAll: { sentinelone: [b.s1IntegrationId], huntress: [b.huntressIntegrationId] },
       portalAimed: { sentinelone: [], huntress: [] },
-      portalAll: [b.s1IntegrationId],
+      portalAll: { sentinelone: [b.s1IntegrationId], huntress: [b.huntressIntegrationId] },
     });
     expect(whileDisconnected).toEqual(whileConnected);
   });
@@ -369,7 +371,8 @@ describe('the shared lookup answers only from agent rows the caller can read', (
     await disconnect(a);
     expect(await asCtx(a.orgCtx, () => activeAgentIntegrationIdsForOrg(a.orgId)))
       .toEqual({ sentinelone: [], huntress: [] });
-    expect(await asCtx(a.partnerCtx, () => activeIntegrationIdsOfReadableAgents('sentinelone', undefined))).toEqual([]);
+    expect(await asCtx(a.partnerCtx, () => activeIntegrationIdsOfReadableAgents({ sentinelone: undefined, huntress: undefined })))
+      .toEqual({ sentinelone: [], huntress: [] });
   });
 });
 
@@ -405,6 +408,64 @@ describe('incident feed findings (history stays, labelled)', () => {
 
       const feedB = await asCtx(ctxOf(b), () => buildIncidentFeed(authFor(scope, b), params));
       expect(bySource(feedB.rows)).toEqual({ s1: false, huntress: false, breeze: false });
+    });
+  }
+});
+
+describe('one vendor disconnected, the other still connected (single tenant)', () => {
+  const VENDORS = [
+    { gone: 'sentinelone', kept: 'Huntress', keptSource: 'huntress', goneLabel: 'SentinelOne' },
+    { gone: 'huntress', kept: 'SentinelOne', keptSource: 'sentinelone', goneLabel: 'Huntress' },
+  ] as const;
+
+  for (const v of VENDORS) {
+    runDb(`${v.gone} disconnected: the device stays protected by ${v.kept} alone, and only ${v.gone} rows are labelled`, async () => {
+      const t = await seedTenant(`mixed-${v.gone}`);
+      if (v.gone === 'sentinelone') {
+        await admin().update(s1Integrations).set({ isActive: false }).where(eq(s1Integrations.id, t.s1IntegrationId));
+      } else {
+        await admin().update(huntressIntegrations).set({ isActive: false }).where(eq(huntressIntegrations.id, t.huntressIntegrationId));
+      }
+      await admin().insert(s1Threats).values({
+        orgId: t.orgId, integrationId: t.s1IntegrationId, s1ThreatId: `threat-${randomUUID().slice(0, 8)}`,
+        threatName: 'EICAR', status: 'active', severity: 'high', deviceId: t.deviceId, detectedAt: NOW,
+      });
+      await admin().insert(huntressIncidents).values({
+        orgId: t.orgId, integrationId: t.huntressIntegrationId, huntressIncidentId: `inc-${randomUUID().slice(0, 8)}`,
+        title: 'Footholds found', status: 'open', severity: 'high', deviceId: t.deviceId, reportedAt: NOW,
+      });
+
+      expect(await asCtx(t.portalCtx, () => devicesProtectedTile(t.orgId, NOW))).toMatchObject({ protected: 1, total: 1 });
+      const page = await asCtx(t.portalCtx, () => securityDevicesPage(t.orgId, { ...PAGE, now: NOW }));
+      expect(page.data.find((row) => row.id === t.deviceId)).toMatchObject({ protection: 'protected' });
+
+      const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId: t.orgId };
+      const evidence = await asCtx(t.portalCtx, () => loadPostureEvidence(scope, TRUST_PAGE_EVIDENCE_POLICY, NOW));
+      expect(evidence.devices.find((d) => d.id === t.deviceId)?.managed).toEqual([v.kept]);
+
+      const status = await asCtx(t.orgCtx, () =>
+        getEdrStatus({ auth: authFor('organization', t), allowedDeviceIds: null, allowedSiteIds: null }, {}));
+      const coverageText = JSON.stringify(status.coverage);
+      expect(coverageText).toContain(v.kept);
+      expect(coverageText).not.toContain(v.goneLabel);
+
+      const feed = await asCtx(t.orgCtx, () => buildIncidentFeed(authFor('organization', t), {
+        limit: 50, offset: 0, hasDevicesRead: true, allowedDeviceIds: null, allowedSiteIds: null,
+      }));
+      const labels = Object.fromEntries(feed.rows.map((r) => [r.source, r.integrationDisconnected]));
+      expect(labels).toEqual(v.gone === 'sentinelone' ? { s1: true, huntress: false } : { s1: false, huntress: true });
+
+      const report = await asSystem(() => generateThreatDetectionReport(t.orgId, {}, {
+        principalKind: 'user' as const, principalUserId: t.userId, scope, capturedAt: NOW,
+        fingerprint: siteScopeFingerprint(scope),
+      }, {
+        periodStart: new Date(NOW.getTime() - 30 * 86_400_000).toISOString().slice(0, 10),
+        periodEnd: NOW.toISOString().slice(0, 10),
+        generatedAt: NOW.toISOString(),
+        deliverableId: randomUUID(),
+      }));
+      const coverage = (report.summary as { agentCoverage: Record<string, unknown> }).agentCoverage;
+      expect(coverage).toMatchObject({ devicesWithDetectionAgent: 1, detectionAgentSources: [v.keptSource] });
     });
   }
 });

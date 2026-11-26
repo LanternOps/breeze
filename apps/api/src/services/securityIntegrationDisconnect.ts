@@ -169,6 +169,8 @@ export async function findReconnectableHuntressIntegration(partnerId: string): P
   return row ?? null;
 }
 
+type LegacyEdrVendor = 'sentinelone' | 'huntress';
+
 /**
  * Which of these integration ids are active. Used to label synced history rows
  * that came from a disconnected integration.
@@ -179,70 +181,87 @@ export async function findReconnectableHuntressIntegration(partnerId: string): P
  * membership.
  */
 export async function activeIntegrationIds(
-  vendor: 'sentinelone' | 'huntress',
+  vendor: LegacyEdrVendor,
   ids: readonly string[],
 ): Promise<Set<string>> {
-  const unique = [...new Set(ids)];
-  if (unique.length === 0) return new Set();
-  const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => {
-      if (vendor === 'sentinelone') {
-        return db
-          .select({ id: s1Integrations.id })
-          .from(s1Integrations)
-          .where(and(inArray(s1Integrations.id, unique), eq(s1Integrations.isActive, true)));
-      }
-      return db
-        .select({ id: huntressIntegrations.id })
-        .from(huntressIntegrations)
-        .where(and(inArray(huntressIntegrations.id, unique), eq(huntressIntegrations.isActive, true)));
-    })
-  );
-  return new Set(rows.map((row) => row.id));
+  return (await activeIntegrationIdsByVendor({ [vendor]: ids }))[vendor];
 }
 
 /**
- * Current coverage from SentinelOne or Huntress agent rows (#12726).
+ * activeIntegrationIds for both vendors at once: one system-context
+ * transaction on one separate pooled connection, whatever the vendor count, so
+ * a reader that needs both does not hold two extra connections. Same contract:
+ * pass only ids from rows the caller already read; it returns membership only.
+ */
+export async function activeIntegrationIdsByVendor(
+  ids: Partial<Record<LegacyEdrVendor, readonly string[]>>,
+): Promise<Record<LegacyEdrVendor, Set<string>>> {
+  const s1Ids = [...new Set(ids.sentinelone ?? [])];
+  const huntressIds = [...new Set(ids.huntress ?? [])];
+  if (s1Ids.length === 0 && huntressIds.length === 0) {
+    return { sentinelone: new Set(), huntress: new Set() };
+  }
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const s1Rows = s1Ids.length === 0 ? [] : await db
+        .select({ id: s1Integrations.id })
+        .from(s1Integrations)
+        .where(and(inArray(s1Integrations.id, s1Ids), eq(s1Integrations.isActive, true)));
+      const huntressRows = huntressIds.length === 0 ? [] : await db
+        .select({ id: huntressIntegrations.id })
+        .from(huntressIntegrations)
+        .where(and(inArray(huntressIntegrations.id, huntressIds), eq(huntressIntegrations.isActive, true)));
+      return {
+        sentinelone: new Set(s1Rows.map((row) => row.id)),
+        huntress: new Set(huntressRows.map((row) => row.id)),
+      };
+    })
+  );
+}
+
+export type ActiveAgentIntegrationIds = Record<LegacyEdrVendor, string[]>;
+
+/**
+ * Current coverage from SentinelOne and Huntress agent rows (#12726).
  *
  * Agent rows outlive a disconnect, so a reader that treats them as "this
  * device is protected" must first drop the rows of a disconnected
- * integration. This reads the distinct integration ids of the agent rows that
- * `where` selects IN THE CALLER'S DB CONTEXT (forced RLS fences that read to
- * the caller's orgs), then asks activeIntegrationIds which of those are
- * active. It can only answer about integrations behind agent rows the caller
- * could already read, and returns nothing but those ids.
+ * integration. For each vendor this reads the distinct integration ids of the
+ * agent rows that its `where` selects IN THE CALLER'S DB CONTEXT (forced RLS
+ * fences that read to the caller's orgs), then asks activeIntegrationIdsByVendor
+ * which of those are active. It can only answer about integrations behind
+ * agent rows the caller could already read, and returns nothing but those ids.
  *
- * Feed the result to agentOfActiveIntegration to filter the reader's own
- * query, or test row membership with it. On the caller's connection it runs
- * one plain SELECT and opens no transaction or savepoint, so it may sit beside
- * sibling queries in a Promise.all.
+ * Feed a vendor's list to agentOfActiveIntegration to filter the reader's own
+ * query. Connections: the agent-row reads are plain SELECTs on the caller's
+ * connection; the active check is one system-context transaction on a separate
+ * pooled connection. Neither opens a savepoint or a withDbTransaction on the
+ * caller's transaction, so the call may sit beside sibling queries in a
+ * Promise.all.
  */
 export async function activeIntegrationIdsOfReadableAgents(
-  vendor: 'sentinelone' | 'huntress',
-  where: SQL | undefined,
-): Promise<string[]> {
-  const table = vendor === 'sentinelone' ? s1Agents : huntressAgents;
-  const rows = await db
-    .selectDistinct({ integrationId: table.integrationId })
-    .from(table)
-    .where(where);
-  const active = await activeIntegrationIds(vendor, rows.map((row) => row.integrationId));
-  return [...active];
+  where: Record<LegacyEdrVendor, SQL | undefined>,
+): Promise<ActiveAgentIntegrationIds> {
+  const [s1Rows, huntressRows] = await Promise.all([
+    db.selectDistinct({ integrationId: s1Agents.integrationId }).from(s1Agents).where(where.sentinelone),
+    db.selectDistinct({ integrationId: huntressAgents.integrationId }).from(huntressAgents).where(where.huntress),
+  ]);
+  const active = await activeIntegrationIdsByVendor({
+    sentinelone: s1Rows.map((row) => row.integrationId),
+    huntress: huntressRows.map((row) => row.integrationId),
+  });
+  return { sentinelone: [...active.sentinelone], huntress: [...active.huntress] };
 }
 
-export type ActiveAgentIntegrationIds = { sentinelone: string[]; huntress: string[] };
-
 /**
- * activeIntegrationIdsOfReadableAgents for both vendors, over one org's agent
- * rows. For the org-scoped coverage readers (portal, posture evidence,
- * reports).
+ * activeIntegrationIdsOfReadableAgents over one org's agent rows. For the
+ * org-scoped coverage readers (portal, reports).
  */
 export async function activeAgentIntegrationIdsForOrg(orgId: string): Promise<ActiveAgentIntegrationIds> {
-  const [sentinelone, huntress] = await Promise.all([
-    activeIntegrationIdsOfReadableAgents('sentinelone', eq(s1Agents.orgId, orgId)),
-    activeIntegrationIdsOfReadableAgents('huntress', eq(huntressAgents.orgId, orgId)),
-  ]);
-  return { sentinelone, huntress };
+  return activeIntegrationIdsOfReadableAgents({
+    sentinelone: eq(s1Agents.orgId, orgId),
+    huntress: eq(huntressAgents.orgId, orgId),
+  });
 }
 
 /**
