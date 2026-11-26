@@ -155,6 +155,8 @@ suite backup sources apps/api/src/routes/agents.ts
 suite backup sources apps/api/src/routes/devices/moveOrg.ts
 suite backup sources apps/api/src/services/agentCommandRelay.ts
 suite backup sources apps/api/src/services/agentWorkExpectation.ts
+suite backup sources apps/api/src/services/deviceDeletion.ts
+suite backup sources apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts
 suite backup sources apps/api/src/services/orgMerge.ts
 
 # ── contract ──

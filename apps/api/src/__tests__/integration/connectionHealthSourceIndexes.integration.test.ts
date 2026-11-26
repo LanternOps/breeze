@@ -249,11 +249,18 @@ describe('connection health source index contract (spec §1.3)', () => {
     },
   );
 
+  // Spec §1.3 asks for a key lookup of the tracked ids, not for one index by
+  // name. Two unique btrees lead with id and bound the read to the same rows:
+  // the primary key, and backup_configs_id_org_uq (id, org_id), which the
+  // org-scoped composite foreign keys reference (#12738). The planner may pick
+  // either; what must hold is an Index Cond on id and no Seq Scan.
   it.each([0, 1].map((i) => [i === 0 ? 'real' : 'unknown', i] as const))(
-    'backup_destination: the config lookup (%s ids) reads configs by primary key (#11772)',
+    'backup_destination: the config lookup (%s ids) reads configs by an id key (#11772)',
     (_label, i) => {
       const plan = plans.configLookup[i]!;
-      expect(plan, plan).toContain('backup_configs_pkey');
+      expect(plan, plan).toMatch(
+        /(?:Bitmap Index Scan on|Index (?:Only )?Scan using) (?:backup_configs_pkey|backup_configs_id_org_uq)\b[^\n]*\n\s*Index Cond: \((?:backup_configs\.)?id = ANY /,
+      );
       expect(plan, plan).not.toContain('Seq Scan on backup_configs');
     },
   );
