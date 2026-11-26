@@ -1,61 +1,175 @@
 package backup
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // The guard's memory follows the selection, not the snapshot (#11234's
 // bound): a restore of one entry into a target inside the backed-up tree
-// (every original lies beneath it) retains the same, whether the snapshot
-// holds 10,000 originals or 200,000. Measured after the manifest pass and
-// at the end of the second pass, where the guard holds the most.
+// (every original lies beneath it, so the second pass runs) holds the same
+// live heap whether the snapshot holds 10,000 originals or 200,000.
+// Measured through RestoreFromSnapshot itself: the manifest downloaded
+// from a provider and decoded with the guard observing every entry, then
+// the second pass streamed from the retained manifest file. The collision
+// is the manifest's last entry and is not selected, so a refusal naming it
+// shows the second pass read to the end.
+//
+// Live heap is read at every garbage collection while the restore runs
+// (peakLiveHeapDuring), so memory held only until it returns counts too.
+// The measurement runs alone in a child process (this test binary, this
+// test only): live heap counts every goroutine's allocations, and earlier
+// tests in this package can leave goroutines running.
 func TestOriginalsGuard_MemoryFollowsSelection(t *testing.T) {
-	const target = "/nonexistent-12638/srv"
-	selected := []string{target + "/data/d0/f0.txt"}
-	collision := target + target + "/data/d0/f0.txt" // where selected[0] restores
+	if os.Getenv(guardMemoryChildEnv) == "" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestOriginalsGuard_MemoryFollowsSelection$", "-test.v", "-test.count=1", "-test.timeout=5m")
+		cmd.Env = append(os.Environ(), guardMemoryChildEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		t.Logf("isolated measurement:\n%s", out)
+		if err != nil {
+			t.Fatalf("isolated measurement failed: %v", err)
+		}
+		if !strings.Contains(string(out), guardMemoryMeasuredMarker) {
+			t.Fatal("the isolated measurement did not run")
+		}
+		return
+	}
 
-	retained := func(n int) int64 {
-		originals := func(yield func(string)) {
-			for i := range n {
-				yield(fmt.Sprintf("%s/data/d%d/f%d.txt", target, i/100, i))
-			}
-			yield(collision) // a backed-up nested copy, last in the manifest
-		}
-		before := liveHeap()
-		g := newOriginalsGuard(target)
-		originals(g.noteOriginal)
-		peak := liveHeap()
-		f := g.check(selected, func(yield func(string)) error {
-			originals(yield)
-			peak = max(peak, liveHeap())
-			return nil
+	target := "/nonexistent-12638/srv"
+	if runtime.GOOS == "windows" {
+		target = `C:\nonexistent-12638\srv`
+	}
+	selected := originalUnder(target, 0)
+	collision := resolveTargetPath(target, selected) // a backed-up nested copy, where selected restores
+
+	growth := func(n int) int64 {
+		provider, snapshotID := writeOriginalsManifest(t, n, target, collision)
+		cfg := RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: t.TempDir(), SelectedPaths: []string{selected}}
+		var result *RestoreResult
+		var err error
+		before, peak := peakLiveHeapDuring(func() {
+			result, err = RestoreFromSnapshot(provider, cfg, nil)
 		})
-		if f.count != 1 || f.overwrite != collision {
-			t.Fatalf("%d originals: finding %+v; want the nested copy found", n, f)
+		if err != nil || result.Code != ResultCodeRestoreWouldOverwriteOriginals || !strings.Contains(result.Error, selected+" would overwrite "+collision) {
+			t.Fatalf("%d originals: restore = %+v, %v; want refused naming the nested copy only the second pass finds", n, result, err)
 		}
-		runtime.KeepAlive(g)
 		return peak - before
 	}
 
-	small, large := retained(10_000), retained(200_000)
-	t.Logf("guard heap growth: %d bytes for 10k originals, %d bytes for 200k", small, large)
+	small, large := growth(10_000), growth(200_000)
+	t.Logf("%s: peak live heap growth %d bytes for 10k originals, %d bytes for 200k", guardMemoryMeasuredMarker, small, large)
+	// 1 MiB over 190,000 more originals is under 6 bytes each: holding
+	// anything per original (a string, an 8-byte hash, a map entry) exceeds
+	// it, while collection timing moves the peak by well under that.
 	if large-small > 1<<20 {
-		t.Fatalf("guard holds %d more bytes for 200k originals than for 10k: its memory grows with the snapshot", large-small)
+		t.Fatalf("the restore holds %d more bytes for 200k originals than for 10k: the guard's memory grows with the snapshot", large-small)
 	}
 }
 
-func liveHeap() int64 {
+// peakLiveHeapDuring runs fn and returns the live heap before it and the
+// largest live heap any garbage collection found while it ran: collection
+// runs often (GOGC 5), and a finalizer re-armed at every cycle reads the
+// heap that cycle left live.
+func peakLiveHeapDuring(fn func()) (before, peak int64) {
+	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	read := func() int64 {
+		metrics.Read(sample)
+		return int64(sample[0].Value.Uint64())
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(5))
 	runtime.GC()
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	return int64(m.HeapAlloc)
+	before = read()
+
+	var mu sync.Mutex
+	observed := before
+	var stopped atomic.Bool
+	var arm func()
+	arm = func() {
+		runtime.SetFinalizer(new([16]byte), func(*[16]byte) {
+			live := read()
+			mu.Lock()
+			observed = max(observed, live)
+			mu.Unlock()
+			if !stopped.Load() {
+				arm()
+			}
+		})
+	}
+	arm()
+	fn()
+	stopped.Store(true)
+	runtime.GC() // a last cycle, so the finalizer has read the heap fn left
+	runtime.GC()
+	mu.Lock()
+	defer mu.Unlock()
+	return before, max(observed, read())
+}
+
+const (
+	guardMemoryChildEnv       = "BREEZE_TEST_GUARD_MEMORY_CHILD"
+	guardMemoryMeasuredMarker = "guard memory measured"
+)
+
+// writeOriginalsManifest stores a manifest of n+2 originals beneath target:
+// the entry to select first, the nested copy collision last. It is written
+// entry by entry, so the fixture is not in memory when the test measures.
+// No file objects are stored: the guard refuses before any is read.
+func writeOriginalsManifest(t *testing.T, n int, target, collision string) (*providers.LocalProvider, string) {
+	t.Helper()
+	provider := privateTestLocalProvider(t, t.TempDir())
+	const snapshotID = "guard-memory-snap"
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	out, err := os.Create(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := bufio.NewWriter(out) // write errors are sticky: Flush reports them
+	entry := func(i int, path string) {
+		sep := ","
+		if i == 0 {
+			sep = ""
+		}
+		quoted, err := json.Marshal(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fmt.Fprintf(w, `%s{"sourcePath":%s,"backupPath":"snapshots/%s/files/f%d.gz","size":1,"modTime":"2026-01-01T00:00:00Z"}`, sep, quoted, snapshotID, i)
+	}
+	_, _ = fmt.Fprintf(w, `{"id":%q,"timestamp":"2026-01-01T00:00:00Z","files":[`, snapshotID)
+	for i := range n + 1 {
+		entry(i, originalUnder(target, i))
+	}
+	entry(n+1, collision)
+	_, _ = fmt.Fprintf(w, `],"size":%d}`, n+2)
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Upload(manifestPath, filepath.Join("snapshots", snapshotID, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+	return provider, snapshotID
+}
+
+func originalUnder(target string, i int) string {
+	return filepath.Join(target, "data", fmt.Sprintf("d%d", i/100), fmt.Sprintf("f%d.txt", i))
 }
 
 // The second pass finds a backed-up nested copy wherever it sits in the

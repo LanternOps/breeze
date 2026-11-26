@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -315,6 +316,34 @@ func TestRestoreFromSnapshot_RefusalWritesNothing(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
 		t.Fatalf("target holds %v (%v) after a refused restore, want it untouched", entries, err)
+	}
+}
+
+// The check runs before the restore's first write: a refused restore to a
+// target that does not exist yet leaves it absent (no directory created
+// for the target, its parents or any entry), as it leaves the work root
+// without a staging folder.
+func TestRestoreFromSnapshot_RefusalCreatesNoTarget(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(dir, "new")
+	target := filepath.Join(parent, "target")
+	first := filepath.Join(target, "sub", "a.txt")
+	nested := resolveTargetPath(target, first)
+	provider, snapshotID := setupRestoreTestSnapshotAt(t, map[string]string{first: "one", nested: "two"}, []string{filepath.Join(target, "sub")})
+	workRoot := t.TempDir()
+
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: workRoot}, nil)
+	if err != nil || result.Code != ResultCodeRestoreWouldOverwriteOriginals {
+		t.Fatalf("restore = %+v, %v; want refused with %s", result, err, ResultCodeRestoreWouldOverwriteOriginals)
+	}
+	if _, err := os.Lstat(parent); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(%s) after a refused restore: %v; want it never created", parent, err)
+	}
+	if result.StagingDir != "" {
+		t.Errorf("staging dir %q created for a refused restore", result.StagingDir)
 	}
 }
 
