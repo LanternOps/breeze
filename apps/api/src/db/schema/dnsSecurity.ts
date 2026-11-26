@@ -133,6 +133,10 @@ export interface DnsIntegrationConfig {
   categories?: string[];
   blocklistId?: string;
   allowlistId?: string;
+  // DNSFilter only (#12699): the DNSFilter policy (an integer id) whose block
+  // and allow lists Breeze edits. DNSFilter keeps those domains on a policy;
+  // it has no list objects, so blocklistId/allowlistId do not apply to it.
+  policyId?: string;
   // Pi-hole admin API version. v5 uses the legacy `/admin/api.php?...&auth=`
   // token endpoint; v6 reworked it into a session-based REST API at `/api/...`.
   // Unset defaults to 'v5' so existing Pi-hole integrations keep working.

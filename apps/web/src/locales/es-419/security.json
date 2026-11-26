@@ -1648,9 +1648,10 @@
       },
       "dnsfilter": {
         "label": "DNSFilter",
-        "helpText": "clave API desde la configuración de su cuenta DNSFilter; La cuenta ID se requiere solo para ámbitos multiinquilino.",
+        "helpText": "Clave de API de la configuración de tu cuenta de DNSFilter. El ID de la organización es opcional: déjalo vacío para usar la organización de la propia clave. El ID de la política es la política de DNSFilter a la que Breeze agrega los dominios bloqueados y permitidos; se necesita para las políticas de DNS.",
         "apiKeyPlaceholder": "dnsfilter-api-key",
-        "accountIdPlaceholder": "dejar en blanco para un solo inquilino"
+        "organizationIdPlaceholder": "déjalo vacío para usar la organización de la clave",
+        "policyIdPlaceholder": "necesario para las listas de bloqueo y permiso"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "API secreto",
       "apiToken": "ficha API",
       "organizationId": "Organización ID",
+      "organizationIdOptional": "ID de la organización (opcional)",
+      "policyIdOptional": "ID de la política (opcional)",
       "accountId": "Cuenta ID",
-      "accountIdOptional": "Cuenta ID (opcional)",
       "apiEndpoint": "punto final API",
       "httpBasicUsername": "HTTP Nombre de usuario básico",
       "httpBasicPassword": "HTTP Contraseña básica",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (API de administración heredada)",
       "v6": "Pi-hole v6 (API de sesión)",
       "help": "Cambia cómo Breeze se comunica con este Pi-hole. Para v6, vuelve a crear la integración con una contraseña de aplicación si la clave guardada es un token de v5."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "ID de la organización de DNSFilter",
+      "organizationIdHelp": "Un número entero. Déjalo vacío para usar la organización de la propia clave de API.",
+      "policyIdLabel": "ID de la política de DNSFilter",
+      "policyIdHelp": "La política de DNSFilter cuyas listas de bloqueo y permiso edita Breeze. Necesario para las políticas de DNS de esta integración.",
+      "invalidId": "Ingresa un número entero o déjalo vacío."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

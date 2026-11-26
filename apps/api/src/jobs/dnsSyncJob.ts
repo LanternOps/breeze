@@ -111,8 +111,9 @@ const SYNC_ERROR_MAX_LENGTH = 2000;
  * Build the message to persist in a tenant-visible sync-error column
  * (`dns_filter_integrations.lastSyncError` / `dns_policies.syncError`).
  *
- * SECURITY: For a {@link DnsProviderHttpError} we store ONLY the body-free
- * `.message` (the `HTTP <status> <statusText>` status line). The upstream
+ * SECURITY: For a {@link DnsProviderHttpError} we store ONLY its `.message`
+ * (the `HTTP <status> <statusText>` status line; the DNSFilter provider adds
+ * DNSFilter's own vetted error text, see DnsProviderHttpError). The raw upstream
  * response body lives on `.responseBody` and is logged server-side by the
  * caller — never returned to the tenant, because for self-hosted Pi-hole/AdGuard
  * the tenant controls the endpoint host and an echoed body would be a
@@ -127,7 +128,7 @@ export function tenantVisibleSyncError(error: unknown): string {
   if (error instanceof SsrfBlockedError) return SSRF_BLOCKED_SYNC_ERROR;
   const message =
     error instanceof DnsProviderHttpError
-      ? error.message // "HTTP <status> <statusText>", body-free by construction
+      ? error.message // "HTTP <status> <statusText>"; DNSFilter adds its own vetted error text (see DnsProviderHttpError)
       : error instanceof Error
         ? error.message
         : String(error);

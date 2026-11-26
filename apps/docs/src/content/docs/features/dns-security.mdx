@@ -64,7 +64,7 @@ Breeze supports the following DNS filter providers:
 |----------|------------|-----------------|
 | Cisco Umbrella | `umbrella` | `apiKey`, `apiSecret` |
 | Cloudflare Gateway | `cloudflare` | `apiKey`, `config.accountId` |
-| DNSFilter | `dnsfilter` | `apiKey` |
+| DNSFilter | `dnsfilter` | `apiKey`, optional `config.organizationId` and `config.policyId` |
 | Pi-hole | `pihole` | `apiKey`, `config.apiEndpoint`, optional `config.piholeVersion` |
 | AdGuard Home | `adguard_home` | `apiKey`, `apiSecret`, `config.apiEndpoint` |
 
@@ -80,6 +80,12 @@ For Cloudflare Gateway, `apiKey` is an API token for the Zero Trust account name
 
 <Aside>
   Cloudflare keeps Gateway analytics for a limited time that depends on your Zero Trust plan (about a day on the Free plan). If a Cloudflare integration has not synced for longer than that, Breeze syncs from the oldest data Cloudflare still holds and logs a warning; the earlier stretch cannot be backfilled.
+</Aside>
+
+For DNSFilter, `apiKey` is an API key from the DNSFilter dashboard (Account Settings). Breeze reads blocked queries (and allowed ones too when **Store allowed traffic** is on) from DNSFilter's Query Logs endpoint, `GET /v1/traffic_reports/query_logs`. `config.organizationId` is the numeric DNSFilter organization ID to read; leave it unset to use the API key's own organization. DNSFilter keeps blocked and allowed domains on a policy rather than on separate lists, so DNS policies sync to the policy named by `config.policyId` (a numeric DNSFilter policy ID); `config.blocklistId` and `config.allowlistId` do not apply to DNSFilter. Both IDs can be changed later from **Stored data** on the integration row, or with `PATCH` (see below).
+
+<Aside>
+  DNSFilter describes its Query Logs endpoint as meant for investigation and reporting, not bulk export. Breeze reads at most 10,000 rows per sync. If a window holds more, the sync is marked **truncated** and the rows past that limit are not fetched; turn off **Store allowed traffic** or shorten the sync interval. Integrations created before this change that hold an "Account ID" that is not a number, or list IDs instead of a policy ID, show an error naming the field to fill in under **Stored data**.
 </Aside>
 
 Pi-hole supports both the legacy v5 admin API and the newer v6 session-based API. In the Add DNS Integration form, pick **Pi-hole v6** from the **Pi-hole version** select (the credential field then becomes **App password**). Through the API, set `config.piholeVersion` to `v5` or `v6`. Either way, match your Pi-hole installation's major version.
@@ -133,7 +139,7 @@ Authorization: Bearer <token>
 | `description` | string | Optional description (max 2,000 chars) |
 | `apiKey` | string | Provider API key (required, max 5,000 chars). For Pi-hole, the expected value depends on `config.piholeVersion` — see below |
 | `apiSecret` | string | Provider API secret (required for Cisco Umbrella) |
-| `config.organizationId` | string | Provider's organization ID. Optional for Cisco Umbrella — accepted for backward compatibility but not used |
+| `config.organizationId` | string | Provider's organization ID. Optional for Cisco Umbrella — accepted for backward compatibility but not used. For DNSFilter, the numeric DNSFilter organization ID (unset: the API key's own organization) |
 | `config.accountId` | string | Provider's account ID (required for Cloudflare Gateway) |
 | `config.apiEndpoint` | string | Custom API endpoint URL (required for Pi-hole) |
 | `config.piholeVersion` | string | Pi-hole API version: `v5` or `v6`. **Defaults to `v5` if unset.** Determines whether `apiKey` is treated as the legacy admin token (v5) or the app password (v6) |
@@ -143,6 +149,7 @@ Authorization: Bearer <token>
 | `config.categories` | string[] | Threat categories to sync (max 100 entries) |
 | `config.blocklistId` | string | Provider-specific blocklist identifier for policy sync |
 | `config.allowlistId` | string | Provider-specific allowlist identifier for policy sync |
+| `config.policyId` | string | DNSFilter only: the numeric DNSFilter policy whose block and allow lists DNS policies sync to |
 | `isActive` | boolean | Whether the integration is active (default `true`) |
 
 ### Triggering a Manual Sync
@@ -218,7 +225,7 @@ Content-Type: application/json
 { "retentionDays": 30 }
 ```
 
-Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays`, `storeAllowedTraffic` and, for Pi-hole integrations, `piholeVersion` (`v5` or `v6`) can be changed after an integration is created.
+Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays`, `storeAllowedTraffic`, for Pi-hole integrations `piholeVersion` (`v5` or `v6`), and for DNSFilter integrations `organizationId` and `policyId` (numeric strings, or `null` to clear) can be changed after an integration is created.
 
 The job deletes in batches, and each batch commits on its own, so it never holds a long lock on the tables the sync writes to. On a large backlog, the first runs after an upgrade may not reach the window in one night: the job logs a warning, reports the backlog to Sentry, and continues the next night. These environment variables control it:
 

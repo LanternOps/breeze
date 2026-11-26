@@ -1648,9 +1648,10 @@
       },
       "dnsfilter": {
         "label": "DNSFilter",
-        "helpText": "API key from your DNSFilter account settings; account ID required only for multi-tenant scopes.",
+        "helpText": "API key from your DNSFilter account settings. Organization ID is optional: leave it blank to use the key's own organization. Policy ID is the DNSFilter policy Breeze adds blocked and allowed domains to; it is needed for DNS policies.",
         "apiKeyPlaceholder": "dnsfilter-api-key",
-        "accountIdPlaceholder": "leave blank for single-tenant"
+        "organizationIdPlaceholder": "leave blank for the key's own organization",
+        "policyIdPlaceholder": "needed for block and allow lists"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "API secret",
       "apiToken": "API token",
       "organizationId": "Organization ID",
+      "organizationIdOptional": "Organization ID (optional)",
+      "policyIdOptional": "Policy ID (optional)",
       "accountId": "Account ID",
-      "accountIdOptional": "Account ID (optional)",
       "apiEndpoint": "API endpoint",
       "httpBasicUsername": "HTTP Basic username",
       "httpBasicPassword": "HTTP Basic password",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (legacy admin API)",
       "v6": "Pi-hole v6 (session API)",
       "help": "Changes how Breeze talks to this Pi-hole. For v6, re-create the integration with an app password if the stored key is a v5 token."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "DNSFilter organization ID",
+      "organizationIdHelp": "A whole number. Leave empty to use the API key's own organization.",
+      "policyIdLabel": "DNSFilter policy ID",
+      "policyIdHelp": "The DNSFilter policy whose block and allow lists Breeze edits. Needed for DNS policies on this integration.",
+      "invalidId": "Enter a whole number, or leave it empty."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

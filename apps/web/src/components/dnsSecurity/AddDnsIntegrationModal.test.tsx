@@ -98,6 +98,26 @@ describe('AddDnsIntegrationModal', () => {
     expect(screen.getByLabelText('API endpoint')).toBeInTheDocument();
   });
 
+  // #12699 — DNSFilter takes a numeric organization id and a policy id; its
+  // API has no account ids, so the old "Account ID" field is gone.
+  it('sends DNSFilter organizationId and policyId, not accountId', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-dnsf' } }));
+    render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'dnsfilter' } });
+
+    expect(screen.queryByLabelText(/Account ID/)).toBeNull();
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'DNSFilter' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'dnsf-key' } });
+    fireEvent.change(screen.getByLabelText('Organization ID (optional)'), { target: { value: ' 1001 ' } });
+    fireEvent.change(screen.getByLabelText('Policy ID (optional)'), { target: { value: '7' } });
+    fireEvent.submit(screen.getByLabelText('Display name').closest('form')!);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(String(fetchWithAuthMock.mock.calls[0]![1]!.body));
+    expect(body).toMatchObject({ provider: 'dnsfilter', config: { organizationId: '1001', policyId: '7' } });
+    expect(body.config).not.toHaveProperty('accountId');
+  });
+
   describe('credential field masking (#12555)', () => {
     const typeOf = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).type;
     const pick = (provider: string) =>

@@ -30,7 +30,7 @@ interface ProviderFieldSpec {
   apiKey: { labelKey: string; placeholderKey: string; secret?: boolean };
   apiSecret?: { labelKey: string; placeholderKey: string };
   configFields?: Array<{
-    key: 'organizationId' | 'accountId' | 'apiEndpoint';
+    key: 'organizationId' | 'accountId' | 'apiEndpoint' | 'policyId';
     labelKey: string;
     placeholderKey: string;
     type?: 'text' | 'url';
@@ -60,7 +60,10 @@ const PROVIDERS: Record<SupportedProvider, ProviderFieldSpec> = {
     helpTextKey: 'providers.dnsfilter.helpText',
     apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.dnsfilter.apiKeyPlaceholder', secret: true },
     configFields: [
-      { key: 'accountId', labelKey: 'fields.accountIdOptional', placeholderKey: 'providers.dnsfilter.accountIdPlaceholder' },
+      // #12699 — DNSFilter's API takes an integer organization_id and keeps
+      // block/allow domains on a policy; it has no account ids.
+      { key: 'organizationId', labelKey: 'fields.organizationIdOptional', placeholderKey: 'providers.dnsfilter.organizationIdPlaceholder' },
+      { key: 'policyId', labelKey: 'fields.policyIdOptional', placeholderKey: 'providers.dnsfilter.policyIdPlaceholder' },
     ],
   },
   pihole: {
@@ -88,6 +91,7 @@ type ConfigPayload = {
   organizationId?: string;
   accountId?: string;
   apiEndpoint?: string;
+  policyId?: string;
   piholeVersion?: PiholeVersion;
 };
 
@@ -141,6 +145,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
     if (config.organizationId?.trim()) trimmedConfig.organizationId = config.organizationId.trim();
     if (config.accountId?.trim()) trimmedConfig.accountId = config.accountId.trim();
     if (config.apiEndpoint?.trim()) trimmedConfig.apiEndpoint = config.apiEndpoint.trim();
+    if (config.policyId?.trim()) trimmedConfig.policyId = config.policyId.trim();
     if (provider === 'pihole') trimmedConfig.piholeVersion = config.piholeVersion ?? 'v5';
 
     try {

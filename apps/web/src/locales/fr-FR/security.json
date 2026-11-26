@@ -1648,9 +1648,10 @@
       },
       "dnsfilter": {
         "label": "DNSFilter",
-        "helpText": "API des paramètres de votre compte DNSFilter ; compte ID requise uniquement pour les champs multi-locataires.",
+        "helpText": "Clé API des paramètres de votre compte DNSFilter. L’ID de l’organisation est optionnel : laissez-le vide pour utiliser l’organisation de la clé. L’ID de la politique est la politique DNSFilter à laquelle Breeze ajoute les domaines bloqués et autorisés ; il est nécessaire pour les politiques DNS.",
         "apiKeyPlaceholder": "dnsfilter-api-key",
-        "accountIdPlaceholder": "Laisser vide pour locataire unique"
+        "organizationIdPlaceholder": "laisser vide pour l’organisation de la clé",
+        "policyIdPlaceholder": "nécessaire pour les listes de blocage et d’autorisation"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "Secret API",
       "apiToken": "API jeton",
       "organizationId": "Organisation ID",
+      "organizationIdOptional": "ID de l’organisation (optionnel)",
+      "policyIdOptional": "ID de la politique (optionnel)",
       "accountId": "Compte ID",
-      "accountIdOptional": "Compte ID (optionnel)",
       "apiEndpoint": "API point d’arrivée",
       "httpBasicUsername": "Nom d’utilisateur HTTP Basic",
       "httpBasicPassword": "HTTP Mot de passe de base",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (ancienne API d’administration)",
       "v6": "Pi-hole v6 (API de session)",
       "help": "Modifie la façon dont Breeze communique avec ce Pi-hole. Pour la v6, recréez l’intégration avec un mot de passe d’application si la clé enregistrée est un jeton v5."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "ID de l’organisation DNSFilter",
+      "organizationIdHelp": "Un nombre entier. Laissez vide pour utiliser l’organisation de la clé API.",
+      "policyIdLabel": "ID de la politique DNSFilter",
+      "policyIdHelp": "La politique DNSFilter dont Breeze modifie les listes de blocage et d’autorisation. Nécessaire pour les politiques DNS de cette intégration.",
+      "invalidId": "Saisissez un nombre entier ou laissez le champ vide."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
