@@ -25,7 +25,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration {
 
 // ParseRetryAfterCapped is ParseRetryAfter with a caller-chosen ceiling in
 // place of the 300 s default, for callers whose back-off is measured in
-// minutes or hours (the workspace index waits out a disabled module, #12713).
+// minutes or hours (for example the workspace index config poll, #12713).
 // The result is clamped to [0, maxWait]; 0 means missing, malformed, zero or
 // in the past, and the caller falls back to its own delay.
 func ParseRetryAfterCapped(h http.Header, now time.Time, maxWait time.Duration) time.Duration {

@@ -3,7 +3,11 @@ package workspaceindex
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -52,32 +56,49 @@ func (r *crawlConfigResponder) ServeHTTP(w http.ResponseWriter, req *http.Reques
 	_, _ = w.Write([]byte(`{"error":"extension unavailable"}`))
 }
 
-// startClockedLoop runs the loop against responder with a test-controlled
-// clock and a 1 ms tick, so "did it refetch?" depends only on the clock.
-func startClockedLoop(t *testing.T, responder http.Handler, base time.Time) *atomic.Int64 {
+// clockedLoop is a running loop with a test-controlled clock and a 1 ms tick,
+// so "did it refetch?" depends only on the clock.
+type clockedLoop struct {
+	nowNanos atomic.Int64
+	// nowCalls counts clock reads; the loop reads the clock once per tick.
+	nowCalls atomic.Int64
+}
+
+func (l *clockedLoop) Store(nanos int64) { l.nowNanos.Store(nanos) }
+
+func startClockedLoop(t *testing.T, responder http.Handler, base time.Time) *clockedLoop {
+	return startClockedLoopWithLog(t, responder, base, loopTestLogger())
+}
+
+func startClockedLoopWithLog(t *testing.T, responder http.Handler, base time.Time, log *slog.Logger) *clockedLoop {
 	t.Helper()
-	var nowNanos atomic.Int64
-	nowNanos.Store(base.UnixNano())
+	loop := &clockedLoop{}
+	loop.nowNanos.Store(base.UnixNano())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := StartLoop(ctx, Deps{
-		Client:       newTestClient(t, responder),
-		Log:          loopTestLogger(),
-		Now:          func() time.Time { return time.Unix(0, nowNanos.Load()) },
+		Client: newTestClient(t, responder),
+		Log:    log,
+		Now: func() time.Time {
+			loop.nowCalls.Add(1)
+			return time.Unix(0, loop.nowNanos.Load())
+		},
 		TickInterval: time.Millisecond,
 	})
 	t.Cleanup(func() {
 		cancel()
 		waitLoopSignal(t, done, "loop shutdown")
 	})
-	return &nowNanos
+	return loop
 }
 
-// assertFetchCountHolds lets the 1 ms ticker fire many times, then checks the
-// loop did not fetch again.
-func assertFetchCountHolds(t *testing.T, fetches *atomic.Int32, want int32, when string) {
+// assertFetchCountHolds waits until the loop has evaluated several ticks at
+// the current clock, then checks it did not fetch again. Counting clock reads
+// (not sleeping) keeps the check from passing vacuously on a starved host.
+func assertFetchCountHolds(t *testing.T, loop *clockedLoop, fetches *atomic.Int32, want int32, when string) {
 	t.Helper()
-	time.Sleep(30 * time.Millisecond)
+	start := loop.nowCalls.Load()
+	waitLoopCondition(t, func() bool { return loop.nowCalls.Load() >= start+5 }, "loop ticks at "+when)
 	if got := fetches.Load(); got != want {
 		t.Fatalf("fetches %s = %d, want %d", when, got, want)
 	}
@@ -92,14 +113,13 @@ func TestStartLoopUnavailableBacksOffInsteadOfRetryingEachTick(t *testing.T) {
 
 			waitLoopCondition(t, func() bool { return responder.fetches.Load() == 1 }, "initial fetch")
 
-			// Before #12713 the next fetch came one tick later. The back-off
-			// floor without Retry-After is 30 minutes.
+			// Without Retry-After the earliest refetch is unavailableBackoffMin.
 			now.Store(base.Add(2 * time.Minute).UnixNano())
-			assertFetchCountHolds(t, &responder.fetches, 1, "two minutes after an unavailable response")
+			assertFetchCountHolds(t, now, &responder.fetches, 1, "two minutes after an unavailable response")
 			now.Store(base.Add(unavailableBackoffMin - time.Second).UnixNano())
-			assertFetchCountHolds(t, &responder.fetches, 1, "just before the back-off floor")
+			assertFetchCountHolds(t, now, &responder.fetches, 1, "just before the back-off floor")
 
-			// The ceiling without Retry-After is 60 minutes.
+			// ...and the latest is unavailableBackoffMax.
 			now.Store(base.Add(unavailableBackoffMax + time.Second).UnixNano())
 			waitLoopCondition(t, func() bool { return responder.fetches.Load() >= 2 }, "fetch after the back-off")
 			if got := responder.fetches.Load(); got != 2 {
@@ -118,7 +138,7 @@ func TestStartLoopUnavailableHonoursRetryAfter(t *testing.T) {
 
 	// Past the no-header ceiling, still inside the server's two hours.
 	now.Store(base.Add(2*time.Hour - time.Second).UnixNano())
-	assertFetchCountHolds(t, &responder.fetches, 1, "before Retry-After elapsed")
+	assertFetchCountHolds(t, now, &responder.fetches, 1, "before Retry-After elapsed")
 
 	// Two hours plus the at-most-10% jitter.
 	now.Store(base.Add(2*time.Hour + 12*time.Minute + time.Second).UnixNano())
@@ -166,6 +186,74 @@ func TestUnavailableBackoffWithoutRetryAfterIsJitteredWithinWindow(t *testing.T)
 	}
 	if len(seen) < 100 {
 		t.Fatalf("unavailableBackoff(0) produced %d distinct values in 2000 draws; jitter is not spreading the fleet", len(seen))
+	}
+}
+
+// The gateway sends every agent the same Retry-After, so the jitter on the
+// hinted path is what keeps a fleet from returning in the same second.
+func TestUnavailableBackoffWithRetryAfterIsJittered(t *testing.T) {
+	hint := 30 * time.Minute
+	seen := map[time.Duration]bool{}
+	for range 2000 {
+		seen[unavailableBackoff(hint)] = true
+	}
+	if len(seen) < 100 {
+		t.Fatalf("unavailableBackoff(%v) produced %d distinct values in 2000 draws, want >= 100", hint, len(seen))
+	}
+}
+
+// levelRecorder is a slog.Handler that keeps the level of each record whose
+// message matches.
+type levelRecorder struct {
+	mu      sync.Mutex
+	message string
+	levels  []slog.Level
+}
+
+func (r *levelRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *levelRecorder) WithAttrs([]slog.Attr) slog.Handler       { return r }
+func (r *levelRecorder) WithGroup(string) slog.Handler            { return r }
+func (r *levelRecorder) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == r.message {
+		r.mu.Lock()
+		r.levels = append(r.levels, rec.Level)
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *levelRecorder) snapshot() []slog.Level {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.levels)
+}
+
+// A fleet with the module off must not ship a Warn per agent per back-off:
+// only entering the state, or a change of status, is shipped.
+func TestStartLoopUnavailableWarnsOnTransitionOnly(t *testing.T) {
+	base := time.Date(2026, time.November, 25, 0, 0, 0, 0, time.UTC)
+	recorder := &levelRecorder{message: "workspace index unavailable; backing off config poll"}
+	responder := newCrawlConfigResponder(t, http.StatusServiceUnavailable, "")
+	now := startClockedLoopWithLog(t, responder, base, slog.New(recorder))
+
+	step := func(at time.Duration, fetches int32) {
+		t.Helper()
+		now.Store(base.Add(at).UnixNano())
+		waitLoopCondition(t, func() bool { return responder.fetches.Load() == fetches }, fmt.Sprintf("fetch %d", fetches))
+	}
+	waitLoopCondition(t, func() bool { return responder.fetches.Load() == 1 }, "initial fetch")
+	step(1*time.Hour+time.Second, 2) // same 503 again
+	responder.status.Store(http.StatusForbidden)
+	step(2*time.Hour+2*time.Second, 3) // status changed to 403
+	responder.status.Store(http.StatusOK)
+	step(3*time.Hour+3*time.Second, 4) // recovered
+	responder.status.Store(http.StatusServiceUnavailable)
+	step(3*time.Hour+3*time.Second+67*time.Second, 5) // unavailable again
+
+	want := []slog.Level{slog.LevelWarn, slog.LevelDebug, slog.LevelWarn, slog.LevelWarn}
+	waitLoopCondition(t, func() bool { return len(recorder.snapshot()) == len(want) }, "back-off log records")
+	if got := recorder.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("back-off log levels = %v, want %v", got, want)
 	}
 }
 

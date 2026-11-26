@@ -22,9 +22,8 @@ import (
 
 const moduleAbsentBackoff = 6 * time.Hour
 
-// Back-off after crawl-config answers ErrUnavailable (#12713). Retrying such
-// an answer each minute cost every agent an authenticated request a minute
-// for a feature that is off.
+// Back-off after crawl-config answers ErrUnavailable (#12713). Without it,
+// every agent re-polls each minute for a feature that is off.
 const (
 	// Without Retry-After the wait is uniform in [min, max], so a fleet that
 	// hit the same 503 does not come back in step.
@@ -32,8 +31,8 @@ const (
 	unavailableBackoffMax = 60 * time.Minute
 	// A Retry-After is honoured within [floor, ceiling]. The floor is the
 	// loop's normal one-minute tick, so a short hint never makes the agent
-	// poll faster than it did before. The ceiling matches the module-absent
-	// back-off, the longest wait a server can already impose with a 404.
+	// poll faster than it did before. The ceiling is moduleAbsentBackoff, so
+	// a Retry-After never parks the poll longer than a 404 already does.
 	unavailableRetryAfterFloor   = time.Minute
 	unavailableRetryAfterCeiling = moduleAbsentBackoff
 )
@@ -154,6 +153,9 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		watchers := make(map[string]watchRegistration)
 		var running *activeCrawl
 		var nextFetch time.Time
+		// lastUnavailableStatus is the status of the previous fetch when it
+		// was ErrUnavailable, else 0; it keeps repeat back-off logs quiet.
+		lastUnavailableStatus := 0
 		// auditedScope is the signature of the source set last announced by the
 		// consent signal (prominent log + device-audit event, #2425). Tracking
 		// the SCOPE rather than a mere on/off bool means a server that widens
@@ -331,6 +333,9 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 				return
 			}
 			config, err := deps.Client.FetchConfig(ctx)
+			if !errors.Is(err, ErrUnavailable) {
+				lastUnavailableStatus = 0
+			}
 			if err != nil {
 				if errors.Is(err, ErrModuleAbsent) {
 					markIndexingInactive("workspace module absent on server")
@@ -343,11 +348,20 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 					// brief proxy blip, and a crawl that gets the same answer
 					// fails on its own. Only the config poll slows down.
 					var retryAfter time.Duration
+					status := 0
 					if httpErr, ok := errors.AsType[*HTTPError](err); ok {
-						retryAfter = httpErr.RetryAfter
+						retryAfter, status = httpErr.RetryAfter, httpErr.StatusCode
 					}
 					wait := unavailableBackoff(retryAfter)
-					deps.Log.Warn("workspace index unavailable; backing off", "err", err, "retryIn", wait)
+					// Warn (which ships) on entering the state or a change of
+					// status; repeats of the same answer stay local at Debug.
+					logAt := deps.Log.Debug
+					if status != lastUnavailableStatus {
+						logAt = deps.Log.Warn
+					}
+					lastUnavailableStatus = status
+					logAt("workspace index unavailable; backing off config poll",
+						"status", status, "retryAfterHint", retryAfter, "retryIn", wait, "err", err)
 					nextFetch = now.Add(wait)
 					return
 				}

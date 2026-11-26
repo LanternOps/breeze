@@ -151,16 +151,20 @@ export const EXTENSION_ROUTE_LABEL_OTHER = 'other';
 export const EXTENSION_ROUTE_LABEL_UNAVAILABLE = 'unavailable';
 
 /**
- * Retry-After on every "extension unavailable" 503 (#12713). Enabling an
- * extension is an operator action, so there is nothing to gain from a caller
- * asking again within the minute: agents polling an agent route otherwise
- * re-run full agent auth and the enabled check once a minute each. Thirty
- * minutes is the low end of the agent's own back-off window for a bare 503;
- * the agent adds its own jitter on top of this value.
+ * Retry-After on the 503 for a registered extension that is disabled or
+ * withdrawn (#12713). Re-enabling it is an operator action, so a caller gains
+ * nothing by asking again within the minute; without the hint the workspace
+ * index agent loop re-ran full agent auth and the enabled check every minute.
+ * Thirty minutes matches the Go agent's no-hint minimum
+ * (`unavailableBackoffMin` in agent/internal/workspaceindex/loop.go); keep
+ * them in step. The agent adds up to 10% jitter to the hint.
+ *
+ * An unknown extension name gets the plain 503: that is a request for
+ * something this build does not serve, not a state an operator flips.
  */
 export const EXTENSION_UNAVAILABLE_RETRY_AFTER_SECONDS = 1800;
 
-function extensionUnavailable(c: Context): Response {
+function extensionDisabled(c: Context): Response {
   c.header('Retry-After', String(EXTENSION_UNAVAILABLE_RETRY_AFTER_SECONDS));
   return c.json({ error: 'extension unavailable' }, 503);
 }
@@ -268,7 +272,7 @@ function createAgentSnapshotWrapper(
     // Agent prefixes may be exempt from the global limiter, so availability
     // must be checked only after agent auth (and its own rate limits) runs.
     if (!active.enabled || !(await isEnabled(active.name))) {
-      return extensionUnavailable(c);
+      return extensionDisabled(c);
     }
     await next();
   });
@@ -358,7 +362,7 @@ export function mountExtensionGateway(
       // not traffic silently vanishing from the request counter. Constant
       // (bounded) route label — no wrapper ran, so no pattern was matched.
       recordExtensionRequest(active.name, EXTENSION_ROUTE_LABEL_UNAVAILABLE, 503, 0);
-      return extensionUnavailable(c);
+      return extensionDisabled(c);
     }
 
     let byPrefix = wrappers.get(active);
@@ -377,9 +381,9 @@ export function mountExtensionGateway(
 
   const dispatchCanonical = async (c: Context): Promise<Response> => {
     const name = c.req.param('extension');
-    if (!name) return extensionUnavailable(c);
+    if (!name) return c.json({ error: 'extension unavailable' }, 503);
     const active = registry.get(name);
-    if (!active) return extensionUnavailable(c);
+    if (!active) return c.json({ error: 'extension unavailable' }, 503);
     return dispatchSnapshot(c, active, `/api/v1/ext/${name}`);
   };
 
