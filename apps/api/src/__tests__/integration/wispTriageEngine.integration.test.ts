@@ -95,6 +95,17 @@ const asSystem = <T>(fn: () => Promise<T>) => withDbAccessContext(SYSTEM_CTX, fn
 
 const DAY_MS = 86_400_000;
 
+/**
+ * A queued_at `agoMs` before now, clamped to the start of the current UTC day:
+ * the budget counts spend by the UTC day of queued_at, so a "recent" seed must
+ * not slip onto yesterday just because the test ran shortly after 00:00 UTC.
+ */
+function spentAtToday(agoMs: number): Date {
+  const now = Date.now();
+  const dayStart = now - (now % DAY_MS);
+  return new Date(Math.max(now - agoMs, dayStart));
+}
+
 function enableWisp() {
   vi.stubEnv('IS_HOSTED', 'true');
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
@@ -329,13 +340,24 @@ describe('ceiling isolation', () => {
 });
 
 describe('budget (UTC day, queued_at)', () => {
+  // Budget spend is counted by the UTC day of queued_at, so these tests must not
+  // depend on when they run. Pin the wall clock (Date only: the Redis and
+  // Postgres clients keep their real timers) to 10 s after a UTC midnight, the
+  // moment a "now - 60 s" seed used to land on the previous day (#12703).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-26T00:00:10.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('an exhausted budget admits zero runs across 3 attempts: grantor told once, deterministic low concern once, grant stays active', async () => {
     const t = await seedTenant();
     const agentId = await seedTriageAgent(t);
     const g = await seedGrant(t, { orgIds: [t.orgA], budgetCentsPerDay: 200 });
-    const now = new Date();
-    await seedSpentRun(agentId, t.orgA, g, 120, new Date(now.getTime() - 60_000));
-    await seedSpentRun(agentId, t.orgA, g, 80, new Date(now.getTime() - 30_000));
+    await seedSpentRun(agentId, t.orgA, g, 120, spentAtToday(60_000));
+    await seedSpentRun(agentId, t.orgA, g, 80, spentAtToday(30_000));
     expect(await runsOfGrant(g.grantId)).toHaveLength(2);
 
     const alertId = randomUUID();
@@ -390,7 +412,7 @@ describe('budget (UTC day, queued_at)', () => {
     const t = await seedTenant();
     const agentId = await seedTriageAgent(t);
     const g = await seedGrant(t, { orgIds: [t.orgA], budgetCentsPerDay: 100 });
-    await seedSpentRun(agentId, t.orgA, g, 100, new Date(Date.now() - 60_000));
+    await seedSpentRun(agentId, t.orgA, g, 100, spentAtToday(60_000));
     const queue = getWispWakeQueue();
 
     const first = await processWakeTick(new Date());
