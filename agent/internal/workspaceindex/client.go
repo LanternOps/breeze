@@ -41,6 +41,13 @@ var (
 	ErrRunConflict     = errors.New("workspace index run conflict")
 	ErrBatchTooLarge   = errors.New("workspace index batch too large")
 	ErrAuthUnavailable = errors.New("workspace index request skipped while authentication is unavailable")
+	// ErrUnavailable marks a crawl-config answer that will not change on the
+	// next tick: a 503 (the module is loaded but disabled, or a proxy is
+	// shedding load) or a 403 (the device is parked, quarantined or
+	// draining). The loop backs off instead of asking again each minute
+	// (#12713). A 401 is not in this set; it stays an auth failure on the
+	// shared monitor.
+	ErrUnavailable = errors.New("workspace index unavailable for this device")
 	// ErrNoServerURL names a wiring bug — the ServerURL provider is unset or
 	// returned empty — so it can't masquerade as a transport failure.
 	ErrNoServerURL = errors.New("workspace index client has no server URL (ServerURL provider unset or empty)")
@@ -56,6 +63,9 @@ var (
 type HTTPError struct {
 	StatusCode int
 	Body       string
+	// RetryAfter is the server's Retry-After (seconds or HTTP-date), capped at
+	// unavailableRetryAfterCeiling. Zero when absent, malformed or past.
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string {
@@ -139,7 +149,11 @@ func (c *Client) FetchConfig(ctx context.Context) (*CrawlConfig, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if err := c.checkResponse(resp, ErrModuleAbsent, http.StatusNotFound); err != nil {
+	sentinel, sentinelStatus := ErrModuleAbsent, http.StatusNotFound
+	if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusForbidden {
+		sentinel, sentinelStatus = ErrUnavailable, resp.StatusCode
+	}
+	if err := c.checkResponse(resp, sentinel, sentinelStatus); err != nil {
 		return nil, err
 	}
 
@@ -350,7 +364,11 @@ func (c *Client) checkResponse(resp *http.Response, sentinel error, sentinelStat
 	if token != "" {
 		body = strings.ReplaceAll(body, token, "[REDACTED]")
 	}
-	httpErr := &HTTPError{StatusCode: resp.StatusCode, Body: body}
+	httpErr := &HTTPError{
+		StatusCode: resp.StatusCode,
+		Body:       body,
+		RetryAfter: httputil.ParseRetryAfterCapped(resp.Header, time.Now(), unavailableRetryAfterCeiling),
+	}
 	if readErr != nil {
 		httpErr.Body = "unable to read error response"
 	}

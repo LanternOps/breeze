@@ -319,6 +319,8 @@ describe('extension gateway + real agent auth on /api/v1/workspace/agent (#12690
     const res = await request(app, 'GET', `/api/v1/workspace/agent/${AGENT_ID}/crawl-config`);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'extension unavailable' });
+    // #12713: agents back off on this hint instead of asking again each minute.
+    expect(res.headers.get('Retry-After')).toBe('1800');
     expect(lookedUpAgentIds).toEqual([AGENT_ID]);
     expect(isEnabled).toHaveBeenCalledWith('workspace');
     expect(handled).not.toHaveBeenCalled();
@@ -327,6 +329,7 @@ describe('extension gateway + real agent auth on /api/v1/workspace/agent (#12690
     isEnabled.mockClear();
     const flat = await request(app, 'GET', '/api/v1/workspace/agent/crawl-config');
     expect(flat.status).toBe(401);
+    expect(flat.headers.get('Retry-After')).toBeNull();
     expect(isEnabled).not.toHaveBeenCalled();
   });
 

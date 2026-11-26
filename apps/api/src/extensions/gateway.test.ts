@@ -422,6 +422,8 @@ describe('mountExtensionGateway', () => {
       headers: { Authorization: 'Bearer agent-test' },
     });
     expect(authenticated.status).toBe(503);
+    expect(authenticated.headers.get('Retry-After')).toBe('1800');
+    expect(unauthenticated.headers.get('Retry-After')).toBeNull();
     expect(agentAuthMiddleware).toHaveBeenCalledTimes(2);
   });
 
@@ -429,8 +431,13 @@ describe('mountExtensionGateway', () => {
     const isEnabled = vi.fn(async (name: string) => name !== 'demo');
     const { app } = makeGatewayFixture({ isEnabled });
 
-    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
-    expect((await app.request('/api/v1/ext/missing/health')).status).toBe(503);
+    const disabled = await app.request('/api/v1/ext/demo/health');
+    const missing = await app.request('/api/v1/ext/missing/health');
+    expect(disabled.status).toBe(503);
+    expect(missing.status).toBe(503);
+    // #12713: every "extension unavailable" answer carries the same back-off hint.
+    expect(disabled.headers.get('Retry-After')).toBe('1800');
+    expect(missing.headers.get('Retry-After')).toBe('1800');
     expect(isEnabled).toHaveBeenCalledOnce();
   });
 

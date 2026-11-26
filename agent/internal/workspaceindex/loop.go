@@ -22,6 +22,22 @@ import (
 
 const moduleAbsentBackoff = 6 * time.Hour
 
+// Back-off after crawl-config answers ErrUnavailable (#12713). Retrying such
+// an answer each minute cost every agent an authenticated request a minute
+// for a feature that is off.
+const (
+	// Without Retry-After the wait is uniform in [min, max], so a fleet that
+	// hit the same 503 does not come back in step.
+	unavailableBackoffMin = 30 * time.Minute
+	unavailableBackoffMax = 60 * time.Minute
+	// A Retry-After is honoured within [floor, ceiling]. The floor is the
+	// loop's normal one-minute tick, so a short hint never makes the agent
+	// poll faster than it did before. The ceiling matches the module-absent
+	// back-off, the longest wait a server can already impose with a 404.
+	unavailableRetryAfterFloor   = time.Minute
+	unavailableRetryAfterCeiling = moduleAbsentBackoff
+)
+
 // indexingScopeSignature reduces the announced source set to a comparable
 // string so the consent signal re-fires when the server changes WHAT is
 // indexed, not only when it toggles indexing on. sources must already be
@@ -322,6 +338,19 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 					nextFetch = now.Add(moduleAbsentBackoff)
 					return
 				}
+				if errors.Is(err, ErrUnavailable) {
+					// Leave running crawls and watchers alone: a 503 may be a
+					// brief proxy blip, and a crawl that gets the same answer
+					// fails on its own. Only the config poll slows down.
+					var retryAfter time.Duration
+					if httpErr, ok := errors.AsType[*HTTPError](err); ok {
+						retryAfter = httpErr.RetryAfter
+					}
+					wait := unavailableBackoff(retryAfter)
+					deps.Log.Warn("workspace index unavailable; backing off", "err", err, "retryIn", wait)
+					nextFetch = now.Add(wait)
+					return
+				}
 				deps.Log.Warn("fetch workspace index config", "err", err)
 				nextFetch = now.Add(deps.TickInterval)
 				return
@@ -368,6 +397,21 @@ func isSourceDue(now time.Time, src SourceConfig) bool {
 		return true
 	}
 	return now.Sub(*src.LastCompleteRunAt) >= time.Duration(src.CadenceMinutes)*time.Minute
+}
+
+// unavailableBackoff returns how long to wait after an ErrUnavailable
+// crawl-config answer. retryAfter is the server's hint (0 when absent). With a
+// hint the wait is the hint clamped to [floor, ceiling] plus up to 10% jitter,
+// never past the ceiling and never earlier than the server asked; without one
+// it is uniform in [unavailableBackoffMin, unavailableBackoffMax].
+func unavailableBackoff(retryAfter time.Duration) time.Duration {
+	if retryAfter <= 0 {
+		span := unavailableBackoffMax - unavailableBackoffMin
+		return unavailableBackoffMin + time.Duration(rand.Int64N(int64(span)+1))
+	}
+	base := min(max(retryAfter, unavailableRetryAfterFloor), unavailableRetryAfterCeiling)
+	jitter := time.Duration(rand.Int64N(int64(base/10) + 1))
+	return min(base+jitter, unavailableRetryAfterCeiling)
 }
 
 func jitterPollInterval(seconds int) time.Duration {

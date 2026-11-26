@@ -20,6 +20,15 @@ const retryAfterMaxCap = 300 * time.Second
 // The returned duration is always clamped to [0, retryAfterMaxCap]. The function
 // returns 0 if the header is missing, malformed, zero, or in the past.
 func ParseRetryAfter(h http.Header, now time.Time) time.Duration {
+	return ParseRetryAfterCapped(h, now, retryAfterMaxCap)
+}
+
+// ParseRetryAfterCapped is ParseRetryAfter with a caller-chosen ceiling in
+// place of the 300 s default, for callers whose back-off is measured in
+// minutes or hours (the workspace index waits out a disabled module, #12713).
+// The result is clamped to [0, maxWait]; 0 means missing, malformed, zero or
+// in the past, and the caller falls back to its own delay.
+func ParseRetryAfterCapped(h http.Header, now time.Time, maxWait time.Duration) time.Duration {
 	if h == nil {
 		return 0
 	}
@@ -33,11 +42,12 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration {
 		if secs <= 0 {
 			return 0
 		}
-		d := time.Duration(secs) * time.Second
-		if d > retryAfterMaxCap {
-			return retryAfterMaxCap
+		// Compare before multiplying: a huge value would overflow
+		// time.Duration and wrap negative.
+		if time.Duration(secs) > maxWait/time.Second {
+			return maxWait
 		}
-		return d
+		return time.Duration(secs) * time.Second
 	}
 
 	// Fall back to HTTP-date parsing (RFC 7231 allows three formats).
@@ -46,8 +56,8 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration {
 		if d <= 0 {
 			return 0
 		}
-		if d > retryAfterMaxCap {
-			return retryAfterMaxCap
+		if d > maxWait {
+			return maxWait
 		}
 		return d
 	}
