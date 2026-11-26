@@ -3,19 +3,21 @@
  * `snapshotIndexEntries` in services/backupSnapshotIndexEntries.ts.
  *
  * Today a snapshot's tree is its own `backup_snapshot_files` rows. Step 2 stores
- * an incremental as differences against a shared checkpoint, and from then on
- * a reader that queries the table directly sees only the differences: a
- * browse that lists a fraction of the tree, or, worse, a membership check that
- * authorizes a checkpoint key the snapshot has since replaced or deleted. So no
- * file outside the layer may read the table. Writers (the inline-result
- * persistence and the hydrator's publish) and the schema definition are allowed.
+ * an incremental as differences against a shared checkpoint, whose entries are
+ * in `backup_tree_checkpoint_entries`. From then on a reader that queries
+ * either table directly sees only part of the tree: a browse that lists a
+ * fraction of it, or, worse, a membership check that authorizes a checkpoint
+ * key the snapshot has since replaced or deleted. So no file outside the layer
+ * may read either table. Writers (the inline-result persistence, the
+ * hydrator's publish, checkpoint GC) and the schema definition are allowed.
  *
  * Static scan of every non-test .ts file under apps/api/src and ee/. After
- * import statements and comments are dropped, each remaining mention of the
- * Drizzle table (`backupSnapshotFiles`) must be the target of `.insert(`,
- * `.update(`, `.delete(` or `INSERT INTO ${…}`, or a column named inside that
- * same write statement (its WHERE, SET, conflict target or RETURNING). Each
- * raw-SQL mention (`backup_snapshot_files`, any case) must follow `INSERT INTO`,
+ * import statements and comments are dropped, each remaining mention of a
+ * Drizzle table (`backupSnapshotFiles`, `backupTreeCheckpointEntries`) must be
+ * the target of `.insert(`, `.update(`, `.delete(` or `INSERT INTO ${…}`, or a
+ * column of that table named inside that same write statement (its WHERE, SET,
+ * conflict target or RETURNING). Each raw-SQL mention (`backup_snapshot_files`,
+ * `backup_tree_checkpoint_entries`, any case) must follow `INSERT INTO`,
  * `UPDATE` or `DELETE FROM`. Anything else is a read. Importing the table under
  * another name (`backupSnapshotFiles as t`) is reported at the import.
  *
@@ -48,6 +50,19 @@ const ALLOWLIST: Readonly<Record<string, string>> = {
     'Maintenance, not a read: it calls breeze_analyze_backup_snapshot_files() and names the table in log text.',
 };
 
+/**
+ * Exempt in advance: the checkpoint publisher and GC (#11736 step 2) are
+ * written in a separate change that does not edit this file. The existence
+ * check below covers only ALLOWLIST; an entry here can move there once its
+ * file exists.
+ */
+const PENDING_ALLOWLIST: Readonly<Record<string, string>> = {
+  'apps/api/src/services/backupSnapshotIndexPublish.ts':
+    'Writer: diffs a verified manifest against its checkpoint inside the publish transaction (#11736)',
+  'apps/api/src/services/backupTreeCheckpointGc.ts':
+    'Checkpoint GC: deletes unreferenced checkpoints (#11736)',
+};
+
 function listSourceFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
   const out: string[] = [];
@@ -77,14 +92,34 @@ export interface DirectRead {
   snippet: string;
 }
 
-const DRIZZLE_TABLE = /\bbackupSnapshotFiles\b/g;
-const RAW_TABLE = /(?<!\w)backup_snapshot_files(?!\w)/gi;
 const DRIZZLE_WRITE_BEFORE = /(?:\.(?:insert|update|delete)\(\s*|INSERT\s+INTO\s+\$\{\s*)$/;
 const RAW_WRITE_BEFORE = /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:public\.)?$/i;
-const WRITE_TARGET = /\.(?:insert|update|delete)\(\s*backupSnapshotFiles\s*\)/g;
-const IMPORT_ALIAS = /^\s*import\s[^;]*?\bbackupSnapshotFiles\s+as\s+\w+/gm;
 
-/** Every mention of the table in `source` that is not a write. */
+/** The tables that hold a snapshot's file index, by Drizzle export name and SQL name. */
+const INDEX_TABLES = [
+  { drizzle: 'backupSnapshotFiles', raw: 'backup_snapshot_files' },
+  { drizzle: 'backupTreeCheckpointEntries', raw: 'backup_tree_checkpoint_entries' },
+] as const;
+
+interface TablePatterns {
+  drizzle: string;
+  drizzleTable: RegExp;
+  bareMention: RegExp;
+  rawTable: RegExp;
+  writeTarget: RegExp;
+  importAlias: RegExp;
+}
+
+const TABLE_PATTERNS: TablePatterns[] = INDEX_TABLES.map(({ drizzle, raw }) => ({
+  drizzle,
+  drizzleTable: new RegExp(`\\b${drizzle}\\b`, 'g'),
+  bareMention: new RegExp(`\\b${drizzle}\\b(?!\\.)`),
+  rawTable: new RegExp(`(?<!\\w)${raw}(?!\\w)`, 'gi'),
+  writeTarget: new RegExp(`\\.(?:insert|update|delete)\\(\\s*${drizzle}\\s*\\)`, 'g'),
+  importAlias: new RegExp(`^\\s*import\\s[^;]*?\\b${drizzle}\\s+as\\s+\\w+`, 'gm'),
+}));
+
+/** Every mention of an index table in `source` that is not a write. */
 export function findDirectIndexReads(source: string): DirectRead[] {
   const code = stripNonCode(source);
   const found: DirectRead[] = [];
@@ -92,39 +127,41 @@ export function findDirectIndexReads(source: string): DirectRead[] {
     const line = code.slice(0, index).split('\n').length;
     found.push({ line, snippet: source.split('\n')[line - 1]!.trim() });
   };
-  for (const m of code.matchAll(DRIZZLE_TABLE)) {
-    const before = code.slice(Math.max(0, m.index! - 40), m.index!);
-    // `backupSnapshotFiles.snapshotDbId` inside a write's own WHERE is part of
-    // that write: a delete's filter names the table's columns.
-    if (DRIZZLE_WRITE_BEFORE.test(before)) continue;
-    if (/^\.\w+/.test(code.slice(m.index! + m[0].length)) && isInsideWriteStatement(code, m.index!)) continue;
-    report(m.index!);
-  }
-  for (const m of code.matchAll(RAW_TABLE)) {
-    const before = code.slice(Math.max(0, m.index! - 40), m.index!);
-    if (RAW_WRITE_BEFORE.test(before)) continue;
-    report(m.index!);
-  }
-  // An import under another name escapes every check above.
-  for (const m of source.matchAll(IMPORT_ALIAS)) {
-    report(m.index! + m[0].indexOf('backupSnapshotFiles'));
+  for (const table of TABLE_PATTERNS) {
+    for (const m of code.matchAll(table.drizzleTable)) {
+      const before = code.slice(Math.max(0, m.index! - 40), m.index!);
+      // `backupSnapshotFiles.snapshotDbId` inside a write's own WHERE is part of
+      // that write: a delete's filter names the table's columns.
+      if (DRIZZLE_WRITE_BEFORE.test(before)) continue;
+      if (/^\.\w+/.test(code.slice(m.index! + m[0].length)) && isInsideWriteStatement(code, m.index!, table)) continue;
+      report(m.index!);
+    }
+    for (const m of code.matchAll(table.rawTable)) {
+      const before = code.slice(Math.max(0, m.index! - 40), m.index!);
+      if (RAW_WRITE_BEFORE.test(before)) continue;
+      report(m.index!);
+    }
+    // An import under another name escapes every check above.
+    for (const m of source.matchAll(table.importAlias)) {
+      report(m.index! + m[0].indexOf(table.drizzle));
+    }
   }
   return found;
 }
 
 /**
  * Whether the column reference at `index` belongs to an insert, update or
- * delete of the table: the nearest preceding write target is this table, and
+ * delete of `table`: the nearest preceding write target is that table, and
  * neither a statement boundary (`;`) nor another bare mention of the table
- * lies between them.
+ * lies between them. A write to a different table does not exempt it.
  */
-function isInsideWriteStatement(code: string, index: number): boolean {
+function isInsideWriteStatement(code: string, index: number, table: TablePatterns): boolean {
   const head = code.slice(0, index);
   let last: RegExpMatchArray | null = null;
-  for (const m of head.matchAll(WRITE_TARGET)) last = m;
+  for (const m of head.matchAll(table.writeTarget)) last = m;
   if (!last) return false;
   const between = head.slice(last.index! + last[0].length);
-  return !between.includes(';') && !/\bbackupSnapshotFiles\b(?!\.)/.test(between);
+  return !between.includes(';') && !table.bareMention.test(between);
 }
 
 function scan(): Array<{ file: string; reads: DirectRead[] }> {
@@ -132,7 +169,7 @@ function scan(): Array<{ file: string; reads: DirectRead[] }> {
   for (const root of SCAN_ROOTS) {
     for (const full of listSourceFiles(root)) {
       const rel = relative(REPO_ROOT, full);
-      if (ALLOWLIST[rel]) continue;
+      if (ALLOWLIST[rel] || PENDING_ALLOWLIST[rel]) continue;
       const reads = findDirectIndexReads(readFileSync(full, 'utf8'));
       if (reads.length > 0) out.push({ file: rel, reads });
     }
@@ -196,21 +233,62 @@ describe('findDirectIndexReads (detector)', () => {
     ].join('\n');
     expect(findDirectIndexReads(source).map((r) => r.line)).toEqual([2]);
   });
+
+  it('reports a Drizzle select and a raw JOIN of the checkpoint entries table, in any case', () => {
+    const source = [
+      'const rows = await db.select({ p: backupTreeCheckpointEntries.sourcePath }).from(backupTreeCheckpointEntries);',
+      'await db.execute(sql`SELECT 1 FROM s JOIN backup_tree_checkpoint_entries e ON e.checkpoint_id = s.id`);',
+      'await db.execute(sql`SELECT 1 FROM s JOIN public.backup_tree_checkpoint_entries e ON e.checkpoint_id = s.id`);',
+      'await db.execute(sql`SELECT 1 FROM s JOIN BACKUP_TREE_CHECKPOINT_ENTRIES e ON e.checkpoint_id = s.id`);',
+    ].join('\n');
+    expect(findDirectIndexReads(source).map((r) => r.line)).toEqual([1, 1, 2, 3, 4]);
+  });
+
+  it('accepts writes to, imports of and longer identifiers around the checkpoint entries table', () => {
+    const source = [
+      "import { backupTreeCheckpointEntries } from '../db/schema';",
+      '// backupTreeCheckpointEntries is read elsewhere; FROM backup_tree_checkpoint_entries',
+      '/* SELECT * FROM backup_tree_checkpoint_entries */',
+      'await tx.insert(backupTreeCheckpointEntries).values(rows);',
+      'await tx.delete(backupTreeCheckpointEntries).where(eq(backupTreeCheckpointEntries.checkpointId, id));',
+      'await tx.execute(sql`INSERT INTO backup_tree_checkpoint_entries (checkpoint_id) SELECT 1`);',
+      'await tx.execute(sql`DELETE FROM backup_tree_checkpoint_entries WHERE checkpoint_id = ${id}`);',
+      'await db.execute(sql`SELECT public.breeze_analyze_backup_tree_checkpoint_entries()`);',
+    ].join('\n');
+    expect(findDirectIndexReads(source)).toEqual([]);
+  });
+
+  it('reports the checkpoint entries table imported under another name', () => {
+    const source = [
+      "import { backupTreeCheckpointEntries as e } from '../db/schema';",
+      'const rows = await db.select().from(e);',
+    ].join('\n');
+    expect(findDirectIndexReads(source).map((r) => r.line)).toEqual([1]);
+  });
+
+  it('exempts a column reference only inside a write to the same table', () => {
+    const source = [
+      'await tx.insert(backupSnapshotFiles).values(rows)',
+      '  .returning({ p: backupTreeCheckpointEntries.sourcePath });',
+    ].join('\n');
+    expect(findDirectIndexReads(source).map((r) => r.line)).toEqual([2]);
+  });
 });
 
-describe('backup_snapshot_files is read only through snapshotIndexEntries (#11736)', () => {
+describe('a snapshot\'s file index tables are read only through snapshotIndexEntries (#11736)', () => {
   it('the read layer exists and every allowlisted file still exists', () => {
     for (const rel of Object.keys(ALLOWLIST)) {
       expect(existsSync(join(REPO_ROOT, rel)), rel).toBe(true);
     }
   });
 
-  it('no file outside the read layer reads the table', () => {
+  it('no file outside the read layer reads either table', () => {
     const offenders = scan().flatMap(({ file, reads }) => reads.map((r) => `${file}:${r.line}  ${r.snippet}`));
     expect(
       offenders,
       'Read a snapshot\'s file index through snapshotIndexEntries (services/backupSnapshotIndexEntries.ts). '
-      + 'From #11736 step 2 the table holds only differences for an incremental, so a direct read sees a partial tree.',
+      + 'From #11736 step 2 backup_snapshot_files holds only differences for an incremental, and the rest lives in the '
+      + 'shared checkpoint\'s backup_tree_checkpoint_entries, so a direct read of either table sees a partial tree.',
     ).toEqual([]);
   });
 });
