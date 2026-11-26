@@ -180,3 +180,35 @@ export async function seedDeltaIndex(
   `);
   return diff;
 }
+
+/** One node of an `EXPLAIN (FORMAT JSON)` plan, the fields the plan contracts read. */
+export type PlanNode = {
+  'Node Type': string;
+  'Relation Name'?: string;
+  'Index Name'?: string;
+  Alias?: string;
+  Plans?: PlanNode[];
+};
+
+export type FlatPlanNode = PlanNode & { underSort: boolean };
+
+/**
+ * Every node of a plan, depth first, each marked with whether a Sort node lies
+ * above it. Plan contracts match node types, relations, aliases and index
+ * names, never costs or text layout, which differ across Postgres majors.
+ */
+export function flattenPlan(root: PlanNode): FlatPlanNode[] {
+  const out: FlatPlanNode[] = [];
+  const walk = (node: PlanNode, underSort: boolean) => {
+    out.push({ ...node, underSort });
+    const below = underSort || node['Node Type'] === 'Sort';
+    for (const child of node.Plans ?? []) walk(child, below);
+  };
+  walk(root, false);
+  return out;
+}
+
+/** The scans of one table alias of the read layer (`sie_file`, `sie_entry`, `sie_tombstone`). */
+export function scansOf(nodes: FlatPlanNode[], alias: string): FlatPlanNode[] {
+  return nodes.filter((n) => n.Alias === alias && n['Relation Name'] !== undefined);
+}
