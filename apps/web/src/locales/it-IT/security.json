@@ -1648,9 +1648,10 @@
       },
       "dnsfilter": {
         "label": "DNSFilter",
-        "helpText": "API key dalle impostazioni dell'account DNSFilter; account ID richiesto solo per ambiti multi-tenant.",
+        "helpText": "API key dalle impostazioni dell’account DNSFilter. L’ID organizzazione è facoltativo: lascialo vuoto per usare l’organizzazione della chiave. L’ID criterio è il criterio DNSFilter a cui Breeze aggiunge i domini bloccati e consentiti; serve per i criteri DNS.",
         "apiKeyPlaceholder": "dnsfilter-api-key",
-        "accountIdPlaceholder": "lascia vuoto per tenant singolo"
+        "organizationIdPlaceholder": "lascia vuoto per l’organizzazione della chiave",
+        "policyIdPlaceholder": "necessario per le liste di blocco e di consenso"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "API secret",
       "apiToken": "Token API",
       "organizationId": "ID organizzazione",
+      "organizationIdOptional": "ID organizzazione (facoltativo)",
+      "policyIdOptional": "ID criterio (facoltativo)",
       "accountId": "ID account",
-      "accountIdOptional": "ID account (facoltativo)",
       "apiEndpoint": "Endpoint API",
       "httpBasicUsername": "Username HTTP Basic",
       "httpBasicPassword": "Password HTTP Basic",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (API di amministrazione legacy)",
       "v6": "Pi-hole v6 (API di sessione)",
       "help": "Cambia il modo in cui Breeze comunica con questo Pi-hole. Per la v6, ricrea l’integrazione con una password per app se la chiave salvata è un token v5."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "ID organizzazione DNSFilter",
+      "organizationIdHelp": "Un numero intero. Lascia vuoto per usare l’organizzazione della API key.",
+      "policyIdLabel": "ID criterio DNSFilter",
+      "policyIdHelp": "Il criterio DNSFilter di cui Breeze modifica le liste di blocco e di consenso. Necessario per i criteri DNS di questa integrazione.",
+      "invalidId": "Inserisci un numero intero oppure lascia il campo vuoto."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

@@ -225,6 +225,11 @@ async function loadAllowedTrafficCoverage(
   return allowedTrafficCoverage(rows.map((row) => row.config));
 }
 
+// #12699 — DNSFilter's organization and policy ids are integers in its API.
+const DNSFILTER_ID_PATTERN = /^[1-9]\d{0,17}$/;
+const dnsFilterIdSchema = (field: string) =>
+  z.string().regex(DNSFILTER_ID_PATTERN, `${field} must be a whole number (the DNSFilter ID)`);
+
 const integrationConfigSchema = z.object({
   organizationId: z.string().min(1).optional(),
   accountId: z.string().min(1).optional(),
@@ -234,6 +239,8 @@ const integrationConfigSchema = z.object({
   categories: z.array(z.string().min(1).max(100)).max(100).optional(),
   blocklistId: z.string().min(1).optional(),
   allowlistId: z.string().min(1).optional(),
+  // DNSFilter only (#12699): the policy whose block and allow lists Breeze edits.
+  policyId: dnsFilterIdSchema('policyId').optional(),
   // Pi-hole admin API version (v6 uses the session-based REST API). Defaults to
   // v5 when unset. Ignored by non-Pi-hole providers.
   piholeVersion: z.enum(['v5', 'v6']).optional(),
@@ -278,6 +285,41 @@ const createIntegrationSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['config', 'accountId'],
       message: 'accountId is required for Cloudflare Gateway'
+    });
+  }
+
+  if (data.provider === 'dnsfilter') {
+    // #12699 — DNSFilter's API takes an integer organization_id and keeps block
+    // and allow domains on a policy. It has no account ids or list objects, so
+    // those keys would be stored and never work.
+    if (data.config?.organizationId !== undefined && !DNSFILTER_ID_PATTERN.test(data.config.organizationId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['config', 'organizationId'],
+        message: 'organizationId must be a whole number (the DNSFilter organization ID)'
+      });
+    }
+    if (data.config?.accountId !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['config', 'accountId'],
+        message: 'DNSFilter takes organizationId (the numeric DNSFilter organization ID), not accountId'
+      });
+    }
+    for (const key of ['blocklistId', 'allowlistId'] as const) {
+      if (data.config?.[key] !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['config', key],
+          message: `DNSFilter keeps blocked and allowed domains on a policy: set policyId, not ${key}`
+        });
+      }
+    }
+  } else if (data.config?.policyId !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['config', 'policyId'],
+      message: 'policyId applies to DNSFilter integrations only'
     });
   }
 
@@ -611,19 +653,27 @@ const updateIntegrationSchema = z.object({
   storeAllowedTraffic: z.boolean().optional(),
   // #12507 — Pi-hole API generation (v6 = session-based REST API). Pi-hole
   // integrations only; the handler refuses it for any other provider.
-  piholeVersion: integrationConfigSchema.shape.piholeVersion
+  piholeVersion: integrationConfigSchema.shape.piholeVersion,
+  // #12699 — DNSFilter organization and policy ids (DNSFilter integrations
+  // only). null clears. Editable so an integration saved by the first DNSFilter
+  // provider (an "Account ID", list ids) can be repaired in place.
+  organizationId: dnsFilterIdSchema('organizationId').nullable().optional(),
+  policyId: dnsFilterIdSchema('policyId').nullable().optional()
 }).strict().refine(
   (body) => body.retentionDays !== undefined
     || body.storeAllowedTraffic !== undefined
-    || body.piholeVersion !== undefined,
-  { message: 'Provide retentionDays, storeAllowedTraffic or piholeVersion' }
+    || body.piholeVersion !== undefined
+    || body.organizationId !== undefined
+    || body.policyId !== undefined,
+  { message: 'Provide retentionDays, storeAllowedTraffic, piholeVersion, organizationId or policyId' }
 );
 
 // #10020 / #10054 — the integration fields editable after create are what
 // Breeze stores for it: the retention window and the allowed-traffic opt-in.
 // Strict schema: credentials and other provider config are not editable here
-// (re-create the integration to change them). The one provider-config
-// exception is piholeVersion (#12507), Pi-hole integrations only.
+// (re-create the integration to change them). The provider-config exceptions
+// are piholeVersion (#12507, Pi-hole only) and the DNSFilter organization and
+// policy ids (#12699, DNSFilter only).
 dnsSecurityRoutes.patch(
   '/integrations/:id',
   requireScope('organization', 'partner', 'system'),
@@ -662,6 +712,9 @@ dnsSecurityRoutes.patch(
     if (body.piholeVersion !== undefined && integration.provider !== 'pihole') {
       return c.json({ error: 'piholeVersion can only be set on a Pi-hole integration' }, 400);
     }
+    if ((body.organizationId !== undefined || body.policyId !== undefined) && integration.provider !== 'dnsfilter') {
+      return c.json({ error: 'organizationId and policyId can only be set on a DNSFilter integration' }, 400);
+    }
 
     const previous = (integration.config ?? {}) as DnsIntegrationConfig;
     const config: DnsIntegrationConfig = { ...previous };
@@ -682,6 +735,20 @@ dnsSecurityRoutes.patch(
     if (body.piholeVersion !== undefined) {
       config.piholeVersion = body.piholeVersion;
       details.piholeVersion = { from: previous.piholeVersion ?? 'v5', to: body.piholeVersion };
+    }
+
+    if (body.organizationId !== undefined) {
+      // The legacy DNSFilter "Account ID" was read as the organization id; the
+      // new value replaces it, so it goes too (audited as the `from`).
+      delete config.accountId;
+      if (body.organizationId === null) delete config.organizationId;
+      else config.organizationId = body.organizationId;
+      details.organizationId = { from: previous.organizationId ?? previous.accountId ?? null, to: body.organizationId };
+    }
+    if (body.policyId !== undefined) {
+      if (body.policyId === null) delete config.policyId;
+      else config.policyId = body.policyId;
+      details.policyId = { from: previous.policyId ?? null, to: body.policyId };
     }
 
     await db

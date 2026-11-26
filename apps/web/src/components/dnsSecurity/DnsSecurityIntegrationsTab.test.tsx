@@ -226,6 +226,24 @@ describe('DnsSecurityIntegrationsTab', () => {
     confirmSpy.mockRestore();
   });
 
+  // #12699 — a DNSFilter row opens Stored data with its ids; a first-version
+  // "Account ID" is shown as the organization id until it is replaced.
+  it.each([
+    [{ accountId: 'acct-abc' }, 'acct-abc', ''],
+    [{ organizationId: '1001', accountId: 'stale', policyId: '7' }, '1001', '7'],
+  ])('prefills DNSFilter ids in Stored data from %j', async (config, organizationId, policyId) => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [umbrellaRow({ provider: 'dnsfilter', name: 'DNSF', config })],
+    }));
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('DNSF')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Stored data'));
+
+    expect(await screen.findByLabelText('DNSFilter organization ID')).toHaveValue(organizationId);
+    expect(screen.getByLabelText('DNSFilter policy ID')).toHaveValue(policyId);
+  });
+
   it('shows a row being deleted as such and disables its actions', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
       data: [umbrellaRow({ isActive: false, lastSyncStatus: 'deleting' })],

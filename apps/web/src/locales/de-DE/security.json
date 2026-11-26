@@ -1648,9 +1648,10 @@
       },
       "dnsfilter": {
         "label": "DNSFilter",
-        "helpText": "API-Schlüssel aus Ihren DNSFilter-Kontoeinstellungen; Konto-ID nur für mehrmandantenfähige Bereiche erforderlich.",
+        "helpText": "API-Schlüssel aus Ihren DNSFilter-Kontoeinstellungen. Die Organisations-ID ist optional: Lassen Sie sie leer, um die Organisation des Schlüssels zu verwenden. Die Richtlinien-ID ist die DNSFilter-Richtlinie, der Breeze blockierte und zugelassene Domains hinzufügt; sie wird für DNS-Richtlinien benötigt.",
         "apiKeyPlaceholder": "dnsfilter-api-key",
-        "accountIdPlaceholder": "Bei Single-Tenant leer lassen"
+        "organizationIdPlaceholder": "leer lassen für die Organisation des Schlüssels",
+        "policyIdPlaceholder": "erforderlich für Sperr- und Zulassungslisten"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "API Geheimnis",
       "apiToken": "API-Token",
       "organizationId": "Organisations-ID",
+      "organizationIdOptional": "Organisations-ID (optional)",
+      "policyIdOptional": "Richtlinien-ID (optional)",
       "accountId": "Konto-ID",
-      "accountIdOptional": "Konto-ID (optional)",
       "apiEndpoint": "API Endpunkt",
       "httpBasicUsername": "HTTP Einfacher Benutzername",
       "httpBasicPassword": "HTTP Basispasswort",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (alte Admin-API)",
       "v6": "Pi-hole v6 (Session-API)",
       "help": "Ändert, wie Breeze mit diesem Pi-hole kommuniziert. Für v6 die Integration mit einem App-Passwort neu anlegen, falls der gespeicherte Schlüssel ein v5-Token ist."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "DNSFilter-Organisations-ID",
+      "organizationIdHelp": "Eine ganze Zahl. Leer lassen, um die Organisation des API-Schlüssels zu verwenden.",
+      "policyIdLabel": "DNSFilter-Richtlinien-ID",
+      "policyIdHelp": "Die DNSFilter-Richtlinie, deren Sperr- und Zulassungslisten Breeze bearbeitet. Für DNS-Richtlinien dieser Integration erforderlich.",
+      "invalidId": "Geben Sie eine ganze Zahl ein oder lassen Sie das Feld leer."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

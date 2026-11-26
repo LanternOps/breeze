@@ -1648,9 +1648,10 @@
       },
       "dnsfilter": {
         "label": "DNSFilter",
-        "helpText": "Chave de API das configurações da sua conta DNSFilter; ID da conta necessário apenas para escopos multilocatário.",
+        "helpText": "Chave de API das configurações da sua conta DNSFilter. O ID da organização é opcional: deixe em branco para usar a organização da própria chave. O ID da política é a política do DNSFilter à qual o Breeze adiciona os domínios bloqueados e permitidos; ele é necessário para as políticas de DNS.",
         "apiKeyPlaceholder": "dnsfilter-api-key",
-        "accountIdPlaceholder": "deixe em branco para locatário único"
+        "organizationIdPlaceholder": "deixe em branco para usar a organização da chave",
+        "policyIdPlaceholder": "necessário para as listas de bloqueio e permissão"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "Segredo de API",
       "apiToken": "Token de API",
       "organizationId": "ID da organização",
+      "organizationIdOptional": "ID da organização (opcional)",
+      "policyIdOptional": "ID da política (opcional)",
       "accountId": "ID da conta",
-      "accountIdOptional": "ID da conta (opcional)",
       "apiEndpoint": "Endpoint da API",
       "httpBasicUsername": "Usuário HTTP Basic",
       "httpBasicPassword": "Senha HTTP Basic",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (API de administração legada)",
       "v6": "Pi-hole v6 (API de sessão)",
       "help": "Altera como o Breeze se comunica com este Pi-hole. Para a v6, recrie a integração com uma senha de aplicativo se a chave armazenada for um token v5."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "ID da organização do DNSFilter",
+      "organizationIdHelp": "Um número inteiro. Deixe vazio para usar a organização da própria chave de API.",
+      "policyIdLabel": "ID da política do DNSFilter",
+      "policyIdHelp": "A política do DNSFilter cujas listas de bloqueio e permissão o Breeze edita. Necessário para as políticas de DNS desta integração.",
+      "invalidId": "Informe um número inteiro ou deixe vazio."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

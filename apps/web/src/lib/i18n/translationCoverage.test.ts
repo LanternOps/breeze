@@ -1307,7 +1307,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 33, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Turkish word).
     'restorePoints.json': 0,
     'scripts.json': 41, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
-    'security.json': 89, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
+    'security.json': 90, // +1 #12699: dnsSecurityAddDnsIntegrationModal.providers.dnsfilter.label "DNSFilter" product name (was a corrupted string); +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
     // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
     // (see the pt-BR block's note above — same root cause, carried forward
     // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself

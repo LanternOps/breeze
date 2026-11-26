@@ -30,6 +30,11 @@ interface RequestJsonInit extends RequestInit {
  * or `dns_policies.syncError`): for self-hosted Pi-hole/AdGuard providers the
  * tenant supplies the endpoint host, so reflecting an upstream body back to them
  * is a partial-read oracle / confused-deputy for arbitrary public hosts.
+ *
+ * One provider overrides `.message` with text taken from the body: DNSFilter
+ * (#12699) adds its own `{ "error": "..." }` text, sanitized and capped, and
+ * only when the request went to a `*.dnsfilter.com` host (the create route pins
+ * its apiEndpoint there). Any other provider's message stays the status line.
  */
 export class DnsProviderHttpError extends Error {
   public readonly status: number;
@@ -40,7 +45,7 @@ export class DnsProviderHttpError extends Error {
     status: number,
     statusText: string,
     responseBody: string,
-    /** Optional body-free message override; defaults to the status line. */
+    /** Optional message override; defaults to the status line. Body-free except DNSFilter's vetted text (above). */
     message?: string
   ) {
     super(message ?? `HTTP ${status} ${statusText}`);

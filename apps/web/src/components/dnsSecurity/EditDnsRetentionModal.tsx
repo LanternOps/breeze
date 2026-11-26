@@ -9,6 +9,10 @@ import { Dialog } from '../shared/Dialog';
 // Mirrors the API bound (routes/dnsSecurity.ts integrationConfigSchema).
 const MIN_DAYS = 1;
 const MAX_DAYS = 365;
+// Mirrors the API's DNSFilter id pattern (routes/dnsSecurity.ts DNSFILTER_ID_PATTERN).
+const DNSFILTER_ID = /^[1-9]\d{0,17}$/;
+
+type DnsFilterIds = { organizationId: string | null; policyId: string | null };
 
 /**
  * #10020 / #10054 — edit what Breeze stores for an integration: whether
@@ -28,7 +32,15 @@ export default function EditDnsRetentionModal({
   onSaved,
 }: {
   // `piholeVersion` is passed only for a Pi-hole integration (#12507); its presence shows the version select.
-  integration: { id: string; name: string; retentionDays: number | null; storeAllowedTraffic: boolean; piholeVersion?: 'v5' | 'v6' };
+  // `dnsfilter` is passed only for a DNSFilter integration (#12699); its presence shows the id fields.
+  integration: {
+    id: string;
+    name: string;
+    retentionDays: number | null;
+    storeAllowedTraffic: boolean;
+    piholeVersion?: 'v5' | 'v6';
+    dnsfilter?: DnsFilterIds;
+  };
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -40,6 +52,10 @@ export default function EditDnsRetentionModal({
   const [storeAllowedTraffic, setStoreAllowedTraffic] = useState(integration.storeAllowedTraffic);
   const [piholeVersion, setPiholeVersion] = useState<'v5' | 'v6'>(integration.piholeVersion ?? 'v5');
   const versionId = useId();
+  const dnsfOrgInputId = useId();
+  const dnsfPolicyInputId = useId();
+  const [dnsfOrganizationId, setDnsfOrganizationId] = useState(integration.dnsfilter?.organizationId ?? '');
+  const [dnsfPolicyId, setDnsfPolicyId] = useState(integration.dnsfilter?.policyId ?? '');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -58,6 +74,22 @@ export default function EditDnsRetentionModal({
       retentionDays = parsed;
     }
 
+    // #12699 — DNSFilter ids: only a changed value is sent; empty sends null (clear).
+    const dnsfilterChanges: Partial<Record<keyof DnsFilterIds, string | null>> = {};
+    if (integration.dnsfilter) {
+      for (const [key, raw] of [['organizationId', dnsfOrganizationId], ['policyId', dnsfPolicyId]] as const) {
+        const next = raw.trim() === '' ? null : raw.trim();
+        // An unchanged value is not re-validated: a legacy "Account ID" shown
+        // here must not block saving an unrelated setting.
+        if (next === (integration.dnsfilter[key] ?? null)) continue;
+        if (next !== null && !DNSFILTER_ID.test(next)) {
+          setError(t('dnsSecurityEditDnsRetentionModal.dnsfilter.invalidId'));
+          return;
+        }
+        dnsfilterChanges[key] = next;
+      }
+    }
+
     setSubmitting(true);
     try {
       await runAction({
@@ -68,6 +100,7 @@ export default function EditDnsRetentionModal({
             storeAllowedTraffic,
             // Only when changed, so a retention-only save does not write a v5 default or a no-op audit entry.
             ...(integration.piholeVersion !== undefined && piholeVersion !== integration.piholeVersion ? { piholeVersion } : {}),
+            ...dnsfilterChanges,
           }),
         }),
         errorFallback: t('dnsSecurityEditDnsRetentionModal.messages.saveFailed', { name: integration.name }),
@@ -139,6 +172,43 @@ export default function EditDnsRetentionModal({
               {t('dnsSecurityEditDnsRetentionModal.piholeVersion.help')}
             </p>
           </div>
+        )}
+
+        {integration.dnsfilter && (
+          <>
+            <div>
+              <label htmlFor={dnsfOrgInputId} className="mb-1 block text-sm font-medium">
+                {t('dnsSecurityEditDnsRetentionModal.dnsfilter.organizationIdLabel')}
+              </label>
+              <input
+                id={dnsfOrgInputId}
+                type="text"
+                inputMode="numeric"
+                value={dnsfOrganizationId}
+                onChange={(e) => setDnsfOrganizationId(e.target.value)}
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('dnsSecurityEditDnsRetentionModal.dnsfilter.organizationIdHelp')}
+              </p>
+            </div>
+            <div>
+              <label htmlFor={dnsfPolicyInputId} className="mb-1 block text-sm font-medium">
+                {t('dnsSecurityEditDnsRetentionModal.dnsfilter.policyIdLabel')}
+              </label>
+              <input
+                id={dnsfPolicyInputId}
+                type="text"
+                inputMode="numeric"
+                value={dnsfPolicyId}
+                onChange={(e) => setDnsfPolicyId(e.target.value)}
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('dnsSecurityEditDnsRetentionModal.dnsfilter.policyIdHelp')}
+              </p>
+            </div>
+          </>
         )}
 
         <div>

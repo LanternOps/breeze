@@ -1647,10 +1647,11 @@
         "accountIdPlaceholder": "Cloudflare kontrol panelinden 32 karakterlik hex"
       },
       "dnsfilter": {
-        "label": "DNSFilter\n__BREEZE_TOKEN_1__ hesap ayarlarınızdan ",
-        "helpText": "DNSFilter hesap ayarlarınızdan API anahtarı; hesap kimliği yalnızca çok kiracılı kapsamlar için gereklidir.",
+        "label": "DNSFilter",
+        "helpText": "DNSFilter hesap ayarlarınızdan API anahtarı. Kuruluş Kimliği isteğe bağlıdır: anahtarın kendi kuruluşunu kullanmak için boş bırakın. İlke Kimliği, Breeze'in engellenen ve izin verilen alan adlarını eklediği DNSFilter ilkesidir; DNS ilkeleri için gereklidir.",
         "apiKeyPlaceholder": "dnsfilter-api-anahtarı",
-        "accountIdPlaceholder": "tek kiracılı için boş bırakın"
+        "organizationIdPlaceholder": "anahtarın kendi kuruluşu için boş bırakın",
+        "policyIdPlaceholder": "engelleme ve izin listeleri için gerekli"
       },
       "pihole": {
         "label": "Pi-hole",
@@ -1676,8 +1677,9 @@
       "apiSecret": "API gizli",
       "apiToken": "API belirteci",
       "organizationId": "Kuruluş Kimliği",
+      "organizationIdOptional": "Kuruluş Kimliği (isteğe bağlı)",
+      "policyIdOptional": "İlke Kimliği (isteğe bağlı)",
       "accountId": "Hesap Kimliği",
-      "accountIdOptional": "Hesap Kimliği (isteğe bağlı)",
       "apiEndpoint": "API uç nokta",
       "httpBasicUsername": "HTTP Temel kullanıcı adı",
       "httpBasicPassword": "HTTP Temel şifresi",
@@ -1839,6 +1841,13 @@
       "v5": "Pi-hole v5 (eski yönetici API’si)",
       "v6": "Pi-hole v6 (oturum API’si)",
       "help": "Breeze’in bu Pi-hole ile nasıl konuştuğunu değiştirir. v6 için, kayıtlı anahtar bir v5 belirteciyse entegrasyonu uygulama parolasıyla yeniden oluşturun."
+    },
+    "dnsfilter": {
+      "organizationIdLabel": "DNSFilter kuruluş kimliği",
+      "organizationIdHelp": "Tam sayı. API anahtarının kendi kuruluşunu kullanmak için boş bırakın.",
+      "policyIdLabel": "DNSFilter ilke kimliği",
+      "policyIdHelp": "Breeze'in engelleme ve izin listelerini düzenlediği DNSFilter ilkesi. Bu entegrasyondaki DNS ilkeleri için gereklidir.",
+      "invalidId": "Tam sayı girin veya boş bırakın."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

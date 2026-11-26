@@ -35,7 +35,15 @@ type Integration = {
   provider: Provider;
   name: string;
   isActive?: boolean;
-  config?: { retentionDays?: number; storeAllowedTraffic?: boolean; piholeVersion?: 'v5' | 'v6' } | null;
+  config?: {
+    retentionDays?: number;
+    storeAllowedTraffic?: boolean;
+    piholeVersion?: 'v5' | 'v6';
+    // DNSFilter (#12699); accountId is the first version's field, read as the organization id.
+    organizationId?: string;
+    accountId?: string;
+    policyId?: string;
+  } | null;
   lastSync: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
@@ -389,6 +397,14 @@ export default function DnsSecurityIntegrationsTab() {
             storeAllowedTraffic: retentionTarget.config?.storeAllowedTraffic === true,
             ...(retentionTarget.provider === 'pihole'
               ? { piholeVersion: retentionTarget.config?.piholeVersion === 'v6' ? 'v6' as const : 'v5' as const }
+              : {}),
+            ...(retentionTarget.provider === 'dnsfilter'
+              ? {
+                  dnsfilter: {
+                    organizationId: retentionTarget.config?.organizationId ?? retentionTarget.config?.accountId ?? null,
+                    policyId: retentionTarget.config?.policyId ?? null,
+                  },
+                }
               : {}),
           }}
           onClose={() => setRetentionTarget(null)}

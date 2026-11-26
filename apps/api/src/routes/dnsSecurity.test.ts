@@ -44,7 +44,7 @@ vi.mock('../db/schema', () => ({
     createdBy: 'createdBy'
   },
   dnsPolicies: {},
-  dnsProviderEnum: { enumValues: ['umbrella', 'cloudflare', 'pihole', 'adguard_home'] },
+  dnsProviderEnum: { enumValues: ['umbrella', 'cloudflare', 'dnsfilter', 'pihole', 'adguard_home'] },
   dnsSecurityEvents: {},
   dnsThreatCategoryEnum: { enumValues: ['malware', 'phishing'] }
 }));
@@ -281,6 +281,43 @@ describe('dns security routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  // #12699 — DNSFilter takes a numeric organization id and a policy id; its
+  // API has no account ids or list ids.
+  describe('POST /integrations (DNSFilter config, #12699)', () => {
+    const create = (config: Record<string, unknown>) => app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'dnsfilter', name: 'DNSFilter', apiKey: 'dnsf-key', config })
+    });
+
+    it.each([
+      [{ organizationId: 'org-abc' }, /organizationId.*whole number/],
+      [{ policyId: '7a' }, /policyId.*whole number/],
+      [{ accountId: '1001' }, /organizationId/],
+      [{ blocklistId: 'bl-1' }, /policyId/],
+      [{ allowlistId: 'al-1' }, /policyId/]
+    ])('rejects DNSFilter config %j', async (config, message) => {
+      const res = await create(config);
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(message);
+    });
+
+    it('accepts a numeric organizationId and policyId', async () => {
+      const res = await create({ organizationId: '1001', policyId: '7' });
+      // The insert is not mocked here; anything other than 400 passed validation.
+      expect(res.status).not.toBe(400);
+    });
+
+    it('refuses policyId on another provider', async () => {
+      const res = await app.request('/dns-security/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'cloudflare', name: 'CF', apiKey: 'k', config: { accountId: 'acct-1', policyId: '7' } })
+      });
+      expect(res.status).toBe(400);
+    });
   });
 
   it('accepts pihole apiEndpoint on RFC1918 (legitimate on-prem)', async () => {
@@ -1319,6 +1356,65 @@ describe('dns security routes', () => {
       it('rejects an unknown piholeVersion', async () => {
         const res = await patch({ piholeVersion: 'v7' });
         expect(res.status).toBe(400);
+      });
+
+      // #12699 — DNSFilter's organization id and policy id are editable after
+      // create, so an integration saved by the first version can be repaired
+      // in place (re-creating it would drop its policies and history).
+      describe('DNSFilter organizationId / policyId (#12699)', () => {
+        const dnsfilterRow = { ...activeRow, provider: 'dnsfilter', config: { retentionDays: 30 } };
+
+        it('sets policyId, keeping the rest of the config', async () => {
+          mockIntegrationLookup(dnsfilterRow);
+          const set = mockUpdate();
+
+          const res = await patch({ policyId: '7' });
+
+          expect(res.status).toBe(200);
+          expect(set).toHaveBeenCalledWith(expect.objectContaining({ config: { retentionDays: 30, policyId: '7' } }));
+          expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+            action: 'dns.integration.update',
+            details: { policyId: { from: null, to: '7' } }
+          }));
+        });
+
+        it('sets organizationId and drops the legacy accountId it replaces', async () => {
+          mockIntegrationLookup({ ...dnsfilterRow, config: { accountId: 'acct-abc', blocklistId: 'bl-1' } });
+          const set = mockUpdate();
+
+          const res = await patch({ organizationId: '1001' });
+
+          expect(res.status).toBe(200);
+          // blocklistId is left as it was: nothing reads it, and it is not ours to delete.
+          expect(set).toHaveBeenCalledWith(expect.objectContaining({ config: { organizationId: '1001', blocklistId: 'bl-1' } }));
+          expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+            details: { organizationId: { from: 'acct-abc', to: '1001' } }
+          }));
+        });
+
+        it('null clears organizationId and the legacy accountId, and clears policyId', async () => {
+          mockIntegrationLookup({ ...dnsfilterRow, config: { accountId: '55', policyId: '7' } });
+          const set = mockUpdate();
+
+          const res = await patch({ organizationId: null, policyId: null });
+
+          expect(res.status).toBe(200);
+          expect(set).toHaveBeenCalledWith(expect.objectContaining({ config: {} }));
+        });
+
+        it.each([{ policyId: '7a' }, { organizationId: '-1' }, { policyId: 7 }])('rejects %j', async (body) => {
+          const res = await patch(body);
+          expect(res.status).toBe(400);
+          expect(db.update).not.toHaveBeenCalled();
+        });
+
+        it.each([{ policyId: '7' }, { organizationId: '1001' }])('refuses %j on a non-DNSFilter integration', async (body) => {
+          mockIntegrationLookup({ ...activeRow, provider: 'umbrella' });
+          const res = await patch(body);
+          expect(res.status).toBe(400);
+          expect(await res.json()).toMatchObject({ error: expect.stringMatching(/DNSFilter/) });
+          expect(db.update).not.toHaveBeenCalled();
+        });
       });
 
       it('rejects keys other than retentionDays', async () => {
