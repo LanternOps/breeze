@@ -1448,6 +1448,34 @@ describe('backup dashboard routes', () => {
       expect(sessionsChain.groupBy).toHaveBeenCalledWith('backup_storage_sessions.job_id');
     });
 
+    it('status reports when a running job is held back by an interrupted writer (#12693)', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      const horizon = new Date(Date.now() + 3 * 60_000);
+      const mine = (id: string, jobId: string, reservation: string) => ({
+        id, jobId, reservationSnapshotId: reservation, revokedAt: null, createdAt: new Date(), urlHorizonAt: null, deletingSince: null,
+      });
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'job-waiting', transferredSize: 0 }),
+          inFlight({ id: 'job-moving', startedAt: new Date('2026-11-05T10:02:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(chainMock([])) // resumedAt
+        .mockReturnValueOnce(chainMock([mine('s-new', 'job-waiting', 'snap-1'), mine('s-mv', 'job-moving', 'snap-2')]))
+        .mockReturnValueOnce(chainMock([
+          mine('s-new', 'job-waiting', 'snap-1'),
+          { ...mine('s-old', 'job-old', 'snap-1'), revokedAt: new Date(), createdAt: new Date(Date.now() - 600_000), urlHorizonAt: horizon },
+          mine('s-mv', 'job-moving', 'snap-2'),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      const byId = Object.fromEntries(data.activeJobs.map((j: { id: string }) => [j.id, j]));
+      expect(byId['job-waiting'].writerWaitUntil).toBe(new Date(horizon.getTime() + 15 * 60_000).toISOString());
+      expect(byId['job-moving'].writerWaitUntil).toBeNull();
+    });
+
     it('orders same-status jobs by startedAt then createdAt ascending', async () => {
       resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
       selectMock

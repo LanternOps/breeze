@@ -74,6 +74,26 @@ describe('DeviceBackupActiveJobs', () => {
     expect(within(cards[1]!).queryByTestId('device-backup-active-job-eta')).toBeNull();
   });
 
+  it('says why a run sits at 0 bytes while an interrupted run is released, with the time left (#12693)', () => {
+    render(
+      <DeviceBackupActiveJobs
+        jobs={[job({ totalSize: null, totalFiles: null, transferredSize: 0, writerWaitUntil: '2026-11-05T12:03:10.000Z' })]}
+      />,
+    );
+    const card = screen.getByTestId('device-backup-active-job');
+    expect(card.getAttribute('data-phase')).toBe('waiting_for_previous_run');
+    expect(within(card).getByText('Waiting for an interrupted run to be released')).toBeTruthy();
+    expect(within(card).getByTestId('device-backup-active-job-wait').textContent).toBe('starts in about 3m');
+    expect(within(card).queryByTestId('device-backup-active-job-eta')).toBeNull();
+  });
+
+  it('shows no wait message once the wait time has passed', () => {
+    render(<DeviceBackupActiveJobs jobs={[job({ writerWaitUntil: '2026-11-05T11:59:00.000Z' })]} />);
+    const card = screen.getByTestId('device-backup-active-job');
+    expect(card.getAttribute('data-phase')).toBe('backing_up');
+    expect(within(card).queryByTestId('device-backup-active-job-wait')).toBeNull();
+  });
+
   it('labels a pending job the device has not picked up yet', () => {
     render(<DeviceBackupActiveJobs jobs={[job({ status: 'pending', startedAt: null, lastKeepaliveAt: null, lastProgressAt: null })]} />);
     const card = screen.getByTestId('device-backup-active-job');

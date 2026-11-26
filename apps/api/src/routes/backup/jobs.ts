@@ -11,7 +11,7 @@ import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
 import { queueBackupStopCommand } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { loadJobResumedAt, resolveScopedOrgId } from './helpers';
+import { loadJobResumedAt, loadJobWriterWaits, resolveScopedOrgId } from './helpers';
 import { backupJobHistoryOrderBy } from '../../services/backupJobOrdering';
 import { jobListSchema } from './schemas';
 import { classifyBackupFailureDetail, deriveBackupJobDataAccounting } from '@breeze/shared';
@@ -136,11 +136,13 @@ jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMIS
     // requests. See services/backupJobOrdering.
     .orderBy(...backupJobHistoryOrderBy);
 
+  const writerWaits = await loadJobWriterWaits(rows.filter((r) => r.job.status === 'running').map((r) => r.job.id));
   return c.json({
     data: rows.map((r) => ({
       ...toJobResponse(r.job),
       deviceName: r.deviceName ?? r.deviceHostname ?? null,
       configName: r.configName ?? null,
+      writerWaitUntil: writerWaits.get(r.job.id)?.toISOString() ?? null,
     })),
   });
 });
@@ -174,11 +176,13 @@ jobsRoutes.get('/jobs/:id', requirePermission(PERMISSIONS.ORGS_READ.resource, PE
     return c.json({ error: 'Device not found or access denied' }, 403);
   }
   const resumedAt = await loadJobResumedAt([row.job.id]);
+  const writerWaits = await loadJobWriterWaits(row.job.status === 'running' ? [row.job.id] : []);
   return c.json({
     ...toJobResponse(row.job),
     deviceName: row.deviceName ?? row.deviceHostname ?? null,
     configName: row.configName ?? null,
     resumedAt: resumedAt.get(row.job.id)?.toISOString() ?? null,
+    writerWaitUntil: writerWaits.get(row.job.id)?.toISOString() ?? null,
   });
 });
 

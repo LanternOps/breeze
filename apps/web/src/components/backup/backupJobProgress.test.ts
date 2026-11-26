@@ -6,6 +6,7 @@ import {
   formatEta,
   nextSpeedSample,
   stallState,
+  writerWaitRemainingMs,
 } from './backupJobProgress';
 
 const NOW = Date.parse('2026-11-05T12:00:00.000Z');
@@ -119,6 +120,38 @@ describe('deriveActivePhase', () => {
 
   it('backing_up: running with a total', () => {
     expect(deriveActivePhase({ ...base, status: 'running', transferredSize: 10, totalSize: 4000 })).toBe('backing_up');
+  });
+});
+
+describe('writer wait (#12693)', () => {
+  const base = { lastKeepaliveAt: iso(1000), resumedAt: null, transferredSize: 0, totalSize: null };
+  const until = (msAhead: number) => new Date(NOW + msAhead).toISOString();
+
+  it('deriveActivePhase: a pending job keeps its queue phase even with a wait time', () => {
+    expect(deriveActivePhase({ ...base, status: 'pending', lastKeepaliveAt: null, writerWaitUntil: until(60_000) }, NOW)).toBe('waiting_for_device');
+  });
+
+  it('writerWaitRemainingMs: milliseconds left while a running job waits', () => {
+    expect(writerWaitRemainingMs({ status: 'running', writerWaitUntil: until(90_000) }, NOW)).toBe(90_000);
+  });
+
+  it('writerWaitRemainingMs: null when absent, past, unparsable or not running', () => {
+    expect(writerWaitRemainingMs({ status: 'running', writerWaitUntil: null }, NOW)).toBeNull();
+    expect(writerWaitRemainingMs({ status: 'running' }, NOW)).toBeNull();
+    expect(writerWaitRemainingMs({ status: 'running', writerWaitUntil: until(-1) }, NOW)).toBeNull();
+    expect(writerWaitRemainingMs({ status: 'running', writerWaitUntil: 'garbage' }, NOW)).toBeNull();
+    expect(writerWaitRemainingMs({ status: 'pending', writerWaitUntil: until(90_000) }, NOW)).toBeNull();
+  });
+
+  it('deriveActivePhase: waiting_for_previous_run wins over scanning and resuming while the wait is live', () => {
+    expect(deriveActivePhase({ ...base, status: 'running', writerWaitUntil: until(60_000) }, NOW)).toBe('waiting_for_previous_run');
+    expect(
+      deriveActivePhase({ ...base, status: 'running', resumedAt: iso(1000), writerWaitUntil: until(60_000) }, NOW),
+    ).toBe('waiting_for_previous_run');
+  });
+
+  it('deriveActivePhase: falls back once the wait has passed', () => {
+    expect(deriveActivePhase({ ...base, status: 'running', writerWaitUntil: until(-1000) }, NOW)).toBe('scanning');
   });
 });
 

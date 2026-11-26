@@ -12,6 +12,7 @@ import {
   formatEta,
   nextSpeedSample,
   stallState,
+  writerWaitRemainingMs,
   type ProgressSample,
 } from './backupJobProgress';
 import '../../lib/i18n';
@@ -63,7 +64,8 @@ export default function DeviceBackupActiveJobs({ jobs, onStop, stoppingId }: Dev
       <h3 className="mb-4 font-semibold">{t('deviceBackupTab.activeJobs.title')}</h3>
       <ul className="space-y-3">
         {jobs.map((job) => {
-          const phase = deriveActivePhase(job);
+          const phase = deriveActivePhase(job, progress.now);
+          const waitMs = writerWaitRemainingMs(job, progress.now);
           const { stalled, minutes } = stallState(job, progress.now);
           const bps = stalled ? undefined : progress.speeds.get(job.id);
           // No speed means no ETA: stalled above, and a resuming run has moved no bytes.
@@ -99,6 +101,15 @@ export default function DeviceBackupActiveJobs({ jobs, onStop, stoppingId }: Dev
                       </span>
                     )}
                   </div>
+                  {waitMs != null && (
+                    <p
+                      data-testid="device-backup-active-job-wait"
+                      title={t('backupJobList.writerWaitExplain')}
+                      className="text-xs text-muted-foreground"
+                    >
+                      {t('backupJobList.writerWaitRemaining', { value: formatEta(waitMs) })}
+                    </p>
+                  )}
                   {isKnownMode(mode) && (
                     <p className="text-xs text-muted-foreground">
                       {t(/* i18n-dynamic */ `deviceBackupTab.activeJobs.mode.${mode}`)}

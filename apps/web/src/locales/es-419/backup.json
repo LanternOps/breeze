@@ -42,6 +42,9 @@
     "filesProgress": "{{done}} / {{total}} archivos",
     "speedValue": "{{value}}/s",
     "etaValue": "faltan unos {{value}}",
+    "writerWaitLabel": "Esperando a que se libere la ejecución interrumpida",
+    "writerWaitRemaining": "empieza en unos {{value}}",
+    "writerWaitExplain": "Una ejecución anterior de esta copia de seguridad se interrumpió. La siguiente espera hasta que la anterior ya no pueda escribir en la misma instantánea, para que nunca se mezclen datos. No hay ningún error; la copia empieza sola.",
     "created": "Creado",
     "updated": "Actualizado",
     "files": "Archivos",
@@ -228,6 +231,7 @@
     "activePhase": {
       "waiting_for_device": "Enviado al dispositivo, esperando a que comience",
       "queued_on_device": "Esperando a que termine otro respaldo en este dispositivo",
+      "waiting_for_previous_run": "Esperando a que se libere una ejecución interrumpida",
       "resuming": "Reanudando un respaldo interrumpido",
       "scanning": "Analizando archivos",
       "backing_up": "Respaldando"

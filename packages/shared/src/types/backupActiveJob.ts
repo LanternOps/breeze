@@ -19,4 +19,10 @@ export type ActiveBackupJob = {
   lastKeepaliveAt: string | null;
   /** Latest `resumed_at` of this job's `snapshot_write` storage sessions. */
   resumedAt: string | null;
+  /**
+   * While a running job waits for an interrupted earlier run to release the
+   * snapshot (#12693): when it may start uploading. Null when it is not
+   * waiting. Absent on an older API during a rolling deploy.
+   */
+  writerWaitUntil?: string | null;
 };

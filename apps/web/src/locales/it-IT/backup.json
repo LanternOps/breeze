@@ -42,6 +42,9 @@
     "filesProgress": "{{done}} / {{total}} file",
     "speedValue": "{{value}}/s",
     "etaValue": "circa {{value}} rimanenti",
+    "writerWaitLabel": "In attesa del rilascio dell’esecuzione interrotta",
+    "writerWaitRemaining": "inizia tra circa {{value}}",
+    "writerWaitExplain": "Un’esecuzione precedente di questo backup è stata interrotta. La successiva attende che la prima non possa più scrivere nello stesso snapshot, così i dati non si mescolano mai. Non c’è alcun guasto: il backup parte da solo.",
     "created": "Creato",
     "updated": "Aggiornato",
     "files": "File",
@@ -228,6 +231,7 @@
     "activePhase": {
       "waiting_for_device": "Inviato al dispositivo, in attesa dell'avvio",
       "queued_on_device": "In attesa che termini un altro backup su questo dispositivo",
+      "waiting_for_previous_run": "In attesa del rilascio di un’esecuzione interrotta",
       "resuming": "Ripresa di un backup interrotto",
       "scanning": "Analisi dei file",
       "backing_up": "Backup in esecuzione"

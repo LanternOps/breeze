@@ -42,6 +42,9 @@
     "filesProgress": "{{done}} / {{total}} dosyalar",
     "speedValue": "{{value}}/s",
     "etaValue": "yaklaşık {{value}} kaldı",
+    "writerWaitLabel": "Kesintiye uğrayan çalıştırmanın serbest bırakılması bekleniyor",
+    "writerWaitRemaining": "yaklaşık {{value}} içinde başlayacak",
+    "writerWaitExplain": "Bu yedeklemenin önceki bir çalıştırması kesintiye uğradı. Sonraki çalıştırma, öncekinin aynı anlık görüntüye artık yazamayacağı ana kadar bekler; böylece veriler asla karışmaz. Bir sorun yok; yedekleme kendiliğinden başlar.",
     "created": "Oluşturuldu",
     "updated": "Güncellendi",
     "files": "Dosyalar",
@@ -228,6 +231,7 @@
     "activePhase": {
       "waiting_for_device": "Cihaza gönderildi, başlaması bekleniyor",
       "queued_on_device": "Bu cihazdaki başka bir yedeklemenin bitmesi bekleniyor",
+      "waiting_for_previous_run": "Kesintiye uğrayan bir çalıştırmanın serbest bırakılması bekleniyor",
       "resuming": "Yarıda kalan bir yedekleme sürdürülüyor",
       "scanning": "Dosyalar taranıyor",
       "backing_up": "Yedekleniyor"

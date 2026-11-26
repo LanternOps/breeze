@@ -414,6 +414,58 @@ describe('backup jobs routes', () => {
     expect((await res.json()).resumedAt).toBeNull();
   });
 
+  describe('writerWaitUntil (#12693)', () => {
+    const horizon = () => new Date(Date.now() + 3 * 60_000);
+    const sess = (id: string, over: Record<string, unknown> = {}) => ({
+      id, jobId: 'job-1', reservationSnapshotId: 'snap-1', revokedAt: null, createdAt: new Date(), urlHorizonAt: null, deletingSince: null, ...over,
+    });
+    const row = (status: string) => ({
+      job: makeJob({ status }), deviceName: 'Device', deviceHostname: 'host', siteId: null, configName: 'Primary Backup',
+    });
+
+    it('GET /jobs/:id says when a running job held back by an interrupted writer may start', async () => {
+      const h = horizon();
+      selectMock
+        .mockReturnValueOnce(makeSelectChain([row('running')]))
+        .mockReturnValueOnce(makeSelectChain([])) // resumedAt
+        .mockReturnValueOnce(makeSelectChain([sess('s-new')]))
+        .mockReturnValueOnce(makeSelectChain([
+          sess('s-new'),
+          sess('s-old', { jobId: 'job-0', revokedAt: new Date(), createdAt: new Date(Date.now() - 600_000), urlHorizonAt: h }),
+        ]));
+
+      const res = await app.request('/jobs/job-1');
+
+      expect((await res.json()).writerWaitUntil).toBe(new Date(h.getTime() + 15 * 60_000).toISOString());
+    });
+
+    it('GET /jobs/:id has no wait for a finished job and looks up no sessions for it', async () => {
+      selectMock
+        .mockReturnValueOnce(makeSelectChain([row('completed')]))
+        .mockReturnValueOnce(makeSelectChain([]));
+
+      const res = await app.request('/jobs/job-1');
+
+      expect((await res.json()).writerWaitUntil).toBeNull();
+      expect(selectMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('GET /jobs carries the wait on the running row', async () => {
+      const h = horizon();
+      selectMock
+        .mockReturnValueOnce(makeSelectChain([row('running')]))
+        .mockReturnValueOnce(makeSelectChain([sess('s-new')]))
+        .mockReturnValueOnce(makeSelectChain([
+          sess('s-new'),
+          sess('s-old', { jobId: 'job-0', urlHorizonAt: h }),
+        ]));
+
+      const res = await app.request('/jobs');
+
+      expect((await res.json()).data[0].writerWaitUntil).toBe(new Date(h.getTime() + 15 * 60_000).toISOString());
+    });
+  });
+
   it('GET /jobs returns dataAccounting per row, a stored full-run reason included, and looks up no sessions', async () => {
     selectMock.mockReturnValueOnce(makeSelectChain([
       {

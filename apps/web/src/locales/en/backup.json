@@ -42,6 +42,9 @@
     "filesProgress": "{{done}} / {{total}} files",
     "speedValue": "{{value}}/s",
     "etaValue": "about {{value}} left",
+    "writerWaitLabel": "Waiting for the interrupted run to be released",
+    "writerWaitRemaining": "starts in about {{value}}",
+    "writerWaitExplain": "An earlier run of this backup was interrupted. The next run waits until the earlier one can no longer write to the same snapshot, so the two never mix data. Nothing is wrong; the backup starts by itself.",
     "created": "Created",
     "updated": "Updated",
     "files": "Files",
@@ -228,6 +231,7 @@
     "activePhase": {
       "waiting_for_device": "Sent to the device, waiting for it to start",
       "queued_on_device": "Waiting for another backup on this device to finish",
+      "waiting_for_previous_run": "Waiting for an interrupted run to be released",
       "resuming": "Resuming an interrupted backup",
       "scanning": "Scanning files",
       "backing_up": "Backing up"

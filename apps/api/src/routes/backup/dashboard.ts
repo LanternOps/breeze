@@ -28,7 +28,7 @@ import {
   type BackupFailureCategory,
   type BackupFailureCause,
 } from '@breeze/shared';
-import { getNextRun, loadJobResumedAt, resolveScopedOrgId } from './helpers';
+import { getNextRun, loadJobResumedAt, loadJobWriterWaits, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 import {
   getFirstPartyCoverageForDevices,
@@ -761,6 +761,7 @@ async function loadActiveBackupJobs(jobs: BackupJobRow[]): Promise<ActiveBackupJ
   if (active.length === 0) return [];
 
   const resumedByJob = await loadJobResumedAt(active.map((j) => j.id));
+  const waitByJob = await loadJobWriterWaits(active.filter((j) => j.status === 'running').map((j) => j.id));
 
   return active.map((j) => ({
     id: j.id,
@@ -776,6 +777,7 @@ async function loadActiveBackupJobs(jobs: BackupJobRow[]): Promise<ActiveBackupJ
     lastProgressAt: j.lastProgressAt?.toISOString() ?? null,
     lastKeepaliveAt: j.lastKeepaliveAt?.toISOString() ?? null,
     resumedAt: resumedByJob.get(j.id)?.toISOString() ?? null,
+    writerWaitUntil: waitByJob.get(j.id)?.toISOString() ?? null,
   }));
 }
 

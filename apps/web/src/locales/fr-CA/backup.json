@@ -42,6 +42,9 @@
     "filesProgress": "{{done}} / {{total}} fichiers",
     "speedValue": "{{value}}/s",
     "etaValue": "encore environ {{value}}",
+    "writerWaitLabel": "En attente de la libération de l’exécution interrompue",
+    "writerWaitRemaining": "démarre dans environ {{value}}",
+    "writerWaitExplain": "Une exécution précédente de cette sauvegarde a été interrompue. La suivante attend que la première ne puisse plus écrire dans le même instantané, afin que les données ne se mélangent jamais. Rien n’est défectueux; la sauvegarde démarre d’elle-même.",
     "created": "Création",
     "updated": "Mise à jour",
     "files": "Dossiers",
@@ -228,6 +231,7 @@
     "activePhase": {
       "waiting_for_device": "Envoyée à l'appareil, en attente de démarrage",
       "queued_on_device": "En attente de la fin d'une autre sauvegarde sur cet appareil",
+      "waiting_for_previous_run": "En attente de la libération d’une exécution interrompue",
       "resuming": "Reprise d’une sauvegarde interrompue",
       "scanning": "Analyse des fichiers",
       "backing_up": "Sauvegarde en cours"

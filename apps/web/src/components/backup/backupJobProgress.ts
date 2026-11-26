@@ -69,20 +69,44 @@ export function estimateRemainingMs(
   return ((total - done) / bps) * 1000;
 }
 
-export type ActivePhase = 'waiting_for_device' | 'queued_on_device' | 'resuming' | 'scanning' | 'backing_up';
+/**
+ * Milliseconds until a running job held back by an interrupted earlier run
+ * may start uploading (#12693), or null when it is not waiting. The API sends
+ * the instant (`writerWaitUntil`); once it has passed the wait is over, so a
+ * stale poll never keeps the message up.
+ */
+export function writerWaitRemainingMs(
+  job: { status: string; writerWaitUntil?: string | null },
+  now: number,
+): number | null {
+  if (job.status !== 'running' || !job.writerWaitUntil) return null;
+  const until = Date.parse(job.writerWaitUntil);
+  if (!Number.isFinite(until) || until <= now) return null;
+  return until - now;
+}
+
+export type ActivePhase =
+  | 'waiting_for_device'
+  | 'queued_on_device'
+  | 'waiting_for_previous_run'
+  | 'resuming'
+  | 'scanning'
+  | 'backing_up';
 
 /**
  * The phase worth showing, derived from columns that already exist (plan
  * Design 4): the agent's own phase is not persisted.
  */
 export function deriveActivePhase(
-  job: Pick<ActiveBackupJob, 'status' | 'lastKeepaliveAt' | 'resumedAt' | 'transferredSize' | 'totalSize'>,
+  job: Pick<ActiveBackupJob, 'status' | 'lastKeepaliveAt' | 'resumedAt' | 'transferredSize' | 'totalSize' | 'writerWaitUntil'>,
+  now: number = Date.now(),
 ): ActivePhase {
   if (job.status === 'pending') {
     // A keepalive on a pending job means the device has it and is running
     // another backup first (one mode at a time per device, #11012).
     return job.lastKeepaliveAt ? 'queued_on_device' : 'waiting_for_device';
   }
+  if (writerWaitRemainingMs(job, now) != null) return 'waiting_for_previous_run';
   if (job.resumedAt && !job.transferredSize) return 'resuming';
   if (!((job.totalSize ?? 0) > 0)) return 'scanning';
   return 'backing_up';
