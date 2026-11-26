@@ -85,6 +85,7 @@
     "eventTypes": {
       "deviceOnline": "Appareil en ligne",
       "deviceOffline": "Appareil hors ligne",
+      "deviceEnrolled": "Appareil inscrit",
       "alertTriggered": "Alerte déclenchée",
       "alertResolved": "Alerte résolue",
       "scriptCompleted": "Script terminé",

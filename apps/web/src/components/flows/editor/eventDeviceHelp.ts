@@ -15,6 +15,7 @@ export type EventDeviceBehavior = 'always' | 'no_run' | 'fails';
 export const EVENT_DEVICE_BEHAVIOR: Readonly<Record<string, EventDeviceBehavior>> = {
   'device.online': 'always',
   'device.offline': 'always',
+  'device.enrolled': 'always',
   'alert.triggered': 'no_run',
   'alert.resolved': 'no_run',
   'script.completed': 'always',

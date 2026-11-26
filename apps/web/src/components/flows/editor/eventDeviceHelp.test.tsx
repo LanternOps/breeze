@@ -28,7 +28,7 @@ describe('event device classification', () => {
     for (const event of ['huntress.incident_created', 'huntress.incident_updated', 'huntress.agent_offline', 's1.threat_detected', 's1.threat_action_completed']) {
       expect(eventDeviceBehavior(event)).toBe('fails');
     }
-    for (const event of ['device.online', 'device.offline', 'script.completed', 'script.failed', 'policy.violation', 's1.device_isolated']) {
+    for (const event of ['device.online', 'device.offline', 'script.completed', 'script.failed', 'policy.violation', 's1.device_isolated', 'device.enrolled']) {
       expect(eventDeviceBehavior(event)).toBe('always');
     }
   });

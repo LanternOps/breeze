@@ -59,7 +59,7 @@ The **Move to Flows** column on the **Jobs** page shows how each Job would move:
 
 4. **Choose a trigger type.** Select one of the four trigger cards:
    - **Schedule** -- runs on a recurring cron schedule. Use the cron expression field or click a quick preset (Every 15 min, Every hour, Daily 9 AM, Weekdays 9 AM, Weekly Sunday). A plain-language description of the schedule appears below the field.
-   - **Event** -- runs when a platform event occurs. Select the event type from the dropdown (Device Online, Device Offline, Alert Triggered, Alert Resolved, Script Completed, Script Failed, Policy Violation).
+   - **Event** -- runs when a platform event occurs. Select the event type from the dropdown (Device Online, Device Offline, Device enrolled, Alert Triggered, Alert Resolved, Script Completed, Script Failed, Policy Violation).
    - **Webhook** -- runs when an external system sends an HTTP POST to the automation's generated URL. After saving, the webhook URL appears and can be copied with one click. Optionally set a webhook secret for authentication.
    - **Manual** -- runs only when you trigger it from the UI or API.
 
@@ -72,7 +72,7 @@ The **Move to Flows** column on the **Jobs** page shows how each Job would move:
    - **Execute Command** -- enter a raw shell command.
    - **Deploy Software** -- select a software item from the catalog. Devices already on the latest version or on an unsupported OS are skipped automatically.
 
-   Actions execute in order. Add multiple actions by clicking **Add Action** again. Each action is numbered and can be removed individually.
+   Actions are dispatched in order, but an action does not wait for the previous one to finish. A script that is queued, delivered or still running does not hold back the next action, so a later action can start before an earlier script has completed. Add multiple actions by clicking **Add Action** again. Each action is numbered and can be removed individually.
 
 7. **Set the failure policy.** Choose what happens if an action fails:
    - **Stop Execution** -- abort immediately.

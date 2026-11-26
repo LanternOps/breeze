@@ -189,6 +189,7 @@ const getTriggerTypeOptions = (t: ScriptsT): { value: TriggerType; label: string
 export const getEventTypeOptions = (t: ScriptsT) => [
   { value: 'device.online', label: t('automationForm.eventTypes.deviceOnline') },
   { value: 'device.offline', label: t('automationForm.eventTypes.deviceOffline') },
+  { value: 'device.enrolled', label: t('automationForm.eventTypes.deviceEnrolled') },
   { value: 'alert.triggered', label: t('automationForm.eventTypes.alertTriggered') },
   { value: 'alert.resolved', label: t('automationForm.eventTypes.alertResolved') },
   { value: 'script.completed', label: t('automationForm.eventTypes.scriptCompleted') },
@@ -297,6 +298,7 @@ export default function AutomationForm({
     && conditionMode === 'advanced'
     && (automationTargetConfig.type === 'groups' || automationTargetConfig.type === 'devices');
   const watchTriggerType = watch('triggerType');
+  const watchEventType = watch('eventType');
   const watchCronExpression = watch('cronExpression');
   const watchOnFailure = watch('onFailure');
 
@@ -487,6 +489,10 @@ export default function AutomationForm({
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('eventType')}
               >
+                {/* A stored event type the list does not offer stays selectable, so opening and saving cannot drop it. */}
+                {watchEventType && !eventTypeOptions.some(opt => opt.value === watchEventType) && (
+                  <option value={watchEventType}>{watchEventType}</option>
+                )}
                 {eventTypeOptions.map(opt => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}

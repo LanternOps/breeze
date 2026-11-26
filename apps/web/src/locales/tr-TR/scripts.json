@@ -85,6 +85,7 @@
     "eventTypes": {
       "deviceOnline": "Cihaz Çevrimiçi",
       "deviceOffline": "Cihaz Çevrimdışı",
+      "deviceEnrolled": "Cihaz kaydedildi",
       "alertTriggered": "Uyarı Tetiklendi",
       "alertResolved": "Uyarı Çözümlendi",
       "scriptCompleted": "Komut Dosyası Tamamlandı",

@@ -140,6 +140,7 @@
         "weeklySunday": "Ogni settimana (domenica)",
         "deviceOffline": "Dispositivo offline",
         "deviceOnline": "Dispositivo online",
+        "deviceEnrolled": "Dispositivo registrato",
         "alertTriggered": "Avviso attivato",
         "alertResolved": "Avviso risolto",
         "complianceFailed": "Conformità non riuscita",
