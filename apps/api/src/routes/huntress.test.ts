@@ -159,6 +159,7 @@ vi.mock('../services/securityIntegrationDisconnect', () => ({
   activeIntegrationIds: vi.fn(async (_vendor: string, ids: string[]) => new Set(ids)),
   disconnectHuntressIntegration: vi.fn(),
   findReconnectableHuntressIntegration: vi.fn(async () => null),
+  writeOrActiveIndexConflict: vi.fn(async (_constraint: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -181,6 +182,7 @@ import {
   activeIntegrationIds,
   disconnectHuntressIntegration,
   findReconnectableHuntressIntegration,
+  writeOrActiveIndexConflict,
 } from '../services/securityIntegrationDisconnect';
 
 const WEBHOOK_INTEGRATION_ID = '33333333-3333-4333-8333-333333333333';
@@ -222,11 +224,26 @@ function standardWebhookHeaders(body: string, key: Buffer = SW_KEY): {
   };
 }
 
+// POST /integration reads twice: the unlocked "seen" probe (`.limit(1)`), then,
+// only when it found a row, the locked re-read (`.for('no key update')`).
+function mockSeenSelect(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => rows) })) })),
+  } as any);
+}
+function mockLockedSelect(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({ where: vi.fn(() => ({ for: vi.fn(async () => rows) })) })),
+  } as any);
+}
+
 describe('huntress routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(writeOrActiveIndexConflict).mockReset();
+    vi.mocked(writeOrActiveIndexConflict).mockImplementation(async (_c: string, fn: () => Promise<unknown>) => fn() as any);
     redisState.store.clear();
     redisState.available = true;
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
@@ -351,9 +368,7 @@ describe('huntress routes', () => {
     });
 
     it('POST reconnect reactivates the disconnected row and carries no stored secret over', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
-      } as any);
+      mockSeenSelect([]);
       vi.mocked(findReconnectableHuntressIntegration).mockResolvedValueOnce({ id: INTEGRATION });
       const set = vi.fn();
       vi.mocked(db.update).mockReturnValueOnce({
@@ -385,6 +400,53 @@ describe('huntress routes', () => {
         webhookSecretEncrypted: null,
       }));
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'huntress.integration.reconnect' }));
+    });
+
+    const DISCONNECTED_MSG = 'Huntress was disconnected while this change was being saved. Connect it again to make changes.';
+    const CONNECTED_MSG = 'Huntress was connected by another request at the same time. Reload to see the saved integration.';
+    const postSave = () => app.request('/huntress/integration', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Huntress', apiKey: 'new-key' }),
+    });
+
+    it('POST edit answers 409 when the integration is disconnected between the probe and the locked read', async () => {
+      mockSeenSelect([{ id: INTEGRATION }]);
+      mockLockedSelect([]);
+
+      const res = await postSave();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(DISCONNECTED_MSG);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('POST answers 409 when a concurrent connect wins the active-partner index', async () => {
+      mockSeenSelect([]);
+      vi.mocked(writeOrActiveIndexConflict).mockResolvedValueOnce('conflict' as any);
+
+      const res = await postSave();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(CONNECTED_MSG);
+      expect(writeOrActiveIndexConflict).toHaveBeenCalledWith('huntress_integrations_partner_active_idx', expect.any(Function));
+    });
+
+    it('POST reconnect answers 409 when the reconnect update matches no row', async () => {
+      mockSeenSelect([]);
+      vi.mocked(findReconnectableHuntressIntegration).mockResolvedValueOnce({ id: INTEGRATION });
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn(() => ({ returning: vi.fn(async () => []) })),
+        }),
+      } as any);
+
+      const res = await postSave();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(CONNECTED_MSG);
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 

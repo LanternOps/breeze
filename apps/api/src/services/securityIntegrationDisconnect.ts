@@ -21,8 +21,17 @@
  * active integration, reactivates the partner's most recently disconnected row
  * instead of inserting a new one. History and the site/org mappings stay on
  * one integration id, and the `(partner_id) WHERE is_active` unique index is
- * never contended. A reconnect is treated like a first connect: every secret
- * must be supplied again; nothing stored on the old row is revived.
+ * normally uncontended. A reconnect is treated like a first connect: every
+ * secret must be supplied again; nothing stored on the old row is revived,
+ * including S1 site registration tokens, which a reconnect clears.
+ *
+ * Races. An edit locks the active row before it reads the secrets it keeps,
+ * so it cannot write them back over a disconnect; one that saw the row active
+ * and then lost it to a disconnect answers 409. Two connects or reconnects
+ * that race on the unique index answer 409 for the loser. Disconnect locks the
+ * integration row first and its mappings second; the S1 sync takes the same
+ * integration lock before it writes any mapping. A sync that finishes after a
+ * disconnect writes no status onto the disconnected row.
  *
  * The writes below run in the caller's DB context. For a partner-scope caller
  * forced RLS fences them to that partner; for a system-scope caller the
@@ -31,6 +40,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransactionIfHeld, withSystemDbAccessContext } from '../db';
 import { huntressIntegrations, s1Integrations, s1OrgMappings } from '../db/schema';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 export type DisconnectedIntegration = { id: string; partnerId: string; name: string };
 
@@ -46,10 +56,7 @@ export async function disconnectS1Integration(partnerId: string): Promise<Discon
 
     // Site registration tokens enroll agents into the vendor console. The
     // site → org assignments themselves are kept for a reconnect.
-    await db
-      .update(s1OrgMappings)
-      .set({ registrationToken: null, updatedAt: now })
-      .where(and(eq(s1OrgMappings.integrationId, row.id), eq(s1OrgMappings.partnerId, partnerId)));
+    await clearS1SiteRegistrationTokens(row.id, partnerId);
     return row;
   });
 }
@@ -67,6 +74,38 @@ export async function disconnectHuntressIntegration(partnerId: string): Promise<
     .where(and(eq(huntressIntegrations.partnerId, partnerId), eq(huntressIntegrations.isActive, true)))
     .returning({ id: huntressIntegrations.id, partnerId: huntressIntegrations.partnerId, name: huntressIntegrations.name });
   return row ?? null;
+}
+
+/**
+ * Run a connect/edit/reconnect write in a savepoint and answer a lost race on
+ * the partner's `(partner_id) WHERE is_active` unique index as 'conflict'
+ * instead of a 500. The savepoint keeps the failed statement from poisoning
+ * the request transaction, so the caller can still answer 409.
+ */
+export async function writeOrActiveIndexConflict<T>(
+  constraint: 's1_integrations_partner_active_idx' | 'huntress_integrations_partner_active_idx',
+  write: () => Promise<T>,
+): Promise<T | 'conflict'> {
+  try {
+    return await withDbTransactionIfHeld(write);
+  } catch (error) {
+    if (isPgUniqueViolation(error, constraint)) return 'conflict';
+    throw error;
+  }
+}
+
+/**
+ * Reconnect clears every site registration token stored for the integration.
+ * A row deactivated before #12691 can still hold them, and a site the console
+ * no longer returns would otherwise keep its old token; the first sync after
+ * the reconnect stores fresh ones. Runs after the integration row is updated,
+ * so it locks integration then mappings, the same order as disconnect.
+ */
+export async function clearS1SiteRegistrationTokens(integrationId: string, partnerId: string): Promise<void> {
+  await db
+    .update(s1OrgMappings)
+    .set({ registrationToken: null, updatedAt: new Date() })
+    .where(and(eq(s1OrgMappings.integrationId, integrationId), eq(s1OrgMappings.partnerId, partnerId)));
 }
 
 /** The row a reconnect reactivates, or null when the partner never had one. */

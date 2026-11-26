@@ -40,7 +40,13 @@ import {
   activeIntegrationIds,
   disconnectHuntressIntegration,
   findReconnectableHuntressIntegration,
+  writeOrActiveIndexConflict,
 } from '../services/securityIntegrationDisconnect';
+
+const HUNTRESS_DISCONNECTED_DURING_SAVE =
+  'Huntress was disconnected while this change was being saved. Connect it again to make changes.';
+const HUNTRESS_CONNECTED_CONCURRENTLY =
+  'Huntress was connected by another request at the same time. Reload to see the saved integration.';
 
 import { isUnassignedPoolOrgType, PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -454,14 +460,29 @@ huntressRoutes.post(
       return c.json({ error: 'To disconnect Huntress, use DELETE /huntress/integration' }, 400);
     }
 
-    const [existing] = await db
-      .select()
+    // An edit keeps the stored secrets it is not given, so it must not act on a
+    // row a disconnect cleared after this request read it. Lock the active row
+    // for the rest of the request (a disconnect waits for it, or has already
+    // committed and the row is gone). An edit that saw the row active and then
+    // lost it answers 409 instead of writing the old secrets back (#12691).
+    const [seen] = await db
+      .select({ id: huntressIntegrations.id })
       .from(huntressIntegrations)
       .where(and(
         eq(huntressIntegrations.partnerId, partnerResult.partnerId),
         eq(huntressIntegrations.isActive, true)
       ))
       .limit(1);
+    const [existing] = seen
+      ? await db
+        .select()
+        .from(huntressIntegrations)
+        .where(and(eq(huntressIntegrations.id, seen.id), eq(huntressIntegrations.isActive, true)))
+        .for('no key update')
+      : [];
+    if (seen && !existing) {
+      return c.json({ error: HUNTRESS_DISCONNECTED_DURING_SAVE }, 409);
+    }
 
     if (!existing && !body.apiKey) {
       return c.json({ error: 'apiKey is required when creating a Huntress integration' }, 400);
@@ -504,26 +525,28 @@ huntressRoutes.post(
       updatedAt: new Date(),
     };
 
-    const [integration] = existing
-      ? await db
+    const returningColumns = {
+      id: huntressIntegrations.id,
+      partnerId: huntressIntegrations.partnerId,
+      name: huntressIntegrations.name,
+      accountId: huntressIntegrations.accountId,
+      apiBaseUrl: huntressIntegrations.apiBaseUrl,
+      isActive: huntressIntegrations.isActive,
+      lastSyncAt: huntressIntegrations.lastSyncAt,
+      lastSyncStatus: huntressIntegrations.lastSyncStatus,
+      lastSyncError: huntressIntegrations.lastSyncError,
+      createdAt: huntressIntegrations.createdAt,
+      updatedAt: huntressIntegrations.updatedAt,
+    };
+
+    const saved = await writeOrActiveIndexConflict('huntress_integrations_partner_active_idx', () => existing
+      ? db
         .update(huntressIntegrations)
         .set(payload)
-        .where(eq(huntressIntegrations.id, existing.id))
-        .returning({
-          id: huntressIntegrations.id,
-          partnerId: huntressIntegrations.partnerId,
-          name: huntressIntegrations.name,
-          accountId: huntressIntegrations.accountId,
-          apiBaseUrl: huntressIntegrations.apiBaseUrl,
-          isActive: huntressIntegrations.isActive,
-          lastSyncAt: huntressIntegrations.lastSyncAt,
-          lastSyncStatus: huntressIntegrations.lastSyncStatus,
-          lastSyncError: huntressIntegrations.lastSyncError,
-          createdAt: huntressIntegrations.createdAt,
-          updatedAt: huntressIntegrations.updatedAt,
-        })
+        .where(and(eq(huntressIntegrations.id, existing.id), eq(huntressIntegrations.isActive, true)))
+        .returning(returningColumns)
       : reconnectTarget
-      ? await db
+      ? db
         .update(huntressIntegrations)
         .set({ ...payload, lastSyncStatus: null, lastSyncError: null })
         .where(and(
@@ -531,41 +554,26 @@ huntressRoutes.post(
           eq(huntressIntegrations.partnerId, partnerResult.partnerId),
           eq(huntressIntegrations.isActive, false)
         ))
-        .returning({
-          id: huntressIntegrations.id,
-          partnerId: huntressIntegrations.partnerId,
-          name: huntressIntegrations.name,
-          accountId: huntressIntegrations.accountId,
-          apiBaseUrl: huntressIntegrations.apiBaseUrl,
-          isActive: huntressIntegrations.isActive,
-          lastSyncAt: huntressIntegrations.lastSyncAt,
-          lastSyncStatus: huntressIntegrations.lastSyncStatus,
-          lastSyncError: huntressIntegrations.lastSyncError,
-          createdAt: huntressIntegrations.createdAt,
-          updatedAt: huntressIntegrations.updatedAt,
-        })
-      : await db
+        .returning(returningColumns)
+      : db
         .insert(huntressIntegrations)
         .values({
           ...payload,
           createdBy: auth.user.id,
           createdAt: new Date(),
         })
-        .returning({
-          id: huntressIntegrations.id,
-          partnerId: huntressIntegrations.partnerId,
-          name: huntressIntegrations.name,
-          accountId: huntressIntegrations.accountId,
-          apiBaseUrl: huntressIntegrations.apiBaseUrl,
-          isActive: huntressIntegrations.isActive,
-          lastSyncAt: huntressIntegrations.lastSyncAt,
-          lastSyncStatus: huntressIntegrations.lastSyncStatus,
-          lastSyncError: huntressIntegrations.lastSyncError,
-          createdAt: huntressIntegrations.createdAt,
-          updatedAt: huntressIntegrations.updatedAt,
-        });
+        .returning(returningColumns));
+    if (saved === 'conflict') {
+      return c.json({ error: HUNTRESS_CONNECTED_CONCURRENTLY }, 409);
+    }
 
+    const [integration] = saved;
     if (!integration) {
+      // An edit holds the row lock, so it cannot lose the row here; the check
+      // stays as a guard. A reconnect finds no row when a concurrent reconnect
+      // reactivated it first.
+      if (existing) return c.json({ error: HUNTRESS_DISCONNECTED_DURING_SAVE }, 409);
+      if (reconnectTarget) return c.json({ error: HUNTRESS_CONNECTED_CONCURRENTLY }, 409);
       return c.json({ error: 'Failed to persist Huntress integration' }, 500);
     }
 

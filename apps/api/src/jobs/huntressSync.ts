@@ -781,7 +781,7 @@ export async function syncIntegrationById(
         db
           .update(huntressIntegrations)
           .set({ lastSyncStatus: 'running', lastSyncError: null, updatedAt: new Date() })
-          .where(eq(huntressIntegrations.id, integration.id))
+          .where(and(eq(huntressIntegrations.id, integration.id), eq(huntressIntegrations.isActive, true)))
       );
     } catch (err) {
       // A 'running'-write failure here usually means the connection pool is
@@ -888,7 +888,8 @@ export async function syncIntegrationById(
 
       // Persist this run's result counts (#1736) in the SAME transaction as the
       // success status + lastSyncAt, so the counts the UI shows can never get
-      // out of step with "succeeded at <lastSyncAt>".
+      // out of step with "succeeded at <lastSyncAt>". Only onto an active row: a
+      // disconnect that committed while this sync ran keeps its state (#12691).
       await db
         .update(huntressIntegrations)
         .set({
@@ -900,7 +901,7 @@ export async function syncIntegrationById(
           lastSyncOrgs: discoveredOrganizations.length,
           updatedAt: new Date(),
         })
-        .where(eq(huntressIntegrations.id, integration.id));
+        .where(and(eq(huntressIntegrations.id, integration.id), eq(huntressIntegrations.isActive, true)));
 
       return {
         integrationId: integration.id,
@@ -946,7 +947,7 @@ export async function syncIntegrationById(
                 lastSyncError: `${source}: ${message}`.slice(0, 2000),
                 updatedAt: new Date(),
               })
-              .where(eq(huntressIntegrations.id, integrationId))
+              .where(and(eq(huntressIntegrations.id, integrationId), eq(huntressIntegrations.isActive, true)))
           )
         );
       } catch (dbErr) {

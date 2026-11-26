@@ -145,6 +145,8 @@ vi.mock('../services/securityIntegrationDisconnect', () => ({
   activeIntegrationIds: vi.fn(async (_vendor: string, ids: string[]) => new Set(ids)),
   disconnectS1Integration: vi.fn(),
   findReconnectableS1Integration: vi.fn(async () => null),
+  clearS1SiteRegistrationTokens: vi.fn(),
+  writeOrActiveIndexConflict: vi.fn(async (_constraint: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../services/secretCrypto', () => ({
@@ -177,6 +179,8 @@ import {
   activeIntegrationIds,
   disconnectS1Integration,
   findReconnectableS1Integration,
+  clearS1SiteRegistrationTokens,
+  writeOrActiveIndexConflict,
 } from '../services/securityIntegrationDisconnect';
 
 const PARTNER_ID = 'a0000000-0000-4000-8000-000000000001';
@@ -205,6 +209,23 @@ function collectSqlValues(node: unknown, seen = new Set<unknown>(), values: unkn
   return values;
 }
 
+// POST /integration reads twice: the unlocked "seen" probe (`.limit(1)`), then,
+// only when it found a row, the locked re-read (`.for('no key update')`).
+function mockSeenSelect(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) })
+    })
+  } as any);
+}
+function mockLockedSelect(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue(rows) })
+    })
+  } as any);
+}
+
 describe('sentinel one routes', () => {
   let app: Hono;
 
@@ -226,6 +247,11 @@ describe('sentinel one routes', () => {
     // `mockReturnValueOnce` values or a `mockImplementation`, so a test whose
     // query count differs from what it queued would leak into the next one.
     vi.mocked(db.select).mockReset();
+    vi.mocked(writeOrActiveIndexConflict).mockReset();
+    vi.mocked(writeOrActiveIndexConflict).mockImplementation(async (_c: string, fn: () => Promise<unknown>) => fn() as any);
+    vi.mocked(clearS1SiteRegistrationTokens).mockReset();
+    vi.mocked(findReconnectableS1Integration).mockReset();
+    vi.mocked(findReconnectableS1Integration).mockResolvedValue(null);
 
     app = new Hono();
     app.route('/s1', sentinelOneRoutes);
@@ -348,14 +374,8 @@ describe('sentinel one routes', () => {
       authState.scope = 'partner';
       authState.partnerId = PARTNER_ID;
 
-      // First select: check existing (returns nothing)
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
+      // Seen probe: nothing active, so no locked read follows
+      mockSeenSelect([]);
       // insert returning
       vi.mocked(db.insert).mockReturnValueOnce({
         values: vi.fn().mockReturnValue({
@@ -396,18 +416,14 @@ describe('sentinel one routes', () => {
       authState.scope = 'partner';
       authState.partnerId = PARTNER_ID;
 
-      // First select: returns existing integration
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: INTEGRATION_ID,
-              managementUrl: 'https://example.sentinelone.net',
-              apiTokenEncrypted: 'enc:stored-token'
-            }])
-          })
-        })
-      } as any);
+      // Seen probe, then the locked re-read of that row
+      mockSeenSelect([{ id: INTEGRATION_ID }]);
+      mockLockedSelect([{
+        id: INTEGRATION_ID,
+        managementUrl: 'https://example.sentinelone.net',
+        apiTokenEncrypted: 'enc:stored-token',
+        isActive: true,
+      }]);
       // update returning
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -527,17 +543,13 @@ describe('sentinel one routes', () => {
       authState.scope = 'partner';
       authState.partnerId = PARTNER_ID;
 
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(async () => [{
-              id: 'integration-1',
-              managementUrl: 'https://old.sentinelone.net',
-              apiTokenEncrypted: 'enc:stored-token'
-            }])
-          }))
-        }))
-      } as any);
+      mockSeenSelect([{ id: 'integration-1' }]);
+      mockLockedSelect([{
+        id: 'integration-1',
+        managementUrl: 'https://old.sentinelone.net',
+        apiTokenEncrypted: 'enc:stored-token',
+        isActive: true,
+      }]);
 
       const res = await app.request('/s1/integration', {
         method: 'POST',
@@ -552,6 +564,78 @@ describe('sentinel one routes', () => {
       const body = await res.json();
       expect(String(body.error)).toContain('re-entered');
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    const saveBody = JSON.stringify({
+      name: 'SentinelOne Prod',
+      managementUrl: 'https://example.sentinelone.net',
+      apiToken: 'new-token'
+    });
+    const postSave = () => app.request('/s1/integration', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: saveBody
+    });
+
+    it('answers 409 when the integration is disconnected between the probe and the locked read', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      mockSeenSelect([{ id: INTEGRATION_ID }]);
+      mockLockedSelect([]);
+
+      const res = await postSave();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(
+        'SentinelOne was disconnected while this change was being saved. Connect it again to make changes.'
+      );
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 when a concurrent connect wins the active-partner index', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      mockSeenSelect([]);
+      vi.mocked(writeOrActiveIndexConflict).mockResolvedValueOnce('conflict' as any);
+
+      const res = await postSave();
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(
+        'SentinelOne was connected by another request at the same time. Reload to see the saved integration.'
+      );
+      expect(writeOrActiveIndexConflict).toHaveBeenCalledWith('s1_integrations_partner_active_idx', expect.any(Function));
+    });
+
+    it('does not clear site registration tokens on the edit path', async () => {
+      authState.scope = 'partner';
+      authState.partnerId = PARTNER_ID;
+      mockSeenSelect([{ id: INTEGRATION_ID }]);
+      mockLockedSelect([{
+        id: INTEGRATION_ID,
+        managementUrl: 'https://example.sentinelone.net',
+        apiTokenEncrypted: 'enc:stored-token',
+        isActive: true,
+      }]);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{
+              id: INTEGRATION_ID, partnerId: PARTNER_ID, name: 'SentinelOne Prod',
+              managementUrl: 'https://example.sentinelone.net', isActive: true,
+              lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+              createdAt: new Date(), updatedAt: new Date(),
+            }])
+          })
+        })
+      } as any);
+
+      const res = await postSave();
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+      expect(clearS1SiteRegistrationTokens).not.toHaveBeenCalled();
     });
   });
 
@@ -641,9 +725,7 @@ describe('sentinel one routes', () => {
     });
 
     it('reactivates the disconnected row instead of inserting a new one', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
-      } as any);
+      mockSeenSelect([]);
       vi.mocked(findReconnectableS1Integration).mockResolvedValueOnce({ id: INTEGRATION_ID });
       const set = vi.fn();
       vi.mocked(db.update).mockReturnValueOnce({
@@ -669,6 +751,30 @@ describe('sentinel one routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ isActive: true, apiTokenEncrypted: 'enc:new-token' }));
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 's1.integration.reconnect' }));
+      expect(clearS1SiteRegistrationTokens).toHaveBeenCalledWith(INTEGRATION_ID, PARTNER_ID);
+    });
+
+    it('answers 409 when the reconnect update matches no row', async () => {
+      mockSeenSelect([]);
+      vi.mocked(findReconnectableS1Integration).mockResolvedValueOnce({ id: INTEGRATION_ID });
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+        }),
+      } as any);
+
+      const res = await app.request('/s1/integration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'S1', managementUrl: 'https://example.sentinelone.net', apiToken: 'new-token' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe(
+        'SentinelOne was connected by another request at the same time. Reload to see the saved integration.'
+      );
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(clearS1SiteRegistrationTokens).not.toHaveBeenCalled();
     });
   });
 
