@@ -15,9 +15,20 @@ const sieEntry = alias(backupTreeCheckpointEntries, 'sie_entry');
 
 // FROM items of the raw subqueries: table plus alias, written out because an
 // aliased Drizzle table interpolated into `sql` renders as its alias alone.
-const sieSnapshotFrom = sql`${backupSnapshots} ${sql.identifier('sie_snapshot')}`;
-const sieCheckpointFrom = sql`${backupTreeCheckpoints} ${sql.identifier('sie_checkpoint')}`;
-const sieTombstoneFrom = sql`${backupSnapshotFiles} ${sql.identifier('sie_tombstone')}`;
+// Built on first use, not at import: this module is reachable from many
+// route and service modules, and a test that replaces `drizzle-orm` with a
+// partial mock must still be able to import them.
+let fromItems:
+  | { snapshot: SQL; checkpoint: SQL; tombstone: SQL }
+  | undefined;
+function sieFrom() {
+  fromItems ??= {
+    snapshot: sql`${backupSnapshots} ${sql.identifier('sie_snapshot')}`,
+    checkpoint: sql`${backupTreeCheckpoints} ${sql.identifier('sie_checkpoint')}`,
+    tombstone: sql`${backupSnapshotFiles} ${sql.identifier('sie_tombstone')}`,
+  };
+  return fromItems;
+}
 
 /**
  * `snapshotDbId` for use inside raw SQL. Drizzle renders a column inside a
@@ -122,8 +133,8 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   // checkpoint (R3). Written with explicit identifiers, never Drizzle columns,
   // because it is also rendered inside a select list (see snapshotIdOutput).
   const deltaCheckpointId = () => sql`(
-    SELECT ${col('sie_checkpoint', 'id')} FROM ${sieSnapshotFrom}
-    JOIN ${sieCheckpointFrom} ON ${checkpointMatchesSnapshot}
+    SELECT ${col('sie_checkpoint', 'id')} FROM ${sieFrom().snapshot}
+    JOIN ${sieFrom().checkpoint} ON ${checkpointMatchesSnapshot}
     WHERE ${col('sie_snapshot', 'id')} = ${id} AND ${col('sie_snapshot', 'file_index_format')} = 'delta')`;
   // The value both legs' `checkpoint_id` is compared with (the planning
   // equality below): the delta checkpoint, else the snapshot's own id, which
@@ -207,13 +218,13 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
       sql`${unionColumn('checkpoint_id')} = ${checkpointKey()}`,
       sql`CASE ${unionColumn('leg')}
         WHEN 1 THEN EXISTS (
-          SELECT 1 FROM ${sieSnapshotFrom}
+          SELECT 1 FROM ${sieFrom().snapshot}
           WHERE ${col('sie_snapshot', 'id')} = ${id}
             AND (${col('sie_snapshot', 'file_index_format')} = 'rows'
-                 OR EXISTS (SELECT 1 FROM ${sieCheckpointFrom} WHERE ${checkpointMatchesSnapshot})))
+                 OR EXISTS (SELECT 1 FROM ${sieFrom().checkpoint} WHERE ${checkpointMatchesSnapshot})))
         ELSE ${deltaCheckpointId()} IS NOT NULL
           AND NOT EXISTS (
-            SELECT 1 FROM ${sieTombstoneFrom}
+            SELECT 1 FROM ${sieFrom().tombstone}
             WHERE ${col('sie_tombstone', 'snapshot_db_id')} = ${id}
               AND ${col('sie_tombstone', 'source_path')} = ${unionColumn('source_path')}
               AND ${col('sie_tombstone', 'checkpoint_entry_no')} = ${unionColumn('entry_no')})
