@@ -20,8 +20,11 @@ import (
 )
 
 const (
-	// DefaultEndpointBase is the default server path for agent workspace-index
-	// operations. ClientConfig.EndpointBase can override it.
+	// DefaultEndpointBase is the server path prefix for agent workspace-index
+	// operations. The default base is this prefix plus the path-escaped agent
+	// ID (/api/v1/workspace/agent/{agentId}): the extension gateway reads the
+	// segment after it as the agent ID to authenticate (#12690).
+	// ClientConfig.EndpointBase overrides the whole base, ID included.
 	DefaultEndpointBase = "/api/v1/workspace/agent"
 
 	maxErrorBodyBytes = 64 * 1024
@@ -41,6 +44,11 @@ var (
 	// ErrNoServerURL names a wiring bug — the ServerURL provider is unset or
 	// returned empty — so it can't masquerade as a transport failure.
 	ErrNoServerURL = errors.New("workspace index client has no server URL (ServerURL provider unset or empty)")
+	// ErrNoAgentID names a wiring bug — no AgentID and no explicit
+	// EndpointBase — instead of sending requests to a base without the agent
+	// ID, which the server rejects as 401 and counts on the shared auth
+	// monitor (#12690).
+	ErrNoAgentID = errors.New("workspace index client has no agent ID and no endpoint base")
 )
 
 // HTTPError describes a non-successful server response. Body is capped at 64
@@ -64,7 +72,13 @@ type ClientConfig struct {
 	// promotion after failover (#2323) is visible to every request. A copied
 	// cfg.ServerURL kept uploading to a dead primary for the process lifetime
 	// (#2423).
-	ServerURL    func() string
+	ServerURL func() string
+	// AgentID builds the default endpoint base. A copied string, like the
+	// UniFi collector and log shipper: the agent ID only changes on
+	// re-enrollment, which restarts the agent.
+	AgentID string
+	// EndpointBase, when set, is used as the whole base (it must already
+	// carry the agent ID). Empty means DefaultEndpointBase + "/" + AgentID.
 	EndpointBase string
 	AuthToken    *secmem.SecureString
 	HTTPClient   *http.Client
@@ -82,11 +96,13 @@ type Client struct {
 
 // NewClient creates a workspace-index API client.
 func NewClient(cfg ClientConfig) *Client {
+	// An empty base with no agent ID stays empty; do() then fails every
+	// request with ErrNoAgentID rather than calling the ID-less path.
 	endpointBase := strings.TrimRight(cfg.EndpointBase, "/")
-	if endpointBase == "" {
-		endpointBase = DefaultEndpointBase
+	if endpointBase == "" && cfg.AgentID != "" {
+		endpointBase = DefaultEndpointBase + "/" + url.PathEscape(cfg.AgentID)
 	}
-	if !strings.HasPrefix(endpointBase, "/") {
+	if endpointBase != "" && !strings.HasPrefix(endpointBase, "/") {
 		endpointBase = "/" + endpointBase
 	}
 
@@ -241,6 +257,9 @@ func (c *Client) PostEvents(ctx context.Context, sourceID string, upserts []Entr
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte, retryBatch bool) (*http.Response, error) {
+	if c.endpointBase == "" {
+		return nil, ErrNoAgentID
+	}
 	if c.authMonitor != nil && c.authMonitor.ShouldSkip() {
 		return nil, ErrAuthUnavailable
 	}

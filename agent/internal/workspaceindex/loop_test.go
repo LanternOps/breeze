@@ -64,7 +64,7 @@ func TestStartLoopRunsDueSourcesSingleFlightFIFO(t *testing.T) {
 
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/crawl-config":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/agent-1/crawl-config":
 			writeLoopConfig(t, w, CrawlConfig{
 				Enabled:             true,
 				PollIntervalSeconds: 3600,
@@ -73,7 +73,7 @@ func TestStartLoopRunsDueSourcesSingleFlightFIFO(t *testing.T) {
 					{ID: "source-b", Kind: "local_profile", CadenceMinutes: 60},
 				},
 			})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/runs":
 			var body struct {
 				SourceID string `json:"sourceId"`
 			}
@@ -91,7 +91,7 @@ func TestStartLoopRunsDueSourcesSingleFlightFIFO(t *testing.T) {
 			mu.Unlock()
 			_, _ = io.WriteString(w, `{"runId":"run-`+body.SourceID+`","startedAt":"2026-07-12T12:00:00Z","cursor":""}`)
 		case r.Method == http.MethodPost && filepath.Base(r.URL.Path) == "batch":
-			if r.URL.Path == "/api/v1/workspace/agent/runs/run-source-a/batch" {
+			if r.URL.Path == "/api/v1/workspace/agent/agent-1/runs/run-source-a/batch" {
 				select {
 				case <-firstBatchStarted:
 				default:
@@ -162,7 +162,7 @@ func TestStartLoopModuleAbsentSleepsForSixHours(t *testing.T) {
 	var fetches atomic.Int32
 
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/crawl-config" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/agent-1/crawl-config" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -205,7 +205,7 @@ func TestStartLoopCancelsCrawlRemovedByConfig(t *testing.T) {
 
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/crawl-config":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/agent-1/crawl-config":
 			fetch := configFetches.Add(1)
 			config := CrawlConfig{Enabled: true, PollIntervalSeconds: 1}
 			if fetch == 1 {
@@ -218,9 +218,9 @@ func TestStartLoopCancelsCrawlRemovedByConfig(t *testing.T) {
 				}
 			}
 			writeLoopConfig(t, w, config)
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/runs":
 			_, _ = io.WriteString(w, `{"runId":"removed-run","startedAt":"2026-07-12T12:00:00Z","cursor":""}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs/removed-run/batch":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/runs/removed-run/batch":
 			close(batchStarted)
 			<-r.Context().Done()
 			close(batchCancelled)
@@ -273,7 +273,7 @@ func TestStartLoopDisabledStopsCrawlAndWatcherAndDropsSourceState(t *testing.T) 
 
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/crawl-config":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/agent-1/crawl-config":
 			fetch := configFetches.Add(1)
 			if fetch == 2 {
 				select {
@@ -302,7 +302,7 @@ func TestStartLoopDisabledStopsCrawlAndWatcherAndDropsSourceState(t *testing.T) 
 				config.Sources = []SourceConfig{{ID: "source-b", Kind: "local_profile", CadenceMinutes: 60}}
 			}
 			writeLoopConfig(t, w, config)
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/runs":
 			var body struct {
 				SourceID string `json:"sourceId"`
 			}
@@ -322,11 +322,11 @@ func TestStartLoopDisabledStopsCrawlAndWatcherAndDropsSourceState(t *testing.T) 
 				t.Errorf("unexpected crawl source: %q", body.SourceID)
 				w.WriteHeader(http.StatusBadRequest)
 			}
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs/source-a-run/batch":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/runs/source-a-run/batch":
 			batchStartedOnce.Do(func() { close(batchStarted) })
 			<-r.Context().Done()
 			batchCancelledOnce.Do(func() { close(batchCancelled) })
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs/source-b-run/batch":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/runs/source-b-run/batch":
 			zr, err := gzip.NewReader(r.Body)
 			if err != nil {
 				t.Errorf("open source B batch: %v", err)
@@ -344,7 +344,7 @@ func TestStartLoopDisabledStopsCrawlAndWatcherAndDropsSourceState(t *testing.T) 
 			}
 			sourceBFirstBatchOnce.Do(func() { sourceBFirstBatchEntries <- len(batch.Entries) })
 			<-r.Context().Done()
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/sources/source-a/events":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/agent-1/sources/source-a/events":
 			watchRequestStartedOnce.Do(func() { close(watchRequestStarted) })
 			<-r.Context().Done()
 			watchRequestCancelledOnce.Do(func() { close(watchRequestCancelled) })
@@ -486,7 +486,7 @@ func TestStartLoopAuditsActivationTransitions(t *testing.T) {
 	farFuture := time.Now().Add(100_000 * time.Hour)
 	var reqCount atomic.Int32
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/crawl-config" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/agent-1/crawl-config" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -561,7 +561,7 @@ func TestStartLoopAuditsScopeWideningWhileActive(t *testing.T) {
 	farFuture := time.Now().Add(100_000 * time.Hour)
 	var reqCount atomic.Int32
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/crawl-config" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/agent-1/crawl-config" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return

@@ -1,6 +1,9 @@
 package sim
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // Route templates. The report and the API DB-budget test
 // (apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts)
@@ -41,7 +44,8 @@ func SteadyStateRoutes() []string {
 }
 
 // RouteKey turns a request into its route template: ids become :id and
-// :commandId, and the /api/v1 prefix is dropped.
+// :commandId (the workspace agent ID is dropped), and the /api/v1 prefix is
+// dropped.
 func RouteKey(method, path string) string {
 	segs := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1"), "/"), "/")
 	switch {
@@ -52,6 +56,11 @@ func RouteKey(method, path string) string {
 		}
 	case len(segs) >= 2 && segs[0] == "agent-ws":
 		segs[1] = ":id"
+	case len(segs) >= 4 && segs[0] == "workspace" && segs[1] == "agent":
+		// /workspace/agent/<agentId>/<action> (#12690): the agent ID is folded
+		// out, not templated, so the label stays the one the perf gate and
+		// stored reports already key on (RouteCrawlConfig).
+		segs = slices.Delete(segs, 2, 3)
 	}
 	return method + " /" + strings.Join(segs, "/")
 }

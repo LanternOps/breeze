@@ -10,6 +10,9 @@ func TestRouteKeyTemplatesEveryAgentPath(t *testing.T) {
 		{"POST", "/api/v1/agents/abc123/commands/9f1c/result", RouteCommandResult},
 		{"POST", "/api/v1/agents/enroll", RouteEnroll},
 		{"GET", "/api/v1/agent-ws/abc123/ws", RouteWSUpgrade},
+		// The real agent sends its ID in the workspace path (#12690); the label
+		// folds it out so it stays the one the perf gate already reads.
+		{"GET", "/api/v1/workspace/agent/abc123/crawl-config", RouteCrawlConfig},
 		{"GET", "/api/v1/workspace/agent/crawl-config", RouteCrawlConfig},
 	} {
 		if got := RouteKey(tc.method, tc.path); got != tc.want {

@@ -1110,7 +1110,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		workspaceClient := workspaceindex.NewClient(workspaceindex.ClientConfig{
 			// URL provider, not a copied string — see the UniFi collector
 			// wiring above (#2423).
-			ServerURL:    hb.ServerURL,
+			ServerURL: hb.ServerURL,
+			// The default base carries the agent ID; the extension gateway
+			// authenticates by that path segment (#12690).
+			AgentID:      cfg.AgentID,
 			EndpointBase: cfg.WorkspaceIndex.EndpointBase,
 			AuthToken:    secureToken,
 			HTTPClient:   newUnifiAPIClient(secureToken, tlsCfg),

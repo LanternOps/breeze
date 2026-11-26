@@ -125,11 +125,13 @@ const workspaceExtension: BreezeExtensionV1 = {
     }));
     // The host gateway authenticates extension agent traffic on
     // /agent/:agentId/... (device identity in the path, mirroring core's
-    // /api/v1/agents/:id/* convention), while the phase-2 wire spec — and the
-    // Go client's default endpoint base — use flat /agent/... paths. Mount the
-    // agent surface under both shapes: the :agentId segment is consumed here
-    // purely for routing (identity always comes from c.get('agent'), bound by
-    // auth to the token, never from the path).
+    // /api/v1/agents/:id/* convention); the Go client's default endpoint base
+    // carries the agent ID to match (#12690). The phase-2 wire spec used flat
+    // /agent/... paths, which host auth rejects (it reads the first segment
+    // as the agent ID). Mount the agent surface under both shapes: the
+    // :agentId segment is consumed here purely for routing (identity always
+    // comes from c.get('agent'), bound by auth to the token, never from the
+    // path).
     //
     // No catch-all INSIDE agentApp: under the dual mount a flat
     // /agent/crawl-config first matches the /agent/:agentId mount (the segment

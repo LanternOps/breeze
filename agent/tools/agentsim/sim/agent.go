@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -127,6 +128,12 @@ func (a *Agent) jitter(d time.Duration, frac float64) time.Duration {
 
 func (a *Agent) agentPath(action string) string {
 	return "/api/v1/agents/" + a.identity().AgentID + "/" + action
+}
+
+// workspacePath is the workspace-index request path the real agent sends: the
+// default endpoint base carries the agent ID (#12690).
+func (a *Agent) workspacePath(action string) string {
+	return workspaceindex.DefaultEndpointBase + "/" + url.PathEscape(a.identity().AgentID) + "/" + action
 }
 
 // send is one agent HTTP call through the agent's own retry wrapper.
@@ -342,7 +349,7 @@ func (a *Agent) crawlConfigLoop(ctx context.Context) {
 		if !sleepCtx(ctx, wait) {
 			return
 		}
-		resp, _, err := a.send(ctx, http.MethodGet, workspaceindex.DefaultEndpointBase+"/crawl-config", nil)
+		resp, _, err := a.send(ctx, http.MethodGet, a.workspacePath("crawl-config"), nil)
 		if err == nil && resp.StatusCode == http.StatusNotFound {
 			wait = crawlConfigAbsentBackoff
 			continue
