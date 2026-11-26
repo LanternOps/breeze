@@ -146,11 +146,32 @@ describe('notifyPendingElevation', () => {
     expect(mocks.createNotification).not.toHaveBeenCalled();
   });
 
-  it('tells nobody when the request row is missing', async () => {
+  it('tells nobody, and warns with ids, when the request row is missing', async () => {
     q.readElevationRequestState.mockResolvedValue(null);
-    const result = await notifyPendingElevation(ARGS);
-    expect(result.skipped).toBe('not_pending');
-    expect(mocks.createNotification).not.toHaveBeenCalled();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await notifyPendingElevation(ARGS);
+      expect(result.skipped).toBe('request_not_found');
+      expect(mocks.createNotification).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith('[PamElevationNotify] pending elevation not announced', {
+        elevationRequestId: 'req-1', orgId: 'org-1', deviceId: 'device-1', skipped: 'request_not_found',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('records every rule-based skip with ids at info', async () => {
+    q.deviceAnnouncedWithin.mockResolvedValue(true);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await notifyPendingElevation(ARGS);
+      expect(info).toHaveBeenCalledWith('[PamElevationNotify] pending elevation not announced', {
+        elevationRequestId: 'req-1', orgId: 'org-1', deviceId: 'device-1', skipped: 'device_cooldown',
+      });
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('tells nobody about a request of another flow', async () => {
@@ -261,18 +282,39 @@ describe('notifyPendingElevation', () => {
   });
 
   it('a failed in-app write does not bypass the ceiling', async () => {
-    q.countRecentElevationNotices.mockResolvedValue(new Map([['u1', PAM_ELEVATION_EMAILS_PER_RECIPIENT_PER_HOUR]]));
-    mocks.createNotification.mockRejectedValue(new Error('insert failed'));
+    q.resolveElevationNoticeAudience.mockResolvedValue(audience(['fine', 'broken']));
+    q.countRecentElevationNotices.mockResolvedValue(new Map([['broken', PAM_ELEVATION_EMAILS_PER_RECIPIENT_PER_HOUR]]));
+    mocks.createNotification.mockImplementation(async (input: { userId: string }) => {
+      if (input.userId === 'broken') throw new Error('insert failed');
+      return 'notice-fine';
+    });
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await notifyPendingElevation(ARGS);
-      expect(result).toMatchObject({ inAppFailed: 1, emailCeilingReached: 1 });
-      expect(await result.emailDelivery).toEqual({ sent: 0, failed: 0 });
-      expect(mocks.sendEmail).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ inAppCreated: 1, inAppFailed: 1, emailCeilingReached: 1 });
+      expect(await result.emailDelivery).toEqual({ sent: 1, failed: 0 });
+      expect(mocks.sendEmail.mock.calls.map(([p]) => p.to)).toEqual(['fine@example.test']);
     } finally {
       errors.mockRestore();
       warn.mockRestore();
+    }
+  });
+
+  it('when every in-app write fails, nobody is emailed and the withheld email is logged with counts', async () => {
+    q.resolveElevationNoticeAudience.mockResolvedValue(audience(['u1', 'u2']));
+    mocks.createNotification.mockRejectedValue(Object.assign(new Error('insert failed'), { cause: { code: '42501' } }));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await notifyPendingElevation(ARGS);
+      expect(result).toMatchObject({ skipped: null, recipients: 2, inAppCreated: 0, inAppFailed: 2 });
+      expect(await result.emailDelivery).toEqual({ sent: 0, failed: 0 });
+      expect(mocks.sendEmail).not.toHaveBeenCalled();
+      expect(errors).toHaveBeenCalledWith('[PamElevationNotify] no in-app notice written; email withheld', {
+        elevationRequestId: 'req-1', orgId: 'org-1', recipients: 2, inAppFailed: 2,
+      });
+    } finally {
+      errors.mockRestore();
     }
   });
 

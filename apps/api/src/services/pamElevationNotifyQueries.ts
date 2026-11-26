@@ -27,13 +27,20 @@ export function pamElevationNotifyDedupeKey(elevationRequestId: string): string 
 
 export interface ElevationNoticeRecipient { id: string; email: string }
 
+/** How long a notifier run waits for another run on the same device before giving up. */
+export const PAM_ELEVATION_NOTIFY_LOCK_TIMEOUT = '10s';
+
 /**
  * Serialize announcement decisions for one device until the caller's
  * transaction ends. A second notifier run for the same device waits here, and
  * then reads the notices the first run committed. Two devices whose ids hash
- * alike only wait on each other.
+ * alike only wait on each other. Each waiter holds a pooled connection, so the
+ * wait is bounded by a transaction-local lock_timeout (it also bounds the
+ * caller's remaining statements, which are short); past it this throws
+ * SQLSTATE 55P03 and that request is not announced.
  */
 export async function lockDeviceAnnouncements(deviceId: string): Promise<void> {
+  await db.execute(sql`SELECT set_config('lock_timeout', ${PAM_ELEVATION_NOTIFY_LOCK_TIMEOUT}, true)`);
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('pam-elevation-notify'), hashtext(${deviceId}))`);
 }
 
@@ -140,6 +147,10 @@ export async function deviceAnnouncedWithin(args: {
  * How many elevation notices each of `userIds` has received since `since`, by
  * user id (users with none are absent). Counts in-app notices, which every
  * announcement writes whether or not it was emailed.
+ *
+ * `user_notifications.created_at` is `timestamp without time zone` filled by
+ * now() in the session's TimeZone, so `since` is converted the same way in SQL
+ * (timestamptz -> timestamp) instead of being sent as a bare timestamp.
  */
 export async function countRecentElevationNotices(userIds: string[], since: Date): Promise<Map<string, number>> {
   if (userIds.length === 0) return new Map();
@@ -149,7 +160,7 @@ export async function countRecentElevationNotices(userIds: string[], since: Date
     .where(and(
       inArray(userNotifications.userId, userIds),
       like(userNotifications.dedupeKey, `${PAM_ELEVATION_NOTICE_KEY_PREFIX}%`),
-      gte(userNotifications.createdAt, since),
+      sql`${userNotifications.createdAt} >= (${since.toISOString()}::timestamptz)::timestamp`,
     ))
     .groupBy(userNotifications.userId);
   return new Map(rows.map((r) => [r.userId, Number(r.n)]));

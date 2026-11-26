@@ -51,6 +51,21 @@ vi.mock('../../routes/agents/helpers', async (importOriginal) => {
   };
 });
 
+// The real notifier, wrapped only to record each run the route starts, keyed
+// by request id, so a test can await it.
+const notifier = vi.hoisted(() => ({ runs: new Map<string, Promise<unknown>>() }));
+vi.mock('../../services/pamElevationNotify', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/pamElevationNotify')>();
+  return {
+    ...actual,
+    notifyPendingElevation: (args: Parameters<typeof actual.notifyPendingElevation>[0]) => {
+      const run = actual.notifyPendingElevation(args);
+      notifier.runs.set(args.elevationRequestId, run);
+      return run;
+    },
+  };
+});
+
 // Only the transport is replaced; recipients and content are the real code's.
 vi.mock('../../services/email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/email')>();
@@ -63,7 +78,11 @@ import {
 } from '../../db/schema';
 import { elevationRequestsRoutes } from '../../routes/agents/elevationRequests';
 import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
-import { pamElevationNotifyDedupeKey } from '../../services/pamElevationNotify';
+import {
+  notifyPendingElevation,
+  type PendingElevationNotifyResult,
+  pamElevationNotifyDedupeKey,
+} from '../../services/pamElevationNotify';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   assignUserToOrganization,
@@ -237,9 +256,41 @@ function emailRecipients(): string[] {
   return mail.sendEmail.mock.calls.flatMap(([p]) => (Array.isArray(p.to) ? p.to : [p.to]));
 }
 
-/** Give a stray background notice a moment before asserting it is absent. */
-function settle(ms = 500): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * The route's background notifier run for request `id`, settled: its result
+ * with the emails handed off. Lets a test assert a suppression by its reason
+ * instead of by the absence of a side effect after a sleep.
+ */
+async function settledRun(id: string): Promise<PendingElevationNotifyResult> {
+  await vi.waitFor(() => expect(notifier.runs.has(id)).toBe(true), { timeout: 5_000, interval: 20 });
+  const result = await notifier.runs.get(id)! as PendingElevationNotifyResult;
+  await result.emailDelivery;
+  return result;
+}
+
+/** Call the real notifier directly (not through the route) and wait for its emails. */
+async function realNotify(args: Parameters<typeof notifyPendingElevation>[0]): Promise<PendingElevationNotifyResult> {
+  const result = await notifyPendingElevation(args);
+  await result.emailDelivery;
+  return result;
+}
+
+/** `count` keyed notices for `userId`, as if earlier announcements had written them. */
+async function seedNotices(
+  userId: string, orgId: string, count: number, opts: { ageMinutes?: number; keyPrefix?: string } = {},
+) {
+  const rows = await getTestDb().insert(userNotifications).values(Array.from({ length: count }, () => ({
+    userId,
+    orgId,
+    type: 'approval' as const,
+    title: 'Elevation request waiting',
+    dedupeKey: opts.keyPrefix ? `${opts.keyPrefix}${randomUUID()}` : pamElevationNotifyDedupeKey(randomUUID()),
+  }))).returning({ id: userNotifications.id });
+  if (opts.ageMinutes) {
+    await getTestDb().update(userNotifications)
+      .set({ createdAt: sql`${userNotifications.createdAt} - make_interval(mins => ${opts.ageMinutes}::int)` })
+      .where(inArray(userNotifications.id, rows.map((r) => r.id)));
+  }
 }
 
 /** The end user declined the request on the device (#8971). */
@@ -281,6 +332,7 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     flags.pamEnabled = true;
     mail.sendEmail.mockReset();
     mail.sendEmail.mockResolvedValue(undefined);
+    notifier.runs.clear();
   });
   afterEach(() => {
     flags.pamEnabled = false;
@@ -352,20 +404,42 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
 
     const first = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    expect(await settledRun(first)).toMatchObject({ skipped: null, inAppCreated: 1 });
     const second = await submitElevation(f);
     expect(second).not.toBe(first);
-    await settle();
+    expect((await settledRun(second)).skipped).toBe('device_cooldown');
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([first]);
     expect(mail.sendEmail).toHaveBeenCalledTimes(1);
 
-    // A person decides the announced request; a new request is announced again.
+    // A person denies the announced request; a new request is announced again.
     await getTestDb().update(elevationRequests)
       .set({ status: 'denied', denialReason: 'test decision', deniedByUserId: holder.id })
       .where(eq(elevationRequests.id, first));
     const third = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
-    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, third].sort());
+    expect(await settledRun(third)).toMatchObject({ skipped: null, inAppCreated: 1 });
+    expect(mail.sendEmail).toHaveBeenCalledTimes(2);
+
+    // A person approves the announced request; the next one is announced again.
+    await getTestDb().update(elevationRequests)
+      .set({ status: 'approved', approvedAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000), approvedByUserId: holder.id })
+      .where(eq(elevationRequests.id, third));
+    const fourth = await submitElevation(f);
+    expect(await settledRun(fourth)).toMatchObject({ skipped: null, inAppCreated: 1 });
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, third, fourth].sort());
+  });
+
+  runDb('a decision recorded without a person does not end the cooldown', async () => {
+    const f = await seedOrgWithDevice();
+    await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+
+    const first = await submitElevation(f);
+    expect((await settledRun(first)).skipped).toBeNull();
+    // A policy-style denial: status changes, no deciding user.
+    await getTestDb().update(elevationRequests).set({ status: 'denied', denialReason: 'policy' })
+      .where(eq(elevationRequests.id, first));
+    const second = await submitElevation(f);
+    expect((await settledRun(second)).skipped).toBe('device_cooldown');
+    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
   });
 
   runDb('withdrawing the announced request and filing again does not announce again inside the cooldown', async () => {
@@ -373,25 +447,30 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
 
     const first = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    expect((await settledRun(first)).skipped).toBeNull();
     await withdrawOnDevice(first);
     const second = await submitElevation(f);
-    await settle();
-    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
+    expect((await settledRun(second)).skipped).toBe('device_cooldown');
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([first]);
 
     // Nor after the system expires the requests: an expiry is not a decision.
     await getTestDb().update(elevationRequests).set({ status: 'expired', expiredAt: new Date() })
       .where(eq(elevationRequests.id, second));
-    await submitElevation(f);
-    await settle();
+    const third = await submitElevation(f);
+    expect((await settledRun(third)).skipped).toBe('device_cooldown');
+
+    // Still inside the cooldown at 14 minutes.
+    await ageRequests(f.deviceId, 14);
+    const fourth = await submitElevation(f);
+    expect((await settledRun(fourth)).skipped).toBe('device_cooldown');
     expect(mail.sendEmail).toHaveBeenCalledTimes(1);
 
     // Once the announced request is older than the cooldown, the next one is announced.
-    await ageRequests(f.deviceId, 16);
-    const fourth = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
-    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, fourth].sort());
+    await ageRequests(f.deviceId, 2);
+    const fifth = await submitElevation(f);
+    expect((await settledRun(fifth)).skipped).toBeNull();
+    expect(mail.sendEmail).toHaveBeenCalledTimes(2);
+    expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, fifth].sort());
   });
 
   runDb('a pending request of another flow on the device does not silence a UAC request', async () => {
@@ -400,7 +479,8 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     await seedPendingRow(f, { flowType: 'tech_jit_admin', subjectUserId: holder.id });
 
     const id = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    expect(await settledRun(id)).toMatchObject({ skipped: null, inAppCreated: 1 });
+    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([id]);
   });
 
@@ -411,7 +491,8 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     await seedPendingRow(f, { flowType: 'uac_intercept' });
 
     const id = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
+    expect(await settledRun(id)).toMatchObject({ skipped: null, inAppCreated: 1 });
+    expect(mail.sendEmail).toHaveBeenCalledTimes(1);
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId)).toEqual([id]);
   });
 
@@ -420,16 +501,31 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
 
     const first = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
-    await submitElevation(f);
-    await settle();
+    expect((await settledRun(first)).skipped).toBeNull();
+    const second = await submitElevation(f);
+    expect((await settledRun(second)).skipped).toBe('device_cooldown');
     await getTestDb().update(elevationRequests).set({ status: 'expired', expiredAt: new Date() })
       .where(eq(elevationRequests.deviceId, f.deviceId));
     await ageRequests(f.deviceId, 16);
 
     const third = await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 50 });
+    expect((await settledRun(third)).skipped).toBeNull();
+    expect(mail.sendEmail).toHaveBeenCalledTimes(2);
     expect((await elevationNotices([holder.id], f.deviceId)).map(noticeRequestId).sort()).toEqual([first, third].sort());
+  });
+
+  runDb('a request no longer pending, or not on this org, is not announced (real rows)', async () => {
+    const f = await seedOrgWithDevice();
+    const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    const withdrawn = await seedPendingRow(f, { flowType: 'uac_intercept' });
+    await withdrawOnDevice(withdrawn);
+    const args = { orgId: f.orgId, siteId: f.siteId, deviceId: f.deviceId, deviceHostname: f.hostname };
+
+    expect((await realNotify({ ...args, elevationRequestId: withdrawn })).skipped).toBe('not_pending');
+    const pending = await seedPendingRow(f, { flowType: 'uac_intercept' });
+    const otherOrg = await createOrganization({ partnerId: f.partnerId });
+    expect((await realNotify({ ...args, orgId: otherOrg.id, elevationRequestId: pending })).skipped).toBe('request_not_found');
+    expect(await elevationNotices([holder.id], f.deviceId)).toEqual([]);
   });
 
   runDb('two requests racing from one device announce exactly one of them', async () => {
@@ -437,8 +533,8 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     const holder = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
 
     const ids = await Promise.all([submitElevation(f), submitElevation(f)]);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
-    await settle();
+    const results = await Promise.all(ids.map(settledRun));
+    expect(results.map((r) => r.skipped).sort()).toEqual(['device_cooldown', null].sort());
     expect(mail.sendEmail).toHaveBeenCalledTimes(1);
     const notices = await elevationNotices([holder.id], f.deviceId);
     expect(notices).toHaveLength(1);
@@ -449,24 +545,26 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
     const f = await seedOrgWithDevice();
     const busy = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
     const quiet = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
-    // Twelve announcements to `busy` in the last hour, about other devices.
-    await getTestDb().insert(userNotifications).values(Array.from({ length: 12 }, () => ({
-      userId: busy.id,
-      orgId: f.orgId,
-      type: 'approval' as const,
-      title: 'Elevation request waiting',
-      dedupeKey: pamElevationNotifyDedupeKey(randomUUID()),
-    })));
+    const almost = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    const stale = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    const otherKinds = await seedMember(f.partnerId, f.orgId, [PERMISSIONS.PAM_APPROVE]);
+    // Twelve elevation notices to `busy` in the last hour, about other devices.
+    await seedNotices(busy.id, f.orgId, 12);
+    // Eleven to `almost`: one under the ceiling.
+    await seedNotices(almost.id, f.orgId, 11);
+    // Twelve to `stale`, but over an hour old.
+    await seedNotices(stale.id, f.orgId, 12, { ageMinutes: 61 });
+    // Twelve recent notices of another kind to `otherKinds`.
+    await seedNotices(otherKinds.id, f.orgId, 12, { keyPrefix: 'other-kind:' });
     const warn = vi.spyOn(console, 'warn');
     try {
       const id = await submitElevation(f);
-      await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
-      await settle();
-      expect(emailRecipients()).toEqual([quiet.email]);
+      expect(await settledRun(id)).toMatchObject({ skipped: null, inAppCreated: 5, emailCeilingReached: 1 });
+      expect(emailRecipients().sort()).toEqual([quiet.email, almost.email, stale.email, otherKinds.email].sort());
       expect((await elevationNotices([busy.id, quiet.id], f.deviceId)).map((n) => n.userId).sort())
         .toEqual([busy.id, quiet.id].sort());
       expect(warn).toHaveBeenCalledWith('[PamElevationNotify] email ceiling reached; in-app notice only', {
-        elevationRequestId: id, orgId: f.orgId, recipients: 2, overCeiling: 1, ceilingPerHour: 12,
+        elevationRequestId: id, orgId: f.orgId, recipients: 5, overCeiling: 1, ceilingPerHour: 12,
       });
     } finally {
       warn.mockRestore();
@@ -482,9 +580,8 @@ describe('pending elevation notifies every permission holder (real PostgreSQL)',
       partnerWithWeakMembership.id, f.orgId, (await orgRole(f.orgId, [PERMISSIONS.DEVICES_EXECUTE])).id,
     );
 
-    await submitElevation(f);
-    await vi.waitFor(() => expect(mail.sendEmail).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 50 });
-    await settle();
+    const id = await submitElevation(f);
+    expect(await settledRun(id)).toMatchObject({ skipped: null, recipients: 1 });
     expect(emailRecipients()).toEqual([holder.email]);
     expect((await elevationNotices([holder.id, partnerWithWeakMembership.id], f.deviceId)).map((n) => n.userId))
       .toEqual([holder.id]);
