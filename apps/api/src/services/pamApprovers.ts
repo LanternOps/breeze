@@ -31,15 +31,35 @@ import { PERMISSIONS } from './permissions';
 import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
 /**
- * Resolve the distinct user ids eligible to approve an elevation for `orgId`.
- * Empty array when none qualify. Pure-read; opens its own system DB context
- * (a no-op passthrough when the caller already has one open, matching
+ * Who an elevation for an org can reach, and why it reaches nobody when it
+ * reaches nobody (#11231).
+ *
+ * - `approverIds`: the distinct users eligible to approve (all three criteria).
+ * - `candidates`: how many distinct users pass criteria 1-2 (active, hold
+ *   pam:approve for the org), whether or not they have a phone.
+ * - `withDevice`: how many of those candidates pass criterion 3. Always
+ *   `approverIds.length`; named so a caller reporting an empty result can say
+ *   "no permission holder" (candidates 0) apart from "holders, but none with a
+ *   notifying phone" (candidates > 0, withDevice 0).
+ *
+ * Counts only, never identities: callers log and audit these.
+ */
+export interface ElevationApproverResolution {
+  approverIds: string[];
+  candidates: number;
+  withDevice: number;
+}
+
+/**
+ * Resolve the users eligible to approve an elevation for `orgId`, with the
+ * counts behind the result. Pure-read; opens its own system DB context (a
+ * no-op passthrough when the caller already has one open, matching
  * `withSystemDbAccessContext`'s documented behavior).
  */
-export async function resolveElevationApprovers(orgId: string): Promise<string[]> {
+export async function resolveElevationApprovers(orgId: string): Promise<ElevationApproverResolution> {
   return withSystemDbAccessContext(async () => {
     const candidateUserIds = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.PAM_APPROVE);
-    if (candidateUserIds.length === 0) return [];
+    if (candidateUserIds.length === 0) return { approverIds: [], candidates: 0, withDevice: 0 };
 
     // Narrow to users with an active, notifications-enabled mobile device.
     const withDevices = await db
@@ -53,6 +73,11 @@ export async function resolveElevationApprovers(orgId: string): Promise<string[]
         ),
       );
 
-    return [...new Set(withDevices.map((d) => d.userId))];
+    const approverIds = [...new Set(withDevices.map((d) => d.userId))];
+    return {
+      approverIds,
+      candidates: candidateUserIds.length,
+      withDevice: approverIds.length,
+    };
   });
 }

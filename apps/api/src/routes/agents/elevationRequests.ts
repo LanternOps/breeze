@@ -191,6 +191,10 @@ async function resolvePamSupportName(orgId: string): Promise<string | null> {
  * each per-approver push is additionally swallowed so one bad token can't drop
  * the rest. No actuate command is enqueued (parity with pam.ts respond — that's
  * deferred to #1150).
+ *
+ * Returns the approver counts the resolver saw, so the caller can record a
+ * request that reached nobody (#11231). `withDevice === 0` means no approver
+ * was asked at all.
  */
 async function fanOutMobileApprovals(args: {
   elevationRequestId: string;
@@ -199,7 +203,7 @@ async function fanOutMobileApprovals(args: {
   reason: string;
   bridgeVerdict: PamBridgeVerdict | null;
   expiresAt: Date;
-}): Promise<void> {
+}): Promise<ApproverReach> {
   const { elevationRequestId, device, payload, reason, bridgeVerdict, expiresAt } = args;
 
   const hasSigner = !!payload.target_executable_signer;
@@ -231,10 +235,11 @@ async function fanOutMobileApprovals(args: {
   // inside this one system context; we then perform the Expo network calls
   // AFTER it closes so we never hold the DB transaction open across the network
   // round-trip (the held-context tripwire in db/index.ts).
-  const pushTargets = await runOutsideDbContext(() =>
+  const { pushTargets, reach } = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const approverIds = await resolveElevationApprovers(device.orgId);
-      if (approverIds.length === 0) return [];
+      const { approverIds, candidates, withDevice } = await resolveElevationApprovers(device.orgId);
+      const reach: ApproverReach = { candidates, withDevice };
+      if (approverIds.length === 0) return { pushTargets: [], reach };
 
       const targets: Array<{ approvalId: string; actionLabel: string; tokens: TaggedPushToken[] }> = [];
       for (const userId of approverIds) {
@@ -274,7 +279,7 @@ async function fanOutMobileApprovals(args: {
         const tokens = await getUserPushTokens(userId);
         targets.push({ approvalId, actionLabel, tokens });
       }
-      return targets;
+      return { pushTargets: targets, reach };
     }),
   );
 
@@ -301,6 +306,58 @@ async function fanOutMobileApprovals(args: {
       );
     }
   }
+  return reach;
+}
+
+/** What the approver resolution found for one request: counts, never identities. */
+interface ApproverReach {
+  /** Active users holding pam:approve for the org. */
+  candidates: number;
+  /** Of those, how many have an active, notifications-enabled mobile device. */
+  withDevice: number;
+}
+
+/**
+ * #11231: a pending request that resolved no eligible approver otherwise
+ * leaves no trace and sits unseen until the stale-pending expirer closes it.
+ * Record it as one warn line and one audit event, both carrying why the list
+ * was empty as counts.
+ *
+ * Not in any transaction of the request: `writeAuditEvent` persists on its own
+ * pooled connection in a fresh system context (`persistAuditLog`), is
+ * fire-and-forget, and never rejects (a failed write goes to the audit retry
+ * queue). It runs after the fan-out's system context has closed, so it never
+ * holds a second connection beside that one, and it cannot fail the agent's
+ * 201 or roll back anything the fan-out wrote. The warn line is written first,
+ * so the condition is visible even if the audit row is eventually dropped.
+ */
+function recordNoApproverReached(
+  c: Parameters<typeof writeAuditEvent>[0],
+  args: { orgId: string; actorId: string; elevationRequestId: string; reach: ApproverReach },
+): void {
+  const { orgId, actorId, elevationRequestId, reach } = args;
+  const reason = reach.candidates === 0 ? 'no_permission_holder' : 'no_notifying_device';
+  console.warn('[ElevationRequests] pending elevation reached no approver', {
+    elevationRequestId,
+    orgId,
+    reason,
+    permissionHolders: reach.candidates,
+    withNotifyingDevice: reach.withDevice,
+  });
+  writeAuditEvent(c, {
+    orgId,
+    actorType: 'agent',
+    actorId,
+    action: 'agent.elevation_request.no_approver',
+    resourceType: 'elevation_request',
+    resourceId: elevationRequestId,
+    details: {
+      flow_type: 'uac_intercept',
+      reason,
+      permission_holders: reach.candidates,
+      with_notifying_device: reach.withDevice,
+    },
+  });
 }
 
 export const elevationRequestsRoutes = new Hono();
@@ -814,7 +871,15 @@ elevationRequestsRoutes.post(
     // 201 even if the entire bridge fails.
     if (ingest.mobileFanOut) {
       try {
-        await fanOutMobileApprovals(ingest.mobileFanOut);
+        const reach = await fanOutMobileApprovals(ingest.mobileFanOut);
+        if (reach.withDevice === 0) {
+          recordNoApproverReached(c, {
+            orgId: ingest.orgId,
+            actorId: agent?.agentId ?? agentId,
+            elevationRequestId: ingest.mobileFanOut.elevationRequestId,
+            reach,
+          });
+        }
       } catch (bridgeErr) {
         console.error(
           `[ElevationRequests] mobile bridge failed for request=${ingest.mobileFanOut.elevationRequestId}:`,
