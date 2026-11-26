@@ -86,6 +86,7 @@ function setup(opts: {
   status?: Record<string, unknown> | null;
   now?: () => number;
   copySettleMs?: number;
+  legacyAckMs?: number;
 } = {}) {
   const channel = new FakeChannel();
   const io = fakeIO(opts.local);
@@ -102,7 +103,7 @@ function setup(opts: {
     lastCopyIntentAt: () => copyIntentAt,
     now: opts.now,
     onChange,
-    timings: { legacyAckMs: 30, ackMs: 60, bufferWaitMs: 80, pollMs: 2, copySettleMs: opts.copySettleMs ?? 200 },
+    timings: { legacyAckMs: opts.legacyAckMs ?? 30, ackMs: 60, bufferWaitMs: 80, pollMs: 2, copySettleMs: opts.copySettleMs ?? 200 },
   });
   current = sync;
   if (opts.status !== null) channel.deliver(opts.status ?? W4A_STATUS);
@@ -776,11 +777,14 @@ describe('ClipboardSync legacy agent', () => {
   });
 
   it('dispatches as soon as the ack arrives', async () => {
-    const { channel, sync } = setup({ local: { text: 'quick' }, status: null });
+    // The legacy wait is far longer than any scheduling delay a loaded host adds, so finishing
+    // well before it can only mean the ack ended the wait; no tight wall-clock bound is needed.
+    const legacyAckMs = 2_000;
+    const { channel, sync } = setup({ local: { text: 'quick' }, status: null, legacyAckMs });
     autoAck(channel);
     const started = Date.now();
     await sync.pasteTransaction(() => {});
-    expect(Date.now() - started).toBeLessThan(25);
+    expect(Date.now() - started).toBeLessThan(legacyAckMs / 2);
   });
 
   it('skips the push for text it already synced but still dispatches', async () => {
