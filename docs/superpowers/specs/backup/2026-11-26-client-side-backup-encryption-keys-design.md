@@ -1,6 +1,6 @@
 ---
 title: Client-side backup encryption keys — browser-generated key pair, passphrase-wrapped private key
-status: draft (awaiting owner decision on §11); advisor quorum done 2026-11-26 (§10)
+status: approved (owner accepted every §11 recommendation on 2026-11-26); advisor quorum done 2026-11-26 (§10); no plan yet
 date: 2026-11-26
 origin: "#10697 (Create Key always fails). Investigation found nothing consumes storage_encryption_keys and the agent has no client-side encryption; PR #12716 made the Encryption Keys page read-only. Owner direction 2026-11-26: specify option A (key pair generated in the browser, private key wrapped by a passphrase the customer holds, server never receives the plaintext private key)."
 related: "#10697, #12716, 2026-03-29-enterprise-backup-phases-design.md §2B, 2026-07-16-incremental-backups-design.md, 2026-09-09-backup-gc-reclamation-design.md, 2026-09-10-bare-metal-boot-media-recovery-design.md, 2026-07-06-bitlocker-filevault-key-escrow-design.md, security tracker CRYPTO4-05"
@@ -31,7 +31,7 @@ states plainly what that model costs: several flows that run unattended today st
 | OD1 | Option A. The key pair is generated in the browser. The private key is wrapped by a passphrase the customer holds, and the server never receives the plaintext private key. | 2026-11-26 |
 | OD2 | No code fix to the old form. The page stays read-only until this model ships (PR #12716). | 2026-11-26 |
 
-Everything else here is a recommendation. §11 lists what still needs the owner.
+The owner also accepted every recommendation in §11 on 2026-11-26, so O1 to O11 are decided as recommended there.
 
 ## 3. Current state
 
@@ -247,7 +247,7 @@ ids, which incrementals already require.
 
 **Who supplies the passphrase.** A human with a new `backup.keys.release` permission, after MFA, in the
 web app. It is never the server, the agent or an AI tool. One passphrase per org key in v1. Per-user
-wraps are an open question (§11 O11).
+wraps were considered and set aside for v1 (§11 O11).
 
 **Key release protocol (all restore kinds):**
 
@@ -538,7 +538,7 @@ Two implementation requirements follow from this model:
 | Released run DEK covers the whole run | Raised. | **Adopted** as an explicit scope note (D3). |
 | Ephemeral recipient comes through the API unauthenticated | Raised: pair independently where possible. | **Adopted** for BMR, the only path with a console. It remains a stated limit for online-device restores (D9). |
 | Periodic passphrase prompt | **Disagreed:** it trains users to type the passphrase on request. | **Resolved for Codex:** prompt removed, replaced by a customer-initiated drill (D3). |
-| Recovery identity generated in the Breeze-served page | Prefer generation on trusted customer media. | **Partly adopted:** import supported, browser generation stays the default for usability (D4). The owner may make import mandatory (§11 O3). |
+| Recovery identity generated in the Breeze-served page | Prefer generation on trusted customer media. | **Partly adopted:** import supported, browser generation stays the default for usability (D4). The owner kept that default, with import allowed (§11 O3). |
 | Fingerprint should cover the whole recipient set | Raised. | **Adopted:** `recipient_set_hash` (D1.4). |
 | Signing key changes | Agreed it gives no protection against the API itself. | Not in v1 (D2). |
 | Mixed hybrid and classical recipients | Go age rejects them. | All-hybrid sets (D1.2). |
@@ -556,9 +556,12 @@ No disagreement is left open.
 - the post-rotation full is now normative (D6);
 - the citations are corrected (§3).
 
-## 11. Open decisions for the owner
+## 11. Owner decisions (accepted 2026-11-26)
 
-| # | Question | Recommendation |
+The owner accepted every recommendation in this table on 2026-11-26. Each row is now a decision; the
+"Decision" column is what the plan implements.
+
+| # | Question | Decision |
 |---|---|---|
 | O1 | Post-quantum hybrid (ML-KEM-768 + X25519) or X25519 only? | **Hybrid.** Retention runs for years, and the cost is about 2 KB of recipient and about 1.1 KB per envelope, paid once per run, not per object. |
 | O2 | Passphrase: generated only, or user-chosen allowed? | **Generated only** (~103 bits). The wrapped identity sits on the server, and a human-chosen passphrase makes the KDF the only defence. |
