@@ -106,7 +106,7 @@ type DeviceInfo = {
   } | null;
   /**
    * #12729: non-null when the agent reported connecting to the server over
-   * plain http:// / ws:// to a host that is not the device itself.
+   * plain http:// / ws:// to a non-loopback host.
    */
   plaintextServerConnection?: { observedAt: string } | null;
   /**
@@ -424,8 +424,8 @@ const PLAINTEXT_SERVER_CONNECTION_DOCS_URL = `${DOCS_BASE_URL}/agents/installati
 
 /**
  * Plaintext server connection notice (#12729): the agent reported that its
- * server_url is http:// (a plain ws:// WebSocket) to a host other than the
- * device itself. Renders nothing when the API sends null/undefined.
+ * server_url is http:// (a plain ws:// WebSocket) to a non-loopback host.
+ * Renders nothing when the API sends null/undefined.
  */
 function PlaintextServerConnectionNotice({
   connection,

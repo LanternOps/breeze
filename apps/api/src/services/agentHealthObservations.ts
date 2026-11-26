@@ -119,7 +119,7 @@ export async function recordAgentHealthObservation(input: {
 /**
  * #12729 — the agent health component an agent reports about how it reaches
  * the server, and the reason it carries when that connection is unencrypted:
- * server_url is http:// to a host that is not the device itself, so the
+ * server_url is http:// (or ws://) to a non-loopback host, so the
  * WebSocket is plain ws://. Kept in step with
  * agent/internal/heartbeat/server_connection.go.
  */

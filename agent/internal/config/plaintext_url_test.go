@@ -22,7 +22,7 @@ func TestPlaintextRemoteHost(t *testing.T) {
 		{"ws to localhost", "ws://localhost:3001/x", "", false},
 		{"ws to LOCALHOST", "ws://LOCALHOST:3001/x", "", false},
 		{"ws to localhost with trailing dot", "ws://localhost.:3001/x", "", false},
-		{"ws to .localhost subdomain", "ws://api.localhost:3001/x", "", false},
+		{"ws to a .localhost subdomain warns (not resolved, not trusted)", "ws://api.localhost:3001/x", "api.localhost", true},
 		{"ws to 127.0.0.1", "ws://127.0.0.1:3001/x", "", false},
 		{"ws to other 127/8 address", "ws://127.0.0.2/x", "", false},
 		{"ws to IPv6 loopback", "ws://[::1]:3001/x", "", false},
@@ -44,12 +44,12 @@ func TestPlaintextRemoteHost(t *testing.T) {
 }
 
 func TestIsLoopbackHost(t *testing.T) {
-	for _, h := range []string{"localhost", "Localhost", "localhost.", "a.localhost", "127.0.0.1", "127.255.0.9", "::1", "::ffff:127.0.0.1"} {
+	for _, h := range []string{"localhost", "Localhost", "localhost.", "127.0.0.1", "127.255.0.9", "::1", "::ffff:127.0.0.1"} {
 		if !IsLoopbackHost(h) {
 			t.Errorf("IsLoopbackHost(%q) = false, want true", h)
 		}
 	}
-	for _, h := range []string{"", "0.0.0.0", "::", "192.168.1.1", "10.0.0.1", "example.com", "localhost.example.com", "notlocalhost", "rmm.local"} {
+	for _, h := range []string{"", "0.0.0.0", "::", "192.168.1.1", "10.0.0.1", "example.com", "localhost.example.com", "notlocalhost", "rmm.local", "a.localhost"} {
 		if IsLoopbackHost(h) {
 			t.Errorf("IsLoopbackHost(%q) = true, want false", h)
 		}

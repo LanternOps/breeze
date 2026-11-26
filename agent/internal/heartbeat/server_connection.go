@@ -11,16 +11,19 @@ import (
 const serverConnectionComponentName = "server_connection"
 
 // serverConnectionPlaintextReason is the component reason when server_url is
-// http:// to a host that is not this machine: the WebSocket is plain ws:// and
-// the heartbeat is plain HTTP. A closed value the server matches on; keep it in
-// step with apps/api (AGENT_HEALTH_PLAINTEXT_SERVER_CONNECTION).
+// http:// (or ws://) to a non-loopback host, so the WebSocket is plain ws://.
+// A closed value the server matches on; keep it in step with apps/api
+// (AGENT_HEALTH_PLAINTEXT_SERVER_CONNECTION). The wire bytes are pinned by
+// TestObserveServerConnection_WireLiterals.
 const serverConnectionPlaintextReason = "plaintext_websocket"
 
 // observeServerConnection records the server_connection component from the
 // current server URL: warning when it is plaintext to a remote host (the rule
 // is config.PlaintextRemoteHost), healthy otherwise. It reports only; it never
-// changes the connection. Monitor.Update warn-logs every non-healthy call, so
-// the component is re-recorded only when its value changes.
+// changes the connection. A warning component also makes the observation's
+// overall state "warning"; nothing alerts on that today. Monitor.Update
+// warn-logs every non-healthy call, so the component is re-recorded only when
+// its value changes.
 func (h *Heartbeat) observeServerConnection() {
 	if h.healthMon == nil {
 		return

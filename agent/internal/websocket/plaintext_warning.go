@@ -9,10 +9,10 @@ import (
 )
 
 // plaintextWarningMessage is logged when the agent connects to its server over
-// an unencrypted WebSocket (#12729). The agent maps an http:// server_url to
-// ws://, so this is what an http:// enrollment looks like on the wire.
+// an unencrypted WebSocket (#12729). buildWSURL maps an http:// server_url to
+// ws://, which is how this normally arises; a ws:// server_url gets here too.
 const plaintextWarningMessage = "server connection is not encrypted: the agent is connecting over plain ws:// " +
-	"because server_url uses http://, so anyone on the network path can read and change this traffic, " +
+	"because server_url is not an https:// address, so anyone on the network path can read and change this traffic, " +
 	"including the agent's credentials. Change server_url to the server's https:// address"
 
 // plaintextWarned is set by the first plaintext dial of this process, so a
@@ -20,7 +20,7 @@ const plaintextWarningMessage = "server connection is not encrypted: the agent i
 var plaintextWarned atomic.Bool
 
 // warnPlaintextDial logs plaintextWarningMessage the first time this process
-// dials wsURL over ws:// to a host that is not this machine (the rule is
+// dials wsURL over ws:// to a non-loopback host (the rule is
 // config.PlaintextRemoteHost). It returns true only when it logged. It never
 // changes or refuses the connection.
 func warnPlaintextDial(wsURL string) bool {

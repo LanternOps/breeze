@@ -11,7 +11,10 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { devices } from '../../db/schema';
-import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
+import {
+  readPlaintextServerConnection,
+  recordAgentHealthObservation,
+} from '../../services/agentHealthObservations';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -256,5 +259,49 @@ describe('agent health observation storage', () => {
       status: 'fulfilled',
       value: { becameLatest: true },
     });
+  });
+
+  // #12729: the device-detail read of the agent's server_connection component
+  // against the real jsonb path, join and RLS.
+  runDb('reads the plaintext server connection from the latest observation, for this device only', async () => {
+    const { orgA, orgB, deviceA, deviceB } = await seedFixture();
+    // The literal wire shape the agent sends (agent/internal/heartbeat/server_connection.go).
+    const plaintext = { state: 'warning' as const, reason: 'plaintext_websocket' };
+    await recordAgentHealthObservation({
+      device: deviceA,
+      observation: {
+        ...health(deviceA.id, '2026-11-20T10:00:00.000Z', 'warning'),
+        components: { metrics: { state: 'healthy' }, server_connection: plaintext },
+      },
+      receivedAt: new Date('2026-11-20T10:00:01.000Z'),
+    });
+    await recordAgentHealthObservation({
+      device: deviceB,
+      observation: {
+        ...health(deviceB.id, '2026-11-20T10:00:00.000Z', 'warning'),
+        components: { server_connection: plaintext },
+      },
+      receivedAt: new Date('2026-11-20T10:00:01.000Z'),
+    });
+
+    await expect(withDbAccessContext(orgContext(orgA.id), () => readPlaintextServerConnection(deviceA)))
+      .resolves.toEqual({ observedAt: '2026-11-20T10:00:00.000Z' });
+    // Another org's device is invisible under RLS, even with its real org id.
+    await expect(withDbAccessContext(orgContext(orgA.id), () => readPlaintextServerConnection(deviceB)))
+      .resolves.toBeNull();
+    await expect(withDbAccessContext(orgContext(orgB.id), () => readPlaintextServerConnection(deviceB)))
+      .resolves.toEqual({ observedAt: '2026-11-20T10:00:00.000Z' });
+
+    // A newer observation after server_url moved to https clears it.
+    await recordAgentHealthObservation({
+      device: deviceA,
+      observation: {
+        ...health(deviceA.id, '2026-11-20T11:00:00.000Z'),
+        components: { metrics: { state: 'healthy' }, server_connection: { state: 'healthy' } },
+      },
+      receivedAt: new Date('2026-11-20T11:00:01.000Z'),
+    });
+    await expect(withDbAccessContext(orgContext(orgA.id), () => readPlaintextServerConnection(deviceA)))
+      .resolves.toBeNull();
   });
 });

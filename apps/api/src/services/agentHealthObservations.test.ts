@@ -176,8 +176,8 @@ describe('recordAgentHealthObservation', () => {
 });
 
 // #12729 — the agent reports `server_connection: { state: 'warning', reason:
-// 'plaintext_websocket' }` when its server_url is http:// to a host that is
-// not the device itself (agent/internal/heartbeat/server_connection.go).
+// 'plaintext_websocket' }` when its server_url is http:// to a non-loopback
+// host (agent/internal/heartbeat/server_connection.go).
 describe('derivePlaintextServerConnection', () => {
   const at = new Date('2026-11-20T10:00:00.000Z');
 

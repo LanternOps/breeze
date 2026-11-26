@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -45,6 +46,22 @@ func TestObserveServerConnection_ReportsPlaintextRemoteServer(t *testing.T) {
 				t.Fatalf("server_connection = %+v, want state %q reason %q", c, tc.wantState, tc.wantReason)
 			}
 		})
+	}
+}
+
+// The API matches these exact literals (apps/api agentHealthObservations.ts
+// derivePlaintextServerConnection); a rename on one side alone would silently
+// drop the device notice, so the wire bytes are pinned here, not the consts.
+func TestObserveServerConnection_WireLiterals(t *testing.T) {
+	h := &Heartbeat{config: &config.Config{AgentID: "agent-1", ServerURL: "http://rmm.example.com"}, healthMon: health.NewMonitor()}
+	h.observeServerConnection()
+	snap := h.healthMon.Snapshot(health.SnapshotMetadata{AgentVersion: "1.0.0", ObservedAt: time.Now()})
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"server_connection":{"state":"warning","reason":"plaintext_websocket"}`; !strings.Contains(string(raw), want) {
+		t.Fatalf("healthStatus JSON = %s, want it to contain %s", raw, want)
 	}
 }
 
