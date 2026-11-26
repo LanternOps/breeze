@@ -31,6 +31,8 @@ interface IncidentFeedRow {
   detectedAt: string;
   trackedIncidentId: string | null;
   linkOut: string | null;
+  /** A Huntress/S1 finding synced from an integration that is now disconnected (#12726). */
+  integrationDisconnected?: boolean;
 }
 
 interface Pagination {
@@ -236,6 +238,15 @@ export default function IncidentsPage() {
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${sourceBadgeClass(row.source)}`}>
                           {sourceLabel(row.source)}
                         </span>
+                        {row.integrationDisconnected ? (
+                          <span
+                            data-testid="incident-feed-disconnected-badge"
+                            title={t('longTail.incidents.IncidentsPage.disconnectedIntegrationTooltip')}
+                            className="ml-2 inline-flex rounded-full border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                          >
+                            {t('longTail.incidents.IncidentsPage.disconnectedIntegration')}
+                          </span>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${severityColors[row.severity]}`}>

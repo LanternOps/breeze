@@ -171,7 +171,7 @@ describe('buildEdrStatusSummary — coverage disclosure (D6)', () => {
 
 describe('legacy agent coverage query (DB-less SQL, #10394)', () => {
   it('groups agents by org within the caller\'s org', () => {
-    const { sql, params } = buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress').toSQL();
+    const { sql, params } = buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress', ['int-1']).toSQL();
     expect(sql).toContain('from "huntress_agents"');
     expect(sql).toMatch(/group by "huntress_agents"\."org_id"/);
     expect(sql).toContain('"huntress_agents"."org_id" = $');
@@ -179,20 +179,20 @@ describe('legacy agent coverage query (DB-less SQL, #10394)', () => {
   });
 
   it('applies the site rule to a restricted caller (linked to an allowed device, or never linked)', () => {
-    const { sql, params } = buildLegacyAgentCoverageQuery({ auth: orgAuth, allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'] }, {}, 'sentinelone').toSQL();
+    const { sql, params } = buildLegacyAgentCoverageQuery({ auth: orgAuth, allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'] }, {}, 'sentinelone', ['int-1']).toSQL();
     expect(sql).toContain('from "s1_agents"');
     expect(sql).toMatch(/"s1_agents"\."device_id" is null or "s1_agents"\."device_id" in \(/);
     expect(params).toContain('d1');
   });
 
   it('a restricted caller with no allowed devices counts only never-linked agents', () => {
-    const { sql } = buildLegacyAgentCoverageQuery({ auth: orgAuth, allowedDeviceIds: [], allowedSiteIds: [] }, {}, 'huntress').toSQL();
+    const { sql } = buildLegacyAgentCoverageQuery({ auth: orgAuth, allowedDeviceIds: [], allowedSiteIds: [] }, {}, 'huntress', ['int-1']).toSQL();
     expect(sql).toMatch(/"huntress_agents"\."device_id" is null/);
     expect(sql).not.toMatch(/"huntress_agents"\."device_id" in/);
   });
 
   it('rejects an org outside an organization caller', () => {
-    expect(() => buildLegacyAgentCoverageQuery(unrestricted(), { orgId: OTHER_ORG }, 'huntress')).toThrow(EdrReadError);
+    expect(() => buildLegacyAgentCoverageQuery(unrestricted(), { orgId: OTHER_ORG }, 'huntress', ['int-1'])).toThrow(EdrReadError);
   });
 
   it('partner scope counts only agents of an ACTIVE integration (a disabled one is not coverage)', () => {
@@ -205,8 +205,15 @@ describe('legacy agent coverage query (DB-less SQL, #10394)', () => {
     expect(s1.sql).toMatch(/exists \(select 1 from "s1_integrations" i where i\.id = "s1_agents"\."integration_id" and i\.is_active\)/);
   });
 
-  it('organization scope skips the integration-state filter (org tokens cannot read the partner-axis integration row under RLS)', () => {
-    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress').toSQL().sql).not.toContain('huntress_integrations');
+  it('organization scope filters by the active integration ids it is handed, never reading the partner-axis table (#12726)', () => {
+    const some = buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress', ['int-1']).toSQL();
+    expect(some.sql).not.toContain('huntress_integrations');
+    expect(some.sql).toMatch(/"huntress_agents"\."integration_id" in \(\$\d+\)/);
+    expect(some.params).toContain('int-1');
+    // No connected integration: no agent counts.
+    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'sentinelone', []).toSQL().sql).toMatch(/\bfalse\b/);
+    // No ids passed for an org-scope read is a wiring bug, not "no coverage".
+    expect(() => buildLegacyAgentCoverageQuery(unrestricted(), {}, 'sentinelone')).toThrow(/orgScopeActiveIntegrationIds/);
   });
 });
 

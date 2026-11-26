@@ -668,6 +668,7 @@ describe('incidentRoutes', () => {
           detectedAt: new Date().toISOString(),
           trackedIncidentId: 'i-1',
           linkOut: null,
+          integrationDisconnected: false,
         },
       ],
       total: 1,

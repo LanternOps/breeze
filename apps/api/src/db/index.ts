@@ -1245,6 +1245,52 @@ export function getCurrentDbAccessContext(): DbAccessContext | undefined {
   return dbContextMetaStorage.getStore();
 }
 
+// Keyed by the outermost context's deferral list: one list per outermost
+// context, shared by joined inner contexts and savepoints, and new for every
+// top-level transaction. The WeakMap lets a settled context's memos go.
+const dbContextMemos = new WeakMap<AfterContextExitTask[], Map<symbol, Map<string, unknown>>>();
+
+/**
+ * A map that belongs to the OUTERMOST DB context in this async
+ * scope: one request transaction, or one job's system context. Joined inner
+ * contexts and savepoints see the same map; any other top-level context (the
+ * next request, or a nested escalation opened through runOutsideDbContext)
+ * gets a new one; outside any context this returns undefined. Use it to
+ * memoise a lookup within one request, never as a cache across requests.
+ *
+ * `namespace` keeps unrelated callers apart. A caller that changes the state
+ * its memo describes, inside the same context, must clear its own map.
+ *
+ * WHAT MAY BE STORED: only values that are the same for every caller scope.
+ * The scope can change inside one outermost context (withResolvedDbAccessContext
+ * starts in system scope and narrows to the tenant on the same context), and
+ * both phases share this map. So a memoised value must never depend on the
+ * caller's org, partner, site or user, and must never be rows read under RLS:
+ * that would hand one scope's answer to another. Put anything scope-dependent
+ * in the key, or do not memoise it here. Use a module-private `Symbol()` as the
+ * namespace, never `Symbol.for`, so two features cannot collide.
+ *
+ * The map is released when the settled context is garbage collected, not at the
+ * moment the context exits: a continuation that outlives the request can still
+ * read it, but it is that same request's map.
+ */
+export function getDbContextMemo<V>(namespace: symbol): Map<string, V> | undefined {
+  if (!dbContextStorage.getStore()) return undefined;
+  const owner = afterContextExitStorage.getStore();
+  if (!owner) return undefined;
+  let byNamespace = dbContextMemos.get(owner);
+  if (!byNamespace) {
+    byNamespace = new Map();
+    dbContextMemos.set(owner, byNamespace);
+  }
+  let memo = byNamespace.get(namespace);
+  if (!memo) {
+    memo = new Map();
+    byNamespace.set(namespace, memo);
+  }
+  return memo as Map<string, V>;
+}
+
 export type RunOutsideDbContextFn = <T>(fn: () => T) => T;
 
 /**

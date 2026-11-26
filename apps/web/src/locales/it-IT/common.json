@@ -2420,6 +2420,8 @@
           "closed": "chiuso"
         },
         "viewInSource": "Visualizza in {{source}}",
+        "disconnectedIntegration": "Integrazione disconnessa",
+        "disconnectedIntegrationTooltip": "Sincronizzato da un'integrazione che non è più collegata",
         "promoteFromEdr": "Promuovi dalla vista EDR.",
         "pagination": "Pagina {{page}} di {{totalPages}} ({{total}} totale)",
         "previous": "Precedente",

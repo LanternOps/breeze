@@ -14,6 +14,7 @@ import {
 import { classifyDeviceProtection } from './protection';
 import { edrEndpointProtectedSql, isEdrVisibilityEnabled } from './edrVisibility';
 import { sqlTimestamp } from './sqlTimestamp';
+import { activeAgentIntegrationIdsForOrg, agentOfActiveIntegration } from '../securityIntegrationDisconnect';
 
 export async function enrichedDevicesForOrg(
   orgId: string,
@@ -23,6 +24,8 @@ export async function enrichedDevicesForOrg(
   // #8166: same flag-gated EDR leg as the security page, so both portal views
   // classify a device identically. Flag off: no EDR column is even selected.
   const edrVisible = await isEdrVisibilityEnabled(orgId);
+  // #12726: agents of a disconnected integration are not protection.
+  const activeIntegrations = await activeAgentIntegrationIdsForOrg(orgId);
   const [countRows, rows] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int` })
@@ -52,11 +55,13 @@ export async function enrichedDevicesForOrg(
           select 1 from ${s1Agents}
           where ${s1Agents.orgId} = ${orgId}
             and ${s1Agents.deviceId} = ${devices.id}
+            and ${agentOfActiveIntegration(s1Agents.integrationId, activeIntegrations.sentinelone)}
         )`,
         hasHuntressAgent: sql<boolean>`exists (
           select 1 from ${huntressAgents}
           where ${huntressAgents.orgId} = ${orgId}
             and ${huntressAgents.deviceId} = ${devices.id}
+            and ${agentOfActiveIntegration(huntressAgents.integrationId, activeIntegrations.huntress)}
         )`,
         ...(edrVisible ? { hasEdrEndpoint: edrEndpointProtectedSql(orgId) } : {}),
         encryption: securityStatus.encryptionStatus,

@@ -21,6 +21,7 @@ import { getSecurityPostureTrend } from '../securityPosture';
 import { edrEndpointLinkedSql, edrEndpointProtectedSql, isEdrVisibilityEnabled } from './edrVisibility';
 import { PORTAL_EDR_LABEL, classifyDeviceProtection } from './protection';
 import { vulnerabilitySeverityForFindings } from './vulnerabilityCatalog';
+import { activeAgentIntegrationIdsForOrg, agentOfActiveIntegration } from '../securityIntegrationDisconnect';
 
 function scoreBand(
   score: number,
@@ -88,6 +89,8 @@ export async function securityScoreTile(orgId: string, now: Date) {
 
 export async function devicesProtectedTile(orgId: string, now: Date) {
   const edrVisible = await isEdrVisibilityEnabled(orgId);
+  // #12726: agents of a disconnected integration are not protection.
+  const activeIntegrations = await activeAgentIntegrationIdsForOrg(orgId);
   const rows = await db
     .select({
       id: devices.id,
@@ -97,11 +100,13 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
         select 1 from s1_agents s1
         where s1.org_id = ${orgId}
           and s1.device_id = ${devices.id}
+          and ${agentOfActiveIntegration(sql`s1.integration_id`, activeIntegrations.sentinelone)}
       )`,
       hasHuntressAgent: sql<boolean>`exists (
         select 1 from huntress_agents ha
         where ha.org_id = ${orgId}
           and ha.device_id = ${devices.id}
+          and ${agentOfActiveIntegration(sql`ha.integration_id`, activeIntegrations.huntress)}
       )`,
       ...(edrVisible ? { hasEdrEndpoint: edrEndpointProtectedSql(orgId) } : {}),
     })
@@ -351,13 +356,17 @@ export async function securityDevicesPage(
 ): Promise<SecurityDevicesDto> {
   const offset = (args.page - 1) * args.limit;
   const edrVisible = await isEdrVisibilityEnabled(orgId);
+  // #12726: agents of a disconnected integration are not protection.
+  const activeIntegrations = await activeAgentIntegrationIdsForOrg(orgId);
   const hasS1Agent = sql<boolean>`exists (
     select 1 from s1_agents s1
     where s1.org_id = ${orgId} and s1.device_id = ${devices.id}
+      and ${agentOfActiveIntegration(sql`s1.integration_id`, activeIntegrations.sentinelone)}
   )`;
   const hasHuntressAgent = sql<boolean>`exists (
     select 1 from huntress_agents ha
     where ha.org_id = ${orgId} and ha.device_id = ${devices.id}
+      and ${agentOfActiveIntegration(sql`ha.integration_id`, activeIntegrations.huntress)}
   )`;
   const hasEdrEndpoint = edrEndpointProtectedSql(orgId);
   const protectedByAgent = edrVisible

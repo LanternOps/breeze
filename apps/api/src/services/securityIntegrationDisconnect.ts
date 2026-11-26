@@ -46,9 +46,10 @@
  * The routes check the same capability first; this check keeps a future
  * caller that forgets its own gate from clearing a partner's credentials.
  */
-import { and, desc, eq, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbTransactionIfHeld, withSystemDbAccessContext } from '../db';
-import { huntressIntegrations, s1Integrations, s1OrgMappings } from '../db/schema';
+import { and, desc, eq, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { db, getCurrentDbAccessContext, getDbContextMemo, withDbTransactionIfHeld } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
+import { huntressAgents, huntressIntegrations, s1Agents, s1Integrations, s1OrgMappings } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
@@ -75,6 +76,7 @@ export async function disconnectS1Integration(
       .set({ isActive: false, apiTokenEncrypted: null, updatedAt: now })
       .where(and(eq(s1Integrations.partnerId, partnerId), eq(s1Integrations.isActive, true)))
       .returning({ id: s1Integrations.id, partnerId: s1Integrations.partnerId, name: s1Integrations.name });
+    forgetActiveIntegrationLookups();
     if (!row) return null;
 
     // Site registration tokens enroll agents into the vendor console. The
@@ -101,6 +103,7 @@ export async function disconnectHuntressIntegration(
     })
     .where(and(eq(huntressIntegrations.partnerId, partnerId), eq(huntressIntegrations.isActive, true)))
     .returning({ id: huntressIntegrations.id, partnerId: huntressIntegrations.partnerId, name: huntressIntegrations.name });
+  forgetActiveIntegrationLookups();
   return row ?? null;
 }
 
@@ -119,6 +122,9 @@ export async function writeOrActiveIndexConflict<T>(
   } catch (error) {
     if (isPgUniqueViolation(error, constraint)) return 'conflict';
     throw error;
+  } finally {
+    // A connect, edit or reconnect may change which integration is active.
+    forgetActiveIntegrationLookups();
   }
 }
 
@@ -169,34 +175,183 @@ export async function findReconnectableHuntressIntegration(partnerId: string): P
   return row ?? null;
 }
 
+type LegacyEdrVendor = 'sentinelone' | 'huntress';
+
+const LEGACY_EDR_VENDORS: readonly LegacyEdrVendor[] = ['sentinelone', 'huntress'];
+
+/**
+ * Per-request memo of the active lookup: `vendor:id` -> whether that
+ * integration is active. Lives in getDbContextMemo, so it lasts one outermost
+ * DB context (one request) and never carries across requests: a disconnect is
+ * seen by the next request. The writes in this module clear it, so a request
+ * that changes an integration's state never reads its own stale answer.
+ */
+const ACTIVE_INTEGRATION_MEMO = Symbol('securityIntegrationDisconnect.activeIntegrationIds');
+
+function forgetActiveIntegrationLookups(): void {
+  getDbContextMemo(ACTIVE_INTEGRATION_MEMO)?.clear();
+}
+
 /**
  * Which of these integration ids are active. Used to label synced history rows
  * that came from a disconnected integration.
  *
- * Runs in system context because the integration tables are partner-axis and
- * an organization-scope caller cannot read them. It only answers for ids taken
- * from rows the caller already read under its own RLS, and returns nothing but
- * membership.
+ * Reads through readWithPartnerAxisVisibility because the integration tables
+ * are partner-axis and an organization-scope caller cannot read them. It only
+ * answers for ids taken from rows the caller already read under its own RLS,
+ * and returns nothing but membership.
  */
 export async function activeIntegrationIds(
-  vendor: 'sentinelone' | 'huntress',
+  vendor: LegacyEdrVendor,
   ids: readonly string[],
 ): Promise<Set<string>> {
-  const unique = [...new Set(ids)];
-  if (unique.length === 0) return new Set();
-  const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => {
-      if (vendor === 'sentinelone') {
-        return db
-          .select({ id: s1Integrations.id })
-          .from(s1Integrations)
-          .where(and(inArray(s1Integrations.id, unique), eq(s1Integrations.isActive, true)));
+  return (await activeIntegrationIdsByVendor({ [vendor]: ids }))[vendor];
+}
+
+/**
+ * activeIntegrationIds for both vendors at once. Same contract: pass only ids
+ * from rows the caller already read; it returns membership only.
+ *
+ * Connections. A caller already in system scope reads in place, on its own
+ * connection. Any other caller escalates (readWithPartnerAxisVisibility),
+ * which takes a second pooled connection from the small nested reserve, so
+ * that caller's answers are memoised for the rest of its request: one
+ * escalation covers every vendor asked about together, concurrent calls share
+ * one in-flight lookup, a later call looks up only the ids not answered yet,
+ * and no id is ever looked up twice in one request. A failed lookup rejects
+ * every caller waiting on it and is forgotten, so a later call retries; it is
+ * never read as "active".
+ */
+export async function activeIntegrationIdsByVendor(
+  ids: Partial<Record<LegacyEdrVendor, readonly string[]>>,
+): Promise<Record<LegacyEdrVendor, Set<string>>> {
+  const wanted = {
+    sentinelone: [...new Set(ids.sentinelone ?? [])],
+    huntress: [...new Set(ids.huntress ?? [])],
+  };
+  // System scope reads in place: nothing to save, and no memo to go stale
+  // across a long-lived job context.
+  const memo = getCurrentDbAccessContext()?.scope === 'system'
+    ? undefined
+    : getDbContextMemo<Promise<boolean>>(ACTIVE_INTEGRATION_MEMO);
+  if (!memo) return readActiveIntegrationIds(wanted);
+
+  const key = (vendor: LegacyEdrVendor, id: string) => `${vendor}:${id}`;
+  const missing = {
+    sentinelone: wanted.sentinelone.filter((id) => !memo.has(key('sentinelone', id))),
+    huntress: wanted.huntress.filter((id) => !memo.has(key('huntress', id))),
+  };
+  if (missing.sentinelone.length > 0 || missing.huntress.length > 0) {
+    const lookup = readActiveIntegrationIds(missing);
+    for (const vendor of LEGACY_EDR_VENDORS) {
+      for (const id of missing[vendor]) {
+        const entry = lookup.then((active) => active[vendor].has(id));
+        // Forget a failed answer so a later call retries. This branch also
+        // marks the rejection handled; every awaiter still sees it.
+        entry.catch(() => {
+          if (memo.get(key(vendor, id)) === entry) memo.delete(key(vendor, id));
+        });
+        memo.set(key(vendor, id), entry);
       }
-      return db
-        .select({ id: huntressIntegrations.id })
-        .from(huntressIntegrations)
-        .where(and(inArray(huntressIntegrations.id, unique), eq(huntressIntegrations.isActive, true)));
-    })
-  );
-  return new Set(rows.map((row) => row.id));
+    }
+  }
+
+  const answer = async (vendor: LegacyEdrVendor) => {
+    const flags = await Promise.all(wanted[vendor].map((id) => memo.get(key(vendor, id))!));
+    return new Set(wanted[vendor].filter((_, i) => flags[i]));
+  };
+  const [sentinelone, huntress] = await Promise.all([answer('sentinelone'), answer('huntress')]);
+  return { sentinelone, huntress };
+}
+
+/** The lookup itself: one partner-axis read covering both vendors. */
+async function readActiveIntegrationIds(
+  ids: Record<LegacyEdrVendor, readonly string[]>,
+): Promise<Record<LegacyEdrVendor, Set<string>>> {
+  if (ids.sentinelone.length === 0 && ids.huntress.length === 0) {
+    return { sentinelone: new Set(), huntress: new Set() };
+  }
+  return readWithPartnerAxisVisibility(async () => {
+    const s1Rows = ids.sentinelone.length === 0 ? [] : await db
+      .select({ id: s1Integrations.id })
+      .from(s1Integrations)
+      .where(and(inArray(s1Integrations.id, [...ids.sentinelone]), eq(s1Integrations.isActive, true)));
+    const huntressRows = ids.huntress.length === 0 ? [] : await db
+      .select({ id: huntressIntegrations.id })
+      .from(huntressIntegrations)
+      .where(and(inArray(huntressIntegrations.id, [...ids.huntress]), eq(huntressIntegrations.isActive, true)));
+    return {
+      sentinelone: new Set(s1Rows.map((row) => row.id)),
+      huntress: new Set(huntressRows.map((row) => row.id)),
+    };
+  });
+}
+
+export type ActiveAgentIntegrationIds = Record<LegacyEdrVendor, string[]>;
+
+/**
+ * Current coverage from SentinelOne and Huntress agent rows (#12726).
+ *
+ * Agent rows outlive a disconnect, so a reader that treats them as "this
+ * device is protected" must first drop the rows of a disconnected
+ * integration. For each vendor KEY in `where`, and only those, this reads the
+ * distinct integration ids of the agent rows its condition selects IN THE
+ * CALLER'S DB CONTEXT (forced RLS fences that read to the caller's orgs), then
+ * asks activeIntegrationIdsByVendor which of those are active. A key whose
+ * condition is `undefined` reads every agent row of that vendor the caller can
+ * see; a vendor left out is not read and is absent from the result. It can
+ * only answer about integrations behind agent rows the caller could already
+ * read, and returns nothing but those ids.
+ *
+ * Feed a vendor's list to agentOfActiveIntegration to filter the reader's own
+ * query. Connections: the agent-row reads are plain SELECTs on the caller's
+ * connection; the active check costs at most one escalation per request (see
+ * activeIntegrationIdsByVendor). Neither opens a savepoint or a
+ * withDbTransaction on the caller's transaction, so the call may sit beside
+ * sibling queries in a Promise.all.
+ */
+export async function activeIntegrationIdsOfReadableAgents<V extends LegacyEdrVendor>(
+  where: Record<V, SQL | undefined>,
+): Promise<Record<V, string[]>> {
+  const vendors = LEGACY_EDR_VENDORS.filter((vendor): vendor is V => vendor in where);
+  const conditions = where as Partial<Record<LegacyEdrVendor, SQL | undefined>>;
+  const readIds = async (vendor: LegacyEdrVendor): Promise<string[]> => {
+    if (!(vendor in conditions)) return [];
+    const rows = vendor === 'sentinelone'
+      ? await db.selectDistinct({ integrationId: s1Agents.integrationId }).from(s1Agents).where(conditions.sentinelone)
+      : await db.selectDistinct({ integrationId: huntressAgents.integrationId }).from(huntressAgents).where(conditions.huntress);
+    return rows.map((row) => row.integrationId);
+  };
+  const [s1Ids, huntressIds] = await Promise.all([readIds('sentinelone'), readIds('huntress')]);
+  const active = await activeIntegrationIdsByVendor({ sentinelone: s1Ids, huntress: huntressIds });
+  const result = {} as Record<V, string[]>;
+  for (const vendor of vendors) result[vendor] = [...active[vendor]];
+  return result;
+}
+
+/**
+ * activeIntegrationIdsOfReadableAgents over one org's agent rows, for the
+ * org-scoped coverage readers (portal, reports). Pass `vendors` to read only
+ * the vendors the reader uses; by default both.
+ */
+export async function activeAgentIntegrationIdsForOrg<V extends LegacyEdrVendor = LegacyEdrVendor>(
+  orgId: string,
+  vendors: readonly V[] = LEGACY_EDR_VENDORS as readonly V[],
+): Promise<Record<V, string[]>> {
+  const orgConditions: Record<LegacyEdrVendor, SQL> = {
+    sentinelone: eq(s1Agents.orgId, orgId),
+    huntress: eq(huntressAgents.orgId, orgId),
+  };
+  const where = {} as Record<V, SQL>;
+  for (const vendor of vendors) where[vendor] = orgConditions[vendor];
+  return activeIntegrationIdsOfReadableAgents(where);
+}
+
+/**
+ * SQL condition: this agent row's integration is one of `activeIds` (from
+ * activeIntegrationIdsOfReadableAgents). An empty list matches nothing, so a
+ * caller with no connected integration counts no agent.
+ */
+export function agentOfActiveIntegration(integrationIdColumn: SQLWrapper, activeIds: readonly string[]): SQL {
+  return activeIds.length > 0 ? inArray(integrationIdColumn, [...activeIds]) : sql`false`;
 }

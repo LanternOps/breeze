@@ -1,5 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// #12726: every integration behind these fixtures' agent rows is connected.
+// The disconnected case runs on real Postgres in
+// edrCoverageDisconnectedIntegration.integration.test.ts.
+vi.mock('./securityIntegrationDisconnect', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./securityIntegrationDisconnect')>()),
+  activeIntegrationIds: vi.fn(async (_vendor: string, ids: readonly string[]) => new Set(ids)),
+  activeIntegrationIdsByVendor: vi.fn(async (ids: { sentinelone?: readonly string[]; huntress?: readonly string[] }) => ({
+    sentinelone: new Set(ids.sentinelone ?? []),
+    huntress: new Set(ids.huntress ?? []),
+  })),
+  activeIntegrationIdsOfReadableAgents: vi.fn(async () => ({
+    sentinelone: ['connected-integration'],
+    huntress: ['connected-integration'],
+  })),
+  activeAgentIntegrationIdsForOrg: vi.fn(async () => ({
+    sentinelone: ['connected-integration'],
+    huntress: ['connected-integration'],
+  })),
+}));
+
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
 vi.mock('./backupConnectionFreshness', () => ({ loadBackupConnectionFreshness: vi.fn() }));
 vi.mock('./securityComplianceReportVulnerabilities', () => ({ loadOpenVulnerabilityCounts: vi.fn(async () => new Map()) }));

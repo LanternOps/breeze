@@ -74,6 +74,7 @@ import {
 } from './reportGenerationService';
 import type { OrgReportGenerationAuthority } from './siteScope';
 import { resolveAdHocEvidenceWindow } from './reportDateRange';
+import { activeAgentIntegrationIdsForOrg, agentOfActiveIntegration } from './securityIntegrationDisconnect';
 
 /** A sync older than this makes the source `stale`: the artifact still prints
  *  what it holds, but says plainly that anything after the last sync is not in
@@ -245,7 +246,8 @@ async function loadEdrCoverage(orgId: string, filter: SiteFilter): Promise<EdrCo
  * Each query joins `devices` and pushes the managed-fleet conditions and its
  * OWN site predicates, like every other branch here. An s1 row the console no
  * longer returns has its `device_id` nulled by the sync, so the INNER JOIN
- * drops it.
+ * drops it. An s1 row of a disconnected integration is not an agent the
+ * device carries today (#12726).
  */
 async function otherDetectionAgentDeviceIds(
   orgId: string,
@@ -254,11 +256,17 @@ async function otherDetectionAgentDeviceIds(
 ): Promise<{ sentinelone: string[]; edr: string[] }> {
   const ids = (rows: Array<{ deviceId: string | null }>) =>
     rows.map((r) => r.deviceId).filter((id): id is string => typeof id === 'string');
+  const activeS1 = (await activeAgentIntegrationIdsForOrg(orgId, ['sentinelone'])).sentinelone;
   const s1Rows = await db
     .select({ deviceId: s1Agents.deviceId })
     .from(s1Agents)
     .innerJoin(devices, eq(s1Agents.deviceId, devices.id))
-    .where(and(eq(s1Agents.orgId, orgId), ...managedDeviceConditions(orgId), ...sitePredicates(filter)));
+    .where(and(
+      eq(s1Agents.orgId, orgId),
+      agentOfActiveIntegration(s1Agents.integrationId, activeS1),
+      ...managedDeviceConditions(orgId),
+      ...sitePredicates(filter),
+    ));
   const edrRows = includeEdr
     ? await db
       .select({ deviceId: edrEndpoints.breezeDeviceId })
@@ -536,7 +544,9 @@ export async function generateThreatDetectionReport(
   // Its OWN site predicates, joined through devices. A Huntress agent with no
   // matched Breeze device cannot be site-scoped, so under a restricted
   // authority it is not counted — the same unattributable rule as incidents.
-  const agentConditions = [eq(huntressAgents.orgId, orgId)];
+  // Huntress: only the connected integration's agents (#12726). Rows left by
+  // an older, disconnected integration are not current coverage.
+  const agentConditions = [eq(huntressAgents.orgId, orgId), eq(huntressAgents.integrationId, integration.id)];
   // A retired (decommissioned) Breeze device is not part of the managed fleet;
   // an agent with no matched Breeze device stays countable (unattributable).
   agentConditions.push(or(isNull(devices.id), ne(devices.status, 'decommissioned'))!);

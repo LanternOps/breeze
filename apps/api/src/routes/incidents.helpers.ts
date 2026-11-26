@@ -7,6 +7,7 @@ import { db } from '../db';
 import { incidents, huntressIncidents, s1Threats, edrDetections, type IncidentTimelineEntry } from '../db/schema';
 import { isEdrProviderKey, type EdrProviderKey } from '../services/edrProviders/providerKeys';
 import { edrSitePredicate } from '../services/edrProviders/readScope';
+import { activeIntegrationIdsByVendor } from '../services/securityIntegrationDisconnect';
 import type { AuthContext } from '../middleware/auth';
 import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import {
@@ -152,6 +153,13 @@ export type IncidentFeedRow = {
   detectedAt: string;
   trackedIncidentId: string | null;
   linkOut: string | null;
+  /**
+   * True for a Huntress or SentinelOne finding synced from an integration that
+   * is now disconnected (#12726): the row is history, not a live vendor
+   * finding. Same field and meaning as the S1 threat and Huntress incident
+   * lists. Always false for tracked incidents and EDR-framework rows.
+   */
+  integrationDisconnected: boolean;
 };
 
 export function resolveFindingLinkOut(details: unknown): string | null {
@@ -309,6 +317,7 @@ export function buildIncidentFeedQueries(
       detectedAt: sql<Date>`${incidents.detectedAt}`.as('detectedAt'),
       trackedIncidentId: sql<string | null>`${incidents.id}::text`.as('trackedIncidentId'),
       details: sql<unknown>`null::jsonb`.as('details'),
+      integrationId: sql<string | null>`null::uuid`.as('integrationId'),
     })
     .from(incidents)
     .where(orgIncidents.condition);
@@ -327,6 +336,7 @@ export function buildIncidentFeedQueries(
       detectedAt: sql<Date>`coalesce(${huntressIncidents.reportedAt}, ${huntressIncidents.createdAt})`.as('detectedAt'),
       trackedIncidentId: sql<string | null>`null::text`.as('trackedIncidentId'),
       details: sql<unknown>`${huntressIncidents.details}`.as('details'),
+      integrationId: sql<string | null>`${huntressIncidents.integrationId}`.as('integrationId'),
     })
     .from(huntressIncidents)
     .where(
@@ -352,6 +362,7 @@ export function buildIncidentFeedQueries(
       detectedAt: sql<Date>`coalesce(${s1Threats.detectedAt}, ${s1Threats.createdAt})`.as('detectedAt'),
       trackedIncidentId: sql<string | null>`null::text`.as('trackedIncidentId'),
       details: sql<unknown>`${s1Threats.details}`.as('details'),
+      integrationId: sql<string | null>`${s1Threats.integrationId}`.as('integrationId'),
     })
     .from(s1Threats)
     .where(
@@ -382,6 +393,7 @@ export function buildIncidentFeedQueries(
       detectedAt: sql<Date>`coalesce(${edrDetections.detectedAt}, ${edrDetections.createdAt})`.as('detectedAt'),
       trackedIncidentId: sql<string | null>`null::text`.as('trackedIncidentId'),
       details: sql<unknown>`null::jsonb`.as('details'),
+      integrationId: sql<string | null>`null::uuid`.as('integrationId'),
     })
     .from(edrDetections)
     .where(
@@ -441,10 +453,9 @@ export function buildIncidentFeedQueries(
     // same vendor could therefore still tie — which needs identical rank AND
     // identical detectedAt AND a colliding vendor incident id, so it is a
     // remote corner rather than the everyday transaction-timestamp tie this
-    // fixes. Making it airtight means adding `integration_id` as a fourth
-    // aliased column to all three legs; not worth the surface today, but that
-    // is the fix if it ever bites.
-    .orderBy(asc(sub.rank), desc(sub.detectedAt), asc(sub.source), asc(sub.sourceId))
+    // fixes. Every leg now carries `integrationId` (#12726; null outside the
+    // Huntress and S1 legs), so it closes that corner as the last tiebreaker.
+    .orderBy(asc(sub.rank), desc(sub.detectedAt), asc(sub.source), asc(sub.sourceId), asc(sub.integrationId))
     .limit(params.limit)
     .offset(params.offset);
 
@@ -459,6 +470,21 @@ export async function buildIncidentFeed(
   if (!built) return { rows: [], total: 0 };
 
   const [countRows, rows] = await Promise.all([built.countQuery, built.rowsQuery]);
+
+  // Which integrations behind this page's Huntress/S1 findings are still
+  // connected. The lookup answers only for ids on the rows just read.
+  const integrationIdsOf = (leg: 'huntress' | 's1') =>
+    rows.filter((r) => r.source === leg && r.integrationId).map((r) => r.integrationId as string);
+  const active = await activeIntegrationIdsByVendor({
+    huntress: integrationIdsOf('huntress'),
+    sentinelone: integrationIdsOf('s1'),
+  });
+  const integrationDisconnected = (source: IncidentFeedSource, integrationId: string | null): boolean => {
+    if (!integrationId) return false;
+    if (source === 'huntress') return !active.huntress.has(integrationId);
+    if (source === 's1') return !active.sentinelone.has(integrationId);
+    return false;
+  };
 
   return {
     rows: rows.map((r) => {
@@ -476,6 +502,7 @@ export async function buildIncidentFeed(
         trackedIncidentId: r.trackedIncidentId,
         // EDR-framework rows carry no vendor deep link in W02 (details is NULL).
         linkOut: source === 'breeze' || isEdrProviderKey(source) ? null : resolveFindingLinkOut(r.details),
+        integrationDisconnected: integrationDisconnected(source, r.integrationId as string | null),
       };
     }),
     total: Number(countRows[0]?.count ?? 0),
