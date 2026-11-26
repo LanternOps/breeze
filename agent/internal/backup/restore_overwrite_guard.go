@@ -27,9 +27,13 @@ import (
 // destination placement computes with the location each recorded path
 // names on this host, both read by one parser in this host's convention.
 // A target that reaches the original tree through an alias (a substituted
-// drive, a mount, a link to a volume root) is not detected, with one
-// exception on macOS: /System/Volumes/Data is read as / there
-// (withoutDarwinDataVolume).
+// or mapped drive, a bind mount or other re-mount, a link or junction to a
+// volume root or an ancestor of the originals, a share naming this machine)
+// is not detected, with one exception on macOS: /System/Volumes/Data is
+// read as / there (withoutDarwinDataVolume). This is a deliberate limit:
+// recognising aliases needs file system identity checks, which cannot be
+// made to fail closed without opening paths the snapshot names or refusing
+// ordinary restores (resume, re-run into the same folder). See #12668.
 
 // ResultCodeRestoreWouldOverwriteOriginals is RestoreResult.Code for a restore to
 // a target that was refused because entries would be written over the
