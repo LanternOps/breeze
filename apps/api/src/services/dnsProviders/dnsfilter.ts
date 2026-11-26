@@ -1,5 +1,5 @@
 import type { DnsAction } from '../../db/schema';
-import type { DnsEvent, DnsEventSlice, DnsProvider } from './index';
+import type { DnsEvent, DnsEventSlice, DnsEventSliceWalkEnd, DnsProvider } from './index';
 import { DnsProviderHttpError, requestJson } from './http';
 import { asArray, asNumber, asRecord, asString, asStringArray } from './helpers';
 import { storesAllowedTraffic } from './syncScope';
@@ -47,11 +47,26 @@ const DEFAULT_BASE_URL = 'https://api.dnsfilter.com';
 export const DNSFILTER_PAGE_SIZE = 100;
 
 /**
- * Pages fetched per sync window (100 x 100 = 10,000 rows). The endpoint is
- * documented as "not designed for bulk or continuous log export", so a window
+ * A sync walks its window in slices of this width, each persisted (and
+ * checkpointed) as it completes, so a first sync's 24 hours or a backlog after
+ * an outage is not one 10,000-row window, and a failure on a late slice keeps
+ * the earlier ones.
+ */
+export const DNSFILTER_SLICE_MS = 60 * 60 * 1000;
+
+/**
+ * Pages fetched per slice (100 x 100 = 10,000 rows an hour). The endpoint is
+ * documented as "not designed for bulk or continuous log export", so a slice
  * with more rows than this is recorded as truncated rather than paged on.
  */
 export const DNSFILTER_MAX_PAGES = 100;
+
+/**
+ * Requests per sync run. Past it the walk stops at the last completed slice
+ * and the run is recorded as partial; the next run resumes there. Keeps a
+ * backlog from spending DNSFilter's rate limit in one burst.
+ */
+export const DNSFILTER_MAX_REQUESTS_PER_RUN = 200;
 
 const WHOLE_NUMBER = /^[1-9]\d{0,17}$/;
 const BREEZE_NOTE_ADD = 'Added by Breeze DNS policy sync';
@@ -146,12 +161,13 @@ function isDnsFilterHost(baseUrl: string): boolean {
 
 type Operation = 'query logs' | 'policy update';
 
-function statusHint(operation: Operation, status: number): string | undefined {
+function statusHint(operation: Operation, status: number, path: string): string | undefined {
   if (status === 401) return 'Check that the DNSFilter API key is valid';
   if (status === 403) {
-    return operation === 'query logs'
+    if (operation === 'policy update') return 'The API key cannot edit the configured DNSFilter policy';
+    return path.includes('organization_id=')
       ? 'The API key cannot read the configured DNSFilter organization ID'
-      : 'The API key cannot edit the configured DNSFilter policy';
+      : 'The API key is not allowed to read DNSFilter query logs';
   }
   if (status === 404 && operation === 'policy update') {
     return 'DNSFilter has no policy with the configured policy ID';
@@ -182,12 +198,22 @@ export class DnsFilterProvider implements DnsProvider {
       });
     } catch (error) {
       if (!(error instanceof DnsProviderHttpError)) throw error;
+      // A 2xx with an unparseable body (requestJson's invalid-JSON case): keep
+      // that message rather than reporting "failed: HTTP 200 OK".
+      if (error.status < 400) {
+        throw new DnsProviderHttpError(
+          error.status,
+          error.statusText,
+          error.responseBody,
+          `DNSFilter ${operation} returned a response that is not JSON (HTTP ${error.status})`
+        );
+      }
       // The message reaches the tenant-visible sync-error column. DNSFilter's
       // error text is included only when the request went to DNSFilter itself
       // (the create route pins apiEndpoint to *.dnsfilter.com over HTTPS):
       // an upstream body from any other host must not be reflected.
       const detail = isDnsFilterHost(baseUrl) ? providerErrorDetail(error.responseBody) : undefined;
-      const hint = statusHint(operation, error.status);
+      const hint = statusHint(operation, error.status, path);
       const message = `DNSFilter ${operation} failed: HTTP ${error.status} ${error.statusText}`
         + (detail ? ` (${detail})` : '')
         + (hint ? `. ${hint}` : '');
@@ -218,21 +244,54 @@ export class DnsFilterProvider implements DnsProvider {
     return legacy;
   }
 
+  /** The whole window at once. The sync job uses {@link syncEventSlices}; this exists for the interface. */
   async syncEvents(since: Date, until: Date): Promise<DnsEvent[]> {
     const events: DnsEvent[] = [];
-    for await (const slice of this.syncEventSlices(since, until)) {
-      events.push(...slice.events);
+    const walk = this.syncEventSlices(since, until);
+    for (;;) {
+      const step = await walk.next();
+      if (step.done) {
+        if (step.value.stoppedShort) {
+          throw new Error('DNSFilter query logs: the window needs more requests than one sync run allows');
+        }
+        return events;
+      }
+      events.push(...step.value.events);
     }
-    return events;
   }
 
   /**
-   * One slice for the whole window. Sliced only so a window with more rows
-   * than {@link DNSFILTER_MAX_PAGES} pages can be reported as truncated
-   * (lastSyncStatus 'truncated') instead of silently cut short.
+   * Walks `[since, until]` in {@link DNSFILTER_SLICE_MS} slices, oldest first,
+   * yielding each as it completes. A slice with more than
+   * {@link DNSFILTER_MAX_PAGES} pages is yielded as truncated (lastSyncStatus
+   * 'truncated'); running out of {@link DNSFILTER_MAX_REQUESTS_PER_RUN} ends
+   * the walk early with `stoppedShort` (lastSyncStatus 'partial').
    */
-  async *syncEventSlices(since: Date, until: Date): AsyncGenerator<DnsEventSlice, void, undefined> {
+  async *syncEventSlices(since: Date, until: Date): AsyncGenerator<DnsEventSlice, DnsEventSliceWalkEnd, undefined> {
     const organizationId = this.organizationId();
+    const budget = { remaining: DNSFILTER_MAX_REQUESTS_PER_RUN };
+    let cursor = since.getTime();
+    const end = until.getTime();
+
+    while (cursor < end) {
+      const sliceEnd = Math.min(cursor + DNSFILTER_SLICE_MS, end);
+      const from = new Date(cursor);
+      const to = sliceEnd === end ? until : new Date(sliceEnd);
+      const slice = await this.fetchSlice(from, to, organizationId, budget);
+      if (!slice) return { stoppedShort: { from, to: until } };
+      yield slice;
+      cursor = sliceEnd;
+    }
+    return {};
+  }
+
+  /** One slice, or null when the run's request budget ran out before it completed. */
+  private async fetchSlice(
+    since: Date,
+    until: Date,
+    organizationId: string | undefined,
+    budget: { remaining: number }
+  ): Promise<DnsEventSlice | null> {
     const events: DnsEvent[] = [];
     let skipped = 0;
     let rowsSeen = 0;
@@ -245,6 +304,8 @@ export class DnsFilterProvider implements DnsProvider {
           truncated = true;
           break;
         }
+        if (budget.remaining <= 0) return null;
+        budget.remaining--;
 
         const query = new URLSearchParams({
           from: formatDnsFilterTime(since),
@@ -270,17 +331,17 @@ export class DnsFilterProvider implements DnsProvider {
           else skipped++;
         }
 
-        const page = asRecord(data.page);
-        const current = asNumber(page?.self) ?? pageNumber;
-        const next = asNumber(page?.next);
-        const last = asNumber(page?.last);
-        const nextPage = next !== undefined && next > current
-          ? next
-          : next === undefined && last !== undefined && current < last
-            ? current + 1
-            : undefined;
-        if (nextPage === undefined || rows.length === 0) break;
+        if (rows.length === 0) break;
+        const nextPage = this.nextPageNumber(asRecord(data.page), pageNumber, rows.length);
+        if (nextPage === undefined) break;
         pageNumber = nextPage;
+      }
+
+      if (rowsSeen > 0 && events.length === 0) {
+        // Every row failed to map: that is a shape we cannot read, not a quiet window.
+        throw new Error(
+          `DNSFilter query logs returned ${rowsSeen} row(s), none of which could be read (unexpected response shape)`
+        );
       }
     } finally {
       if (skipped > 0) {
@@ -291,11 +352,35 @@ export class DnsFilterProvider implements DnsProvider {
       }
     }
 
-    yield {
+    return {
       events,
       until,
       ...(truncated ? { truncated: { from: since, to: until, reachableRecords: rowsSeen } } : {})
     };
+  }
+
+  /**
+   * The next page to fetch from `data.page` (TrafficReportsPaginationResponse),
+   * or undefined at the end. `next: null` is the documented end. Paging we
+   * cannot follow after a full page throws: stopping there would record the
+   * rest of the window as fetched when it was not.
+   */
+  private nextPageNumber(
+    page: Record<string, unknown> | null,
+    requested: number,
+    rowCount: number
+  ): number | undefined {
+    const current = asNumber(page?.self) ?? requested;
+    if (page?.next === null) return undefined;
+    const next = asNumber(page?.next);
+    if (next !== undefined) {
+      if (next > current) return next;
+      throw new Error(`DNSFilter query logs paging did not advance (page ${current}, next ${next})`);
+    }
+    const last = asNumber(page?.last);
+    if (last !== undefined) return current < last ? current + 1 : undefined;
+    if (rowCount < DNSFILTER_PAGE_SIZE) return undefined;
+    throw new Error('DNSFilter query logs returned a full page with no paging information (unexpected response shape)');
   }
 
   private requirePolicyId(): string {

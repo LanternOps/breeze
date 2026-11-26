@@ -164,6 +164,18 @@ describe('EditDnsRetentionModal — DNSFilter ids (#12699)', () => {
     expect(sentBody()).toEqual({ retentionDays: 7, storeAllowedTraffic: false, organizationId: null });
   });
 
+  it('saves an unrelated change while a legacy non-numeric id is left as it is', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse({ id: 'int-1' }));
+    const { onSaved } = renderDnsFilter({ organizationId: 'acct-abc', policyId: null });
+
+    fireEvent.click(screen.getByTestId('dns-store-allowed-traffic'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(sentBody()).toEqual({ retentionDays: 7, storeAllowedTraffic: true });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('refuses a non-numeric id without calling the API', () => {
     renderDnsFilter({ organizationId: null, policyId: null });
 

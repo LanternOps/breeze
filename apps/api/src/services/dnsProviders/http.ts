@@ -45,7 +45,7 @@ export class DnsProviderHttpError extends Error {
     status: number,
     statusText: string,
     responseBody: string,
-    /** Optional body-free message override; defaults to the status line. */
+    /** Optional message override; defaults to the status line. Body-free except DNSFilter's vetted text (above). */
     message?: string
   ) {
     super(message ?? `HTTP ${status} ${statusText}`);

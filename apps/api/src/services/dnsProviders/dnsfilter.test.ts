@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DnsFilterProvider, type DnsFilterProviderConfig } from './dnsfilter';
+import {
+  DNSFILTER_MAX_PAGES,
+  DNSFILTER_MAX_REQUESTS_PER_RUN,
+  DNSFILTER_PAGE_SIZE,
+  DNSFILTER_SLICE_MS,
+  DnsFilterProvider, type DnsFilterProviderConfig } from './dnsfilter';
 import { DnsProviderHttpError, requestJson } from './http';
 
 // Same shape as the Umbrella/Cloudflare/AdGuard provider tests: transport is
@@ -94,7 +99,8 @@ function makeProvider(config: DnsFilterProviderConfig = {}) {
   return new DnsFilterProvider('dnsf-key', config);
 }
 
-const SINCE = new Date('2026-11-24T12:15:00.000Z');
+// A window inside one slice (DNSFILTER_SLICE_MS = 1 h), so each test sees one request per page.
+const SINCE = new Date('2026-11-25T11:45:00.000Z');
 const UNTIL = new Date('2026-11-25T12:15:00.000Z');
 
 beforeEach(() => {
@@ -132,7 +138,7 @@ describe('DnsFilterProvider.syncEvents — documented query-log endpoint (#12699
     await makeProvider().syncEvents(SINCE, UNTIL);
 
     const params = urlOf(requestJsonMock.mock.calls[0]!).searchParams;
-    expect(params.get('from')).toBe('2026-11-24T12:15:00Z');
+    expect(params.get('from')).toBe('2026-11-25T11:45:00Z');
     expect(params.get('to')).toBe('2026-11-25T12:15:00Z');
     expect(params.get('result')).toBe('blocked');
     expect(params.get('page[number]')).toBe('1');
@@ -262,8 +268,24 @@ describe('DnsFilterProvider.syncEvents — documented query-log endpoint (#12699
 
     expect(slices).toHaveLength(1);
     expect(slices[0]!.until).toEqual(UNTIL);
-    expect(slices[0]!.truncated).toEqual({ from: SINCE, to: UNTIL, reachableRecords: slices[0]!.events.length });
-    expect(slices[0]!.events.length).toBeGreaterThan(0);
+    expect(requestJsonMock).toHaveBeenCalledTimes(DNSFILTER_MAX_PAGES);
+    expect(slices[0]!.events).toHaveLength(DNSFILTER_MAX_PAGES);
+    expect(slices[0]!.truncated).toEqual({ from: SINCE, to: UNTIL, reachableRecords: DNSFILTER_MAX_PAGES });
+  });
+
+  it('does not mark a window truncated when its last page is exactly the page cap', async () => {
+    requestJsonMock.mockImplementation(async (input) => {
+      const n = Number(new URL(String(input)).searchParams.get('page[number]'));
+      return docPage([docRow({ fqdn: `p${n}.example` })], {
+        self: n, last: DNSFILTER_MAX_PAGES, next: n < DNSFILTER_MAX_PAGES ? n + 1 : null
+      }) as never;
+    });
+
+    const slices = [];
+    for await (const slice of makeProvider().syncEventSlices(SINCE, UNTIL)) slices.push(slice);
+
+    expect(requestJsonMock).toHaveBeenCalledTimes(DNSFILTER_MAX_PAGES);
+    expect(slices[0]!.truncated).toBeUndefined();
   });
 
   it('surfaces DNSFilter\'s status and error text when the call fails', async () => {
@@ -273,7 +295,140 @@ describe('DnsFilterProvider.syncEvents — documented query-log endpoint (#12699
 
     const failure = makeProvider().syncEvents(SINCE, UNTIL);
     await expect(failure).rejects.toBeInstanceOf(DnsProviderHttpError);
-    await expect(failure).rejects.toThrow(/DNSFilter.*HTTP 401 Unauthorized.*Not Authorized/);
+    await expect(failure).rejects.toThrow(/DNSFilter.*HTTP 401 Unauthorized.*Not Authorized.*Check that the DNSFilter API key is valid/);
+  });
+});
+
+describe('DnsFilterProvider paging guards (#12699)', () => {
+  it('stops on an empty page even if it names a next page', async () => {
+    requestJsonMock.mockResolvedValueOnce(docPage([], { self: 1, last: 5, next: 2 }) as never);
+
+    await makeProvider().syncEvents(SINCE, UNTIL);
+
+    expect(requestJsonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to self < last when next is absent', async () => {
+    const first = docPage([docRow({ fqdn: 'a.example' })], { self: 1, last: 2, next: null });
+    delete (first.data.page as Record<string, unknown>).next;
+    requestJsonMock
+      .mockResolvedValueOnce(first as never)
+      .mockResolvedValueOnce(docPage([docRow({ fqdn: 'b.example' })], { self: 2, last: 2, next: null }) as never);
+
+    const events = await makeProvider().syncEvents(SINCE, UNTIL);
+
+    expect(events.map((e) => e.domain)).toEqual(['a.example', 'b.example']);
+  });
+
+  it('fails when paging does not advance, instead of looping or stopping quietly', async () => {
+    requestJsonMock.mockResolvedValueOnce(docPage([docRow()], { self: 2, last: 5, next: 2 }) as never);
+
+    await expect(makeProvider().syncEvents(SINCE, UNTIL)).rejects.toThrow(/paging did not advance/);
+    expect(requestJsonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails on a full page with no paging information (the rest of the window would be lost)', async () => {
+    const rows = Array.from({ length: DNSFILTER_PAGE_SIZE }, (_, i) => docRow({ fqdn: `r${i}.example` }));
+    requestJsonMock.mockResolvedValueOnce({ data: { values: rows } } as never);
+
+    await expect(makeProvider().syncEvents(SINCE, UNTIL)).rejects.toThrow(/full page with no paging information/);
+  });
+
+  it('accepts a short page with no paging information as the whole window', async () => {
+    requestJsonMock.mockResolvedValueOnce({ data: { values: [docRow()] } } as never);
+
+    await expect(makeProvider().syncEvents(SINCE, UNTIL)).resolves.toHaveLength(1);
+  });
+
+  it('fails when rows came back but none could be read (shape drift, not a quiet window)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    requestJsonMock.mockResolvedValueOnce(docPage([
+      { timestamp: '2026-11-25T12:10:00Z', query: 'renamed.example', action: 'block' },
+      docRow({ result: 'quarantined' })
+    ], { self: 1, last: 1, next: null }) as never);
+
+    await expect(makeProvider().syncEvents(SINCE, UNTIL)).rejects.toThrow(/2 row\(s\), none of which could be read/);
+  });
+});
+
+describe('DnsFilterProvider config ids (#12699)', () => {
+  it('refuses a non-numeric config.organizationId without calling DNSFilter', async () => {
+    await expect(makeProvider({ organizationId: 'abc' }).syncEvents(SINCE, UNTIL)).rejects.toThrow(
+      /organization ID on this integration is not a whole number/
+    );
+    expect(requestJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('prefers config.organizationId over a legacy accountId', async () => {
+    requestJsonMock.mockResolvedValueOnce(docPage([], { self: 1, last: 1, next: null }) as never);
+
+    await makeProvider({ organizationId: '1001', accountId: 'acct-x' }).syncEvents(SINCE, UNTIL);
+
+    expect(urlOf(requestJsonMock.mock.calls[0]!).searchParams.get('organization_id')).toBe('1001');
+  });
+
+  it.each(['default', '7/../x', '0'])('refuses policyId %j without calling DNSFilter', async (policyId) => {
+    await expect(makeProvider({ policyId }).addBlocklistDomain('bad.example')).rejects.toThrow(/not a whole number/);
+    expect(requestJsonMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DnsFilterProvider error text (#12699)', () => {
+  it.each([
+    ['https://api.example-dns.test'],
+    ['https://evildnsfilter.com'],
+    ['https://dnsfilter.com.evil.test']
+  ])('does not reflect the response body for a non-DNSFilter host (%s)', async (apiEndpoint) => {
+    requestJsonMock.mockRejectedValueOnce(new DnsProviderHttpError(500, 'Server Error', '{"error":"SECRET-BODY"}'));
+
+    const failure = makeProvider({ apiEndpoint }).syncEvents(SINCE, UNTIL);
+    await expect(failure).rejects.toThrow(/HTTP 500 Server Error/);
+    await expect(failure).rejects.not.toThrow(/SECRET-BODY/);
+  });
+
+  it.each([
+    ['query logs', 403, '{"error":"Forbidden"}', /\(Forbidden\)\. The API key is not allowed to read DNSFilter query logs$/],
+    ['query logs', 429, '{"error":"Too Many Requests"}', /rate limit reached/],
+    ['query logs', 400, '{"error":{"message":"bad from"}}', /\(bad from\)$/],
+    ['policy update', 403, '{"error":"Forbidden"}', /cannot edit the configured DNSFilter policy/],
+    ['policy update', 422, '["Domain is invalid","Note is missing"]', /\(Domain is invalid; Note is missing\)$/],
+    ['policy update', 400, '<html>oops</html>', /HTTP 400 Bad\s?$/]
+  ] as const)('%s HTTP %i maps to a readable message', async (operation, status, body, message) => {
+    requestJsonMock.mockRejectedValueOnce(new DnsProviderHttpError(status, status === 400 ? 'Bad' : 'Err', body));
+
+    const run = operation === 'query logs'
+      ? makeProvider().syncEvents(SINCE, UNTIL)
+      : makeProvider({ policyId: '7' }).addBlocklistDomain('bad.example');
+    await expect(run).rejects.toThrow(message);
+  });
+
+  it('names the configured organization ID in a query-log 403 only when one is sent', async () => {
+    requestJsonMock.mockRejectedValueOnce(new DnsProviderHttpError(403, 'Forbidden', '{"error":"Forbidden"}'));
+
+    await expect(makeProvider({ organizationId: '1001' }).syncEvents(SINCE, UNTIL)).rejects.toThrow(
+      /cannot read the configured DNSFilter organization ID/
+    );
+  });
+
+  it('strips control characters and caps DNSFilter\'s text at 200 characters', async () => {
+    const long = `line1\nline2\u0007${'x'.repeat(300)}`;
+    requestJsonMock.mockRejectedValueOnce(new DnsProviderHttpError(400, 'Bad Request', JSON.stringify({ error: long })));
+
+    const error = (await makeProvider().syncEvents(SINCE, UNTIL).catch((e: unknown) => e)) as Error;
+
+    const detail = /\((.*)\)/.exec(error.message)![1]!;
+    expect(detail.startsWith('line1 line2 x')).toBe(true);
+    expect(detail.length).toBe(200);
+  });
+
+  it('reports an unparseable 2xx body as non-JSON, not as "failed: HTTP 200 OK"', async () => {
+    requestJsonMock.mockRejectedValueOnce(
+      new DnsProviderHttpError(200, 'OK', '<html>maintenance</html>', 'Provider returned invalid JSON payload')
+    );
+
+    await expect(makeProvider().syncEvents(SINCE, UNTIL)).rejects.toThrow(
+      'DNSFilter query logs returned a response that is not JSON (HTTP 200)'
+    );
   });
 });
 
@@ -329,5 +484,79 @@ describe('DnsFilterProvider block/allow edits — documented policy endpoints (#
     await expect(makeProvider({ policyId: '7' }).addBlocklistDomain('bad.example')).rejects.toThrow(
       /HTTP 404 Not Found.*policy/
     );
+  });
+});
+
+describe('DnsFilterProvider time slices (#12699)', () => {
+  const DAY_SINCE = new Date('2026-11-24T12:15:00.000Z');
+  const emptyPage = () => docPage([], { self: 1, last: 1, next: null });
+
+  it('walks a 24-hour window in hourly slices, oldest first, each checkpointed at its end', async () => {
+    requestJsonMock.mockImplementation(async () => emptyPage() as never);
+
+    const slices = [];
+    for await (const slice of makeProvider().syncEventSlices(DAY_SINCE, UNTIL)) slices.push(slice);
+
+    expect(DNSFILTER_SLICE_MS).toBe(60 * 60 * 1000);
+    expect(slices).toHaveLength(24);
+    expect(slices[0]!.until).toEqual(new Date('2026-11-24T13:15:00.000Z'));
+    expect(slices[23]!.until).toEqual(UNTIL);
+    const windows = requestJsonMock.mock.calls.map((c) => {
+      const p = urlOf(c).searchParams;
+      return [p.get('from'), p.get('to')];
+    });
+    expect(windows[0]).toEqual(['2026-11-24T12:15:00Z', '2026-11-24T13:15:00Z']);
+    expect(windows[1]).toEqual(['2026-11-24T13:15:00Z', '2026-11-24T14:15:00Z']);
+    expect(windows[23]).toEqual(['2026-11-25T11:15:00Z', '2026-11-25T12:15:00Z']);
+  });
+
+  it('keeps the slices already yielded when a later slice fails', async () => {
+    requestJsonMock
+      .mockResolvedValueOnce(docPage([docRow({ fqdn: 'early.example' })], { self: 1, last: 1, next: null }) as never)
+      .mockRejectedValueOnce(new DnsProviderHttpError(503, 'Service Unavailable', '{"error":"down"}'));
+
+    const yielded: string[] = [];
+    const walk = async () => {
+      for await (const slice of makeProvider().syncEventSlices(DAY_SINCE, UNTIL)) {
+        yielded.push(...slice.events.map((e) => e.domain));
+      }
+    };
+
+    await expect(walk()).rejects.toThrow(/HTTP 503/);
+    expect(yielded).toEqual(['early.example']);
+  });
+
+  it('stops at the per-run request budget and reports where the next run resumes', async () => {
+    // Every slice is endless, so each spends DNSFILTER_MAX_PAGES requests and is truncated.
+    requestJsonMock.mockImplementation(async (input) => {
+      const n = Number(new URL(String(input)).searchParams.get('page[number]'));
+      return docPage([docRow({ fqdn: `p${n}.example` })], { self: n, last: 999, next: n + 1 }) as never;
+    });
+
+    const walk = makeProvider().syncEventSlices(DAY_SINCE, UNTIL);
+    const slices = [];
+    let end;
+    for (;;) {
+      const step = await walk.next();
+      if (step.done) { end = step.value; break; }
+      slices.push(step.value);
+    }
+
+    const fullSlices = DNSFILTER_MAX_REQUESTS_PER_RUN / DNSFILTER_MAX_PAGES;
+    expect(slices).toHaveLength(fullSlices);
+    expect(slices.every((s) => s.truncated)).toBe(true);
+    expect(requestJsonMock).toHaveBeenCalledTimes(DNSFILTER_MAX_REQUESTS_PER_RUN);
+    expect(end).toEqual({
+      stoppedShort: { from: new Date(DAY_SINCE.getTime() + fullSlices * DNSFILTER_SLICE_MS), to: UNTIL }
+    });
+  });
+
+  it('syncEvents refuses to return a window it could not finish', async () => {
+    requestJsonMock.mockImplementation(async (input) => {
+      const n = Number(new URL(String(input)).searchParams.get('page[number]'));
+      return docPage([docRow()], { self: n, last: 999, next: n + 1 }) as never;
+    });
+
+    await expect(makeProvider().syncEvents(DAY_SINCE, UNTIL)).rejects.toThrow(/more requests than one sync run allows/);
   });
 });
