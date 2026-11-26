@@ -943,6 +943,9 @@ const REPOINT_TABLES: readonly string[] = [
   "backup_snapshot_id_reservations",
   "backup_snapshot_retirements",
   "backup_snapshots",
+  // Derived file-index checkpoint of a device's backups (#11736). Repointed with the org; the snapshot
+  // tenancy reset clears every snapshot pointer to it, so the merged delta snapshots re-hydrate.
+  "backup_tree_checkpoints",
   // Storage key history (and its revocation evidence) moves with the org.
   "backup_storage_credential_history",
   // Multipart uploads of write sessions travel with their session.

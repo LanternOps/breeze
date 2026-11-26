@@ -11,6 +11,10 @@ import {
   bigint,
   index,
   uniqueIndex,
+  unique,
+  check,
+  foreignKey,
+  primaryKey,
   customType,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
@@ -196,6 +200,9 @@ export const backupConfigs = pgTable(
     orgDefaultUq: uniqueIndex('backup_configs_org_default_uq')
       .on(table.orgId)
       .where(sql`is_default`),
+    // #11736: target of backup_tree_checkpoints_config_org_fk, so a checkpoint
+    // can only name a config of its own org.
+    idOrgUq: unique('backup_configs_id_org_uq').on(table.id, table.orgId),
   })
 );
 
@@ -398,6 +405,99 @@ export const backupJobs = pgTable(
   })
 );
 
+/**
+ * Snapshot file index checkpoint (#11736 step 2): a full entry set owned by one
+ * backup lineage of one device, shared by that lineage's `delta` snapshots.
+ * Derived data, rebuildable from the source manifest. Tenancy shape 1 (direct
+ * org_id). Migration 2027-01-31-120000-backup-tree-checkpoints.sql also owns
+ * the composite FKs' deferral (config: DEFERRABLE INITIALLY IMMEDIATE; device:
+ * DEFERRABLE INITIALLY DEFERRED), which Drizzle cannot declare.
+ *
+ * On a device org move the header is deleted, not restamped:
+ * backup_tree_checkpoints_config_org_fk names a SOURCE-org config. The AFTER
+ * UPDATE OF org_id trigger breeze_device_moved_backup_tree_checkpoints deletes
+ * it on every move path; CORE_DEVICE_ORG_MOVE_DELETE_TABLES is the app's
+ * fallback. backup_tree_checkpoints_device_org_fk pins the header's org to its
+ * device's org and deletes the header with its device.
+ */
+export const backupTreeCheckpoints = pgTable(
+  'backup_tree_checkpoints',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id')
+      .notNull()
+      .references(() => organizations.id),
+    // FK: backup_tree_checkpoints_device_org_fk below (composite, with org_id).
+    deviceId: uuid('device_id').notNull(),
+    configId: uuid('config_id').notNull(),
+    // Lineage key (R5), with org, device and config.
+    storageIdentity: text('storage_identity').notNull(),
+    backupType: backupTypeEnum('backup_type').notNull(),
+    keyLayout: text('key_layout').notNull(),
+    keyPrefix: text('key_prefix'),
+    entryCount: integer('entry_count').notNull(),
+    // Provenance only, not an FK: the source snapshot retires independently.
+    sourceSnapshotDbId: uuid('source_snapshot_db_id'),
+    sourceManifestSha256: text('source_manifest_sha256').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    lastReferencedAt: timestamp('last_referenced_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    lineageIdx: index('backup_tree_checkpoints_lineage_idx').on(
+      table.deviceId,
+      table.configId,
+      table.storageIdentity,
+      table.createdAt.desc(),
+    ),
+    orgIdIdx: index('backup_tree_checkpoints_org_id_idx').on(table.orgId),
+    // Target of backup_snapshots_file_index_checkpoint_fk.
+    idOrgDeviceUq: unique('backup_tree_checkpoints_id_org_device_uq').on(table.id, table.orgId, table.deviceId),
+    entryCountChk: check('backup_tree_checkpoints_entry_count_chk', sql`${table.entryCount} >= 0`),
+    configOrgFk: foreignKey({
+      name: 'backup_tree_checkpoints_config_org_fk',
+      columns: [table.configId, table.orgId],
+      foreignColumns: [backupConfigs.id, backupConfigs.orgId],
+    }).onDelete('cascade'),
+    deviceOrgFk: foreignKey({
+      name: 'backup_tree_checkpoints_device_org_fk',
+      columns: [table.deviceId, table.orgId],
+      foreignColumns: [devices.id, devices.orgId],
+    }).onDelete('cascade'),
+  })
+);
+
+/**
+ * The entries of a checkpoint. No org_id: parent-join RLS through the header,
+ * the shape backup_snapshot_files has. No id and no created_at, to keep rows
+ * small. `entryNo` is what a delta snapshot's tombstone names, because
+ * source_path is not unique within a manifest.
+ */
+export const backupTreeCheckpointEntries = pgTable(
+  'backup_tree_checkpoint_entries',
+  {
+    checkpointId: uuid('checkpoint_id')
+      .notNull()
+      .references(() => backupTreeCheckpoints.id, { onDelete: 'cascade' }),
+    entryNo: integer('entry_no').notNull(),
+    sourcePath: text('source_path').notNull(),
+    backupPath: text('backup_path').notNull(),
+    size: bigint('size', { mode: 'number' }),
+    modifiedAt: timestamp('modified_at'),
+    kind: text('kind').$type<SnapshotEntryKind>(),
+  },
+  (table) => ({
+    pk: primaryKey({ name: 'backup_tree_checkpoint_entries_pkey', columns: [table.checkpointId, table.entryNo] }),
+    checkpointSourceIdx: index('backup_tree_checkpoint_entries_checkpoint_source_idx').on(
+      table.checkpointId,
+      table.sourcePath,
+    ),
+    checkpointBackupPathIdx: index('backup_tree_checkpoint_entries_checkpoint_backup_path_idx').on(
+      table.checkpointId,
+      table.backupPath,
+    ),
+  })
+);
+
 export const backupSnapshots = pgTable(
   'backup_snapshots',
   {
@@ -478,6 +578,14 @@ export const backupSnapshots = pgTable(
     // 'agent_result_after_reconcile' (a reconciled row whose producing
     // device's own result arrived later). NULL = created before this column.
     resultProvenance: text('result_provenance'),
+    // #11736 step 2: 'rows' = this snapshot's backup_snapshot_files rows are its
+    // whole tree (every snapshot before step 2, permanently). 'delta' = its tree
+    // is the checkpoint's entries it does not tombstone plus its own rows; the
+    // pointer is set exactly then (backup_snapshots_file_index_checkpoint_chk).
+    // A change of org_id or device_id resets a delta snapshot to 'rows' with no
+    // rows (breeze_backup_snapshot_file_index_tenancy_reset()).
+    fileIndexFormat: text('file_index_format').$type<'rows' | 'delta'>().notNull().default('rows'),
+    fileIndexCheckpointId: uuid('file_index_checkpoint_id'),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),
@@ -505,6 +613,25 @@ export const backupSnapshots = pgTable(
     keyLayoutNonDefaultIdx: index('backup_snapshots_key_layout_non_default_idx')
       .on(table.keyLayout)
       .where(sql`${table.keyLayout} <> 'legacy_flat'`),
+    // Serves the RESTRICT check and checkpoint GC's "no snapshot references it".
+    fileIndexCheckpointIdx: index('backup_snapshots_file_index_checkpoint_idx')
+      .on(table.fileIndexCheckpointId)
+      .where(sql`${table.fileIndexCheckpointId} IS NOT NULL`),
+    fileIndexFormatChk: check(
+      'backup_snapshots_file_index_format_chk',
+      sql`${table.fileIndexFormat} IN ('rows', 'delta')`,
+    ),
+    fileIndexCheckpointChk: check(
+      'backup_snapshots_file_index_checkpoint_chk',
+      sql`(${table.fileIndexFormat} = 'delta') = (${table.fileIndexCheckpointId} IS NOT NULL)`,
+    ),
+    // R4: a snapshot pins its checkpoint; no reference count. Composite so it can
+    // only name a checkpoint of its own org and device.
+    fileIndexCheckpointFk: foreignKey({
+      name: 'backup_snapshots_file_index_checkpoint_fk',
+      columns: [table.fileIndexCheckpointId, table.orgId, table.deviceId],
+      foreignColumns: [backupTreeCheckpoints.id, backupTreeCheckpoints.orgId, backupTreeCheckpoints.deviceId],
+    }).onDelete('restrict'),
   })
 );
 
@@ -528,9 +655,15 @@ export const backupSnapshotFiles = pgTable(
     // (services/backupSnapshotEntryKind.ts).
     kind: text('kind').$type<SnapshotEntryKind>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
+    // #11736 step 2: NULL = an entry of this snapshot. Set = a tombstone that
+    // hides that entry of the snapshot's checkpoint (delta format only); its
+    // backup_path is '' so it never names an object.
+    checkpointEntryNo: integer('checkpoint_entry_no'),
   },
   (table) => ({
-    snapshotIdx: index('backup_snapshot_files_snapshot_idx').on(table.snapshotDbId),
+    // No snapshot_db_id-only index: backup_snapshot_files_snapshot_idx was dropped
+    // (#11736 R8). This index leads with the same column and serves the FK
+    // cascade from backup_snapshots and every reader.
     snapshotSourceIdx: index('backup_snapshot_files_snapshot_source_idx').on(table.snapshotDbId, table.sourcePath),
     // W09 (#6464): the download-authorization membership check
     // (authorizeExternalReference, Task 6) filters by (snapshot_db_id,

@@ -159,7 +159,11 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Snapshot attestations reference the snapshot, the job and the device.
   'backup_snapshot_attestations',
   'backup_snapshot_id_reservations',
-  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots',
+  // #11736: snapshots reference the checkpoint header (ON DELETE RESTRICT), so it goes after backup_snapshots.
+  // Its entries table has no device_id and cascades from the header.
+  'backup_tree_checkpoints',
+  'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
   // Deployment invites (FK device_id → devices.id; no cascade)

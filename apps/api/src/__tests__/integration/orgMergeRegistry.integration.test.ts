@@ -436,11 +436,14 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'alerts.breeze_alerts_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
   'tickets.breeze_tickets_partner_feed_xid': 'only stamps partner_feed_xid; never reads or reverts org_id',
   // #6488 (2026-10-31-100700): fires on an actual org_id/device_id change and
-  // only drops a complete/hydrating file_index_status to 'none', so the
-  // snapshot's origin provenance is re-verified under the new org. Never
-  // RAISEs and never reverts org_id — a merge repoint is exactly the case it
-  // exists for.
-  'backup_snapshots.backup_snapshots_file_index_tenancy_reset': 'only resets file_index_status on an org/device change; never reads-to-block or reverts org_id',
+  // drops a complete/hydrating file_index_status to 'none', so the snapshot's
+  // origin provenance is re-verified under the new org. #11736
+  // (2027-01-31-120000) also resets a 'delta' snapshot to 'rows' (NULL
+  // checkpoint pointer, status 'none') and deletes its backup_snapshot_files
+  // rows, so it re-hydrates instead of reading a checkpoint the merge left
+  // unreferenced. Never RAISEs and never reverts org_id — a merge repoint is
+  // exactly the case it exists for.
+  'backup_snapshots.backup_snapshots_file_index_tenancy_reset': 'only resets the file index (status, and a delta snapshot\'s format, pointer and rows) on an org/device change; never reads-to-block or reverts org_id',
   // Snapshot attestations (2026-11-08-110000): the BEFORE UPDATE guard freezes
   // the attested/binding columns and the status transition, and deliberately
   // leaves org_id out of both, so a device move or merge repoint passes.

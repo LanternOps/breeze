@@ -498,6 +498,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // every FK (command, both devices, snapshot, config) is ON DELETE CASCADE,
   // so position is determinism, not correctness.
   'backup_storage_sessions',
+  'backup_tree_checkpoints',
   'backup_verifications',
   'bare_metal_recoveries',
   'billing_link_tokens',
