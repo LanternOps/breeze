@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { pax8Integrations, pax8ProductMappings } from '../db/schema/pax8';
 import { createPax8ClientForIntegration } from './pax8SyncService';
-import { applyImportedPricingBySku, createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
+import { applyImportedPricing, createCatalogItem, CatalogServiceError, type CatalogActor } from './catalogService';
 import type { Pax8ProductRecord, Pax8ProductPriceRecord } from './pax8Client';
 import { getRedis } from './redis';
 import { enrichDistributorListing } from './catalogEnrichmentService';
@@ -201,9 +201,24 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
   };
 
   return withDbAccessContext(dbCtx, async () => {
+    // The mapping, not the SKU, identifies a product imported before: items from
+    // before #12524 carry Pax8's JSON-string vendorSku as their SKU (#12527).
+    // Only that SKU, the raw vendorSku trimmed as the old importer stored it, is
+    // replaced; any other SKU on the item is the partner's and stays.
+    const [mapping] = await db.select({ catalogItemId: pax8ProductMappings.catalogItemId })
+      .from(pax8ProductMappings)
+      .where(and(
+        eq(pax8ProductMappings.partnerId, integration.partnerId),
+        eq(pax8ProductMappings.integrationId, integration.id),
+        eq(pax8ProductMappings.pax8ProductId, product.pax8ProductId),
+      ))
+      .limit(1);
+    const legacySku = typeof product.raw.vendorSku === 'string' ? product.raw.vendorSku.trim() : null;
     let created: Awaited<ReturnType<typeof createCatalogItem>>;
     try {
-      created = await createCatalogItem(payload, actor);
+      created = mapping?.catalogItemId
+        ? await applyImportedPricing({ itemId: mapping.catalogItemId, sku: payload.sku ?? null, replacesSku: legacySku }, payload, actor)
+        : await createCatalogItem(payload, actor);
     } catch (err) {
       const sku = payload.sku;
       if (err instanceof CatalogServiceError && err.code === 'DUPLICATE_SKU' && sku) {
@@ -211,7 +226,7 @@ export async function importPax8CatalogItem(input: Pax8ImportInput, actor: Catal
         // the requested sell-currency price + the freshly fetched feed cost to
         // the existing item under its row lock instead of silently dropping them,
         // and return the same item-plus-price-book shape a fresh create does.
-        created = await applyImportedPricingBySku(sku, payload, actor);
+        created = await applyImportedPricing({ sku }, payload, actor);
       } else {
         throw err;
       }

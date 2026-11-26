@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   db: { select: vi.fn(), insert: vi.fn() },
   createPax8ClientForIntegration: vi.fn(),
   createCatalogItem: vi.fn(),
-  applyImportedPricingBySku: vi.fn(),
+  applyImportedPricing: vi.fn(),
   getRedis: vi.fn(() => null),
   enrichDistributorListing: vi.fn(),
   // #2190 — pass-through wrapper; kept as a vi.fn (not an inline arrow) so
@@ -17,13 +17,14 @@ vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: mocks.crea
 vi.mock('./catalogService', async (orig) => ({
   ...(await orig<typeof import('./catalogService')>()),
   createCatalogItem: mocks.createCatalogItem,
-  applyImportedPricingBySku: mocks.applyImportedPricingBySku,
+  applyImportedPricing: mocks.applyImportedPricing,
 }));
 vi.mock('./redis', () => ({ getRedis: mocks.getRedis }));
 vi.mock('./catalogEnrichmentService', () => ({ enrichDistributorListing: mocks.enrichDistributorListing }));
 
 import { searchPax8Products, importPax8CatalogItem, getPax8CatalogStatus, getPax8ProductPricing, Pax8CatalogError } from './pax8CatalogService';
 import { CatalogServiceError } from './catalogService';
+import { pax8ProductMappings } from '../db/schema/pax8';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
 // #2190 — the request-scoped DbAccessContext the route rebuilds from `auth` and
@@ -40,10 +41,12 @@ function insertChain() {
 
 beforeEach(() => {
   mocks.db.select.mockReset(); mocks.db.insert.mockReset();
+  // Any select a test does not queue (the import's product-mapping lookup) finds nothing.
+  mocks.db.select.mockReturnValue(selectChain([]));
   mocks.createPax8ClientForIntegration.mockReset(); mocks.createCatalogItem.mockReset();
   mocks.getRedis.mockReturnValue(null);
   mocks.enrichDistributorListing.mockReset();
-  mocks.applyImportedPricingBySku.mockReset();
+  mocks.applyImportedPricing.mockReset();
   // mockClear (not mockReset) preserves the pass-through implementation while
   // resetting call history/order between tests.
   mocks.withDbAccessContext.mockClear();
@@ -88,21 +91,82 @@ describe('importPax8CatalogItem', () => {
     mocks.db.select.mockReturnValueOnce(selectChain([integration])); // getActiveIntegration
     mocks.createCatalogItem.mockRejectedValueOnce(new CatalogServiceError('dup', 409, 'DUPLICATE_SKU'));
     const merged = { id: 'existing-1', name: 'Microsoft 365 Business Premium', costBasis: '18.50', costCurrency: 'USD', prices: [{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }] };
-    mocks.applyImportedPricingBySku.mockResolvedValueOnce(merged);
+    mocks.applyImportedPricing.mockResolvedValueOnce(merged);
     mocks.db.insert.mockReturnValueOnce(insertChain());
     const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw: {} };
     const item = await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 22, sellCurrency: 'EUR' } }, actor, dbCtx);
-    expect(mocks.applyImportedPricingBySku).toHaveBeenCalledWith(
-      'CFQ7',
+    expect(mocks.applyImportedPricing).toHaveBeenCalledWith(
+      { sku: 'CFQ7' },
       expect.objectContaining({ prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'USD' }),
       actor,
     );
     expect(item).toBe(merged); // same shape as creation — includes the price book
+    // Integration + product-mapping lookups only (no mapping, so the SKU path ran).
     // No raw catalog_items lookup: the service resolves + locks the row itself.
-    expect(mocks.db.select).toHaveBeenCalledTimes(1);
+    expect(mocks.db.select).toHaveBeenCalledTimes(2);
     expect(mocks.db.insert).toHaveBeenCalled(); // mapping upsert still happens
     const mapping = (mocks.db.insert.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]![0];
     expect(mapping).toMatchObject({ catalogItemId: 'existing-1', pax8ProductId: 'p1' });
+  });
+
+  // #12527: items imported before #12524 carry Pax8's JSON-string vendorSku as
+  // their SKU, so a re-import with the real SKU never hits DUPLICATE_SKU.
+  it('re-importing a product first imported under its JSON-string SKU updates that item instead of creating a second one (#12527)', async () => {
+    const catalog: Array<{ id: string; sku: string | null }> = [];
+    let mappedItemId: string | null = null;
+    mocks.db.select.mockImplementation(() => {
+      let table: unknown;
+      const chain = {
+        from: vi.fn((t: unknown) => { table = t; return chain; }),
+        where: vi.fn(() => chain),
+        limit: vi.fn(async () => (table === pax8ProductMappings ? (mappedItemId ? [{ catalogItemId: mappedItemId }] : []) : [integration])),
+      };
+      return chain;
+    });
+    mocks.db.insert.mockImplementation(() => {
+      const chain = {
+        values: vi.fn((v: { catalogItemId: string }) => { mappedItemId = v.catalogItemId; return chain; }),
+        onConflictDoUpdate: vi.fn(() => chain),
+      };
+      return chain;
+    });
+    mocks.createCatalogItem.mockImplementation(async (p: { sku: string | null }) => {
+      const created = { id: `item-${catalog.length + 1}`, sku: p.sku };
+      catalog.push(created);
+      return created;
+    });
+    mocks.applyImportedPricing.mockImplementation(async (target: { itemId: string; sku: string | null; replacesSku: string | null }) => {
+      const found = catalog.find((i) => i.id === target.itemId)!;
+      if (target.sku && found.sku === target.replacesSku) found.sku = target.sku;
+      return found;
+    });
+    // Pax8 sends both: the plain sku, and the JSON-string vendorSku the importer used before #12524.
+    const raw = { sku: 'CFQ7', vendorSku: '{"sku":"CFQ7"}' };
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'CFQ7', commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '18.50', currency: 'USD', raw };
+
+    await importPax8CatalogItem({ product, item: { name: product.name, sku: '{"sku":"CFQ7"}', unitPrice: 22 } }, actor, dbCtx);
+    await importPax8CatalogItem({ product, item: { name: product.name, sku: 'CFQ7', unitPrice: 25, sellCurrency: 'EUR' } }, actor, dbCtx);
+
+    expect(catalog).toEqual([{ id: 'item-1', sku: 'CFQ7' }]);
+    expect(mappedItemId).toBe('item-1');
+    expect(mocks.applyImportedPricing).toHaveBeenCalledWith(
+      { itemId: 'item-1', sku: 'CFQ7', replacesSku: '{"sku":"CFQ7"}' },
+      expect.objectContaining({ prices: [{ currencyCode: 'EUR', unitPrice: 25 }], costBasis: 18.5, costCurrency: 'USD' }),
+      actor,
+    );
+  });
+
+  it('falls back to create when the mapping no longer points at an item (catalog item deleted)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration])).mockReturnValueOnce(selectChain([{ catalogItemId: null }]));
+    mocks.createCatalogItem.mockResolvedValueOnce({ id: 'item-9', name: 'M' });
+    mocks.db.insert.mockReturnValueOnce(insertChain());
+    const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'M', vendorName: null, vendorSku: 'CFQ7', commitmentTerm: null, billingTerm: null, partnerBuyRate: null, currency: null, raw: {} };
+    const item = await importPax8CatalogItem({ product, item: { name: 'M', sku: 'CFQ7', unitPrice: 22 } }, actor, dbCtx);
+    expect(item.id).toBe('item-9');
+    expect(mocks.createCatalogItem).toHaveBeenCalledTimes(1);
+    expect(mocks.applyImportedPricing).not.toHaveBeenCalled();
+    const mapping = (mocks.db.insert.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]![0];
+    expect(mapping).toMatchObject({ catalogItemId: 'item-9', pax8ProductId: 'p1' });
   });
 
   it('re-throws a non-duplicate createCatalogItem error without touching the existing item', async () => {
@@ -111,7 +175,7 @@ describe('importPax8CatalogItem', () => {
     const product = { source: 'pax8' as const, pax8ProductId: 'p1', name: 'M', vendorName: null, vendorSku: 'CFQ7', commitmentTerm: null, billingTerm: null, partnerBuyRate: null, currency: null, raw: {} };
     await expect(importPax8CatalogItem({ product, item: { name: 'M', sku: 'CFQ7', unitPrice: 22.5, sellCurrency: 'JPY' } }, actor, dbCtx))
       .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE' });
-    expect(mocks.applyImportedPricingBySku).not.toHaveBeenCalled();
+    expect(mocks.applyImportedPricing).not.toHaveBeenCalled();
     expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 

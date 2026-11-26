@@ -391,19 +391,28 @@ export async function removeItemPrice(itemId: string, currencyCode: string, acto
  * markup derivation here either. A cost without a currency (the importedCost
  * gap) leaves the stored cost untouched.
  *
+ * The item is found by SKU, or by id when the importer already knows it (the
+ * Pax8 product mapping, #12527). Found by id, the item takes the imported SKU
+ * only while it still holds `replacesSku` (a SKU the importer itself once
+ * wrote) and no other of the partner's items holds the new one. Any other SKU,
+ * such as one the partner set by hand, stays, and the pricing still lands.
+ *
  * Runs under the catalog-side lock order (item row FIRST, then price rows) and
  * returns the same item-plus-price-book shape createCatalogItem does, plus
  * `pricingApplied`.
  */
-export async function applyImportedPricingBySku(
-  sku: string,
+export async function applyImportedPricing(
+  target: { sku: string } | { itemId: string; sku: string | null; replacesSku: string | null },
   input: Pick<CreateCatalogItemInput, 'unitPrice' | 'prices' | 'costBasis' | 'costCurrency' | 'markupPercent'>,
   actor: CatalogActor
 ) {
   const partnerId = requirePartner(actor);
   const result = await db.transaction(async (tx) => {
     const [existing] = await tx.select().from(catalogItems)
-      .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, sku))).limit(1).for('update');
+      .where(and(
+        eq(catalogItems.partnerId, partnerId),
+        'itemId' in target ? eq(catalogItems.id, target.itemId) : eq(catalogItems.sku, target.sku),
+      )).limit(1).for('update');
     if (!existing) throw new CatalogServiceError('Catalog item not found', 404, 'ITEM_NOT_FOUND');
     const partnerCurrency = await resolvePartnerCurrency(partnerId, tx);
 
@@ -416,13 +425,22 @@ export async function applyImportedPricingBySku(
       assertPriceInRange(v);
       assertRepresentable(v, code);
     }
-    const costPatch: Partial<typeof catalogItems.$inferInsert> = {};
+    const patch: Partial<typeof catalogItems.$inferInsert> = {};
     if (input.costBasis != null && input.costCurrency) {
       const costBasis = input.costBasis.toFixed(2);
       assertRepresentable(costBasis, input.costCurrency);
-      costPatch.costBasis = costBasis;
-      costPatch.costCurrency = input.costCurrency;
-      if (input.markupPercent != null) costPatch.markupPercent = input.markupPercent.toFixed(2);
+      patch.costBasis = costBasis;
+      patch.costCurrency = input.costCurrency;
+      if (input.markupPercent != null) patch.markupPercent = input.markupPercent.toFixed(2);
+    }
+    // Pre-checked rather than left to the unique index, for the same reason as
+    // updateCatalogItem: a raised violation aborts the caller's request transaction.
+    if ('itemId' in target && target.sku != null && target.sku !== existing.sku
+      && target.replacesSku != null && existing.sku === target.replacesSku) {
+      const [taken] = await tx.select({ id: catalogItems.id }).from(catalogItems)
+        .where(and(eq(catalogItems.partnerId, partnerId), eq(catalogItems.sku, target.sku), ne(catalogItems.id, existing.id)))
+        .limit(1);
+      if (!taken) patch.sku = target.sku;
     }
 
     // Which currencies already have a row? Read under the item lock, before any
@@ -439,8 +457,8 @@ export async function applyImportedPricingBySku(
     for (const currencyCode of added) {
       await upsertPriceRow(tx, existing.id, partnerId, currencyCode, priceMap.get(currencyCode)!);
     }
-    if (Object.keys(costPatch).length > 0) {
-      const rows = await tx.update(catalogItems).set({ ...costPatch, updatedAt: new Date() })
+    if (Object.keys(patch).length > 0) {
+      const rows = await tx.update(catalogItems).set({ ...patch, updatedAt: new Date() })
         .where(and(eq(catalogItems.id, existing.id), eq(catalogItems.partnerId, partnerId))).returning();
       item = rows[0] ?? item;
     }

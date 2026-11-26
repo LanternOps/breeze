@@ -33,7 +33,7 @@ import {
 import { catalogItems, catalogItemOrgPricing, catalogItemPrices, catalogBundleComponents } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import {
-  applyImportedPricingBySku,
+  applyImportedPricing,
   createCatalogItem,
   updateCatalogItem,
   setOrgPriceOverride,
@@ -1082,7 +1082,7 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(outcome.rowCount).toBe(1); // only the first import persisted
   });
 
-  runDb('applyImportedPricingBySku (#3775 review #9): a re-import adds the requested sell-currency row + feed cost to the existing item and keeps its other rows', async () => {
+  runDb('applyImportedPricing (#3775 review #9): a re-import adds the requested sell-currency row + feed cost to the existing item and keeps its other rows', async () => {
     const fx = await seedFixture();
     const first = await withDbAccessContext(fx.ctxA, () =>
       createCatalogItem({ ...dupInput('First import', 'REIMPORT-1'), costBasis: 80, costCurrency: 'USD' }, fx.actorA));
@@ -1090,7 +1090,7 @@ describe('catalogService (breeze_app, real DB)', () => {
 
     // Second import from a quote in EUR, feed now reports a CAD cost.
     const merged = await withDbAccessContext(fx.ctxA, () =>
-      applyImportedPricingBySku('REIMPORT-1', { prices: [{ currencyCode: 'EUR', unitPrice: 95 }], costBasis: 110.25, costCurrency: 'CAD' }, fx.actorA));
+      applyImportedPricing({ sku: 'REIMPORT-1' }, { prices: [{ currencyCode: 'EUR', unitPrice: 95 }], costBasis: 110.25, costCurrency: 'CAD' }, fx.actorA));
     expect(merged.id).toBe(first.id);
     expect(merged).toMatchObject({ costBasis: '110.25', costCurrency: 'CAD' });
     expect(await bookPriceOf(first.id)).toBe('100.00'); // the USD row is untouched (EUR ≠ partner currency)
@@ -1107,22 +1107,22 @@ describe('catalogService (breeze_app, real DB)', () => {
     // Another partner cannot reach the row through its SKU (ownership + RLS).
     const actorB: CatalogActor = { userId: null as unknown as string, partnerId: fx.partnerB.id, accessibleOrgIds: null };
     const ctxB: DbAccessContext = { scope: 'partner', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: [fx.partnerB.id], userId: null };
-    await expect(withDbAccessContext(ctxB, () => applyImportedPricingBySku('REIMPORT-1', { unitPrice: 1 }, actorB)))
+    await expect(withDbAccessContext(ctxB, () => applyImportedPricing({ sku: 'REIMPORT-1' }, { unitPrice: 1 }, actorB)))
       .rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
   });
 
   // #3775 review #3: a re-import must not reset a hand-adjusted price-book row
   // to distributor MSRP. Only a currency with no row is added; the feed COST
   // (real feed truth) still lands.
-  runDb('applyImportedPricingBySku (#3775 review #3): a re-import preserves hand-adjusted rows and only adds missing currencies', async () => {
+  runDb('applyImportedPricing (#3775 review #3): a re-import preserves hand-adjusted rows and only adds missing currencies', async () => {
     const fx = await seedFixture();
     const first = await withDbAccessContext(fx.ctxA, () =>
       createCatalogItem({ ...dupInput('First import', 'REIMPORT-2'), costBasis: 80, costCurrency: 'USD' }, fx.actorA));
     // The partner hand-adjusts the USD row well away from the feed's 100.00.
     await withDbAccessContext(fx.ctxA, () => setItemPrice(first.id, 'USD', { unitPrice: 149.99 }, fx.actorA));
 
-    const merged = await withDbAccessContext(fx.ctxA, () => applyImportedPricingBySku(
-      'REIMPORT-2',
+    const merged = await withDbAccessContext(fx.ctxA, () => applyImportedPricing(
+      { sku: 'REIMPORT-2' },
       { prices: [{ currencyCode: 'USD', unitPrice: 100 }, { currencyCode: 'EUR', unitPrice: 95 }], costBasis: 70.5, costCurrency: 'USD' },
       fx.actorA
     ));
@@ -1141,8 +1141,8 @@ describe('catalogService (breeze_app, real DB)', () => {
     expect(detail.prices.map((p) => [p.currencyCode, p.unitPrice])).toEqual([['EUR', '95.00'], ['USD', '149.99']]);
 
     // A third import now preserves BOTH — nothing left to add.
-    const again = await withDbAccessContext(fx.ctxA, () => applyImportedPricingBySku(
-      'REIMPORT-2', { prices: [{ currencyCode: 'USD', unitPrice: 1 }, { currencyCode: 'EUR', unitPrice: 2 }] }, fx.actorA));
+    const again = await withDbAccessContext(fx.ctxA, () => applyImportedPricing(
+      { sku: 'REIMPORT-2' }, { prices: [{ currencyCode: 'USD', unitPrice: 1 }, { currencyCode: 'EUR', unitPrice: 2 }] }, fx.actorA));
     expect(again.pricingApplied).toEqual({ added: [], preserved: ['EUR', 'USD'] });
     expect(again.prices).toEqual([
       { currencyCode: 'EUR', unitPrice: '95.00' },
