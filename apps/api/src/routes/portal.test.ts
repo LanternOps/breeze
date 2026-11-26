@@ -119,6 +119,15 @@ vi.mock('../services/portal/edrVisibility', () => ({
   edrEndpointProtectedSql: vi.fn(),
   edrEndpointLinkedSql: vi.fn(),
 }));
+// #12726: the device read model asks which SentinelOne/Huntress integrations
+// behind the org's agent rows are connected; all are here (no extra select).
+vi.mock('../services/securityIntegrationDisconnect', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/securityIntegrationDisconnect')>()),
+  activeAgentIntegrationIdsForOrg: vi.fn(async () => ({
+    sentinelone: ['connected-integration'],
+    huntress: ['connected-integration'],
+  })),
+}));
 
 vi.mock('../services/portal/timezone', () => ({
   resolveOrgTimezone: vi.fn(async () => 'UTC'),
