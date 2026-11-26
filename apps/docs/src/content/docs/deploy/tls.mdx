@@ -248,6 +248,19 @@ If you prefer nginx, here's an equivalent configuration.
   The server-level `add_header X-Frame-Options "DENY" always;` above also lands on `/portal/trust/embed/` responses, the one portal path that may be framed by the websites a [Trust Center embed](/security/trust-center-embed/) allows. A proxy that adds its own `Content-Security-Policy` to those responses always breaks embedding, because a second, restrictive CSP is enforced alongside the portal's. A proxy-added `X-Frame-Options` is ignored by modern browsers when the portal's `frame-ancestors` is present, but it still blocks the embed in older browsers. Exclude `location /portal/trust/embed/` from both, for example with its own `location` block that sets only the headers you need (nginx does not inherit server-level `add_header` into a block that declares its own).
 </Aside>
 
+### Software package uploads behind your own proxy
+
+Uploading a file to the software catalog is sent in pieces. The dashboard opens an upload session, sends the file as a series of `PUT` requests of up to 8 MB each (`/api/v1/software/catalog/<id>/versions/uploads/<upload>/chunks`), then makes one final `POST` to `…/complete`. The browser waits up to 5 minutes for each chunk and up to 10 minutes for the final request.
+
+The final request does the server-side work (assembling and hashing the file and storing it), so on a large package it can run for minutes with no bytes moving. Your proxy must allow both:
+
+- a request body limit of at least 8 MB on the upload routes, and
+- a response timeout on the `…/complete` route that is longer than the time the largest package takes to finish, ideally at least the browser's 10 minutes.
+
+If a limit is hit, the proxy answers with its own error page (typically `413`, `502`, `504` or a proxy-specific timeout status) rather than a Breeze error. The dashboard reports the failing step and the HTTP status, for example "Uploading the file failed (HTTP 413)", which points at the proxy rather than at Breeze. Check your proxy's body-size and timeout settings for those routes first.
+
+Uploads that span more than one API replica also need session affinity, or a single replica; see the `upload_instance_mismatch` message the dashboard shows in that case.
+
 ## Security Headers
 
 Both configurations include these security headers:

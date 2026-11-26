@@ -590,6 +590,9 @@ export default function AddPackageModal({
         errorFallback: i18n.t(
           "policies:software.addPackageModal.packageCreatedButAddingTheFirstVersion",
         ),
+        // The chunked uploader rejects with a message naming the failed step; show it
+        // under the headline instead of dropping it (#12756).
+        showRequestErrorDetail: true,
         // A cancel is not an "Added" event. runAction skips the toast for an
         // empty message, which is how the cancel path stays silent without
         // taking success/failure surfacing away from runAction.

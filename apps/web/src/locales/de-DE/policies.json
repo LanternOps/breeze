@@ -1702,6 +1702,13 @@
     }
   },
   "software": {
+    "uploadFailure": {
+      "stepCreate": "Upload wird gestartet",
+      "stepChunk": "Datei wird hochgeladen",
+      "stepComplete": "Upload wird abgeschlossen",
+      "failedHttp": "{{step}} fehlgeschlagen (HTTP {{status}})",
+      "failedReason": "{{step}} fehlgeschlagen: {{reason}}"
+    },
     "addPackageModal": {
       "failedToCreatePackage": "Paket konnte nicht erstellt werden",
       "missingPackageId": "Fehlende Paket-ID",

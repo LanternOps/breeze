@@ -497,6 +497,23 @@ describe('AddPackageModal', () => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
     });
 
+    it('shows the step and reason as toast detail when the upload request rejects (#12756)', async () => {
+      routeMock({});
+      uploadMock.mockRejectedValueOnce(new Error('Uploading the file failed: Failed to fetch'));
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fillFileForm();
+      await submitCreate();
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith({
+          type: 'error',
+          message: 'Package created, but adding the first version failed',
+          detail: 'Uploading the file failed: Failed to fetch',
+        }),
+      );
+    });
+
     it('keeps the catalog id for retry when the chunked upload fails (runAction error path)', async () => {
       const onCreated = vi.fn();
       routeMock({});

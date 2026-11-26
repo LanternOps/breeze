@@ -1702,6 +1702,13 @@
     }
   },
   "software": {
+    "uploadFailure": {
+      "stepCreate": "Démarrage du téléversement",
+      "stepChunk": "Téléversement du fichier",
+      "stepComplete": "Finalisation du téléversement",
+      "failedHttp": "{{step}} a échoué (HTTP {{status}})",
+      "failedReason": "{{step}} a échoué : {{reason}}"
+    },
     "addPackageModal": {
       "failedToCreatePackage": "Impossible de créer un package",
       "missingPackageId": "Identifiant de colis manquant",

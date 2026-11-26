@@ -764,7 +764,13 @@ export default function SoftwareVersionManager({
               : typeof errData.message === "string"
                 ? errData.message
                 : "Failed to upload version";
-          throw new Error(`${detail} (HTTP ${response.status})`);
+          // The uploader already names the HTTP status when the body had no
+          // reason of its own; don't print it twice.
+          throw new Error(
+            detail.includes(`HTTP ${response.status}`)
+              ? detail
+              : `${detail} (HTTP ${response.status})`,
+          );
         }
         const newVersionData = await response.json();
         const newVersion = normalizeVersion(

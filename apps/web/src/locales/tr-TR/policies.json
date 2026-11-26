@@ -1702,6 +1702,13 @@
     }
   },
   "software": {
+    "uploadFailure": {
+      "stepCreate": "Yükleme başlatılıyor",
+      "stepChunk": "Dosya yükleniyor",
+      "stepComplete": "Yükleme tamamlanıyor",
+      "failedHttp": "{{step}} başarısız oldu (HTTP {{status}})",
+      "failedReason": "{{step}} başarısız oldu: {{reason}}"
+    },
     "addPackageModal": {
       "failedToCreatePackage": "Paket oluşturulamadı",
       "missingPackageId": "Paket kimliği eksik",
