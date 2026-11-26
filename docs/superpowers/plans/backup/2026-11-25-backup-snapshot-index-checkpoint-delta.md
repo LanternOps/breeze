@@ -36,7 +36,7 @@ If a check disagrees with what the wave expects, stop and report.
 Each is followed by where this plan implements it, or where the code forced a change.
 
 - **R1.** `org_id` lives on a small checkpoint header. Entries sit under it with parent-join RLS, the shape `backup_snapshot_files` has today. Org merge restamps one header row, not 180k entry rows. → W2, Task 1.
-- **R2.** Register the header for org cascade, merge and export like `backup_snapshots`. Delete disposition on org move. → W2, Tasks 1 and 3b. The contract tests only admit a delete disposition with an outbound composite org FK, and the code needs five pieces to represent it. See D6.
+- **R2.** Register the header for org cascade, merge and export like `backup_snapshots`. Delete disposition on org move. → W2, Tasks 1, 1b and 3b. The contract tests only admit a delete disposition with an outbound composite org FK, and the code needs five pieces to represent it. See D6.
 - **R3.** A delta snapshot is readable only when its checkpoint header is visible and matches the snapshot's org and device. A hidden or mismatched header yields an empty tree, never a partial one. → W3, Task 1.
 - **R4.** A `RESTRICT` foreign key from `backup_snapshots` keeps a checkpoint alive. There is no reference count. → W2, Task 1. GC in W4, Task 4.
 - **R5.** Lineage key = (org, device, storage identity, config, backup type, key root). Any NULL keeps today's full `rows` format. → W4, Task 1.
@@ -87,7 +87,7 @@ Each is followed by where this plan implements it, or where the code forced a ch
 The design review's "not checked" list, resolved on `03c87b9794`:
 
 1. **`source_path` is not unique within a snapshot.**
-   - There is no unique index (`schema/backup.ts:532-539`: three plain indexes).
+   - There is no unique index (`schema/backup.ts:533-539`: three plain indexes, at `:533`, `:534` and `:539`).
    - The hydrator's validation pass checks each entry's schema, key and origin but not duplicate paths (`backupSnapshotFileIndex.ts:577-603`).
    - So the delta cannot key on path alone. Tombstones name a checkpoint entry by number, and the diff pairs exact duplicates by ordinal. See D1.
 2. **How the org-cascade test treats the FK direction.**
@@ -96,7 +96,7 @@ The design review's "not checked" list, resolved on `03c87b9794`:
    - `backup_snapshots` references `backup_tree_checkpoints`, which alphabetical order already satisfies. `orgCascadeFkOnDelete.integration.test.ts` rule (d) accepts a `RESTRICT` edge when both ends are in the cascade set.
    - **Device** deletion is an explicit ordered list (`deviceCascadeTables.ts:125`), so the header must be listed after `backup_snapshots` (`:162`).
 3. **The 2x disagreement in bytes per row.** It is **not resolved.**
-   - The issue's 1.35 GB/day over "~1M rows/day" gives about 1.35 KB/row **[derived]**. The issue's own per-device rates give 1.2 to 1.6M rows/day **[issue]**, which gives 0.84 to 1.1 KB/row **[derived]**.
+   - The issue's 1.35 GB/day over "~1M rows/day" gives about 1.35 KB/row **[derived]**. The issue's own per-device rates give 1.2 to 1.6M rows/day **[derived: 500k + 180k × 4–6]**, which gives 0.84 to 1.1 KB/row **[derived]**.
    - The code comment's "about 145 MB or more per … snapshot" at 250k entries (`backupResultPersistence.ts:894-897`) is 580 B/row. That figure comes from the 2026-11-05 plan: "1.1M rows cost about 578 bytes each including indexes", from synthetic Windows paths on an idle laptop database **[measured-lab]**.
    - Plausible causes, none checked: real paths are longer than synthetic ones; delete-and-reinsert re-hydration leaves dead tuples until autovacuum; the redundant index (R8); and the issue's daily total may include TOAST or WAL.
    - Gate G2 measures it. Nothing in this plan depends on which figure is right: both shrink by the same factor.
@@ -109,7 +109,7 @@ The design review's "not checked" list, resolved on `03c87b9794`:
    - `mint()` calls `countIndexedFiles` (`:883`), and `resolveStorageSessionObjects()` calls `filterIndexedKeys` (`:1175`).
    - The verify worker itself was not traced.
 6. **The inline agent-row writer can run on a snapshot that is not `complete`** (`backupResultPersistence.ts:1807`). It deletes the snapshot's rows, inserts agent rows and sets status `agent` (`:1815-1849`).
-   - On a `delta` snapshot that an org move reset to `none`, that would leave `delta` format with agent rows treated as adds: a wrong tree. W4, Task 3 resets the format in the same update.
+   - On a `delta` snapshot whose status is not `complete` (for example `failed` after a refused re-hydration, or `hydrating`), that would leave `delta` format with the agent rows read as adds against the checkpoint: a wrong tree. W4, Task 3 resets the format in the same update. An org move is handled by the trigger instead (D6), which resets the format itself.
 7. **The device org move restamps before it deletes** (`deviceOrgMove/moveDeviceOrgInTransaction.ts:997` restamp loop, `:1090` move-delete loop).
    - A move-delete table must carry an outbound composite `(x, org_id)` FK to a non-device row, or `moveOrg.coverage.test.ts:390-414` fails ("Move them to CORE_DEVICE_ORG_DENORMALIZED_TABLES (restamp)").
    - The database-side restamp (`breeze_device_child_orgid_tables()`, last defined in `2026-12-27-170000-pam-org-move-unactuated-elevation-restamp.sql:44-99`) auto-discovers every public table with both `device_id` and `org_id` columns, minus a name list. See D6.
@@ -144,10 +144,12 @@ The design review's "not checked" list, resolved on `03c87b9794`:
   2. **The header's config FK is composite:** `(config_id, org_id) → backup_configs(id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE`. A backup config is org-owned and stays in the source org, so this FK is what makes a restamp unrepresentable. It is the FK `moveOrg.coverage.test.ts:390-414` asks for. The lineage includes the config anyway (R5).
   3. **The snapshot's pointer FK is composite** (see Tenancy shape): `ON DELETE RESTRICT DEFERRABLE INITIALLY IMMEDIATE`, with `UNIQUE (id, org_id, device_id)` on the header.
   4. **The existing tenancy trigger is extended** (`breeze_backup_snapshot_file_index_tenancy_reset()`, `2026-10-31-100700-…-org-move-reset.sql:29`). When a `delta` snapshot's `org_id` or `device_id` changes, the trigger, in the same row update:
-     - sets `file_index_format := 'rows'` and `file_index_checkpoint_id := NULL`;
-     - deletes that snapshot's `backup_snapshot_files` rows through a new `SECURITY DEFINER` helper, `breeze_backup_snapshot_drop_delta_rows(uuid)`. Without the checkpoint those rows (adds and tombstones) would read as a partial tree.
+     - sets `file_index_format := 'rows'`, `file_index_checkpoint_id := NULL` and `file_index_status := 'none'`, whatever the old status;
+     - deletes that snapshot's `backup_snapshot_files` rows. Without the checkpoint those rows (adds and tombstones) would read as a partial tree.
 
-     Because the new row's pointer is NULL, the composite FK is never checked mid-move (MATCH SIMPLE). Status is already reset to `none` by the same trigger, so the snapshot re-hydrates on its next use, which browse, selection, brokered reads and recovery preflight each request (`backupResultPersistence.ts:892-897`). A `rows` snapshot keeps today's behaviour exactly.
+     To make that delete work, the trigger function becomes `SECURITY DEFINER` and elects system scope around the delete, because the table is under forced RLS. W2 Task 1b has the detail.
+
+     Because the new row's pointer is NULL, the composite FK is never checked mid-move (MATCH SIMPLE). The snapshot then re-hydrates on its next use, which browse, selection, brokered reads and recovery preflight each request (`backupResultPersistence.ts:892-897`). A `rows` snapshot keeps today's behaviour exactly.
   5. **The header is excluded from the database-side restamp:** `CREATE OR REPLACE` `breeze_device_child_orgid_tables()` with `'backup_tree_checkpoints'` added to its `NOT IN` list. Otherwise a raw `UPDATE devices SET org_id` would restamp it and fail the config FK.
      - **W2 Step 0:** first read how the existing move-delete tables (`topology_device_presence`, `CORE_DEVICE_ORG_MOVE_DELETE_TABLES` in `routes/devices/core.ts:409`) avoid that path, and follow the same mechanism if it differs.
      - On the raw path the header then stays in the source org, unreferenced. GC collects it at once (D8).
@@ -180,12 +182,12 @@ The design review's "not checked" list, resolved on `03c87b9794`:
 Five conditions no single happy-path test covers, most likely first. Each is pinned to a named test in its owning task.
 
 1. **The header is hidden or mismatched.** RLS hides it from the caller, or its org/device differs after a move that missed it. Expected: browse, search, selection and count see an empty tree, and both authorization reads refuse every key. Never only the delta's adds. Tests: W3 Task 1 `a delta snapshot whose checkpoint is not visible reads as empty, never as its adds`, and `… whose checkpoint names another device …`.
-2. **A key the delta replaced is asked for.** Expected: `filterIndexedKeys` and `authorizeExternalReference` refuse the checkpoint's old object for this snapshot. They still grant it for an older snapshot that holds it. Test: W3 Task 2 chain contract in `delta` mode (`brokered key grants … never a replaced, deleted or other-lineage one`), and W4 Task 2 in `publisher` mode.
-3. **The manifest has two entries with the same path, or two identical entries.** Expected: the effective tree has the same multiset of rows as a `rows` publish of that manifest. Test: W4 Task 1 `duplicate paths and identical entries round-trip exactly`.
+2. **A key the delta replaced is asked for.** Expected: `filterIndexedKeys` and `authorizeExternalReference` refuse the checkpoint's old object for this snapshot. They still grant it for an older snapshot that holds it. Test: W3 Task 2 chain contract in `delta` mode (`brokered key grants … never a replaced, deleted or other-lineage one`), and W4 Task 6 `the chain contract holds when the publisher writes every snapshot`.
+3. **The manifest has two entries with the same path, or two identical entries.** Expected: the effective tree has the same multiset of rows as a `rows` publish of that manifest. Test: W4 Task 6 `duplicate paths and identical entries round-trip exactly`.
 4. **An agent result arrives for a `delta` snapshot that is not `complete`** (fact 6). Expected: the snapshot reads exactly the agent rows (`rows` format, no checkpoint pointer). Test: W4 Task 3 `inline agent rows on a delta snapshot reset it to rows format`.
 5. **A device with delta snapshots moves to another org,** through the app route, a raw `UPDATE devices`, or an org merge. Expected:
    - no FK error;
-   - the source org keeps no checkpoint of that device;
+   - after the app move, the source org keeps no checkpoint of that device. After a raw `UPDATE devices`, the header stays in the source org, unreferenced and unreadable through any snapshot, until GC deletes it (D8);
    - each moved delta snapshot reads as empty (never partial) until it re-hydrates, then reads its full tree;
    - `rows` snapshots read as before.
 
@@ -225,18 +227,20 @@ Re-check at W2's Step 0. If newer files exist, move both names past the newest a
 - Modify: `apps/api/src/services/orgMergeRegistry.ts` (repoint block, `:941-945`)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` (`backup_snapshots` at `:288`, plus a new header entry)
 - Modify: `apps/api/src/services/deviceCascadeTables.ts` (`:160-162`)
-- Modify: `apps/api/src/routes/devices/core.ts` (`DEVICE_ORG_DENORMALIZED_TABLES` at `:261`, `CORE_DEVICE_ORG_MOVE_DELETE_TABLES` at `:409`)
+- Modify: `apps/api/src/routes/devices/core.ts` (`CORE_DEVICE_ORG_DENORMALIZED_TABLES` at `:237`, entry `:262`; `CORE_DEVICE_ORG_MOVE_DELETE_TABLES` at `:409`)
 - Modify: `apps/api/src/services/deviceInstallBoundary/classification.ts` (`:133`)
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (`PARENT_FK_JOIN_POLICY_TABLES`, `:1352`)
-- Create: `apps/api/src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts`
+- Modify: `apps/api/src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts` (pinned restamp exclusions, `:438`)
+- Modify: `apps/api/src/__tests__/integration/orgMergeRegistry.integration.test.ts` (trigger reason, `:443`)
+- Create: `apps/api/src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts`
 
 ### Execution split and parallelism (W2)
 
-- **Group A (serial, Opus):** Tasks 1, 1b and 2. All of them own `schema/backup.ts`, and every later task needs the schema.
+- **Group A (serial, strongest model):** Tasks 1, 1b and 2. All of them own `schema/backup.ts`, and every later task needs the schema.
 - **Group B (parallel after A, file-disjoint):**
-  - Task 3a (Sonnet, mechanical): `tenantCascade.ts`, `orgMergeRegistry.ts`, `tenantExportPolicyRegistry.ts`.
-  - Task 3b (Sonnet, mechanical): `deviceCascadeTables.ts`, `routes/devices/core.ts`, `deviceInstallBoundary/classification.ts`.
-  - Task 4 (Opus): `rls-coverage.integration.test.ts` and the new tenancy integration test.
+  - Task 3a (smaller model, mechanical): `tenantCascade.ts`, `orgMergeRegistry.ts`, `tenantExportPolicyRegistry.ts`.
+  - Task 3b (smaller model, mechanical): `deviceCascadeTables.ts`, `routes/devices/core.ts`, `deviceInstallBoundary/classification.ts`.
+  - Task 4 (strongest model): `rls-coverage.integration.test.ts` and the new tenancy integration test.
 - **Group C (serial):** Task 5, the full contract run and the PR.
 
 ### Task 1: Tables, columns and RLS (transactional migration)
@@ -275,6 +279,7 @@ Re-check at W2's Step 0. If newer files exist, move both names past the newest a
   - `backup_snapshots_file_index_checkpoint_chk CHECK ((file_index_format = 'delta') = (file_index_checkpoint_id IS NOT NULL))`.
 - `backup_snapshot_files` gains `checkpoint_entry_no integer NULL`. NULL means an entry of this snapshot; non-NULL means a tombstone of that checkpoint entry.
 - `public.breeze_analyze_backup_tree_checkpoint_entries()`: `SECURITY DEFINER`, pinned `search_path`, `EXECUTE` granted to `breeze_app` and revoked from `PUBLIC`. Copy the body and grants of `breeze_analyze_backup_snapshot_files()` from `2027-01-22-210200-backup-snapshot-files-analyze.sql`.
+- `backup_configs_id_org_uq UNIQUE (id, org_id)` on `backup_configs`, declared in Drizzle as well. The header's config FK needs it, so it ships in this task.
 - RLS: header Shape 1 (copy the `backup_snapshots` policy names and shape); entries parent-join (see Tenancy shape). Both `ENABLE` and `FORCE`.
 
 - [ ] **Step 1: Write the failing tests** in `backupTreeCheckpointsTenancy.integration.test.ts`:
@@ -287,7 +292,7 @@ Re-check at W2's Step 0. If newer files exist, move both names past the newest a
   - `a snapshot cannot point at another org's or another device's checkpoint`: as admin, set a snapshot in org A to point at org B's header, then at a header of another device in org A. Expect FK violations both times.
   - `org B's erasure is never blocked by a reference from org A`: follows from the previous test. Run the org-B cascade after the refused forge and expect success.
 - [ ] **Step 2: Run them and see them fail** (`relation "backup_tree_checkpoints" does not exist`):
-  `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts`
+  `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts`
 - [ ] **Step 3: Write the migration and the Drizzle schema.**
   - Every object is idempotent: `IF NOT EXISTS`, `DROP POLICY IF EXISTS` then `CREATE`, and constraints added in `DO $$ … IF NOT EXISTS (SELECT 1 FROM pg_constraint …) $$`.
   - Grants follow the newest table-creating migration's pattern.
@@ -297,30 +302,40 @@ Re-check at W2's Step 0. If newer files exist, move both names past the newest a
 
 ### Task 1b: Move and merge coherence (same migration file)
 
-**Files:** the Task 1 migration and `schema/backup.ts`. Serial after Task 1.
+**Files:**
+- the Task 1 migration;
+- `schema/backup.ts`;
+- `apps/api/src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts`, whose list is at `:423-450`;
+- `apps/api/src/__tests__/integration/orgMergeRegistry.integration.test.ts`, whose trigger reason is at `:443`.
+
+Serial after Task 1. The `backup_configs` unique key that the header's config FK needs ships in **Task 1**, not here, so that Task 1 migrates on its own.
 
 **Interfaces (produces):**
-- `backup_configs_id_org_uq UNIQUE (id, org_id)` on `backup_configs`, declared in Drizzle as well.
-- The header's composite config FK (Task 1 columns).
-- `public.breeze_backup_snapshot_drop_delta_rows(p_snapshot_id uuid) RETURNS void`, with these properties:
-  - `SECURITY DEFINER` and a pinned `search_path`;
-  - it deletes `backup_snapshot_files` rows of that one snapshot;
-  - `EXECUTE` is revoked from `PUBLIC` and not granted to `breeze_app`, because only the trigger calls it.
-- `breeze_backup_snapshot_file_index_tenancy_reset()`, replaced with the same body plus one more branch. When `OLD.file_index_format = 'delta'`:
-  - set `NEW.file_index_format := 'rows'` and `NEW.file_index_checkpoint_id := NULL`;
-  - `PERFORM public.breeze_backup_snapshot_drop_delta_rows(NEW.id)`.
+- `breeze_backup_snapshot_file_index_tenancy_reset()`, replaced. It keeps the same trigger definition (`BEFORE UPDATE OF org_id, device_id … WHEN …`) and gains these changes:
+  - **It becomes `SECURITY DEFINER` with `SET search_path = public, pg_catalog`.** A trigger function cannot be called directly, so this widens nothing. The precedent is `breeze_restamp_unactuated_elevation_requests()` in `2026-12-27-170000-…`. Without it, the delete below runs with the mover's (`breeze_app`) privileges.
+  - **The existing branch is kept unchanged:** `complete` or `hydrating` becomes `none`.
+  - **A new branch runs when `OLD.file_index_format = 'delta'`:**
+    - set `NEW.file_index_format := 'rows'` and `NEW.file_index_checkpoint_id := NULL`;
+    - set `NEW.file_index_status := 'none'` whatever the old status. A delta snapshot in `failed`, `agent` or `none` loses its rows here too, so it must re-hydrate;
+    - save `current_setting('breeze.scope', true)`, then `set_config('breeze.scope', 'system', true)`;
+    - `DELETE FROM public.backup_snapshot_files WHERE snapshot_db_id = NEW.id`;
+    - restore the saved scope.
 
-  The trigger definition (`BEFORE UPDATE OF org_id, device_id … WHEN …`) is unchanged.
-- `breeze_device_child_orgid_tables()`, replaced with its current body (re-read the newest definition at Step 0; on the baseline it is `2026-12-27-170000-…:44-99`) plus `'backup_tree_checkpoints'` in the `NOT IN` list. The comment in that list says why: the header names a source-org config and is deleted by the app move, or collected by GC on the raw path.
+    The scope election is required because `backup_snapshot_files` is `FORCE ROW LEVEL SECURITY`, and a definer is still bound by it. Without the election the delete silently matches zero rows. Copy the save/elect/restore shape of `breeze_learned_networks_device_moved()` (`2027-01-29-100000-learned-networks.sql:367-395`).
+  - There is no separate helper function.
+- `breeze_device_child_orgid_tables()`, replaced with its current body plus `'backup_tree_checkpoints'` in the `NOT IN` list. Re-read the newest definition first; on the baseline it is `2026-12-27-170000-…:44-99`. The list's comment says why: the header names a source-org config. It is deleted by the app move, or collected by GC on the raw path.
+  - **Why the `NOT IN` list, and not a `BEFORE UPDATE` trigger on `devices`** (the learned-networks move-delete precedent): a trigger-first delete is refused by `RESTRICT`, because the snapshots still point at the header until their own restamp clears the pointer.
+- `deviceOwnershipEpochs.integration.test.ts:438`: add `'backup_tree_checkpoints'` to the pinned exclusion array, in sorted position. That test pins the full set.
+- `orgMergeRegistry.integration.test.ts:443`: update the stated reason for `backup_snapshots_file_index_tenancy_reset`. It now also resets the format and pointer and drops delta rows.
 
-- [ ] **Step 0:** read how `topology_device_presence` and `device_network_isolations` (`routes/devices/core.ts:409-420`) avoid the raw-path restamp. If they use a mechanism other than the `NOT IN` list, follow theirs and say so in the PR.
-- [ ] **Step 1: Write the failing tests** (in the tenancy file):
-  - `moving a delta snapshot's org resets it to rows and drops its delta rows`;
+- [ ] **Step 1: Write the failing tests** (in the tenancy file). **Each move runs as `breeze_app` in a non-system request context, not on the admin connection:**
+  - `moving a delta snapshot's org resets it to rows, clears its status and drops its delta rows`: afterwards the snapshot has zero `backup_snapshot_files` rows;
+  - the same assertion for a delta snapshot whose status was `failed`;
   - `moving a rows snapshot keeps its rows` (today's behaviour);
   - `backup_tree_checkpoints is not in breeze_device_child_orgid_tables()`.
 - [ ] **Step 2: Run them and see them fail.**
-- [ ] **Step 3: Implement it in the migration and the schema.**
-- [ ] **Step 4:** `pnpm db:migrate && pnpm db:check-drift`, the tenancy file, and `src/__tests__/integration/backupSnapshotOriginsOrgMove.integration.test.ts`. Expected: PASS.
+- [ ] **Step 3: Implement it in the migration, the schema and the two test lists.**
+- [ ] **Step 4:** `pnpm db:migrate && pnpm db:check-drift`. Then the tenancy file, `backupSnapshotOriginsOrgMove.integration.test.ts`, `deviceOwnershipEpochs.integration.test.ts` and `orgMergeRegistry.integration.test.ts` (all with `--config vitest.integration.config.ts`). Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): checkpoint references stay within one org and device across moves (#11736)`.
 
 ### Task 2: Index changes (no-transaction migration)
@@ -338,7 +353,7 @@ The file's first line is `-- @no-transaction`. Each statement is sent on its own
 - [ ] **Step 4:** `pnpm db:migrate && pnpm db:check-drift`, the test, and `cd apps/api && npx vitest run src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts`. Expected: PASS.
 - [ ] **Step 5: Commit** `perf(api): drop the duplicate snapshot-files index; index the checkpoint pointer (#11736)`.
 
-### Task 3a: Org cascade, merge and export registrations (Sonnet)
+### Task 3a: Org cascade, merge and export registrations (smaller model)
 
 - `tenantCascade.ts` `CORE_ORG_CASCADE_DELETE_ORDER`: add `'backup_tree_checkpoints'` at its `localeCompare` position, between `'backup_storage_sessions'` and `'backup_verifications'` (`:492-500`). Do not add the entries table: it has no `org_id` and rides `ON DELETE CASCADE`.
 - `orgMergeRegistry.ts`: add `"backup_tree_checkpoints"` to the repoint block after `"backup_snapshots"` (`:945`), with the comment `// Derived file-index checkpoint of a device's backups; moves with its snapshots (#11736).`
@@ -349,18 +364,18 @@ The file's first line is `-- @no-transaction`. Each statement is sent on its own
 - Tests: `cd apps/api && npx vitest run src/services/tenantCascade.test.ts src/services/tenantExportPolicy.test.ts src/services/orgMerge.test.ts`. The integration side runs in Task 5.
 - Commit: `chore(api): register the checkpoint header for org cascade, merge and export (#11736)`.
 
-### Task 3b: Device cascade, move and install-boundary registrations (Sonnet)
+### Task 3b: Device cascade, move and install-boundary registrations (smaller model)
 
 - `deviceCascadeTables.ts`: insert `'backup_tree_checkpoints'` immediately **after** `'backup_snapshots'` (`:162`). `RESTRICT` means the referencing snapshots must go first.
 - `routes/devices/core.ts`: this is the delete disposition (D6).
-  - Add `'backup_tree_checkpoints'` to `DEVICE_ORG_DENORMALIZED_TABLES`, the coverage list, next to `'backup_snapshots'` (`:261`).
+  - Add `'backup_tree_checkpoints'` to `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (`:237`), the coverage list, next to `'backup_snapshots'` (`:262`).
   - **And** add it to `CORE_DEVICE_ORG_MOVE_DELETE_TABLES` (`:409`), with the comment: `// #11736: (config_id, org_id) names a SOURCE-org backup config, so a restamp would 23503; the device's moved snapshots re-hydrate and build a new checkpoint in the target org.`
   - `moveOrg.coverage.test.ts:390-414` passes because of Task 1b's composite config FK.
 - `deviceInstallBoundary/classification.ts`: `backup_tree_checkpoints: history('file-index checkpoint of the device\'s snapshots (#11736)')`, next to `backup_snapshots` (`:133`).
 - Tests: `cd apps/api && npx vitest run src/routes/devices/cascadeDelete.test.ts src/routes/devices/moveOrg.coverage.test.ts src/services/deviceInstallBoundary/deviceInstallBoundary.test.ts src/services/deviceInstallBoundary/orgMoveParity.test.ts`. Expected: PASS. A red names the list it wants.
 - Commit: `chore(api): register the checkpoint header for device delete and move (#11736)`.
 
-### Task 4: RLS coverage entry and tenancy lifecycle tests (Opus)
+### Task 4: RLS coverage entry and tenancy lifecycle tests (strongest model)
 
 - `rls-coverage.integration.test.ts`: add `['backup_tree_checkpoint_entries', ['backup_tree_checkpoints']]` after `:1353`.
 - Add to `backupTreeCheckpointsTenancy.integration.test.ts`:
@@ -380,7 +395,7 @@ The file's first line is `-- @no-transaction`. Each statement is sent on its own
 ### Task 5: Full contract run and PR
 
 - [ ] Run each of these and record the pass lines in the PR:
-  - `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgCascadeFkOnDelete.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/backupSnapshotOriginsOrgMove.integration.test.ts src/__tests__/integration/backupSnapshotIndexChain.integration.test.ts src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts`
+  - `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts src/__tests__/integration/orgCascadeFkOnDelete.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/backupSnapshotOriginsOrgMove.integration.test.ts src/__tests__/integration/backupSnapshotIndexChain.integration.test.ts src/__tests__/integration/backupTreeCheckpointsTenancy.integration.test.ts src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts`
   - `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`
   - `cd apps/api && npx vitest run src/__tests__/backupSnapshotIndexReadPath.contract.test.ts src/services/backupSnapshotBrowse.test.ts src/services/backupSnapshotFileIndex.test.ts`. These are unchanged, and nothing should read differently.
   - The typecheck command (Global Constraints).
@@ -419,12 +434,12 @@ No file overlaps W4.
 ### Execution split and parallelism (W3)
 
 - **Group A (parallel):**
-  - Task 2a (Sonnet): `helpers/backupIndexFixtures.ts`.
-  - Task 4 (Sonnet, mechanical): read-path contract test extension.
+  - Task 2a (smaller model): `helpers/backupIndexFixtures.ts`.
+  - Task 4 (smaller model, mechanical): read-path contract test extension.
 - **Group B (after 2a):**
-  - Task 1 (Opus): read layer plus the gate test.
-  - Task 2b (Opus): parameterize the chain test. It is file-disjoint from Task 1 and runs red until Task 1 lands.
-- **Group C (after Task 1):** Task 3 (Opus): query extraction plus the EXPLAIN contract.
+  - Task 1 (strongest model): read layer plus the gate test.
+  - Task 2b (strongest model): parameterize the chain test. It is file-disjoint from Task 1 and runs red until Task 1 lands.
+- **Group C (after Task 1):** Task 3 (strongest model): query extraction plus the EXPLAIN contract.
 - **Group D:** verification and PR.
 
 ### Task 1: `snapshotIndexEntries` reads both formats
@@ -480,7 +495,7 @@ Notes for the implementer:
 - [ ] **Step 4: Run the Step 2 command and `backupSnapshotIndexChain.integration.test.ts`, `backupSnapshotBrowse.integration.test.ts`, `backupSnapshotSearchAndSelection.integration.test.ts`, `backupSnapshotContentlessEntries.integration.test.ts` and `backupIndexAttestationBinding.integration.test.ts`** (same `--config`). Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): the snapshot index read layer resolves checkpoint plus delta (#11736)`.
 
-### Task 2a: Chain fixtures seeded directly (Sonnet)
+### Task 2a: Chain fixtures seeded directly (smaller model)
 
 `helpers/backupIndexFixtures.ts` exports these:
 - `type IndexEntry = { sourcePath: string; backupPath: string; size: number | null; modifiedAt: string | null; kind: SnapshotEntryKind | null }`. This is the chain test's `Entry` type, moved here.
@@ -519,12 +534,12 @@ Everything is written with the admin connection, like the existing helper. Unit-
 - Red: run before Task 1 is on the branch. The entries index is absent from every plan. Green after.
 - Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupSnapshotIndexPlans.integration.test.ts`
 
-### Task 4: The read-path contract covers the entries table (Sonnet)
+### Task 4: The read-path contract covers the entries table (smaller model)
 
 - In `backupSnapshotIndexReadPath.contract.test.ts`, generalize the detector to a list of tables: `backupSnapshotFiles`/`backup_snapshot_files` and `backupTreeCheckpointEntries`/`backup_tree_checkpoint_entries`.
   - The read layer and the schema stay allowlisted.
   - Writers stay allowed by the existing write-shape rule.
-  - W4's publisher and GC files are not allowlisted. They write with `INSERT INTO … SELECT`, which the rule allows, and any other read they need goes through a reviewed allowlist entry added in W4.
+  - Pre-allow `apps/api/src/services/backupSnapshotIndexPublish.ts` and `apps/api/src/services/backupTreeCheckpointGc.ts` in this task, with reasons: "Writer: diffs a verified manifest against its checkpoint inside the publish transaction (#11736)" and "Checkpoint GC: deletes unreferenced checkpoints (#11736)". This keeps W3 and W4 file-disjoint, because W4 never edits the contract file.
 - Add detector cases: a Drizzle select from `backupTreeCheckpointEntries` and a raw `JOIN backup_tree_checkpoint_entries` are reported.
 - Red: the new detector cases fail before the change. Command: `cd apps/api && npx vitest run src/__tests__/backupSnapshotIndexReadPath.contract.test.ts`
 
@@ -562,12 +577,12 @@ No file overlaps W3. Task 6 reads W3's fixtures and needs W3 merged.
 ### Execution split and parallelism (W4)
 
 - **Group A (parallel):**
-  - Task 5 (Sonnet): the flag module.
-  - Task 3 (Sonnet, small): inline reset in `backupResultPersistence.ts`.
-- **Group B (serial, Opus):**
+  - Task 5 (smaller model): the flag module.
+  - Task 3 (smaller model, small): inline reset in `backupResultPersistence.ts`.
+- **Group B (serial, strongest model):**
   - Task 1: the publisher.
   - Task 2: the hydrator wiring plus statistics. It depends on Task 1's interface.
-- **Group C (parallel with B after Task 1's interface is fixed):** Task 4 (Opus): GC plus worker wiring.
+- **Group C (parallel with B after Task 1's interface is fixed):** Task 4 (strongest model): GC plus worker wiring.
 - **Group D:** Task 6, the round trip through the readers. It runs after rebasing on merged W3.
 
 ### Task 1: The publisher
@@ -585,6 +600,7 @@ The algorithm (`publishDeltaIndex`), all on `tx`:
 1. `ANALYZE snapshot_index_incoming`. Temp tables are never autovacuumed, and the session owns this one.
 2. `SELECT pg_advisory_xact_lock(hashtextextended('backup_tree_lineage:' || <lineage fields joined by '|', NULL as ''>, 0))`. Lock order is snapshot row (taken by the caller at `backupSnapshotFileIndex.ts:686-700`), then lineage.
 3. Newest header of the lineage `FOR KEY SHARE`: equality on every lineage field, `key_prefix IS NOT DISTINCT FROM`, `ORDER BY created_at DESC LIMIT 1`.
+   - If GC deletes that header while this statement waits on its lock, Postgres drops the row rather than returning the next one. The publisher then sees no header and writes a new checkpoint. That is correct, only costlier, and acceptable at GC's rate.
 4. If one exists, count adds and tombstones with D2's two anti-joins, without writing.
 5. If there is no header, or `adds + tombstones > ceil(CHECKPOINT_REBASE_RATIO × entry_count)`:
    - insert a new header (`entry_count = eligibleEntries`, `source_snapshot_db_id`, `source_manifest_sha256`);
@@ -612,7 +628,7 @@ Tests, unit-level with the mocked tx where the repo pattern allows. The SQL-leve
   - `publishDeltaIndex`;
   - the final update sets `fileIndexFormat: 'delta', fileIndexCheckpointId`. `metadata.fileIndexVersion` stays 3.
   - `HydrationOutcome.entryCount` stays the tree size, `eligibleEntries`, not the rows written. Add `rowsWritten`.
-- `ClaimedSnapshot` must carry `configId`, `backupType`, `keyLayout` and `keyPrefix`. Extend `loadSnapshotForHydration` (`:189`) if it lacks them.
+- `ClaimedSnapshot` must carry `configId`, `backupType`, `keyLayout` and `keyPrefix`. Extend `loadSnapshotForHydration` (`:189-209`): it selects neither `configId` nor `backupType` today.
 - Statistics:
   - `refreshSnapshotFileIndexStatistics(rowsWritten)` (`backupSnapshotFileIndexStatistics.ts:98`) is called with the rows actually written to `backup_snapshot_files`.
   - Add `refreshCheckpointEntriesStatistics(rowsWritten)`, the same shape, calling `breeze_analyze_backup_tree_checkpoint_entries()`, when a checkpoint was written.
@@ -623,11 +639,11 @@ Tests, unit-level with the mocked tx where the repo pattern allows. The SQL-leve
   - `the delta path sets format and pointer in the publishing update`.
 - Then run every existing hydrator test: `cd apps/api && npx vitest run src/services/backupSnapshotFileIndex.test.ts src/services/backupSnapshotFileIndex.stream.test.ts src/services/backupSnapshotFileIndex.transactionScope.test.ts src/services/backupSnapshotFileIndexStatistics.test.ts`
 
-### Task 3: Inline agent rows reset the format (Sonnet)
+### Task 3: Inline agent rows reset the format (smaller model)
 
 - In `backupResultPersistence.ts:1849`, the status update becomes `.set({ fileIndexStatus: 'agent', fileIndexFormat: 'rows', fileIndexCheckpointId: null })` (D7, fact 6).
 - Test, in `backupResultPersistence.test.ts`: `inline agent rows on a delta snapshot reset it to rows format`. The update's `set` includes both fields.
-- Integration twin, in Task 6's file: a `delta` snapshot reset to `none`, then given an agent result, reads exactly the agent rows.
+- Integration twin, in Task 6's file: a `delta` snapshot set to `failed` (as a refused re-hydration leaves it), then given an agent result, reads exactly the agent rows.
 - Red first: `cd apps/api && npx vitest run src/services/backupResultPersistence.test.ts`
 
 ### Task 4: Checkpoint GC
@@ -655,7 +671,7 @@ Tests, unit-level with the mocked tx where the repo pattern allows. The SQL-leve
   - `a header held by a publisher survives the sweep`: integration, two connections. Open a publisher transaction holding `FOR KEY SHARE`, run GC (it skips the header), commit the reference, run GC again (it keeps it).
 - Also run `cd apps/api && npx vitest run src/jobs/backupSnapshotCleanupWorker.test.ts src/__tests__/parkedFanout.contract.test.ts`.
 
-### Task 5: The flag (Sonnet)
+### Task 5: The flag (smaller model)
 
 - `resolveDeltaPublishMode(orgId)` reads `BACKUP_INDEX_DELTA_PUBLISH` on every call: `off` (default, also for any unknown value, with one warning), `canary` or `on`. `canary` returns `delta` only for orgs listed in `BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS` (comma-separated uuids; invalid entries ignored with a warning).
 - Tests: every value, whitespace, case, an empty list and a bad uuid. Command: `cd apps/api && npx vitest run src/services/backupIndexDeltaFlag.test.ts`
@@ -679,7 +695,7 @@ Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts sr
 - With the flag off, every existing hydrator, persistence and statistics test passes unchanged.
 - With the flag on, Task 6 passes.
 - GC is wired and green.
-- `backupSnapshotIndexReadPath.contract.test.ts` passes, with any new allowlist entry reasoned.
+- `backupSnapshotIndexReadPath.contract.test.ts` passes, using the two entries W3 pre-allowed.
 - Typecheck exit 0.
 
 **W4 rollback:**
@@ -692,7 +708,7 @@ Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts sr
 
 **Goal:** New hydrations publish deltas by default. Operators can see rows written and drift. A 1M-entry run proves read latency.
 
-**Preconditions:** gates G2, G3 and G4 are closed.
+**Preconditions:** gates G2 and G3 are closed. G4 is decided inside this wave, on Task 2's output, before Task 3 flips the default.
 
 ### File ownership (W5)
 
@@ -706,9 +722,9 @@ Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts sr
 ### Execution split and parallelism (W5)
 
 - **Group A (parallel):**
-  - Task 1 (Sonnet): metrics.
-  - Task 2 (Opus): perf script and run.
-  - Task 4 (Sonnet): docs and release note.
+  - Task 1 (smaller model): metrics.
+  - Task 2 (strongest model): perf script and run.
+  - Task 4 (smaller model): docs and release note.
 - **Then** Task 3: flip the default. It is the last commit, after Task 2's numbers are in the PR body.
 
 ### Task 1: Metrics
@@ -722,7 +738,7 @@ Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts sr
 ### Task 2: 1M-entry perf acceptance
 
 - `backup-index-delta-perf.ts` runs against a local test stack only. It refuses any `DATABASE_URL` whose host is not loopback.
-  - It seeds one lineage: a 1,000,000-entry checkpoint **[issue acceptance target]** and snapshots at 1% and 5% drift.
+  - It seeds one lineage: a 1,000,000-entry checkpoint **[issue design comment]** and snapshots at 1% and 5% drift.
   - It times, as `breeze_app` under RLS: browse root, browse at depth 3, a search miss, a full selection walk, `indexedKeysQuery` for 500 keys, and `referenceMembershipQuery`.
   - It runs the same set on a `rows` snapshot of the same tree, and prints both.
 - **Acceptance [guessed thresholds, gate G4]:**
@@ -797,9 +813,9 @@ Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts sr
 | Inline agent-row ceiling | about 9.5k entries | [issue design comment] |
 | Bytes per `backup_snapshot_files` row | about 578 B incl. indexes | [measured-lab] |
 | Same, from the issue's daily total | 0.84 to 1.35 KB | [derived] |
-| Largest device's tree | about 180k entries, 4 to 6 runs a day | [issue] |
+| The issue's 180k-entry device | about 180k entries, 4 to 6 runs a day | [issue] |
 | Rows per 1%-drift run, same-file churn | about 2 × 1,800 = 3,600 | [derived, D1] |
 | Rows per run, 1% disjoint churn, averaged over a rebase cycle | about 64k (3.6k, 7.2k, then a 180k rebuild every 3rd run), against about 35k for one row per change and 180k today | [derived, guessed churn] |
 | Orphan checkpoint TTL | 7 days | [guessed] |
 | EXPLAIN fixture size | 50,000 entries | [guessed] |
-| Perf acceptance | 1M entries; 1.5x; 50 ms | [issue] for 1M, [guessed] for the rest |
+| Perf acceptance | 1M entries; 1.5x; 50 ms | [issue design comment] for 1M, [guessed] for the rest |
