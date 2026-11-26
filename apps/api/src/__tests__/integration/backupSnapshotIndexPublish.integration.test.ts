@@ -15,7 +15,7 @@
  *     src/__tests__/integration/backupSnapshotIndexPublish.integration.test.ts
  */
 import './setup';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { sql } from 'drizzle-orm';
 import postgres from 'postgres';
@@ -49,18 +49,32 @@ vi.mock('../../jobs/backupSnapshotFileIndexWorker', async (importOriginal) => ({
 vi.mock('../../jobs/backupSnapshotAttestationWorker', () => ({
   enqueueSnapshotAttestationVerification: vi.fn(async () => 'job'),
 }));
+// A seam for one test: the hydrator's publisher, told the manifest has more
+// entries than it has, so its invariant (D9) fails inside a real hydration.
+const publishSeam = vi.hoisted(() => ({ overstateBy: 0 }));
+vi.mock('../../services/backupSnapshotIndexPublish', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../services/backupSnapshotIndexPublish')>();
+  return {
+    ...real,
+    publishDeltaIndex: (tx: Parameters<typeof real.publishDeltaIndex>[0], a: Parameters<typeof real.publishDeltaIndex>[1]) =>
+      real.publishDeltaIndex(tx, { ...a, eligibleEntries: a.eligibleEntries + publishSeam.overstateBy }),
+  };
+});
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 const prevFlag = process.env.BACKUP_INDEX_DELTA_PUBLISH;
 beforeAll(() => { process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on'; });
-beforeEach(() => { process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on'; });
+beforeEach(() => {
+  process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on';
+  publishSeam.overstateBy = 0;
+});
 afterAll(() => {
   if (prevFlag === undefined) delete process.env.BACKUP_INDEX_DELTA_PUBLISH;
   else process.env.BACKUP_INDEX_DELTA_PUBLISH = prevFlag;
 });
 
-type Entry = { sourcePath: string; backupPath: string; size?: number; kind?: 'dir' | 'symlink' };
+type Entry = { sourcePath: string; backupPath: string; size?: number; kind?: 'dir' | 'symlink'; modTime?: string };
 
 function newId(): string {
   return `snapshot-20261126T120000Z-${randomBytes(12).toString('hex')}`;
@@ -93,11 +107,15 @@ async function snapshotOf(t: WriteTenant, deviceId = t.deviceId): Promise<Snap> 
   return { dbId, snapshotId };
 }
 
-const tupleOf = (r: { source_path: string; backup_path: string; size: unknown; kind: unknown }) =>
-  JSON.stringify([r.source_path, r.backup_path, r.size === null ? null : Number(r.size), r.kind ?? null]);
+const tupleOf = (r: { source_path: string; backup_path: string; size: unknown; kind: unknown; modified: string | null }) =>
+  JSON.stringify([r.source_path, r.backup_path, r.size === null ? null : Number(r.size), r.kind ?? null, r.modified ?? null]);
+
+/** The manifest's modTime as the column stores it: UTC, without a zone, to the second here. */
+const storedModTime = (modTime: string | undefined) =>
+  modTime ? new Date(modTime).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '') : null;
 
 const expectedTree = (entries: Entry[]) =>
-  entries.map((e) => JSON.stringify([e.sourcePath, e.backupPath, e.size ?? null, e.kind ?? null])).sort();
+  entries.map((e) => JSON.stringify([e.sourcePath, e.backupPath, e.size ?? null, e.kind ?? null, storedModTime(e.modTime)])).sort();
 
 /**
  * The snapshot's tree as stored, read on the admin connection: for 'rows',
@@ -106,11 +124,11 @@ const expectedTree = (entries: Entry[]) =>
  */
 async function storedTree(snapshotDbId: string): Promise<string[]> {
   const rows = (await getTestDb().execute(sql`
-    SELECT f.source_path, f.backup_path, f.size, f.kind
+    SELECT f.source_path, f.backup_path, f.size, f.kind, to_char(f.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modified
       FROM backup_snapshot_files f
      WHERE f.snapshot_db_id = ${snapshotDbId}::uuid AND f.checkpoint_entry_no IS NULL
     UNION ALL
-    SELECT e.source_path, e.backup_path, e.size, e.kind
+    SELECT e.source_path, e.backup_path, e.size, e.kind, to_char(e.modified_at, 'YYYY-MM-DD HH24:MI:SS') AS modified
       FROM backup_snapshots s
       JOIN backup_tree_checkpoint_entries e ON e.checkpoint_id = s.file_index_checkpoint_id
      WHERE s.id = ${snapshotDbId}::uuid AND s.file_index_format = 'delta'
@@ -118,7 +136,7 @@ async function storedTree(snapshotDbId: string): Promise<string[]> {
          SELECT 1 FROM backup_snapshot_files t
           WHERE t.snapshot_db_id = s.id AND t.checkpoint_entry_no = e.entry_no
        )
-  `)) as unknown as Array<{ source_path: string; backup_path: string; size: unknown; kind: unknown }>;
+  `)) as unknown as Array<{ source_path: string; backup_path: string; size: unknown; kind: unknown; modified: string | null }>;
   return rows.map(tupleOf).sort();
 }
 
@@ -498,5 +516,133 @@ describe('a checkpoint always names its snapshot\'s org and device', () => {
     `)));
     expect(await indexState(s0.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null });
     expect(await checkpointsOfDevice(t.deviceId)).toEqual([]);
+  });
+});
+
+describe('delta publish edges (#11736 step 2)', () => {
+  runDb('tombstones alone can tip a delta past 5%', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1, s2] = [await snapshotOf(t), await snapshotOf(t), await snapshotOf(t)];
+    const base = filesOf(s0.snapshotId, 100); // threshold ceil(5% of 100) = 5
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    const [h1] = await checkpointsOfDevice(t.deviceId);
+
+    // 3 additions + 2 removals = 5: still a delta.
+    const tree1 = [...base.slice(2), ...filesOf(s1.snapshotId, 3, 500)];
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h1!.id, adds: 3, tombstones: 2 });
+
+    // 2 additions + 4 removals = 6: the removals tip it, a new checkpoint.
+    const tree2 = [...base.slice(4), ...filesOf(s2.snapshotId, 2, 600)];
+    await hydrate(s2.dbId, manifestOf(s2.snapshotId, tree2));
+    const state2 = await indexState(s2.dbId);
+    expect(state2).toMatchObject({ format: 'delta', adds: 0, tombstones: 0 });
+    expect(state2.checkpoint_id).not.toBe(h1!.id);
+    for (const [s, tree] of [[s0, base], [s1, tree1], [s2, tree2]] as const) {
+      expect(await storedTree(s.dbId)).toEqual(expectedTree(tree));
+    }
+  });
+
+  runDb('a change of modification time or kind alone is a changed entry', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const stamped: Entry = { sourcePath: 'C:/m/stamped', backupPath: `snapshots/${s0.snapshotId}/files/stamped`, size: 3, modTime: '2026-01-02T03:04:05Z' };
+    const link: Entry = { sourcePath: 'C:/m/link', backupPath: '', kind: 'dir' };
+    const base = [...filesOf(s0.snapshotId, 60), stamped, link];
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+
+    const tree1 = [...filesOf(s0.snapshotId, 60), { ...stamped, modTime: '2026-01-02T03:04:06Z' }, { ...link, kind: 'symlink' as const }];
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', adds: 2, tombstones: 2 });
+    expect(await storedTree(s1.dbId)).toEqual(expectedTree(tree1));
+    expect(await storedTree(s0.dbId)).toEqual(expectedTree(base));
+  });
+
+  runDb('an empty manifest publishes an empty tree, and the next snapshot gets a checkpoint of its own', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    expect(await hydrate(s0.dbId, manifestOf(s0.snapshotId, []))).toMatchObject({ status: 'complete', entryCount: 0, rowsWritten: 0 });
+    const [empty] = await checkpointsOfDevice(t.deviceId);
+    expect(empty).toMatchObject({ entry_count: 0 });
+    expect(await storedTree(s0.dbId)).toEqual([]);
+
+    // ceil(5% of 0) = 0: any entry is past it.
+    const tree1 = filesOf(s1.snapshotId, 1);
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    const state1 = await indexState(s1.dbId);
+    expect(state1).toMatchObject({ format: 'delta', adds: 0, tombstones: 0 });
+    expect(state1.checkpoint_id).not.toBe(empty!.id);
+    expect(await storedTree(s1.dbId)).toEqual(expectedTree(tree1));
+  });
+
+  runDb('a re-hydration whose delta fails the invariant leaves the previous rows, format and pointer', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const base = filesOf(s0.snapshotId, 80);
+    const tree1 = [...base.slice(1), ...filesOf(s1.snapshotId, 2, 400)];
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    const before = await indexState(s1.dbId);
+    expect(before).toMatchObject({ format: 'delta', adds: 2, tombstones: 1 });
+    const headersBefore = await checkpointsOfDevice(t.deviceId);
+
+    publishSeam.overstateBy = 1;
+    await expect(hydrate(s1.dbId, manifestOf(s1.snapshotId, [...tree1, ...filesOf(s1.snapshotId, 1, 401)])))
+      .rejects.toThrow(/snapshot index delta does not reproduce the manifest/);
+
+    // Only the failure was recorded; the index it had is untouched.
+    expect(await indexState(s1.dbId)).toEqual({ ...before, status: 'failed' });
+    expect(await storedTree(s1.dbId)).toEqual(expectedTree(tree1));
+    expect(await checkpointsOfDevice(t.deviceId)).toEqual(headersBefore);
+  });
+
+  runDb('one device keeps a checkpoint per config and per backup type', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const otherConfig = randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
+      SELECT ${otherConfig}::uuid, org_id, 'Second', type, provider, provider_config FROM backup_configs WHERE id = ${t.configId}::uuid
+    `);
+    const s0 = await snapshotOf(t);
+    const sConfig = await snapshotOf({ ...t, configId: otherConfig });
+    const sType = await snapshotOf(t);
+    await getTestDb().execute(sql`UPDATE backup_snapshots SET backup_type = 'database' WHERE id = ${sType.dbId}::uuid`);
+    // The same tree everywhere: diffing against another lineage's checkpoint would write nothing.
+    const tree = filesOf(s0.snapshotId, 30);
+
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, tree));
+    await hydrate(sConfig.dbId, manifestOf(sConfig.snapshotId, tree));
+    await hydrate(sType.dbId, manifestOf(sType.snapshotId, tree));
+
+    const pointers = await Promise.all([s0, sConfig, sType].map(async (s) => (await indexState(s.dbId)).checkpoint_id));
+    expect(new Set(pointers).size).toBe(3);
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(3);
+    for (const s of [s0, sConfig, sType]) expect(await storedTree(s.dbId)).toEqual(expectedTree(tree));
+
+    // A newer header of a sibling lineage does not make s0's collectable.
+    await getTestDb().execute(sql`DELETE FROM backup_snapshots WHERE id = ${s0.dbId}::uuid`);
+    await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000 });
+    expect(await checkpointExists(pointers[0]!)).toBe(true);
+  });
+
+  runDb('an empty agent index on a delta snapshot resets that snapshot only', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'running' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const base = filesOf(s0.snapshotId, 20);
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, base));
+    const sibling = await indexState(s1.dbId);
+    await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_status = 'failed' WHERE id = ${s0.dbId}::uuid`);
+
+    await withDbAccessContext(orgContext(t.orgId), () => applyBackupCommandResultToJob({
+      jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+      result: { snapshotId: s0.snapshotId, filesBackedUp: 0, bytesBackedUp: 0, snapshot: { id: s0.snapshotId, files: [] } } as never,
+      dispatchExpectationVerified: true,
+    }));
+
+    expect(await indexState(s0.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, adds: 0, tombstones: 0 });
+    expect(await indexState(s1.dbId)).toEqual(sibling);
+    expect(await storedTree(s1.dbId)).toEqual(expectedTree(base));
   });
 });

@@ -22,6 +22,7 @@ const MAX_LOGGED_VALUE = 64;
 
 const warnedSettingValues = new Set<string>();
 const warnedOrgItems = new Set<string>();
+let warnedEmptyCanary = false;
 
 function describeValue(raw: string): string {
   return JSON.stringify(raw.slice(0, MAX_LOGGED_VALUE));
@@ -72,12 +73,20 @@ export function resolveDeltaPublishMode(
 ): 'rows' | 'delta' {
   const setting = resolveDeltaPublishSetting(env);
   if (setting === 'on') return 'delta';
-  if (setting === 'canary' && listedOrgIds(env).has(orgId.toLowerCase())) return 'delta';
-  return 'rows';
+  if (setting !== 'canary') return 'rows';
+  const listed = listedOrgIds(env);
+  if (listed.size === 0 && !warnedEmptyCanary) {
+    warnedEmptyCanary = true;
+    console.warn(
+      `[backup-index] ${BACKUP_INDEX_DELTA_PUBLISH_ENV}=canary but ${BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS_ENV} lists no valid org; every org publishes rows`,
+    );
+  }
+  return listed.has(orgId.toLowerCase()) ? 'delta' : 'rows';
 }
 
 /** Test-only: forget which values have already been warned about. */
 export function resetDeltaPublishFlagWarningsForTests(): void {
   warnedSettingValues.clear();
   warnedOrgItems.clear();
+  warnedEmptyCanary = false;
 }

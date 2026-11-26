@@ -84,7 +84,9 @@ describe('backupIndexDeltaFlag', () => {
     it('is rows for an empty or unset list', () => {
       expect(resolveDeltaPublishMode(ORG_A, canary(''))).toBe('rows');
       expect(resolveDeltaPublishMode(ORG_A, canary())).toBe('rows');
-      expect(warn).not.toHaveBeenCalled();
+      // Once: canary that selects no org is almost certainly a mistake.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('lists no valid org');
     });
 
     it('tolerates spaces and empty items', () => {
@@ -129,6 +131,22 @@ describe('backupIndexDeltaFlag', () => {
     } finally {
       if (prev === undefined) delete process.env[E];
       else process.env[E] = prev;
+    }
+  });
+});
+
+describe('canary with no listed org (#11736)', () => {
+  it('warns once that every org publishes rows', () => {
+    resetDeltaPublishFlagWarningsForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const env = { BACKUP_INDEX_DELTA_PUBLISH: 'canary', BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS: ' , not-a-uuid' };
+      expect(resolveDeltaPublishMode('11111111-1111-4111-8111-111111111111', env)).toBe('rows');
+      expect(resolveDeltaPublishMode('11111111-1111-4111-8111-111111111111', env)).toBe('rows');
+      const emptyWarnings = warn.mock.calls.filter(([m]) => String(m).includes('lists no valid org'));
+      expect(emptyWarnings).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
     }
   });
 });

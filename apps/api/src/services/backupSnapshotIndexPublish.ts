@@ -22,6 +22,7 @@
 // manifest's multiset exactly.
 import { sql } from 'drizzle-orm';
 import type { db } from '../db';
+import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { extractRowCount } from '../db/rowCount';
 import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
 
@@ -29,6 +30,14 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Differences above this share of the checkpoint's entries write a new checkpoint (D4). */
 export const CHECKPOINT_REBASE_RATIO = 0.05;
+
+/**
+ * The longest a publish waits for its lineage's lock. A waiter holds a pooled
+ * connection, its snapshot's row lock and a loaded temp table, so the wait is
+ * bounded: past it the publish fails as a retryable provider error and is
+ * tried again on its next use. A publish of a million-entry diff takes seconds.
+ */
+export const LINEAGE_LOCK_TIMEOUT_MS = 120_000;
 
 /**
  * The lineage a checkpoint is shared within (R5). A snapshot missing any part
@@ -232,7 +241,12 @@ export async function publishDeltaIndex(
   // Temp tables are never autovacuumed; the diff's plan needs a row estimate.
   await tx.execute(sql`ANALYZE snapshot_index_incoming`);
 
+  const priorLockTimeoutMs = await tightenLockTimeout(tx, LINEAGE_LOCK_TIMEOUT_MS);
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lineageLockKey(lineage)}, 0))`);
+  if (lockTimeoutWasChanged(priorLockTimeoutMs, LINEAGE_LOCK_TIMEOUT_MS)) {
+    // The caller's own value for the rest of its transaction.
+    await tx.execute(sql`SELECT set_config('lock_timeout', ${`${priorLockTimeoutMs}ms`}, true)`);
+  }
 
   const newest = (await tx.execute(sql`
     SELECT id, entry_count FROM backup_tree_checkpoints

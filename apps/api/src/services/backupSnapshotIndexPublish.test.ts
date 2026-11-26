@@ -3,6 +3,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   CHECKPOINT_REBASE_RATIO,
+  LINEAGE_LOCK_TIMEOUT_MS,
   exceedsRebase,
   lineageKeyOf,
   lineageLockKey,
@@ -106,8 +107,9 @@ function fakeTx(opts: {
       return rows(opts.snapshot === null ? [] : [opts.snapshot ?? { org_id: ORG, device_id: DEVICE }]);
     }
     if (/FROM backup_tree_checkpoints\b[\s\S]*FOR KEY SHARE/.test(text)) return rows(opts.header ? [opts.header] : []);
-    if (/AS n FROM \(\s*SELECT 1 FROM incoming i WHERE NOT EXISTS/.test(text)) return rows([{ n: opts.adds ?? 0 }]);
-    if (/AS n FROM \(\s*SELECT 1 FROM checkpoint c WHERE NOT EXISTS/.test(text)) return rows([{ n: opts.tombstones ?? 0 }]);
+    // A count stops at its LIMIT (the last parameter), as Postgres would.
+    if (/AS n FROM \(\s*SELECT 1 FROM incoming i WHERE NOT EXISTS/.test(text)) return rows([{ n: Math.min(opts.adds ?? 0, Number(p.at(-1))) }]);
+    if (/AS n FROM \(\s*SELECT 1 FROM checkpoint c WHERE NOT EXISTS/.test(text)) return rows([{ n: Math.min(opts.tombstones ?? 0, Number(p.at(-1))) }]);
     if (/INSERT INTO backup_tree_checkpoints\b/.test(text)) return rows([{ id: 'new-header' }]);
     if (/INSERT INTO backup_tree_checkpoint_entries/.test(text)) return rows([], opts.checkpointEntriesInserted ?? 0);
     if (/INSERT INTO backup_snapshot_files/.test(text)) {
@@ -214,5 +216,65 @@ describe('loadIncomingBatch', () => {
     const execute = vi.fn();
     expect(await loadIncomingBatch({ execute } as unknown as Tx, [])).toBe(0);
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('publishDeltaIndex: bounds and lineage', () => {
+  it('bounds the wait for the lineage lock, then restores the caller\'s lock_timeout', async () => {
+    const { tx, statements, params } = fakeTx({ header: null, checkpointEntriesInserted: 1 });
+    const execute = (tx as unknown as { execute: ReturnType<typeof vi.fn<(q: SQL) => Promise<unknown>>> }).execute;
+    const base = execute.getMockImplementation()!;
+    execute.mockImplementation(async (q: SQL) => {
+      if (/set_config\(\s*'lock_timeout'/.test(render(q).sql) && /pg_settings/.test(render(q).sql)) {
+        statements.push(render(q).sql);
+        params.push(render(q).params);
+        return Object.assign([{ prior_ms: 0, applied: `${LINEAGE_LOCK_TIMEOUT_MS}ms` }], { count: 1 });
+      }
+      return base(q);
+    });
+
+    await publishDeltaIndex(tx, args(1));
+
+    const tighten = statements.findIndex((s) => /pg_settings/.test(s) && /lock_timeout/.test(s));
+    const lock = statements.findIndex((s) => /pg_advisory_xact_lock/.test(s));
+    const restore = statements.findIndex((s, i) => i > lock && /set_config\('lock_timeout'/.test(s));
+    expect(tighten).toBeGreaterThan(-1);
+    expect(params[tighten]).toContain(LINEAGE_LOCK_TIMEOUT_MS);
+    expect(lock).toBeGreaterThan(tighten);
+    expect(restore).toBeGreaterThan(lock);
+    expect(params[restore]).toContain('0ms');
+  });
+
+  it('counts up to one past the threshold, and tombstones up to what is left of it', async () => {
+    // 1,000 entries: threshold 50.
+    const { tx, statements, params } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 30, tombstones: 20 });
+    await publishDeltaIndex(tx, args(1_010));
+    const addCount = statements.findIndex((s) => /SELECT 1 FROM incoming i WHERE NOT EXISTS/.test(s) && /AS n/.test(s));
+    const tombCount = statements.findIndex((s) => /SELECT 1 FROM checkpoint c WHERE NOT EXISTS/.test(s) && /AS n/.test(s));
+    expect(params[addCount]!.at(-1)).toBe(51);
+    expect(params[tombCount]!.at(-1)).toBe(21);
+  });
+
+  it('tombstones alone can tip a delta past 5%: 30 + 20 of 1,000 is a delta, 30 + 21 a new checkpoint', async () => {
+    const within = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 30, tombstones: 20 });
+    expect(await publishDeltaIndex(within.tx, args(1_010))).toMatchObject({ checkpointWritten: false, adds: 30, tombstones: 20 });
+
+    const past = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 30, tombstones: 21, checkpointEntriesInserted: 1_009 });
+    expect(await publishDeltaIndex(past.tx, args(1_009))).toMatchObject({ checkpointWritten: true, checkpointId: 'new-header' });
+  });
+
+  it('finds the newest checkpoint by every lineage part, a non-NULL key prefix included', async () => {
+    const lineage = lineageKeyOf({ ...snapshotFields, keyLayout: 'prefixed_flat', keyPrefix: 'tenant-a' })!;
+    const { tx, statements, params } = fakeTx({ header: null, checkpointEntriesInserted: 1 });
+    await publishDeltaIndex(tx, { ...args(1), lineage });
+    const newest = statements.findIndex((s) => /FOR KEY SHARE/.test(s));
+    for (const column of ['org_id', 'device_id', 'config_id', 'storage_identity', 'backup_type', 'key_layout']) {
+      expect(statements[newest]).toMatch(new RegExp(`\\b${column} = \\$\\d+`));
+    }
+    expect(statements[newest]).toMatch(/key_prefix IS NOT DISTINCT FROM \$\d+::text/);
+    expect(params[newest]).toEqual([ORG, DEVICE, CONFIG, 's3::bucket', 'file', 'prefixed_flat', 'tenant-a']);
+    // The new header carries the same key root.
+    const header = statements.findIndex((s) => /INSERT INTO backup_tree_checkpoints\b/.test(s));
+    expect(params[header]).toEqual(expect.arrayContaining(['prefixed_flat', 'tenant-a']));
   });
 });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // #3036: the diagnostic re-read runs on a NESTED transaction (a postgres.js
 // SAVEPOINT) and MUST issue its query on the `tx` handed to the callback rather
@@ -1691,8 +1692,19 @@ describe('backup result persistence', () => {
       // The rows are gone; without the reset a 'delta' snapshot would read as
       // the bare checkpoint. Scoped to delta rows, so a rows snapshot is not rewritten.
       expect(db.delete).toHaveBeenCalledTimes(1);
-      const sets = vi.mocked(db.update).mock.results.map((r) => (r.value as { set?: ReturnType<typeof vi.fn> })?.set?.mock.calls[0]?.[0]);
-      expect(sets).toContainEqual({ fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+      const updates = vi.mocked(db.update).mock.results.map((r) => r.value as { set?: ReturnType<typeof vi.fn>; where?: ReturnType<typeof vi.fn> });
+      const reset = updates.find((u) => {
+        const v = u?.set?.mock.calls[0]?.[0];
+        return v && v.fileIndexFormat === 'rows' && !('fileIndexStatus' in v);
+      });
+      expect(reset?.set).toHaveBeenCalledWith({ fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+      // Scoped to this snapshot, and only while it is a delta snapshot.
+      // Later updates share one chain mock: find the where that names 'delta'.
+      const where = reset!.where!.mock.calls.map(([w]) => new PgDialect().sqlToQuery(w)).find((q) => q.params.includes('delta'))!;
+      // (This file mocks the schema, so column names do not render: the two
+      // equalities and their values are what can be checked.)
+      expect(where.sql).toMatch(/= \$\d+ and .*= \$\d+/);
+      expect(where.params).toEqual(expect.arrayContaining(['snapshot-db-1', 'delta']));
     });
 
     it('enqueues file-index hydration when referencedFiles > 0 (non-S3 destination), after the context exits', async () => {

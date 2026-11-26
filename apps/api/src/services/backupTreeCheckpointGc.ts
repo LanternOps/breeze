@@ -27,6 +27,9 @@ export const CHECKPOINT_GC_MAX_HEADERS = 100;
 
 export type CheckpointGcResult = { deleted: number; refused: number };
 
+/** The only foreign key that may refuse a header delete: a snapshot still pins it (R4). */
+const SNAPSHOT_POINTER_FK = 'backup_snapshots_file_index_checkpoint_fk';
+
 /**
  * Deletes one collectable header in its own system transaction, returning its
  * id, or null when none is left. The row lock is held from selection to
@@ -103,7 +106,13 @@ export async function collectUnreferencedCheckpoints(opts: {
       if (!id) break;
       deleted += 1;
     } catch (err) {
-      if (!isPgForeignKeyViolation(err) || !attempted.id) throw err;
+      if (!isPgForeignKeyViolation(err, SNAPSHOT_POINTER_FK) || !attempted.id) throw err;
+      // A snapshot gained a reference after the candidate was selected,
+      // without the publisher's lock. Expected to be rare: logged, so a header
+      // that keeps being refused is visible.
+      console.warn(
+        `[BackupTreeCheckpointGc] Checkpoint ${attempted.id} is still referenced by a snapshot (${SNAPSHOT_POINTER_FK}); skipped for this run`,
+      );
       refused += 1;
       skip.push(attempted.id);
     }

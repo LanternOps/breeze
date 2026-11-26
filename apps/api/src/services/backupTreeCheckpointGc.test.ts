@@ -34,8 +34,10 @@ const dialect = new PgDialect();
 const render = (q: SQL) => dialect.sqlToQuery(q);
 const isSelect = (q: SQL) => /^\s*SELECT c\.id FROM backup_tree_checkpoints c/.test(render(q).sql);
 const isDelete = (q: SQL) => /^\s*DELETE FROM backup_tree_checkpoints/.test(render(q).sql);
-const fkError = () => Object.assign(new Error('update or delete violates foreign key constraint'), { code: '23503' });
-const restrictError = () => Object.assign(new Error('restrict violation'), { code: '23001' });
+const POINTER_FK = 'backup_snapshots_file_index_checkpoint_fk';
+const fkError = (constraint_name = POINTER_FK) =>
+  Object.assign(new Error('update or delete violates foreign key constraint'), { code: '23503', constraint_name });
+const restrictError = () => Object.assign(new Error('restrict violation'), { code: '23001', constraint_name: POINTER_FK });
 
 /** Answers each candidate select with the next id of `candidates` (then none), and each delete via `onDelete`. */
 function candidates(ids: string[], onDelete: (id: string) => void = () => {}) {
@@ -152,5 +154,35 @@ describe('collectUnreferencedCheckpoints', () => {
   it('defaults to 100 headers a run', async () => {
     candidates(Array.from({ length: 150 }, (_, i) => `h${i}`));
     expect(await collectUnreferencedCheckpoints({ deadlineMs: farDeadline() })).toEqual({ deleted: 100, refused: 0 });
+  });
+});
+
+describe('collectUnreferencedCheckpoints refusals', () => {
+  it('logs each refusal with the header it skipped', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let first = true;
+      executeMock.mockImplementation(async (q) => {
+        if (isSelect(q)) {
+          const id = first ? 'h1' : undefined;
+          return Object.assign(id ? [{ id }] : [], { count: id ? 1 : 0 });
+        }
+        first = false;
+        throw fkError();
+      });
+      await collectUnreferencedCheckpoints({ deadlineMs: farDeadline() });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('h1');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rethrows a foreign-key violation from any other constraint', async () => {
+    executeMock.mockImplementation(async (q) => {
+      if (isSelect(q)) return Object.assign([{ id: 'h1' }], { count: 1 });
+      throw fkError('some_other_fk');
+    });
+    await expect(collectUnreferencedCheckpoints({ deadlineMs: farDeadline() })).rejects.toThrow(/foreign key/);
   });
 });
