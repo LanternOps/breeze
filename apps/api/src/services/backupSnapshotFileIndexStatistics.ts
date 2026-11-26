@@ -13,7 +13,12 @@
 // The API role does not own the table and cannot ANALYZE it, so this goes
 // through public.breeze_analyze_backup_snapshot_files() (SECURITY DEFINER,
 // migration 2027-01-22-210200-backup-snapshot-files-analyze.sql).
-import { sql } from 'drizzle-orm';
+//
+// #11736 step 2: a publish that writes a new checkpoint writes its entries to
+// backup_tree_checkpoint_entries instead, which has the same problem and its
+// own helper, public.breeze_analyze_backup_tree_checkpoint_entries()
+// (migration 2027-01-31-120000-backup-tree-checkpoints.sql).
+import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tightenStatementTimeout } from '../db/lockTimeout';
 import { pgErrorCode } from '../utils/pgErrors';
@@ -68,19 +73,40 @@ export type StatisticsRefreshOutcome =
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** A table a publish writes in bulk, and the definer helper that analyzes it. */
+type AnalyzedTable = {
+  table: 'backup_snapshot_files' | 'backup_tree_checkpoint_entries';
+  call: () => SQL;
+  helper: string;
+  /** Prefix of the closed outcome label recorded for this table. */
+  metricPrefix: '' | 'checkpoint_entries_';
+};
+
+const SNAPSHOT_FILES: AnalyzedTable = {
+  table: 'backup_snapshot_files',
+  call: () => sql`SELECT public.breeze_analyze_backup_snapshot_files() AS analyzed`,
+  helper: 'breeze_analyze_backup_snapshot_files()',
+  metricPrefix: '',
+};
+
+const CHECKPOINT_ENTRIES: AnalyzedTable = {
+  table: 'backup_tree_checkpoint_entries',
+  call: () => sql`SELECT public.breeze_analyze_backup_tree_checkpoint_entries() AS analyzed`,
+  helper: 'breeze_analyze_backup_tree_checkpoint_entries()',
+  metricPrefix: 'checkpoint_entries_',
+};
+
 /** One attempt, in its own short system-scoped transaction. True once analyzed. */
-async function analyzeOnce(): Promise<boolean> {
+async function analyzeOnce(target: AnalyzedTable): Promise<boolean> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db.transaction(async (tx) => {
         // Never widened, and gone when this transaction ends.
         await tightenStatementTimeout(tx, STATISTICS_REFRESH_TIMEOUT_MS);
-        const rows = (await tx.execute(
-          sql`SELECT public.breeze_analyze_backup_snapshot_files() AS analyzed`,
-        )) as unknown as Array<{ analyzed: unknown }>;
+        const rows = (await tx.execute(target.call())) as unknown as Array<{ analyzed: unknown }>;
         const analyzed = rows[0]?.analyzed;
         if (typeof analyzed !== 'boolean') {
-          throw new Error(`breeze_analyze_backup_snapshot_files() returned ${JSON.stringify(analyzed)}, not a boolean`);
+          throw new Error(`${target.helper} returned ${JSON.stringify(analyzed)}, not a boolean`);
         }
         return analyzed;
       }),
@@ -99,12 +125,31 @@ export async function refreshSnapshotFileIndexStatistics(
   rowsWritten: number,
   opts?: { minRows?: number; retryDelayMs?: number },
 ): Promise<StatisticsRefreshOutcome> {
+  return refreshStatistics(SNAPSHOT_FILES, rowsWritten, opts);
+}
+
+/**
+ * The same for backup_tree_checkpoint_entries, once a publish has written a
+ * new checkpoint of `entriesWritten` entries. Same threshold, same rules.
+ */
+export async function refreshCheckpointEntriesStatistics(
+  entriesWritten: number,
+  opts?: { minRows?: number; retryDelayMs?: number },
+): Promise<StatisticsRefreshOutcome> {
+  return refreshStatistics(CHECKPOINT_ENTRIES, entriesWritten, opts);
+}
+
+async function refreshStatistics(
+  target: AnalyzedTable,
+  rowsWritten: number,
+  opts?: { minRows?: number; retryDelayMs?: number },
+): Promise<StatisticsRefreshOutcome> {
   if (rowsWritten < (opts?.minRows ?? STATISTICS_REFRESH_MIN_ROWS)) return 'below_threshold';
 
   let outcome: StatisticsRefreshOutcome = 'busy';
   try {
     for (let attempt = 1; attempt <= STATISTICS_REFRESH_ATTEMPTS; attempt += 1) {
-      if (await analyzeOnce()) {
+      if (await analyzeOnce(target)) {
         outcome = 'analyzed';
         break;
       }
@@ -112,12 +157,12 @@ export async function refreshSnapshotFileIndexStatistics(
     }
     if (outcome === 'busy') {
       console.info(
-        `[backupSnapshotFileIndex] backup_snapshot_files was locked by other maintenance on all ${STATISTICS_REFRESH_ATTEMPTS} attempts after publishing ${rowsWritten} rows; left to autovacuum`,
+        `[backupSnapshotFileIndex] ${target.table} was locked by other maintenance on all ${STATISTICS_REFRESH_ATTEMPTS} attempts after publishing ${rowsWritten} rows; left to autovacuum`,
       );
     }
   } catch (err) {
     const code = pgErrorCode(err);
-    const message = `[backupSnapshotFileIndex] Could not refresh backup_snapshot_files statistics after publishing ${rowsWritten} rows; reads stay slow until autovacuum analyzes the table:`;
+    const message = `[backupSnapshotFileIndex] Could not refresh ${target.table} statistics after publishing ${rowsWritten} rows; reads stay slow until autovacuum analyzes the table:`;
     if (code && CONFIGURATION_FAULTS.has(code)) {
       console.error(message, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
@@ -126,6 +171,6 @@ export async function refreshSnapshotFileIndexStatistics(
     }
     outcome = 'error';
   }
-  recordSnapshotFileIndex('statistics', outcome);
+  recordSnapshotFileIndex('statistics', `${target.metricPrefix}${outcome}`);
   return outcome;
 }

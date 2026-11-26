@@ -17,12 +17,16 @@
  *    stops between orgs / storage identities when it is spent; the next run
  *    resumes where this one stopped (cursors in Redis);
  *  - BACKUP_SNAPSHOT_CLEANUP_CRON overrides the schedule, and `off` removes it.
+ *
+ * After retention, the same run collects unreferenced file-index checkpoints
+ * (#11736, services/backupTreeCheckpointGc.ts) until the end of its budget.
  */
 
 import { randomUUID } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection, getRedis } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { collectUnreferencedCheckpoints, type CheckpointGcResult } from '../services/backupTreeCheckpointGc';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { attachWorkerObservability } from './workerObservability';
 import { getBackupQueue } from './backupEnqueue';
@@ -128,7 +132,10 @@ async function saveCursors(redis: RedisClient, cursors: BackupSnapshotCleanupCur
 
 async function processCleanupJob(
   job: Job<BackupSnapshotCleanupQueueJobData>,
-): Promise<Awaited<ReturnType<typeof processCleanupExpiredSnapshots>> | { skipped: 'already-running' }> {
+): Promise<
+  | (Awaited<ReturnType<typeof processCleanupExpiredSnapshots>> & { checkpointGc: CheckpointGcResult | 'error' })
+  | { skipped: 'already-running' }
+> {
   parseQueueJobData(BACKUP_SNAPSHOT_CLEANUP_QUEUE, job, backupSnapshotCleanupQueueJobDataSchema);
   assertQueueJobName(BACKUP_SNAPSHOT_CLEANUP_QUEUE, job, JOB_NAME);
 
@@ -175,13 +182,24 @@ async function processCleanupJob(
       readCursor(redis, BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS.retention),
       readCursor(redis, BACKUP_SNAPSHOT_CLEANUP_CURSOR_KEYS.gc),
     ]);
-    return await processCleanupExpiredSnapshots({
+    const retention = await processCleanupExpiredSnapshots({
       retentionDeadlineMs: startedAt + Math.floor(budgetMs / 2),
       gcDeadlineMs: startedAt + budgetMs,
       retentionCursor,
       gcCursor,
       saveCursors: (cursors) => saveCursors(redis, cursors),
     });
+    // Retention's work is done and its cursors are saved, so a checkpoint GC
+    // failure is reported here instead of failing (and retrying) the run.
+    let checkpointGc: CheckpointGcResult | 'error';
+    try {
+      checkpointGc = await collectUnreferencedCheckpoints({ deadlineMs: startedAt + budgetMs });
+    } catch (err) {
+      console.error('[BackupSnapshotCleanupWorker] File-index checkpoint GC failed; the next run tries again:', err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      checkpointGc = 'error';
+    }
+    return { ...retention, checkpointGc };
   } finally {
     clearInterval(renew);
     try {
