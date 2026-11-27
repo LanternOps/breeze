@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   rateLimiterThrows: false,
   rateKeys: [] as string[],
   knownBudgetLeft: Infinity,
+  knownHostBudgetLeft: Infinity,
   knownClient: false,
   knownClientThrows: false,
   warns: [] as Array<{ errorId: string; context?: Record<string, unknown>; err?: unknown }>,
@@ -28,14 +29,16 @@ vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async (_redis: unknown, key: string) => {
     if (state.rateLimiterThrows) throw new Error('ECONNRESET');
     state.rateKeys.push(key);
-    const left = key.includes(':host:') ? state.hostBudgetLeft
-      : key.endsWith(':known') ? state.knownBudgetLeft : state.globalBudgetLeft;
+    const left = key.startsWith('oauth:cimd:fetch:known:host:') ? state.knownHostBudgetLeft
+      : key.startsWith('oauth:cimd:fetch:host:') ? state.hostBudgetLeft
+        : key.endsWith(':known') ? state.knownBudgetLeft : state.globalBudgetLeft;
     return { allowed: left > 0, remaining: Math.max(0, left - 1), resetAt: new Date(Date.now() + 60_000) };
   }),
 }));
 
 import {
-  CIMD_APPROVAL_TTL_MS, CIMD_FETCH_BUDGET, CIMD_FETCH_TIMEOUT_MS, CIMD_MAX_BYTES,
+  CIMD_APPROVAL_TTL_MS, CIMD_FETCH_BUDGET, CIMD_FETCH_TIMEOUT_MS, CIMD_KNOWN_CLIENT_REFETCH_PER_HOST_PER_MINUTE,
+  CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE, CIMD_MAX_BYTES,
   __cimdApprovalsForTests, __resetCimdApprovalsForTests, __resetCimdRefusalLogForTests, cimdAllowFetch, cimdHostAllowed,
   createOidcProviderFetch, isCimdClientId, parseCimdAllowedHosts, validateCimdMetadata,
 } from './cimdPolicy';
@@ -74,6 +77,7 @@ beforeEach(() => {
   state.knownClient = false;
   state.knownClientThrows = false;
   state.knownBudgetLeft = Infinity;
+  state.knownHostBudgetLeft = Infinity;
   state.rateKeys = [];
   state.rateLimiterThrows = false;
   state.redis = {};
@@ -149,6 +153,8 @@ describe('cimdAllowFetch', () => {
 
   it('budgets match the plan', () => {
     expect(CIMD_FETCH_BUDGET).toEqual({ perHostPerMinute: 10, globalPerMinute: 120, createsPerHour: 200 });
+    expect(CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE).toBe(1200);
+    expect(CIMD_KNOWN_CLIENT_REFETCH_PER_HOST_PER_MINUTE).toBe(60);
     expect(CIMD_FETCH_TIMEOUT_MS).toBe(5000);
     expect(CIMD_MAX_BYTES).toBe(5120);
     expect(CIMD_APPROVAL_TTL_MS).toBe(30_000);
@@ -271,7 +277,31 @@ describe('review fixes (B-W03 PR B)', () => {
   it('a materialised client still refetches when the new-client budget is spent', async () => {
     state.knownClient = true;
     expect(await withCimdEnv({ globalBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(true);
-    expect(state.rateKeys).toEqual(['oauth:cimd:fetch:host:client.example.com', 'oauth:cimd:fetch:known']);
+    expect(state.rateKeys).toEqual(['oauth:cimd:fetch:known:host:client.example.com', 'oauth:cimd:fetch:known']);
+  });
+
+  // #9464 lab: never-seen ids on a host (each an unauthenticated GET /oauth/auth)
+  // used to spend the per-host bucket a known client's refetch also drew on, so
+  // five requests a minute broke refresh_token grants for every admitted client
+  // on that host once its document dropped out of the process cache.
+  it('a materialised client still refetches when its host’s new-client budget is spent', async () => {
+    state.knownClient = true;
+    expect(await withCimdEnv({ hostBudgetLeft: 0, globalBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(true);
+    expect(state.rateKeys).not.toContain('oauth:cimd:fetch:host:client.example.com');
+  });
+
+  it('a materialised client is still held to its own per-host refetch budget', async () => {
+    state.knownClient = true;
+    expect(await withCimdEnv({}, async () => {
+      state.knownHostBudgetLeft = 0;
+      return cimdAllowFetch({}, ID);
+    })).toBe(false);
+    expect(state.warns.map((w) => w.context?.reason)).toContain('fetch_budget_exceeded');
+  });
+
+  it('an unknown client on that host is still held to the new-client per-host budget', async () => {
+    state.knownClient = false;
+    expect(await withCimdEnv({ hostBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(false);
   });
 
   it('an unknown client is still held to the new-client budget', async () => {
