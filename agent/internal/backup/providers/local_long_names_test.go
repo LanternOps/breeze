@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -258,7 +259,7 @@ func TestLocalStoreSweepRemovesOldAndNewTempLeftovers(t *testing.T) {
 	}
 
 	// Real objects, all older than the cutoff. Names a user could give a
-	// file: the natural key adds ".gz", which neither temporary scheme ends in.
+	// file: a file's key adds ".gz", which neither temporary scheme ends in.
 	objects := []string{
 		upload("a.txt.gz"),
 		upload(".x.upload-notes.txt.gz"),
@@ -282,6 +283,11 @@ func TestLocalStoreSweepRemovesOldAndNewTempLeftovers(t *testing.T) {
 		leftover(".b.txt.gz.upload-ZZZZZZZZZZZZZZZZZZZZZZZZZZ", time.Minute),
 	}
 
+	// A directory whose name has a temporary form is not a leftover.
+	tempNamedDir := dirKey + "/.breeze-upload-DDDDDDDDDDDDDDDDDDDDDDDDDD"
+	upload(".breeze-upload-DDDDDDDDDDDDDDDDDDDDDDDDDD/inside.gz")
+	age(tempNamedDir, 48*time.Hour)
+
 	n, err := p.SweepStaleUploads("snapshots/s1", 24*time.Hour)
 	if err != nil {
 		t.Fatalf("SweepStaleUploads: %v", err)
@@ -297,6 +303,9 @@ func TestLocalStoreSweepRemovesOldAndNewTempLeftovers(t *testing.T) {
 		if slices.Contains(listed, key) {
 			t.Errorf("stale leftover %q was not removed", path.Base(key))
 		}
+	}
+	if !slices.Contains(listed, tempNamedDir+"/inside.gz") {
+		t.Error("an object under a directory with a temporary-form name must be kept")
 	}
 	for _, key := range append(slices.Clone(objects), fresh...) {
 		if !slices.Contains(listed, key) {
@@ -400,5 +409,89 @@ func TestLocalStoreUploadsNonLatin1FileNames(t *testing.T) {
 				t.Fatalf("restored %q, want %q", got, content)
 			}
 		})
+	}
+}
+
+// The temporary-name match is exact: every shape UploadWithDigest of this or
+// an earlier agent wrote, and nothing else.
+func TestLocalStoreTempNameMatchIsExact(t *testing.T) {
+	b26 := "ABCDEFGHIJKLMNOPQRSTUVWX27"
+	cases := map[string]bool{
+		".breeze-upload-" + b26:                     true,
+		".a.txt.gz.upload-" + b26:                   true, // rand.Text() era
+		".a.txt.gz.upload-1":                        true, // os.CreateTemp era
+		".a.txt.gz.upload-4294967295":               true, // largest uint32
+		".a.upload-b.gz.upload-" + b26:              true, // last marker counts
+		".breeze-upload-" + b26[:25]:                false,
+		".breeze-upload-" + b26 + "A":               false,
+		".breeze-upload-" + strings.ToLower(b26):    false,
+		".breeze-upload-ABCDEFGHIJKLMNOPQRSTUVWX01": false, // 0, 1 are not base32
+		".breeze-upload-ABCDEFGHIJKLMNOPQRSTUVWX89": false,
+		".breeze-upload-":                           false,
+		".breeze-upload-" + b26 + ".gz":             false,
+		"breeze-upload-" + b26:                      false,
+		".a.txt.gz.upload-12345678901":              false, // 11 digits
+		".a.txt.gz.upload-":                         false,
+		".a.txt.gz.upload-12a":                      false,
+		".a.txt.gz.upload-" + b26[:25]:              false,
+		".a.txt.gz.upload-" + b26 + ".gz":           false,
+		".upload-123":                               false, // no leaf
+		"a.txt.gz.upload-123":                       false, // no leading dot
+		".x.upload-notes.txt.gz":                    false,
+		"manifest.json":                             false,
+	}
+	for name, want := range cases {
+		if got := isLocalUploadTempName(name); got != want {
+			t.Errorf("isLocalUploadTempName(%q) = %v, want %v", name, got, want)
+		}
+	}
+	for range 100 {
+		name, err := newLocalUploadTempName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(name) != localUploadTempNameLen || !isLocalUploadTempName(name) {
+			t.Fatalf("generated temporary name %q (%d bytes) does not have the fixed form", name, len(name))
+		}
+	}
+}
+
+// The gzip header keeps a Latin-1 name and drops any other, and the stored
+// object carries it.
+func TestLocalStoreGzipHeaderName(t *testing.T) {
+	cases := map[string]string{
+		"café.txt":    "café.txt",
+		"plain.txt":   "plain.txt",
+		"日本語.txt":     "",
+		"😀.png":       "",
+		"bad\xff.txt": "", // invalid UTF-8 (a raw byte some filesystems allow)
+	}
+	for in, want := range cases {
+		if got := gzipHeaderName(in); got != want {
+			t.Errorf("gzipHeaderName(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	base := privateStoreTempDir(t)
+	p := NewLocalProvider(base)
+	src := filepath.Join(t.TempDir(), "café.txt")
+	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := "snapshots/s1/files/g/café.txt.gz"
+	if _, err := p.UploadWithDigest(context.Background(), src, key); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(base, filepath.FromSlash(key)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zr.Name != "café.txt" {
+		t.Errorf("stored gzip header name = %q, want %q", zr.Name, "café.txt")
 	}
 }

@@ -232,9 +232,9 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 		return UploadDigest{}, err
 	}
 	defer func() { _ = tree.Close() }()
-	// Every failure below names the object's key (bounded by the key-length
-	// limit in internal/backup/objectkey_length.go) besides the OS error, so
-	// the job's error log says which object could not be written and why.
+	// From here on a store failure names the object's key besides the OS
+	// error, so the job's error log says which object could not be written
+	// and why.
 	destPath, err := p.objectRelative(tree, remotePath)
 	if err != nil {
 		return UploadDigest{}, fmt.Errorf("backup object %s: %w", remotePath, err)
@@ -343,20 +343,20 @@ func renameWithRetry(tree *os.Root, from, to string) error {
 // directory (so the rename into place stays on one volume and is atomic) and
 // renames it over the key once the copy completed. The temporary name is
 // localUploadTempPrefix plus 26 random base32 characters: a fixed 41 bytes,
-// whatever the key (#12799). It used to be "." + leaf + ".upload-" + random,
-// 35 bytes longer than the object's own name, so a key leaf of 221 to 255
-// bytes, which the store accepts (internal/backup/objectkey_length.go), could
-// not be written on a filesystem that limits a name to 255 bytes or 255
-// UTF-16 units.
+// whatever the key (#12799). Since #11828 it was "." + leaf + ".upload-" +
+// rand.Text(), 35 bytes longer than the object's own name (earlier agents used
+// os.CreateTemp, up to 19 bytes longer), so a key leaf of 221 to 255 bytes,
+// which the backup package's key-length limit accepts, could not be written
+// on a filesystem that limits a name to 255 bytes or 255 UTF-16 units.
 //
 // The random part keeps concurrent writers of different objects in one
-// directory apart (the file is also created O_EXCL). A natural object key
-// always ends in ".gz" and so never takes either temporary form.
+// directory apart (the file is also created O_EXCL). File object keys end in
+// ".gz" and control objects have fixed names, so no object takes either
+// temporary form.
 //
-// List and ObjectSizes report a temporary file like any other entry: a
-// prefix deleted by listing it (snapshot cleanup, vault retention) must
-// remove an upload's leftover too. Restore and verify read the keys a
-// manifest records, never a listing, so they cannot pick one up.
+// List and ObjectSizes report a temporary file like any other entry, so a
+// caller that deletes a prefix by listing it removes an upload's leftover
+// too.
 const (
 	localUploadTempPrefix  = ".breeze-upload-"
 	localUploadTempRandLen = 26 // 16 random bytes, base32 without padding
