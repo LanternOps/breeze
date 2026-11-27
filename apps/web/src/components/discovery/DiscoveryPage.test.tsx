@@ -560,6 +560,36 @@ describe('DiscoveryPage', () => {
     });
   });
 
+  describe('?asset= deep link', () => {
+    const ASSET_ID = '3f2b8c1e-9d4a-4b6f-8e21-5c7a9d0b1e42';
+
+    it('fetches the asset detail for a UUID asset id', async () => {
+      window.history.pushState({}, '', `/discovery?asset=${ASSET_ID}#assets`);
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(`/discovery/assets/${ASSET_ID}`));
+    });
+
+    it.each([
+      ['a relative path', '../../users/me'],
+      ['an encoded traversal', '..%2F..%2Fusers%2Fme'],
+      ['a query injection', `${ASSET_ID}?include=secrets`],
+      ['a non-UUID id', 'asset-9'],
+    ])('ignores %s', async (_label, value) => {
+      window.history.pushState({}, '', `/discovery?asset=${encodeURIComponent(value)}#assets`);
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+      const paths = fetchWithAuthMock.mock.calls.map(([path]) => String(path));
+      expect(paths.filter((path) => path.startsWith('/discovery/assets/'))).toEqual([]);
+      expect(paths.some((path) => path.includes('..') || path.includes('users/me'))).toBe(false);
+    });
+  });
+
   it('renders neither the prompt nor the tab content on a transient pre-hydration null org', () => {
     // Before the persisted context rehydrates / the first org auto-selects,
     // currentOrgId is null and allOrgs is false. Single-org users must NOT see
