@@ -21,6 +21,9 @@ use tokio::time::Instant;
 use super::client::SessionError;
 use super::envelope::IpcError;
 
+/// The agent closed its end between frames (see [`ConnectionLoss::from_outcome`]).
+const CLOSED_BY_AGENT: &str = "closed_by_agent";
+
 /// The agent's `ipc.TypeHelperLog`.
 pub(crate) const HELPER_LOG_TYPE: &str = "helper_log";
 
@@ -44,18 +47,30 @@ pub(crate) struct HelperLogRecord {
 
 impl ConnectionLoss {
     /// A session that ran for `session` ended at `lost_at` with `outcome`
-    /// (`Ok` = the agent sent `disconnect`). `None` for an outcome that does
-    /// not reconnect (a permanent reject).
+    /// (`Ok` = the agent sent `disconnect`). `None` when there is nothing to
+    /// report:
+    ///
+    /// - a permanent reject, which does not reconnect;
+    /// - a clean close by the agent: `disconnect`, or its end closed between
+    ///   frames. Every agent restart or upgrade ends each Assist connection
+    ///   this way, so reporting it would raise a warning on every device at
+    ///   every agent update; and when the broker itself closes a session it
+    ///   logs its own reason. Only warn+ crosses the relay
+    ///   (`ipc.SanitizeHelperLogRecord`), so there is no lower level to send
+    ///   it at.
     pub(crate) fn from_outcome(
         outcome: &Result<(), SessionError>,
         session: Duration,
         lost_at: Instant,
     ) -> Option<Self> {
         let reason = match outcome {
-            Ok(()) => "agent_disconnect".to_string(),
+            Ok(()) => return None,
             Err(SessionError::Transient(e)) => reason_code(e),
             Err(SessionError::PermanentReject(_)) => return None,
         };
+        if reason == CLOSED_BY_AGENT {
+            return None;
+        }
         Some(Self { reason, session, lost_at })
     }
 
@@ -64,6 +79,7 @@ impl ConnectionLoss {
         Self { reason: "panic".to_string(), session, lost_at }
     }
 
+    #[cfg(test)]
     pub(crate) fn reason(&self) -> &str {
         &self.reason
     }
@@ -95,7 +111,7 @@ pub(crate) fn reason_code(e: &IpcError) -> String {
             if io.to_string().contains("mid-frame") {
                 "closed_mid_frame".to_string()
             } else {
-                "closed_by_agent".to_string()
+                CLOSED_BY_AGENT.to_string()
             }
         }
         IpcError::Io(io) => format!("io_{:?}", io.kind()),
@@ -182,12 +198,19 @@ mod tests {
     }
 
     #[test]
-    fn a_clean_disconnect_is_reported_and_a_permanent_reject_is_not() {
+    fn a_clean_agent_close_and_a_permanent_reject_are_not_reported() {
         let now = Instant::now();
-        let clean = ConnectionLoss::from_outcome(&Ok(()), Duration::ZERO, now).expect("reconnects");
-        assert_eq!(clean.reason(), "agent_disconnect");
+        assert!(ConnectionLoss::from_outcome(&Ok(()), Duration::ZERO, now).is_none(), "disconnect");
+        let between: Result<(), SessionError> =
+            Err(SessionError::Transient(eof("connection closed between frames")));
+        assert!(ConnectionLoss::from_outcome(&between, Duration::ZERO, now).is_none(), "closed between frames");
         let reject: Result<(), SessionError> = Err(SessionError::PermanentReject("x".into()));
         assert!(ConnectionLoss::from_outcome(&reject, Duration::ZERO, now).is_none());
+
+        let mid: Result<(), SessionError> = Err(SessionError::Transient(eof("connection closed mid-frame")));
+        let mid = ConnectionLoss::from_outcome(&mid, Duration::ZERO, now).expect("a mid-frame cut is reported");
+        assert_eq!(mid.reason(), "closed_mid_frame");
+        assert_eq!(mid.helper_log_record(now).level, "warn");
         assert_eq!(ConnectionLoss::panicked(Duration::ZERO, now).reason(), "panic");
     }
 }

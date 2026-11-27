@@ -24,7 +24,7 @@ use super::desktop::{self, ConsentBridge};
 use super::message::{
     MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
 };
-use super::connection_loss::{ConnectionLoss, HELPER_LOG_TYPE};
+use super::connection_loss::{reason_code, ConnectionLoss, HELPER_LOG_TYPE};
 use super::envelope::{write_frame, FrameReader, IpcError, PROTOCOL_VERSION};
 use super::prompt::{
     self as prompt, Addressed, ClosedReason, CloseOutcome, Decoded, PromptBridge, PromptClose, PromptRef, PromptShow,
@@ -1362,7 +1362,7 @@ pub async fn run(
             Some(Ok(Ok(()))) => {
                 // Clean disconnect. Reset backoff if the session was healthy.
                 eprintln!("[helper] ipc: the agent ended the session; will reconnect");
-                pending_loss = pending_loss.take().or(ConnectionLoss::from_outcome(&Ok(()), started.elapsed(), tokio::time::Instant::now()));
+                pending_loss = carry_loss(pending_loss.take(), &Ok(()), started.elapsed(), tokio::time::Instant::now());
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
@@ -1378,12 +1378,11 @@ pub async fn run(
             }
             Some(Ok(Err(SessionError::Transient(e)))) => {
                 let outcome = Err(SessionError::Transient(e));
-                let loss = ConnectionLoss::from_outcome(&outcome, started.elapsed(), tokio::time::Instant::now());
-                if let Err(e) = &outcome {
-                    let reason = loss.as_ref().map(|l| l.reason()).unwrap_or("");
+                if let Err(SessionError::Transient(e)) = &outcome {
+                    let reason = reason_code(e);
                     eprintln!("[helper] ipc: session ended ({reason}): {e}; will reconnect");
                 }
-                pending_loss = pending_loss.take().or(loss);
+                pending_loss = carry_loss(pending_loss.take(), &outcome, started.elapsed(), tokio::time::Instant::now());
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
@@ -1395,6 +1394,19 @@ pub async fn run(
         }
         backoff = next_backoff(backoff);
     }
+}
+
+/// The loss to report on the next connection once a session of length
+/// `session` ended at `now` with `outcome`. The oldest unreported loss wins
+/// (#12808): the session that failed to deliver it is usually a symptom of the
+/// first.
+fn carry_loss(
+    pending: Option<ConnectionLoss>,
+    outcome: &Result<(), SessionError>,
+    session: std::time::Duration,
+    now: tokio::time::Instant,
+) -> Option<ConnectionLoss> {
+    pending.or_else(|| ConnectionLoss::from_outcome(outcome, session, now))
 }
 
 /// Exponential backoff: double, capped at [`BACKOFF_MAX`].
@@ -1835,7 +1847,7 @@ mod tests {
         let (client_half, mut broker_half) = tokio::io::duplex(8192);
         let token = HelperToken::new();
         let id = test_identity();
-        let mut loss = ConnectionLoss::from_outcome(&Ok(()), Duration::from_secs(5), tokio::time::Instant::now());
+        let mut loss = Some(ConnectionLoss::panicked(Duration::from_secs(5), tokio::time::Instant::now()));
         let session = tokio::spawn(async move {
             let res = run_session(client_half, &token, &id, None, None, &mut loss).await;
             (res, loss)
@@ -1846,7 +1858,100 @@ mod tests {
         write_frame(&mut broker_half, &ZERO_KEY, &mut send, &env.id, "pre_auth_reject", Some(raw(reject))).await.unwrap();
         let (res, loss) = session.await.unwrap();
         assert!(matches!(res, Err(SessionError::Transient(_))), "{res:?}");
-        assert_eq!(loss.as_ref().map(|l| l.reason()), Some("agent_disconnect"), "the undelivered report was dropped");
+        assert_eq!(loss.as_ref().map(|l| l.reason()), Some("panic"), "the undelivered report was dropped");
+    }
+
+    /// How the agent's end of a test session goes away.
+    #[derive(Clone, Copy, Debug)]
+    enum AgentEnd {
+        /// Sends `disconnect`.
+        Disconnect,
+        /// Closes its end between frames: an agent restart or upgrade, or a
+        /// session the broker closed (it logs its own reason).
+        CloseBetweenFrames,
+        /// Closes its end after part of a frame.
+        CutMidFrame,
+    }
+
+    /// Runs one authenticated session, ends it from the agent side as `how`,
+    /// and returns what Assist's reconnect driver would carry to the next one.
+    async fn loss_after(how: AgentEnd) -> Option<ConnectionLoss> {
+        use crate::ipc::envelope::encode_frame;
+        use tokio::io::AsyncWriteExt;
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, None, &mut None).await });
+        let (mut send, mut recv) = (0u64, 0u64);
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
+        let key = [9u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut send, &env.id, "auth_response", Some(raw(&resp))).await.unwrap();
+        match how {
+            AgentEnd::Disconnect => {
+                write_frame(&mut broker_half, &key, &mut send, "bye", "disconnect", None).await.unwrap();
+            }
+            AgentEnd::CloseBetweenFrames => {}
+            AgentEnd::CutMidFrame => {
+                let frame = encode_frame(&key, &mut send, "p", "ping", None).expect("encode");
+                broker_half.write_all(&frame[..frame.len() / 2]).await.unwrap();
+                broker_half.flush().await.unwrap();
+            }
+        }
+        drop(broker_half);
+        let outcome = session.await.expect("join");
+        carry_loss(None, &outcome, Duration::from_secs(60), tokio::time::Instant::now())
+    }
+
+    /// The first frame Assist sends after the next auth, carrying `pending`.
+    async fn first_frame_after_auth(pending: Option<ConnectionLoss>) -> crate::ipc::envelope::Envelope {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move {
+            let mut pending = pending;
+            run_session(client_half, &token, &id, None, None, &mut pending).await
+        });
+        let (mut send, mut recv) = (0u64, 0u64);
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
+        let key = [9u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut send, &env.id, "auth_response", Some(raw(&resp))).await.unwrap();
+        // A ping: with nothing to report, the pong is the first frame.
+        write_frame(&mut broker_half, &key, &mut send, "p1", "ping", None).await.unwrap();
+        let first = read_frame(&mut broker_half, &key, &mut recv).await.expect("first frame");
+        write_frame(&mut broker_half, &key, &mut send, "bye", "disconnect", None).await.unwrap();
+        drop(broker_half);
+        let _ = session.await;
+        first
+    }
+
+    /// #12808 review: an agent restart or upgrade closes every Assist
+    /// connection cleanly, so reporting that as "lost its connection" would
+    /// raise a warning on every device at every agent update. A clean close by
+    /// the agent produces no warning-level record; a cut mid-frame still does.
+    #[tokio::test]
+    async fn test_a_clean_agent_close_is_not_reported_and_a_mid_frame_cut_is() {
+        for how in [AgentEnd::Disconnect, AgentEnd::CloseBetweenFrames] {
+            let carried = loss_after(how).await;
+            let first = first_frame_after_auth(carried).await;
+            let warn = first.typ == "helper_log"
+                && serde_json::from_str::<serde_json::Value>(first.payload.as_ref().unwrap().get()).unwrap()["level"]
+                    == "warn";
+            assert!(
+                !warn && first.typ == "pong",
+                "{how:?}: a clean close by the agent was reported: first frame {} {:?}",
+                first.typ,
+                first.payload.as_ref().map(|p| p.get().to_string())
+            );
+        }
+
+        let carried = loss_after(AgentEnd::CutMidFrame).await;
+        let first = first_frame_after_auth(carried).await;
+        assert_eq!(first.typ, "helper_log", "a mid-frame cut must still be reported");
+        let p: serde_json::Value = serde_json::from_str(first.payload.as_ref().unwrap().get()).unwrap();
+        assert_eq!(p["level"], "warn");
+        assert_eq!(p["fields"]["reason"], "closed_mid_frame");
     }
 
     /// #12808: the idle ping fires after 30 s with no frame from the agent,
