@@ -680,16 +680,6 @@ export default function SoftwareCatalog() {
         </FilterSelect>
       </div>
 
-      {isPartnerScope && (
-        <BuiltinPackagesPanel
-          providersInCatalog={catalogComplete ? builtinProviders : undefined}
-          onPackagesLoaded={setBuiltinRows}
-          onProvisioned={() => {
-            void fetchCatalog();
-          }}
-        />
-      )}
-
       {filteredSoftware.length === 0 && !loading ? (
         <div className="rounded-lg border bg-card p-12 text-center">
           <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
@@ -836,6 +826,18 @@ export default function SoftwareCatalog() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Built-ins still on offer sit below the partner's own packages, so
+          they never push the library down as it grows. */}
+      {isPartnerScope && (
+        <BuiltinPackagesPanel
+          providersInCatalog={catalogComplete ? builtinProviders : undefined}
+          onPackagesLoaded={setBuiltinRows}
+          onProvisioned={() => {
+            void fetchCatalog();
+          }}
+        />
       )}
       </>
       )}

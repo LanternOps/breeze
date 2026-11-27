@@ -644,12 +644,24 @@ describe('SoftwareCatalog DNS built-ins (#6958)', () => {
     window.location.hash = '';
   });
 
-  it('partner scope: renders the Built-in packages panel above the grid', async () => {
+  it('partner scope: renders the Built-in packages panel below the package cards', async () => {
     ownerScope.isPartnerScope = true;
     routeKeyed([ITEM]);
     render(<SoftwareCatalog />);
-    expect(await screen.findByTestId('builtin-packages-panel')).toBeInTheDocument();
+    const panel = await screen.findByTestId('builtin-packages-panel');
     expect(fetchMock).toHaveBeenCalledWith('/software/builtin-packages');
+    // The partner's own packages come first; the built-ins on offer must not push them down.
+    const card = screen.getByTestId('catalog-card-cat-1');
+    expect(card.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('partner scope: an empty library still shows the panel, after the empty state', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([]);
+    render(<SoftwareCatalog />);
+    const panel = await screen.findByTestId('builtin-packages-panel');
+    const empty = screen.getByText(/No software packages yet/i);
+    expect(empty.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('org scope: no panel and no built-in packages fetch', async () => {
