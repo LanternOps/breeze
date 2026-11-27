@@ -5098,7 +5098,7 @@
       "unreadable": "Planification de l’outil illisible"
     },
     "toolConfigHelp": {
-      "notManual": "Breeze n’a pas lancé l’outil du constructeur, car sa propre planification des mises à jour n’est pas réglée sur les mises à jour manuelles, et deux planifications ne doivent pas mettre à jour le micrologiciel d’un même appareil. Une nouvelle installation de Dell Command | Update se planifie automatiquement. Sur l’appareil, exécutez dcu-cli /configure -scheduleManual en tant qu’administrateur, puis exécutez de nouveau les mises à jour du constructeur.",
+      "notManual": "Breeze n’a pas lancé l’outil du constructeur, car sa propre planification des mises à jour n’est pas réglée sur les mises à jour manuelles, et deux planifications ne doivent pas mettre à jour le micrologiciel d’un même appareil. Une nouvelle installation de Dell Command | Update se planifie automatiquement, donc Breeze n’installe pas l’outil non plus. Sur l’appareil, installez Dell Command | Update s’il est absent, exécutez dcu-cli /configure -scheduleManual en tant qu’administrateur, puis exécutez de nouveau les mises à jour du constructeur.",
       "policyNotManual": "Breeze n’a pas lancé l’outil du constructeur, car une stratégie règle sa planification des mises à jour sur autre chose que les mises à jour manuelles. Réglez la stratégie sur les mises à jour manuelles, puis exécutez de nouveau les mises à jour du constructeur.",
       "unreadable": "Breeze n’a pas pu lire dans le registre la planification des mises à jour de l’outil du constructeur, donc il n’a pas lancé l’outil. Vérifiez le journal de l’agent sur l’appareil, puis exécutez de nouveau les mises à jour du constructeur."
     },

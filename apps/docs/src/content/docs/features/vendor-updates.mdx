@@ -33,7 +33,7 @@ When the mode is anything other than manual updates, the agent does not start th
 
 | Reason (`errorCode`) | Shown as | What to do |
 |---|---|---|
-| `vendor_schedule_not_manual` | Vendor tool not in manual-updates mode | On the device, run `dcu-cli /configure -scheduleManual` as an administrator (the CLI is in `C:\Program Files\Dell\CommandUpdate\`), then run vendor updates again. This covers no schedule set (the automatic default), automatic, daily, weekly and monthly. |
+| `vendor_schedule_not_manual` | Vendor tool not in manual-updates mode | On the device, install Dell Command \| Update if it is missing (Breeze does not install it on a device that is not in manual mode), run `dcu-cli /configure -scheduleManual` as an administrator (the CLI is in `C:\Program Files\Dell\CommandUpdate\`), then run vendor updates again. This covers no schedule set (the automatic default), automatic, daily, weekly and monthly. |
 | `vendor_schedule_policy_not_manual` | Vendor tool schedule set by policy | A Group Policy setting for Dell Command \| Update sets a schedule other than manual updates. Change the policy to manual updates, then run vendor updates again. |
 | `vendor_schedule_unreadable` | Vendor tool schedule unreadable | The agent could not read the schedule from the registry. Check the agent log on the device, then run vendor updates again. |
 

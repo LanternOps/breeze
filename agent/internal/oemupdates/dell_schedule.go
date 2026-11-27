@@ -12,7 +12,7 @@ import (
 //
 // Lab captures (DCU 5.7.2, #12267): the mode is one REG_SZ value, ScheduleMode,
 // under the settings key below, holding the enum name. The key is absent on a
-// fresh install and empty after -restoreDefaults; the default behaves as
+// fresh install, and after -restoreDefaults the key is left with no values; the default behaves as
 // automatic (every 3 days, per the CLI help). LocalSystem can read it and the
 // read writes nothing. The mode is never read through the tool's CLI: any call
 // to it, even /version, wakes the vendor service, which rewrites its scheduler
@@ -190,10 +190,12 @@ func (l *dellLane) CheckToolConfig() (Outcome, error) {
 	}
 	code := m.refusalCode()
 	mode := sanitizeToolText(m.Mode, maxVersionLen)
-	log.Warn("Dell Command | Update is not in manual-updates mode; the vendor update run is refused and the tool is not started",
-		"errorCode", code, "source", m.Source, "state", m.State.String(), "mode", mode, "note", m.Note)
 	if m.Err != nil {
+		log.Warn("could not read Dell Command | Update's schedule mode; the vendor update run is refused and the tool is not started",
+			"errorCode", code, "source", m.Source, "error", m.Err.Error(), "note", m.Note)
 		return OutcomeToolUnavailable, runErr(code, m.Err)
 	}
+	log.Warn("Dell Command | Update is not in manual-updates mode; the vendor update run is refused and the tool is not started",
+		"errorCode", code, "source", m.Source, "state", m.State.String(), "mode", mode, "note", m.Note)
 	return OutcomeToolUnavailable, runErr(code, fmt.Errorf("%s ScheduleMode is %s %q, want %q", m.Source, m.State, mode, dellManualUpdates))
 }

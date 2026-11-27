@@ -291,7 +291,8 @@ export function emitRunFailingAlert(input: {
 }): Promise<string | null> {
   const { occurrenceKey, lastOutcome, commandId } = input;
   const lastErrorCode = input.lastErrorCode ?? null;
-  const words = (isOemToolConfigErrorCode(lastErrorCode) ? TOOL_CONFIG_WORDS[lastErrorCode] : null)
+  const configCode = lastOutcome === 'tool_unavailable' && isOemToolConfigErrorCode(lastErrorCode) ? lastErrorCode : null;
+  const words = (configCode ? TOOL_CONFIG_WORDS[configCode] : null)
     ?? (lastOutcome && RUN_FAILING_WORDS[lastOutcome]) ?? 'failed';
   return raiseDeviceAlert(RUN_FAILING_TEMPLATE, input, (label) => ({
     title: `${label} is still failing vendor updates`,

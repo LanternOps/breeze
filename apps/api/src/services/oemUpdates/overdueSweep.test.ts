@@ -620,6 +620,12 @@ describe('runOemOverdueSweep: run failing', () => {
     expect(raised()[0]!.context).toMatchObject({ lastOutcome: 'tool_unavailable', lastErrorCode });
   });
 
+  it('a tool-config code on another outcome keeps that outcome\'s words', async () => {
+    h.failingRows = [failing({ lastOutcome: 'failed', lastErrorCode: 'vendor_schedule_not_manual' })];
+    await runOemOverdueSweep(NOW);
+    expect(raised()[0]!.message).toContain(' schedule failed,');
+  });
+
   it('keeps the outcome words for any other tool_unavailable code', async () => {
     h.failingRows = [failing({ lastOutcome: 'tool_unavailable', lastErrorCode: 'tool_absent' })];
     await runOemOverdueSweep(NOW);

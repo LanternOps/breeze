@@ -126,6 +126,10 @@ func checkToolConfig(lane Lane) (Outcome, error) {
 	if outcome == "" && err != nil {
 		outcome = OutcomeToolUnavailable // an error never reads as ready
 	}
+	if outcome != "" && err == nil {
+		// A refusal always carries its reason, so refuse() logs it.
+		err = runErr("tool_config_unchecked", fmt.Errorf("lane %s refused its tool's configuration", lane.ID()))
+	}
 	return outcome, err
 }
 

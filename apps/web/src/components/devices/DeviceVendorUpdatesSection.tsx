@@ -137,12 +137,14 @@ function toolConfigHelp(code: OemToolConfigErrorCode, t: DevicesT): string {
 
 /** A run's outcome, named by its tool-config refusal when it has one. */
 function runOutcomeLabel(outcome: OemOutcome, errorCode: string | null, t: DevicesT): string {
-  return isOemToolConfigErrorCode(errorCode) ? toolConfigLabel(errorCode, t) : outcomeLabel(outcome, t);
+  return outcome === 'tool_unavailable' && isOemToolConfigErrorCode(errorCode)
+    ? toolConfigLabel(errorCode, t)
+    : outcomeLabel(outcome, t);
 }
 
 /** What to do next. Nothing for an outcome that needs nothing. */
 function outcomeHelp(outcome: OemOutcome, errorCode: string | null, t: DevicesT): string | null {
-  if (isOemToolConfigErrorCode(errorCode)) return toolConfigHelp(errorCode, t);
+  if (outcome === 'tool_unavailable' && isOemToolConfigErrorCode(errorCode)) return toolConfigHelp(errorCode, t);
   switch (outcome) {
     case 'partial':
       return t('vendorUpdates.outcomeHelp.partial');

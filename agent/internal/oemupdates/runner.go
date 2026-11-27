@@ -134,9 +134,10 @@ func (r *run) execute(ctx context.Context) RunResult {
 	}
 	r.marker.ToolVersion = tool.Version
 
-	// A scheduled run never reads or writes the vendor tool's own schedule or
-	// settings (#12267). It runs as Run Now does, and every result reports
-	// takeover not_attempted.
+	// A scheduled run never writes the vendor tool's own schedule or settings,
+	// and never starts the tool to read them (#12267). It runs as Run Now does,
+	// and every result reports takeover not_attempted. A lane may still read
+	// its tool's configuration from the registry (ToolConfigCheckedLane).
 
 	plan, skips, err := r.splitCategories()
 	if err != nil {
@@ -156,7 +157,7 @@ func (r *run) execute(ctx context.Context) RunResult {
 	if refusal, stop := r.recheck(ctx, deadline); stop {
 		return r.finish(refusal, tool, skips)
 	}
-	// Read again immediately before the tool starts: the tool step may have
+	// Read again before the flash guard and Apply: the tool step may have
 	// installed or replaced it, and an install can leave its default
 	// configuration (Dell: automatic updates, #12267).
 	if outcome, err := checkToolConfig(r.lane); outcome != "" {

@@ -220,6 +220,22 @@ func TestDellLaneIsToolConfigChecked(t *testing.T) {
 	}
 }
 
+// The production lane carries the real registry reader. Every other test
+// injects a fake, so without this a dropped wiring line would refuse every
+// real Dell run and no test would notice.
+func TestProductionDellHostReadsTheRegistry(t *testing.T) {
+	if systemDellHost().registry == nil {
+		t.Fatal("the production Dell host has no registry reader")
+	}
+	l, ok := LaneFor(LaneDell)
+	if !ok {
+		t.Fatal("no dell lane")
+	}
+	if l.(*dellLane).host.registry == nil {
+		t.Fatal("the built-in Dell lane has no registry reader")
+	}
+}
+
 func countReads(reg *fakeRegistry, key string) int {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()

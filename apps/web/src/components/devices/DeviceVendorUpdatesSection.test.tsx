@@ -169,6 +169,14 @@ describe('DeviceVendorUpdatesSection', () => {
     expect(await within(root).findByTestId('vendor-updates-run-run-1')).toHaveTextContent(label);
   });
 
+  it('a tool-config code on another outcome keeps that outcome\'s copy', async () => {
+    answer(statusBody({ displayState: 'failing', status: lastRun({ lastOutcome: 'failed', lastErrorCode: 'vendor_schedule_not_manual' }) }));
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    expect(within(root).getByTestId('vendor-updates-last-run')).not.toHaveTextContent(/manual-updates mode/);
+    expect(within(root).getByTestId('vendor-updates-outcome-help')).toHaveTextContent(/did not finish/);
+  });
+
   it('another tool_unavailable code keeps the generic copy', async () => {
     answer(statusBody({ displayState: 'failing', status: lastRun({ lastOutcome: 'tool_unavailable', lastErrorCode: 'tool_absent' }) }));
     render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
