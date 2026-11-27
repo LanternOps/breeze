@@ -619,6 +619,46 @@ describe('delta publish (#11736 step 2)', () => {
     expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(1);
   });
 
+  // The rollback the canary relies on (#12741): turning the flag off strands
+  // nothing. A delta snapshot with real tombstones and adds keeps answering
+  // every reader with its manifest, GC never takes a referenced checkpoint, and
+  // once the deltas are re-hydrated (the retire path) GC collects the rest.
+  runDb('rollback: with the flag off, a delta with tombstones and adds reads its manifest in every reader, and GC collects only after the deltas retire', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const base = filesOf(s0.snapshotId, 100);
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    // One file replaced (a tombstone and an add), one deleted, one added: 4 rows, within ceil(5%) of 100.
+    const tree1 = [
+      ...base.slice(0, 98),
+      { ...filesOf(s1.snapshotId, 1, 0)[0]!, sourcePath: base[98]!.sourcePath, size: 9_000 },
+      ...filesOf(s1.snapshotId, 1, 500),
+    ];
+    expect(await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1))).toMatchObject({ rowsWritten: 4, checkpointEntriesWritten: 0 });
+    const [header] = await checkpointsOfDevice(t.deviceId);
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', checkpoint_id: header!.id, adds: 2, tombstones: 2 });
+
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'off';
+    const replaced = base.slice(98).map((e) => e.backupPath);
+    await expectReadersReturnManifest(t, s1, tree1, { keys: replaced, paths: [base[99]!.sourcePath] });
+    await expectReadersReturnManifest(t, s0, base);
+
+    // GC with the flag off, even past the orphan TTL, keeps the referenced checkpoint.
+    const pastTtl = new Date(Date.now() + CHECKPOINT_ORPHAN_TTL_MS + 60_000);
+    expect(await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000, now: pastTtl })).toMatchObject({ deleted: 0 });
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(1);
+
+    // Retire the deltas: each re-hydration with the flag off publishes rows.
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, adds: 100, tombstones: 0 });
+    await expectReadersReturnManifest(t, s1, tree1, { keys: replaced, paths: [base[99]!.sourcePath] });
+    // Unreferenced now, and the newest of its lineage: kept until the TTL, then collected.
+    expect(await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000 })).toMatchObject({ deleted: 0 });
+    expect(await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000, now: pastTtl })).toMatchObject({ deleted: 1 });
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(0);
+  });
+
   runDb('inline agent rows on a failed delta snapshot reset it to rows format and read exactly the agent rows', async () => {
     const t = await seedWriteTenant({ jobStatus: 'running' });
     const s0 = await snapshotOf(t);
