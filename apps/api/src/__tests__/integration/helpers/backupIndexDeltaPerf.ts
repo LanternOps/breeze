@@ -360,12 +360,19 @@ export async function waitUntilBlocked(pid: number, timeoutMs = 15_000): Promise
  * `jit: 'off'`, the request transaction runs with jit off (transaction-local,
  * inherited by the readers' savepoints): the comparison for the JIT finding.
  */
-export function asOrg<T>(orgId: string, fn: () => Promise<T>, opts: { jit?: 'default' | 'off' } = {}): Promise<T> {
+export function asOrg<T>(orgId: string, fn: () => Promise<T>, opts: PlanSettings = {}): Promise<T> {
   return runOutsideDbContext(() => withDbAccessContext(orgContext(orgId), async () => {
     if (opts.jit === 'off') await db.execute(sql`SELECT set_config('jit', 'off', true)`);
+    if (opts.sort === 'off') await db.execute(sql`SELECT set_config('enable_sort', 'off', true)`);
     return fn();
   }));
 }
+
+/**
+ * Settings a statement is planned under: JIT as the server has it or off, and
+ * sorts on or off (a selection page runs with both off, withSelectionPagePlan).
+ */
+export type PlanSettings = { jit?: 'default' | 'off'; sort?: 'default' | 'off' };
 
 export type Timed<T> = { firstMs: number; medianMs: number; runs: number; result: T | null; error: string | null };
 
@@ -466,7 +473,7 @@ function summarizePlan(root: AnalyzedNode, executionMs: number, planningMs: numb
 }
 
 /** EXPLAIN (ANALYZE, BUFFERS) of `statement` in the org's request context (breeze_app, RLS on). */
-export async function explainAnalyze(orgId: string, statement: { getSQL(): SQL }, opts: { jit?: 'default' | 'off' } = {}): Promise<PlanSummary> {
+export async function explainAnalyze(orgId: string, statement: { getSQL(): SQL }, opts: PlanSettings = {}): Promise<PlanSummary> {
   return asOrg(orgId, async () => {
     const rows = (await db.execute(sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.getSQL()}`)) as unknown as Array<{
       'QUERY PLAN': Array<{ Plan: AnalyzedNode; 'Execution Time': number; 'Planning Time': number; JIT?: JitInfo }>;

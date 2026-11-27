@@ -51,6 +51,7 @@ import {
   readableSourcePathPageQuery,
   resolveSelectedSnapshotPathsInDb,
   searchSnapshotFiles,
+  withSelectionPagePlan,
 } from '../../services/backupSnapshotBrowse';
 import { snapshotIndexEntries } from '../../services/backupSnapshotIndexEntries';
 import { drizzleBrokeredReadStore, indexedKeysQuery } from '../../services/backupStorageSessionStore';
@@ -196,7 +197,40 @@ async function measureReaders(orgId: string, snapshotDbId: string, n: number, ev
     membershipUnchanged: await timedRuns(read(() => referenceMembershipQuery(snapshotDbId, unchangedKey, digest))),
     membershipReplaced: replacedKey ? await timedRuns(read(() => referenceMembershipQuery(snapshotDbId, replacedKey, digest))) : null,
   };
-  const plans: Record<string, { default: ReturnType<typeof planRow>; jitOff: ReturnType<typeof planRow> }> = {};
+  // The selection walk page by page (the statement readableSourcePaths runs,
+  // with JIT off and through withSelectionPagePlan, as the walk runs it):
+  // where its time goes, and the plan of its slowest page (EXPLAINed bare).
+  const pageTimes: number[] = [];
+  const pageAfters: Array<string | null> = [];
+  await asOrg(orgId, async () => {
+    let after: string | null = null;
+    const walkEnds = Date.now() + 120_000;
+    while (Date.now() < walkEnds) {
+      const started = performance.now();
+      const cursor = after;
+      const page = (await db.transaction((tx) => withSelectionPagePlan(tx, () => readableSourcePathPageQuery(snapshotDbId, cursor, tx)))) as Array<{ sourcePath: string }>;
+      pageTimes.push(ms(started));
+      pageAfters.push(after);
+      if (page.length < 5_000) break;
+      after = page[page.length - 1]!.sourcePath;
+    }
+  }, { jit: 'off' });
+  const sortedPages = [...pageTimes].sort((x, y) => x - y);
+  const slowest = pageTimes.indexOf(sortedPages[sortedPages.length - 1] ?? 0);
+  const pageWalk = {
+    pages: pageTimes.length,
+    totalMs: Math.round(pageTimes.reduce((x, y) => x + y, 0)),
+    p50Ms: sortedPages[Math.floor(sortedPages.length / 2)] ?? null,
+    p95Ms: sortedPages[Math.floor(sortedPages.length * 0.95)] ?? null,
+    maxMs: sortedPages[sortedPages.length - 1] ?? null,
+    slowestPage: slowest,
+    firstTenMs: pageTimes.slice(0, 10),
+    lastTenMs: pageTimes.slice(-10),
+    slowestPlan: pageTimes.length > 0
+      ? planRow(await explainAnalyze(orgId, readableSourcePathPageQuery(snapshotDbId, pageAfters[slowest] ?? null), { jit: 'off', sort: 'off' }))
+      : null,
+  };
+  const plans: Record<string, { default: ReturnType<typeof planRow>; jitOff: ReturnType<typeof planRow>; selectionPage?: ReturnType<typeof planRow> }> = {};
   const statements: Record<string, { getSQL(): ReturnType<typeof sql> }> = {
     selectionFirstPage: readableSourcePathPageQuery(snapshotDbId, null),
     selectionMidPage: readableSourcePathPageQuery(snapshotDbId, mid),
@@ -210,6 +244,8 @@ async function measureReaders(orgId: string, snapshotDbId: string, n: number, ev
     plans[name] = {
       default: planRow(await explainAnalyze(orgId, statement)),
       jitOff: planRow(await explainAnalyze(orgId, statement, { jit: 'off' })),
+      // As the selection walk runs a page (withSelectionPagePlan): JIT and sorts off.
+      ...(name.startsWith('selection') ? { selectionPage: planRow(await explainAnalyze(orgId, statement, { jit: 'off', sort: 'off' })) } : {}),
     };
   }
 
@@ -228,6 +264,7 @@ async function measureReaders(orgId: string, snapshotDbId: string, n: number, ev
   const strip = <T,>(t: { firstMs: number; medianMs: number; error: string | null } & T) => ({ firstMs: t.firstMs, medianMs: t.medianMs, error: t.error });
   return {
     timings: Object.fromEntries(Object.entries(timings).map(([k, v]) => [k, v ? strip(v) : null])),
+    pageWalk,
     plans,
     correct,
     expected: { count: n, keysGranted: keys.length, membershipUnchanged: 1, membershipReplaced: replacedKey ? 0 : null, selectionOk: true },
@@ -264,11 +301,14 @@ describe('checkpoint plus delta measurements (#12741)', () => {
         const deltaReaders = await measureReaders(t.orgId, deltaSnap, n, drift.every);
         const rowsReaders = await measureReaders(t.orgId, rowsSnap, n, drift.every);
         drifts.push({ driftPct: drift.pct, publish: { delta, deltaJitOff, rows }, readers: { delta: deltaReaders, rows: rowsReaders } });
-        expectCorrect(deltaReaders);
-        expectCorrect(rowsReaders);
       }
       const sizes = await relationBytes(FILE_INDEX_TABLES);
+      // Reported before any assertion, so a wrong or timed-out reader still leaves its figures.
       report(`readers-${n}`, { entries: n, settings, firstCheckpoint, drifts, tableBytesAtEnd: sizes });
+      for (const d of drifts) {
+        expectCorrect(d.readers.delta);
+        expectCorrect(d.readers.rows);
+      }
     }, 4 * HOUR_MS);
   });
 
