@@ -231,8 +231,8 @@ export function createSourceClient(baseUrl: string, options: SourceClientOptions
               signal: deadline.signal,
               // The same budget as the timer above, which is armed first and
               // so still ends the request; without it safeFetch's default
-              // overall bound (30 s, or the timeout if longer; #12788) would end
-              // it sooner.
+              // overall bound (30 s, or the timeout if longer; #12788) could
+              // end it sooner.
               deadlineMs: requestDeadline,
               maxBytes,
               allowPrivateNetwork: selfHostAllowsPrivateNetwork(),

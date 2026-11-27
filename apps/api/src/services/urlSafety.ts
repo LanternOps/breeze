@@ -139,7 +139,8 @@ const MAX_CONNECT_ATTEMPTS = 3;
 /**
  * How long one address gets to establish a connection (TCP connect, plus the
  * TLS handshake for https) before the next validated address is tried. Never
- * applied to the last address, which is governed by `timeoutMs` as before.
+ * applied to the last address: that one is bounded by `timeoutMs` (the connect
+ * timer in `dialPinned`, then the inactivity timer) and by the overall bound.
  */
 const DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
 let connectAttemptTimeoutMs = DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
@@ -191,6 +192,11 @@ interface RequestBound {
   ms: number;
   /** True when it is the caller's own `deadlineMs`, which expires as `ResponseDeadlineError`. */
   explicit: boolean;
+  /**
+   * The bound named in the expiry error, when it differs from `ms`: a redirect
+   * hop runs on what is left of the chain, but reports the chain's own bound.
+   */
+  reportMs?: number;
 }
 
 function requestBound(init: SafeFetchInit): RequestBound {
@@ -201,7 +207,8 @@ function requestBound(init: SafeFetchInit): RequestBound {
 }
 
 function boundExpired(bound: RequestBound): Error {
-  return bound.explicit ? new ResponseDeadlineError(bound.ms) : defaultBoundError(bound.ms);
+  const ms = bound.reportMs ?? bound.ms;
+  return bound.explicit ? new ResponseDeadlineError(ms) : defaultBoundError(ms);
 }
 
 export interface SsrfGuardOptions {
@@ -463,8 +470,9 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * Deadline, from the moment `safeFetch` is called, for the response HEADERS
    * to arrive — DNS resolution, connect, TLS and the wait for the status line.
    * Once headers arrive it no longer applies: a body that takes longer (a slow
-   * non-streamed generation, say) is bounded only by `timeoutMs` inactivity,
-   * `maxBytes` and the caller's `signal`. On expiry the request is destroyed
+   * non-streamed generation, say) is bounded by `timeoutMs` inactivity,
+   * `maxBytes`, the caller's `signal` and the overall bound (`deadlineMs`, or
+   * its default). On expiry the request is destroyed
    * and the call rejects with `ResponseHeadersTimeoutError`.
    *
    * Distinct from `timeoutMs`, which is a socket-INACTIVITY timeout. Unset =
@@ -911,8 +919,8 @@ function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): P
       | undefined;
 
     // Unreachable via Node's connect path (it always supplies a callback), but
-    // if it ever happened, silently returning would hang the request forever
-    // when no timeoutMs is set — throw so it surfaces as a connection error.
+    // if it ever happened, silently returning would leave the request stalled
+    // until the overall bound — throw so it surfaces as a connection error.
     if (!callback) throw new Error('pinnedLookup invoked without a callback');
 
     if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
@@ -1095,8 +1103,9 @@ function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): P
     // `req.setTimeout` (below) is armed on the socket only when its TCP connect
     // completes, so on its own it leaves a connect that never completes (a host
     // that drops packets) to the kernel's SYN retries (#12788). This covers that
-    // window on the last address; earlier addresses have `attemptTimer`. From
-    // the connect on, the inactivity timer covers the TLS handshake too.
+    // window on the last address when `timeoutMs` is set (without it, only the
+    // overall bound does); earlier addresses have `attemptTimer`. From the
+    // connect on, the inactivity timer covers the TLS handshake too.
     let connectTimer: NodeJS.Timeout | undefined;
     const clearConnectTimer = (): void => {
       if (connectTimer !== undefined) clearTimeout(connectTimer);
@@ -1106,7 +1115,7 @@ function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): P
     if (connectTimeoutMs !== undefined) {
       connectTimer = setTimeout(() => {
         connectTimer = undefined;
-        req.destroy(new Error(`request timed out after ${timeoutMs}ms`));
+        req.destroy(new Error(`request timed out after ${connectTimeoutMs}ms`));
       }, connectTimeoutMs);
       req.once('close', clearConnectTimer);
     }
@@ -1289,16 +1298,11 @@ export async function safeFetchFollowingRedirects(
     }
     const remaining = endsAt - Date.now();
     if (remaining <= 0) throw boundExpired(chain);
-    let response: Response;
-    try {
-      response = await safeFetchBounded(currentUrl, currentInit, { ms: remaining, explicit: chain.explicit });
-    } catch (err) {
-      // A hop runs on what is left of the chain's bound; report the chain's
-      // own bound, not the remainder.
-      if (err instanceof ResponseDeadlineError && chain.explicit) throw boundExpired(chain);
-      if (err instanceof Error && defaultBoundErrors.has(err)) throw boundExpired(chain);
-      throw err;
-    }
+    // A hop runs on what is left of the chain's bound but reports the chain's
+    // own, also when it expires later, while the caller reads the last body.
+    const response = await safeFetchBounded(currentUrl, currentInit, {
+      ms: remaining, explicit: chain.explicit, reportMs: chain.ms
+    });
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get('location');

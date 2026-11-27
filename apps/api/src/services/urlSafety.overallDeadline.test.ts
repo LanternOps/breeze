@@ -211,7 +211,8 @@ describe('safeFetch — the overall bound is for the whole request, not per reso
   }, 5000);
 
   it('the bound keeps running across a fallback to the next address', async () => {
-    // Each earlier address gets 200 ms; the bound (500 ms) ends the third.
+    // Each earlier address gets 200 ms; the bound (500 ms) ends the third at
+    // ~500 ms. A bound restarted per address would end it at ~900 ms.
     __setDefaultDeadlineForTests(500);
     __setConnectAttemptTimeoutForTests(200);
     resolvesTo('8.8.8.8', '8.8.4.4', '1.1.1.1');
@@ -220,7 +221,7 @@ describe('safeFetch — the overall bound is for the whole request, not per reso
     expect(outcome).not.toBe('still pending');
     if (outcome === 'still pending') return;
     expectTimeoutError(outcome.error, 500);
-    expect(outcome.elapsed).toBeLessThan(1000);
+    expect(outcome.elapsed).toBeLessThan(750);
     expect(dialed).toEqual(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
   }, 5000);
 });
@@ -398,20 +399,101 @@ describe('safeFetch — the default bound applies when the caller passes none', 
 
 describe('safeFetchFollowingRedirects — the default bound covers the whole chain', () => {
   it('a slow redirect followed by a hop that never answers ends at one bound, not one per hop', async () => {
-    __setDefaultDeadlineForTests(500);
+    __setDefaultDeadlineForTests(600);
     resolvesTo('8.8.8.8');
     dialLocally();
     const target = await rawServer(() => { /* never answers */ });
     const redirect = await rawServer((sock) => {
       sock.once('data', () => setTimeout(() => sock.end(
         `HTTP/1.1 302 Found\r\nLocation: http://vendor.example.test:${target}/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`
-      ), 350));
+      ), 400));
     });
     const outcome = await settleWithin(safeFetchFollowingRedirects(`http://vendor.example.test:${redirect}/x`), 2500);
     expect(outcome).not.toBe('still pending');
     if (outcome === 'still pending') return;
-    expectTimeoutError(outcome.error, 500);
-    // One bound per hop would end at ~850 ms.
-    expect(outcome.elapsed).toBeLessThan(750);
+    expectTimeoutError(outcome.error, 600);
+    // One bound per hop would end at ~1000 ms.
+    expect(outcome.elapsed).toBeLessThan(900);
+  }, 5000);
+
+  it('a body that stalls after a redirect reports the chain\'s bound, not the hop\'s remainder', async () => {
+    __setDefaultDeadlineForTests(400);
+    resolvesTo('8.8.8.8');
+    dialLocally();
+    const target = await rawServer((sock) => {
+      sock.once('data', () => sock.write('HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc'));
+    });
+    const redirect = await rawServer((sock) => {
+      sock.once('data', () => setTimeout(() => sock.end(
+        `HTTP/1.1 302 Found\r\nLocation: http://vendor.example.test:${target}/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`
+      ), 50));
+    });
+    for (const streamResponse of [false, true]) {
+      const outcome = await settleWithin(
+        safeFetchFollowingRedirects(`http://vendor.example.test:${redirect}/x`, { streamResponse }).then((res) => res.text()),
+        2500
+      );
+      expect(outcome).not.toBe('still pending');
+      if (outcome === 'still pending') return;
+      expectTimeoutError(outcome.error, 400);
+    }
+  }, 8000);
+});
+
+describe('safeFetch — the bound is released and steps aside for the caller', () => {
+  /** Bound timers still armed: only safeFetch arms timers on this path. */
+  async function liveTimersAfter(run: () => Promise<unknown>): Promise<number> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await run().catch(() => {});
+      // Let the request's 'close' (which releases the bound) run.
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+      return vi.getTimerCount();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('no bound timer outlives a finished request (buffered, streamed, cancelled, refused)', async () => {
+    resolvesTo('8.8.8.8');
+    dialLocally();
+    const port = await rawServer((sock) => {
+      sock.once('data', () => sock.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok'));
+    });
+    const url = `http://vendor.example.test:${port}/x`;
+    expect(await liveTimersAfter(async () => (await safeFetch(url)).text())).toBe(0);
+    expect(await liveTimersAfter(async () => (await safeFetch(url, { timeoutMs: 5000 })).text())).toBe(0);
+    expect(await liveTimersAfter(async () => (await safeFetch(url, { streamResponse: true })).text())).toBe(0);
+    expect(await liveTimersAfter(async () => (await safeFetch(url, { streamResponse: true })).body!.cancel())).toBe(0);
+    resolvesTo('10.0.0.5');
+    expect(await liveTimersAfter(() => safeFetch(url))).toBe(0);
+  }, 8000);
+
+  it('a caller abort still settles as \'aborted\', not as the bound', async () => {
+    __setDefaultDeadlineForTests(1000);
+    resolvesTo('8.8.8.8');
+    stallConnects();
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 50);
+    const outcome = await settleWithin(safeFetch('http://vendor.example.test/x', { signal: ac.signal }), 1500);
+    expect(outcome).not.toBe('still pending');
+    if (outcome === 'still pending') return;
+    expect((outcome.error as Error).message).toBe('aborted');
+    expect(outcome.elapsed).toBeLessThan(500);
+    expect(stalledSockets.every((s) => s.destroyed)).toBe(true);
+  }, 5000);
+
+  it('a streamed body outlives the default under a longer explicit deadlineMs', async () => {
+    __setDefaultDeadlineForTests(200);
+    resolvesTo('8.8.8.8');
+    dialLocally();
+    const port = await rawServer((sock) => {
+      sock.once('data', () => {
+        sock.write('HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabc');
+        setTimeout(() => sock.end('def'), 450);
+      });
+    });
+    const res = await safeFetch(`http://vendor.example.test:${port}/x`, { streamResponse: true, deadlineMs: 3000 });
+    expect(await res.text()).toBe('abcdef');
   }, 5000);
 });

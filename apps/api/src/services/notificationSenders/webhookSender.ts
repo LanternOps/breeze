@@ -316,7 +316,8 @@ export async function sendWebhookNotification(
       signal: controller.signal,
       // The configured timeout (up to 60 s) is the whole budget. The timer
       // above is armed first and still ends the request; this keeps
-      // safeFetch's 30 s default overall bound (#12788) from ending it sooner.
+      // safeFetch's 30 s default overall bound (#12788) from ending it sooner
+      // when the configured timeout is longer.
       deadlineMs: timeout,
       redirect: 'error',
       // Must mirror the save-time decision, or a URL we accepted would be
