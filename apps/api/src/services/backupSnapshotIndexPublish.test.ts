@@ -93,7 +93,7 @@ function fakeTx(opts: {
   header?: { id: string; entry_count: number } | null;
   adds?: number;
   tombstones?: number;
-  written?: { adds: number; tombstones: number };
+  written?: { adds: number; tombstones: number; misnamed?: number };
   checkpointEntriesInserted?: number;
 }) {
   const statements: string[] = [];
@@ -178,6 +178,24 @@ describe('publishDeltaIndex', () => {
     const { tx } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 5, tombstones: 5, written: { adds: 5, tombstones: 5 } });
 
     await expect(publishDeltaIndex(tx, args(1_001))).rejects.toThrow(/snapshot index delta does not reproduce the manifest/);
+  });
+
+  it('refuses a tombstone whose source path is not its checkpoint entry\'s (D1)', async () => {
+    // The counts balance, so only the path check can refuse it.
+    const { tx } = fakeTx({
+      header: { id: HEADER, entry_count: 1_000 }, adds: 5, tombstones: 5, written: { adds: 5, tombstones: 5, misnamed: 1 },
+    });
+
+    await expect(publishDeltaIndex(tx, args(1_000))).rejects.toThrow(/1 tombstone\(s\) do not carry the source path of the checkpoint entry they name/);
+  });
+
+  it('checks each written tombstone against the checkpoint entry it names, in the writing statement', async () => {
+    const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 1, tombstones: 1 });
+    await publishDeltaIndex(tx, args(1_000));
+    const write = statements.find((s) => /INSERT INTO backup_snapshot_files/.test(s))!;
+    expect(write).toMatch(/RETURNING checkpoint_entry_no, source_path/);
+    expect(write).toMatch(/LEFT JOIN backup_tree_checkpoint_entries e\s+ON e\.checkpoint_id = \$\d+::uuid AND e\.entry_no = w\.checkpoint_entry_no/);
+    expect(write).toMatch(/e\.source_path IS DISTINCT FROM w\.source_path/);
   });
 
   it('refuses a checkpoint whose entry count is not the manifest\'s', async () => {

@@ -302,8 +302,14 @@ export async function publishDeltaIndex(
 
   const checkpoint = header!;
   // One statement, so adds and tombstones come from the same numbering.
-  // Tombstones copy source_path (the read layer's anti-join uses the
-  // (snapshot_db_id, source_path) index) and name no object (D1).
+  // Tombstones name no object (D1) and copy source_path from the checkpoint
+  // entry they name, read in this same statement, never from the manifest.
+  // The read layer hides an entry only when a tombstone matches both its
+  // entry_no and its source_path (the path lets that anti-join use the
+  // (snapshot_db_id, source_path) index), so a tombstone with another path
+  // would hide nothing and the old entry would read as live. `misnamed`
+  // re-reads each written tombstone's entry by its key and counts any whose
+  // path differs, or whose entry does not exist.
   const written = (await tx.execute(sql`
     WITH ${numberedSides(checkpoint.id)},
     written AS (
@@ -316,14 +322,25 @@ export async function publishDeltaIndex(
       SELECT ${snapshotDbId}::uuid, c.source_path, '', NULL::bigint, NULL::timestamp, NULL::text, c.entry_no
         FROM checkpoint c
        WHERE NOT EXISTS (SELECT 1 FROM incoming i WHERE ${SAME_ENTRY})
-      RETURNING checkpoint_entry_no
+      RETURNING checkpoint_entry_no, source_path
     )
-    SELECT count(*) FILTER (WHERE checkpoint_entry_no IS NULL)::int AS adds,
-           count(*) FILTER (WHERE checkpoint_entry_no IS NOT NULL)::int AS tombstones
-      FROM written
-  `)) as unknown as Array<{ adds: number; tombstones: number }>;
+    SELECT count(*) FILTER (WHERE w.checkpoint_entry_no IS NULL)::int AS adds,
+           count(*) FILTER (WHERE w.checkpoint_entry_no IS NOT NULL)::int AS tombstones,
+           count(*) FILTER (
+             WHERE w.checkpoint_entry_no IS NOT NULL AND e.source_path IS DISTINCT FROM w.source_path
+           )::int AS misnamed
+      FROM written w
+      LEFT JOIN backup_tree_checkpoint_entries e
+        ON e.checkpoint_id = ${checkpoint.id}::uuid AND e.entry_no = w.checkpoint_entry_no
+  `)) as unknown as Array<{ adds: number; tombstones: number; misnamed: number }>;
   const adds = Number(written[0]?.adds ?? 0);
   const tombstones = Number(written[0]?.tombstones ?? 0);
+  const misnamed = Number(written[0]?.misnamed ?? 0);
+
+  // D1: a tombstone the read layer would not match would leave its entry live.
+  if (misnamed > 0) {
+    throw invariantFailure(`${misnamed} tombstone(s) do not carry the source path of the checkpoint entry they name`);
+  }
 
   // D9: the effective tree has exactly the manifest's entry count.
   if (checkpoint.entryCount - tombstones + adds !== eligibleEntries) {
