@@ -30,12 +30,15 @@ describe('ticketSearchCondition (staff search box; #8313 spec §5)', () => {
     expect(dialect.sqlToQuery(ticketSearchCondition('#A%_B', [ORG_A])).params[2]).toBe('%A\\%\\_B%');
   });
 
-  it('a term of only # or only whitespace cannot match every ticket', () => {
-    for (const term of ['#', '  #  ', '   ', '']) {
-      const { sql, params } = dialect.sqlToQuery(ticketSearchCondition(term, [ORG_A]));
-      expect(params).not.toContain('%%');
-      expect(sql).not.toMatch(/ticket_number" ilike/);
-    }
+  it('a lone # drops the number clause and is a literal # search, never match-everything', () => {
+    const { sql, params } = dialect.sqlToQuery(ticketSearchCondition('  #  ', [ORG_A]));
+    expect(sql).not.toMatch(/ticket_number" ilike/);
+    expect(params.slice(0, 2)).toEqual(['%#%', '%#%']);
+    expect(params).not.toContain('%%');
+  });
+
+  it('keeps a # inside the code', () => {
+    expect(dialect.sqlToQuery(ticketSearchCondition('#A#B', [ORG_A])).params[2]).toBe('%A#B%');
   });
 
   it('escapes ILIKE wildcards in the substring term', () => {
@@ -49,7 +52,9 @@ describe('ticketSearchCondition (staff search box; #8313 spec §5)', () => {
     expect(dialect.sqlToQuery(ticketSearchCondition('ZM-1', null)).sql).not.toContain('"org_id" in');
   });
 
-  it('a blank term adds no source-number clause', () => {
-    expect(dialect.sqlToQuery(ticketSearchCondition('   ', [ORG_A])).sql).not.toContain('ticket_external_refs');
+  it('a blank term matches nothing (never a bare %% that matches every ticket)', () => {
+    for (const term of ['   ', '']) {
+      expect(dialect.sqlToQuery(ticketSearchCondition(term, [ORG_A]))).toEqual({ sql: 'false', params: [] });
+    }
   });
 });

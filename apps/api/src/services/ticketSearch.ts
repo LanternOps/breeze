@@ -30,12 +30,10 @@ export function ticketSearchCondition(search: string, visibleOrgIds: readonly st
   const refOrgs = visibleOrgIds === null
     ? undefined
     : visibleOrgIds.length > 0 ? inArray(ticketExternalRefs.orgId, [...visibleOrgIds]) : sql`false`;
-  const bySourceNumber = whole
-    ? sql`${tickets.id} IN (SELECT ${ticketExternalRefs.ticketId} FROM ${ticketExternalRefs} WHERE ${and(
-      refOrgs,
-      isNotNull(ticketExternalRefs.externalNumber),
-      sql`lower(${ticketExternalRefs.externalNumber}) = lower(${whole})`,
-    )})`
-    : undefined;
+  const bySourceNumber = sql`${tickets.id} IN (SELECT ${ticketExternalRefs.ticketId} FROM ${ticketExternalRefs} WHERE ${and(
+    refOrgs,
+    isNotNull(ticketExternalRefs.externalNumber),
+    sql`lower(${ticketExternalRefs.externalNumber}) = lower(${whole})`,
+  )})`;
   return or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term), customerTerm ? ilike(tickets.ticketNumber, customerTerm) : undefined, bySourceNumber)!;
 }

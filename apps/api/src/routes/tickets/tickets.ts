@@ -365,13 +365,15 @@ ticketsRoutes.get(
     else if (q.slaState === 'at_risk') conditions.push(SLA_AT_RISK);
     else if (q.slaState === 'breaching') conditions.push(sql`(${SLA_BREACHED} OR ${SLA_AT_RISK})`);
     else if (q.slaState === 'ok') conditions.push(sql`(NOT ${SLA_BREACHED} AND NOT ${SLA_AT_RISK})`);
-    if (q.search) {
+    // A blank (whitespace-only) box is no filter, like an empty one.
+    const search = q.search?.trim();
+    if (search) {
       // Subject / Breeze number substrings (ILIKE-escaped by the helper), or
       // the whole source number of an imported ticket (#8313).
       const visibleOrgIds = auth.scope === 'organization'
         ? [auth.orgId as string]
         : auth.scope === 'partner' ? (auth.accessibleOrgIds ?? []) : null;
-      conditions.push(ticketSearchCondition(q.search, visibleOrgIds));
+      conditions.push(ticketSearchCondition(search, visibleOrgIds));
     }
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
