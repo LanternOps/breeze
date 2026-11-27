@@ -25,7 +25,7 @@
 // overhead["k"] is the median over runs of the steps only shard k runs.
 // Files no longer in the integration suite at HEAD are dropped.
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REPO_ROOT, STALE_BELOW, TIMINGS_PATH, integrationTestFiles, loadTimings, partition, planLoads, quantile } from './shard-partition.mjs';
@@ -227,14 +227,47 @@ function parseArgs(argv) {
     if (value === undefined) throw new Error(`${flag} needs a value`);
     if (flag === '--runs') opts.runs = Number(value);
     else if (flag === '--run-ids') opts.runIds = value.split(',').map(Number);
-    else if (flag === '--out') opts.out = value;
+    else if (flag === '--out' || flag === '--file') opts.out = value;
     else if (flag === '--repo') opts.repo = value;
     else throw new Error(`unknown flag ${flag}`);
   }
-  if (opts.command !== 'refresh') throw new Error('usage: test-timings.mjs refresh [--runs N | --run-ids a,b] [--out path] [--repo owner/name]');
+  if (opts.command !== 'refresh' && opts.command !== 'coverage') {
+    throw new Error('usage: test-timings.mjs refresh [--runs N | --run-ids a,b] [--out path] [--repo owner/name]\n'
+      + '       test-timings.mjs coverage [--file path]   (prints JSON; default file is the committed table)');
+  }
   if (opts.runs !== undefined && !(Number.isInteger(opts.runs) && opts.runs > 0)) throw new Error('--runs must be a positive integer');
   if (opts.runIds?.some(id => !Number.isInteger(id) || id <= 0)) throw new Error('--run-ids must be run ids');
   return opts;
+}
+
+// The weekly report goes red when the committed table covers less than this
+// share of the integration suite. STALE_BELOW (0.9) is the line that fails a
+// PR's lint and asks for a refresh; this is the earlier warning, set 3 points
+// above it so a maintainer hears about drift weeks before someone's PR trips
+// the hard check. (At ~1,800 files, 3 points is ~55 new files of headroom.)
+export const WARN_BELOW = 0.93;
+
+// How well a timing table (its JSON text) covers `present`, the integration
+// files at HEAD; null when the table is unusable. The one definition of
+// coverage: writeTable, the stale-shard warning's 0.9 line and the weekly
+// report all count a file as known when the table has a timing for it.
+export function coverageOf(text, present) {
+  const loaded = loadTimings(text);
+  if (!loaded) return null;
+  const missing = present.filter(f => !Object.hasOwn(loaded.timings, f));
+  const known = present.length - missing.length;
+  let meta = {};
+  try { meta = JSON.parse(text); } catch { /* loadTimings already accepted it */ }
+  return {
+    known,
+    total: present.length,
+    ratio: present.length ? known / present.length : 1,
+    missing,
+    runs: Array.isArray(meta.runs) ? meta.runs : [],
+    generated: meta.generated ?? null,
+    staleBelow: STALE_BELOW,
+    warnBelow: WARN_BELOW,
+  };
 }
 
 // Checks a refreshed table before it replaces the committed one: it must be a
@@ -244,7 +277,7 @@ export function writeTable(table, { present, out, count = 16, write = writeFileS
   const text = serializeTable(table);
   const loaded = loadTimings(text);
   if (!loaded) throw new TimingLogError('the refreshed table is empty or invalid; nothing written');
-  const known = present.filter(f => Object.hasOwn(loaded.timings, f)).length;
+  const known = coverageOf(text, present).known;
   if (known / present.length < STALE_BELOW) {
     throw new TimingLogError(`the refreshed table covers only ${known}/${present.length} integration files; nothing written`);
   }
@@ -262,6 +295,12 @@ function main() {
   const opts = parseArgs(process.argv.slice(2));
   const gh = args => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
   const present = integrationTestFiles(REPO_ROOT);
+  if (opts.command === 'coverage') {
+    const c = coverageOf(readFileSync(opts.out, 'utf8'), present);
+    if (!c) throw new TimingLogError(`${opts.out} is not a usable timing table`);
+    console.log(JSON.stringify(c));
+    return;
+  }
   const table = refresh({ gh, repo: opts.repo, runs: opts.runs, runIds: opts.runIds, present: new Set(present) });
   for (const line of writeTable(table, { present, out: opts.out })) console.log(line);
 }

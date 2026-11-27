@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { TimingLogError, buildTable, parseJobLog, refresh, shardOverhead, serializeTable, writeTable } from './test-timings.mjs';
-import { loadTimings } from './shard-partition.mjs';
+import { TimingLogError, WARN_BELOW, buildTable, coverageOf, parseJobLog, refresh, shardOverhead, serializeTable, writeTable } from './test-timings.mjs';
+import { STALE_BELOW, TIMINGS_PATH, integrationTestFiles, loadTimings } from './shard-partition.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const FIXTURES = join(REPO_ROOT, '.github/scripts/fixtures/test-timings');
@@ -225,6 +225,50 @@ test('refresh: an explicit run without every shard green is an error', () => {
   const runs = [{ id: 10, createdAt: '2026-11-08T01:00:00Z', jobs: [{ ...job(1, true), name: 'Integration Tests (shard 1/2)' }] }];
   assert.throws(() => refresh({ gh: fakeGh({ runs, logs: {} }).gh, repo: 'o/r', runIds: [10], present: new Set(), log: () => {} }),
     e => e instanceof TimingLogError && /run 10/.test(e.message));
+});
+
+test('coverageOf counts the integration files that have a recorded timing', () => {
+  const present = ['a.test.ts', 'b.test.ts', 'c.test.ts', 'd.test.ts'];
+  const text = JSON.stringify({ schema: 1, generated: '2026-11-01T00:00:00Z', runs: [3, 1], files: { 'a.test.ts': 1, 'b.test.ts': 2, 'gone.test.ts': 3 }, overhead: {} });
+  const c = coverageOf(text, present);
+  assert.equal(c.known, 2);
+  assert.equal(c.total, 4);
+  assert.equal(c.ratio, 0.5);
+  assert.deepEqual(c.missing, ['c.test.ts', 'd.test.ts']);
+  assert.deepEqual(c.runs, [3, 1]);
+  assert.equal(c.generated, '2026-11-01T00:00:00Z');
+  assert.equal(c.staleBelow, STALE_BELOW);
+  assert.equal(c.warnBelow, WARN_BELOW);
+  assert.equal(coverageOf('not json', present), null);
+});
+
+test('the early-warning line sits between the 90% check and 95%', () => {
+  assert.ok(WARN_BELOW > STALE_BELOW && WARN_BELOW <= 0.95, `WARN_BELOW=${WARN_BELOW}`);
+});
+
+test('the committed table is measurable with the same function the writer checks', () => {
+  const present = integrationTestFiles(REPO_ROOT);
+  const c = coverageOf(readFileSync(join(REPO_ROOT, TIMINGS_PATH), 'utf8'), present);
+  assert.equal(c.total, present.length);
+  assert.equal(c.known + c.missing.length, c.total);
+});
+
+test('weekly report workflow is read-only, fork-guarded and never writes', () => {
+  const wf = readFileSync(join(REPO_ROOT, '.github/workflows/integration-timings-report.yml'), 'utf8');
+  assert.match(wf, /^on:\n  schedule:\n    - cron: '[^']+'\n  workflow_dispatch:/m);
+  assert.match(wf, /^permissions:\n  contents: read\n  actions: read\n(?!\s+\S+: )/m);
+  assert.match(wf, /github\.repository == 'LanternOps\/breeze'/);
+  assert.match(wf, /timeout-minutes: \d+/);
+  assert.match(wf, /persist-credentials: false/);
+  assert.match(wf, /test-timings\.mjs coverage/);
+  assert.match(wf, /test-timings\.mjs refresh/);
+  assert.match(wf, /GITHUB_STEP_SUMMARY/);
+  assert.match(wf, /actions\/upload-artifact@[0-9a-f]{40}/);
+  // The maintainer's `git commit` is printed into the summary by an echo; nothing else may write.
+  const executed = wf.split('\n').filter(l => !/^\s*echo\b/.test(l)).join('\n');
+  assert.doesNotMatch(executed, /git (push|commit|add)|gh pr (create|merge)|gh api -X (POST|PUT|PATCH|DELETE)/);
+  assert.doesNotMatch(wf, /contents: write|pull-requests: write|git push/);
+  for (const m of wf.matchAll(/uses: (\S+)@(\S+)/g)) assert.match(m[2], /^[0-9a-f]{40}$/, `${m[1]} is not SHA-pinned`);
 });
 
 test('lint runs this suite', () => {
