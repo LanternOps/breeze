@@ -469,7 +469,7 @@ Besides integrating with a provider's API, Breeze can install a vendor's DNS fil
 The client binaries are vendor GitHub release assets, pinned in Breeze by version and sha256. The agent verifies the sha256 when it downloads the file. Both packages need agent **0.125.0** or newer.
 
 <Steps>
-1. **Add the package to your catalog.** Go to **Software → Catalog → Built-in packages** and choose **Add to catalog** on the package's row. The package then leaves that list and appears as a card in your catalog, marked **Built-in**, with its required variable and uninstall command on the card's details. This needs full partner access (organization access "all"), the `devices.execute` permission and MFA. Organization-scoped users do not see the built-in cards; the partner deploys them.
+1. **Add the package to your catalog.** Go to **Software → Catalog → Built-in packages** and choose **Add to catalog** on the package's row. The package then leaves that list and appears as a card in your catalog, marked **Built-in**, with its required variable and uninstall command on the card's details. This needs full partner access (organization access "all"), the `devices.execute` permission and MFA. Organization-scoped users do not see the **Built-in packages** list; a partner adds the package.
 2. **Set the tenant variable per organization.** Under **Settings → Variables**, set `controld_provisioning_code` (Control D) or `nextdns_profile_id` (NextDNS) to your `<provisioning-code>` or `<profile-id>`. These variables are non-secret by design, and secret variables are rejected.
 3. **Deploy.** Use a software deployment, or a partner-wide software policy with an allowlist rule so the client is installed and kept in place across organizations.
 </Steps>

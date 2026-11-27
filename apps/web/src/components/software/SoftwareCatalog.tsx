@@ -211,9 +211,11 @@ export default function SoftwareCatalog() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [detailTab, setDetailTab] = useState<"details" | "versions">("details");
   const [catalogItems, setCatalogItems] = useState<SoftwareItem[]>([]);
-  // Latched on the first successful catalog load. The built-in panel offers
-  // "connect Huntress" only for a provider known to be absent from the catalog.
-  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  // True once a catalog load returned every row. The built-in panel offers
+  // "connect Huntress" only for a provider known to be absent from the catalog,
+  // and the list endpoint pages (50 by default): on a truncated page the
+  // provider's package may simply not have been loaded.
+  const [catalogComplete, setCatalogComplete] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [confirmDelete, setConfirmDelete] = useState<SoftwareItem | null>(null);
@@ -362,7 +364,9 @@ export default function SoftwareCatalog() {
       const data = asList(payload);
       if (Array.isArray(data)) {
         setCatalogItems(data.map(toSoftwareItem));
-        setCatalogLoaded(true);
+        const total = (payload as { pagination?: { total?: unknown } } | null)
+          ?.pagination?.total;
+        setCatalogComplete(typeof total !== "number" || total <= data.length);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load catalog");
@@ -678,7 +682,7 @@ export default function SoftwareCatalog() {
 
       {isPartnerScope && (
         <BuiltinPackagesPanel
-          providersInCatalog={catalogLoaded ? builtinProviders : undefined}
+          providersInCatalog={catalogComplete ? builtinProviders : undefined}
           onPackagesLoaded={setBuiltinRows}
           onProvisioned={() => {
             void fetchCatalog();

@@ -733,6 +733,34 @@ describe('SoftwareCatalog DNS built-ins (#6958)', () => {
     expect(screen.queryByTestId('builtin-package-row-controld_windows')).not.toBeInTheDocument();
   });
 
+  it('a truncated catalog page never offers "connect": the integration package may be on a page that was not loaded', async () => {
+    ownerScope.isPartnerScope = true;
+    fetchMock.mockImplementation((url: string) => {
+      // The list endpoint pages at 50; total > data means rows exist that this page does not show.
+      if (url === '/software/catalog')
+        return Promise.resolve(jsonResponse({ data: [KEYED_ITEM], pagination: { page: 1, limit: 50, total: 51 } }));
+      if (url === '/software/builtin-packages')
+        return Promise.resolve(jsonResponse({ data: [{ ...BUILTIN_ROWS[0], key: 'nextdns_windows', name: 'NextDNS CLI (Windows)', catalogId: null }] }));
+      return Promise.resolve(jsonResponse({ data: null }));
+    });
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-package-row-nextdns_windows')).toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-huntress')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-sentinelone')).not.toBeInTheDocument();
+  });
+
+  it('a complete catalog page (total equals the rows returned) does offer the missing integrations', async () => {
+    ownerScope.isPartnerScope = true;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/software/catalog')
+        return Promise.resolve(jsonResponse({ data: [KEYED_ITEM], pagination: { page: 1, limit: 50, total: 1 } }));
+      if (url === '/software/builtin-packages') return Promise.resolve(jsonResponse({ data: BUILTIN_ROWS }));
+      return Promise.resolve(jsonResponse({ data: null }));
+    });
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-package-row-huntress')).toBeInTheDocument();
+  });
+
   it('the panel drops Huntress once its package is a catalog card', async () => {
     ownerScope.isPartnerScope = true;
     routeKeyed([KEYED_ITEM, BUILTIN_ITEM]);
