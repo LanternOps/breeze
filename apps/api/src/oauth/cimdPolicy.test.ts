@@ -42,6 +42,7 @@ import {
   __cimdApprovalsForTests, __resetCimdApprovalsForTests, __resetCimdRefusalLogForTests, cimdAllowFetch, cimdHostAllowed,
   createOidcProviderFetch, isCimdClientId, parseCimdAllowedHosts, validateCimdMetadata,
 } from './cimdPolicy';
+import { rateLimiter } from '../services/rate-limit';
 
 const ID = 'https://client.example.com/oauth/metadata.json';
 
@@ -71,6 +72,7 @@ async function withCimdEnv<T>(env: CimdEnv, fn: () => Promise<T>): Promise<T> {
 }
 
 beforeEach(() => {
+  vi.mocked(rateLimiter).mockClear();
   __resetCimdApprovalsForTests();
   __resetCimdRefusalLogForTests();
   state.warns = [];
@@ -281,13 +283,15 @@ describe('review fixes (B-W03 PR B)', () => {
   });
 
   // #9464 lab: never-seen ids on a host (each an unauthenticated GET /oauth/auth)
-  // used to spend the per-host bucket a known client's refetch also drew on, so
-  // five requests a minute broke refresh_token grants for every admitted client
-  // on that host once its document dropped out of the process cache.
+  // must not spend the per-host bucket a known client's refetch draws on, or a
+  // few requests a minute break refresh_token grants for every admitted client
+  // on that host once its document drops out of the process cache.
   it('a materialised client still refetches when its host’s new-client budget is spent', async () => {
     state.knownClient = true;
     expect(await withCimdEnv({ hostBudgetLeft: 0, globalBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(true);
     expect(state.rateKeys).not.toContain('oauth:cimd:fetch:host:client.example.com');
+    expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(expect.anything(), 'oauth:cimd:fetch:known:host:client.example.com', CIMD_KNOWN_CLIENT_REFETCH_PER_HOST_PER_MINUTE, 60);
+    expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(expect.anything(), 'oauth:cimd:fetch:known', CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE, 60);
   });
 
   it('a materialised client is still held to its own per-host refetch budget', async () => {
@@ -297,11 +301,20 @@ describe('review fixes (B-W03 PR B)', () => {
       return cimdAllowFetch({}, ID);
     })).toBe(false);
     expect(state.warns.map((w) => w.context?.reason)).toContain('fetch_budget_exceeded');
+    expect(state.rateKeys).toEqual(['oauth:cimd:fetch:known:host:client.example.com']);
   });
 
   it('an unknown client on that host is still held to the new-client per-host budget', async () => {
     state.knownClient = false;
     expect(await withCimdEnv({ hostBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(false);
+    expect(state.rateKeys).toEqual(['oauth:cimd:fetch:host:client.example.com']);
+    expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(expect.anything(), 'oauth:cimd:fetch:host:client.example.com', CIMD_FETCH_BUDGET.perHostPerMinute, 60);
+  });
+
+  it('a failed known-client lookup is held to the new-client per-host budget too', async () => {
+    state.knownClientThrows = true;
+    expect(await withCimdEnv({ hostBudgetLeft: 0 }, () => cimdAllowFetch({}, ID))).toBe(false);
+    expect(state.rateKeys).toEqual(['oauth:cimd:fetch:host:client.example.com']);
   });
 
   it('an unknown client is still held to the new-client budget', async () => {

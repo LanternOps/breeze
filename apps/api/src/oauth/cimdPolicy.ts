@@ -40,9 +40,10 @@ export const CIMD_FETCH_BUDGET = { perHostPerMinute: 10, globalPerMinute: 120, c
  * per-host one — so a flood of new client ids exhausting `globalPerMinute` or a
  * host's `perHostPerMinute` cannot stop connected clients from refreshing their
  * tokens. New ids on a host cost nothing but an unauthenticated
- * `GET /oauth/auth`, and a refused document is fetched twice per attempt
- * (oidc-provider re-resolves the client in its error handler), so five such
- * requests a minute used to exhaust a shared per-host bucket.
+ * `GET /oauth/auth`, and an invalid document is fetched (and budgeted) twice
+ * per attempt, because oidc-provider re-resolves the client in its
+ * authorization error handler; with a shared per-host bucket of 10, five such
+ * requests a minute would exhaust it.
  */
 export const CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE = 1200;
 /** Per-host refetch budget for already-admitted clients; still bounds fetches to one host. */

@@ -230,9 +230,9 @@ Fetching is hardened: requests are DNS-pinned and SSRF-guarded (private, loopbac
 | Document fetches for client ids Breeze has not admitted yet, all hosts | 120 per minute |
 | Refetches for already-admitted clients, per host | 60 per minute |
 | Refetches for already-admitted clients, all hosts | 1200 per minute |
-
-The already-admitted budgets are separate from the new-id budgets, so a flood of new client ids, on one host or across many, cannot stop connected clients from signing in again or refreshing their tokens.
 | New CIMD clients | 200 per hour |
+
+The already-admitted budgets are separate from the new-id budgets, so a flood of new client ids, on one host or across many, cannot stop connected clients from signing in again or refreshing their tokens. A host with at least one admitted client can therefore see up to 60 document refetches a minute from Breeze when the cache is cold.
 
 Fetch budgets are charged only when a document is not in the cache. They fail closed: in production a missing Redis, and anywhere a Redis error, refuses the fetch.
 

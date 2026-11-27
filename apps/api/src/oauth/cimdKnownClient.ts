@@ -1,8 +1,9 @@
 /**
  * B-W03 (#6157): is this CIMD client id already an admitted, enabled
  * `oauth_clients` row? Used by `cimdAllowFetch` so a refetch for a known client
- * (its cached document expired or was evicted) draws on its own budget and
- * cannot be starved by a flood of new, attacker-chosen client ids.
+ * (its cached document expired or was evicted) draws on its own per-host and
+ * global budgets and cannot be starved by a flood of new, attacker-chosen
+ * client ids.
  *
  * A read only; it runs outside any request DB context (no fetch happens here).
  */
