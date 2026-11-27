@@ -846,6 +846,126 @@ describe("binarySync", () => {
           errorSpy.mockRestore();
         }
       });
+
+      // The backfill verifies the manifest against the tag the release API
+      // returned, but signs a manifest that says `version: currentVersion`. A
+      // response for a different (older) tag would otherwise get an older
+      // backup's checksum deployment-signed as the current version, and the
+      // agent only checks the signed manifest's version: a downgrade.
+      it("the boot backfill refuses a release whose tag is not the current version's, signing and writing nothing", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        process.env.BINARY_SOURCE = "github";
+        process.env.APP_VERSION = "0.65.9";
+        dbMocks.select.mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                component: "agent",
+                platform: "linux",
+                architecture: "amd64",
+                isLatest: true,
+                edition: "self-host",
+              },
+            ]),
+          }),
+        });
+        // A genuine, correctly signed OLDER release: its manifest verifies
+        // against its own tag, so only a tag check can refuse it.
+        const older = makeSignedReleaseManifestMulti([backupAsset], "v0.60.0", repo);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = older.publicKey;
+        useRealDeploymentKey();
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) => {
+            if (url.includes("/releases/latest"))
+              return new Response(releaseJson(older, []));
+            if (url.includes("/releases/tags/v0.65.9"))
+              return new Response(releaseJson(older, [backupAsset]));
+            return manifestResponses(url, older);
+          }),
+        );
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        try {
+          await syncBinaries();
+          expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+          expect(dbMocks.insertValues).not.toHaveBeenCalled();
+          const messages = errorSpy.mock.calls.map((args) => args.map(String).join(" "));
+          expect(
+            messages.some(
+              (m) =>
+                m.includes("Failed to auto-sync version 0.65.9") &&
+                m.includes("v0.60.0"),
+            ),
+          ).toBe(true);
+        } finally {
+          errorSpy.mockRestore();
+        }
+      });
+
+      // Same rule in the main sync: when it asked for a specific tag (the
+      // pinned boot release, the current-version safety net, or the admin
+      // route's ?version=), a response for any other tag must not be
+      // registered and, under AGENT_AUTO_PROMOTE, promoted.
+      it("syncFromGitHub refuses a release whose tag is not the one it asked for, writing nothing", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        const older = makeSignedReleaseManifestMulti(
+          [agentAsset, backupAsset],
+          "v1.2.3",
+          repo,
+        );
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = older.publicKey;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) =>
+            url.includes("/releases/tags/v1.2.4")
+              ? new Response(releaseJson(older, [agentAsset, backupAsset]))
+              : manifestResponses(url, older),
+          ),
+        );
+
+        await expect(syncFromGitHub("v1.2.4")).rejects.toThrow(/v1\.2\.4.*v1\.2\.3/);
+        expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+        expect(dbMocks.insertValues).not.toHaveBeenCalled();
+      });
+
+      // Backup verification now runs before any write (all-or-nothing, like
+      // watchdog and user-helper). A release that simply ships no backup
+      // asset for a platform is not a fault: that target is skipped and the
+      // rest of the sync, backup included, goes through.
+      it("a release missing the backup asset for one platform skips that target and does not abort", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        const windowsAgent = {
+          name: "breeze-agent-windows-amd64.exe",
+          buffer: Buffer.from("self-hoster signed windows agent bytes"),
+        };
+        const signed = makeSignedReleaseManifestMulti(
+          [agentAsset, windowsAgent, backupAsset],
+          "v1.2.3",
+          repo,
+        );
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) =>
+            url.includes("/releases/latest")
+              ? new Response(releaseJson(signed, [agentAsset, windowsAgent, backupAsset]))
+              : manifestResponses(url, signed),
+          ),
+        );
+
+        const result = await syncFromGitHub();
+
+        expect(result.failed).toEqual([]);
+        expect(result.synced).toEqual(
+          expect.arrayContaining([
+            "agent:linux/amd64",
+            "agent:windows/amd64",
+            "backup:linux/amd64",
+          ]),
+        );
+        expect(result.synced).not.toContain("backup:windows/amd64");
+      });
     });
   });
 
@@ -3028,6 +3148,18 @@ describe("binarySync", () => {
         checksum: signed.checksums.get(backupAsset.name),
         downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${backupAsset.name}`,
       });
+
+      // Official repository (#11028): backup now shares the signing phase,
+      // which must stay a pass-through here. The row carries the release's
+      // own manifest, signature and key ID, which agents verify against the
+      // embedded official key, and the deployment key is never touched.
+      expect(backupInsert![0]).toMatchObject({
+        signingKeyId: "release-artifact-manifest-ed25519",
+        releaseManifest: signed.manifest.toString("utf8"),
+        manifestSignature: signed.signature.toString("utf8"),
+      });
+      expect(manifestSigningMocks.ensureActiveSigningKey).not.toHaveBeenCalled();
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
     });
 
     it("succeeds without a backup row when the asset is missing (backward-compat)", async () => {

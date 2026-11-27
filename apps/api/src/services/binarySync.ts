@@ -2129,6 +2129,21 @@ async function syncFromGitHubRelease(
     assets: GitHubReleaseAsset[];
   };
 
+  // A sync that asked for a specific tag (the pinned boot release, the
+  // current-version safety net, the admin route's ?version=, or the hop from a
+  // server-only release) registers exactly that tag or nothing. The manifest
+  // is verified against whatever tag came back, so without this a response for
+  // a different, older release would verify, register and, under
+  // AGENT_AUTO_PROMOTE, promote it: a fleet downgrade. GitHub's tags endpoint
+  // matches exactly, so a genuine response always passes.
+  if (requestedVersion && release.tag_name !== requestedVersion) {
+    throw new Error(
+      follow
+        ? `Asked GitHub for binaries release ${requestedVersion} (named by server-only release ${follow.from}) but got ${release.tag_name}`
+        : `Asked GitHub for release ${requestedVersion} but got ${release.tag_name}; refusing to register it`,
+    );
+  }
+
   const version = release.tag_name.replace(/^v/, "");
   const trustedManifest = await fetchTrustedReleaseManifest(release.assets);
 
@@ -2144,11 +2159,7 @@ async function syncFromGitHubRelease(
       expectedRelease: release.tag_name,
     });
     if (follow) {
-      if (release.tag_name !== requestedVersion) {
-        throw new Error(
-          `Asked GitHub for binaries release ${requestedVersion} (named by server-only release ${follow.from}) but got ${release.tag_name}`,
-        );
-      }
+      // The tag itself was checked above (follow always names requestedVersion).
       if (identity.releaseKind !== "full") {
         throw new Error(
           `Binaries release ${release.tag_name} (named by server-only release ${follow.from}) is not a full release — refusing chained server-only releases`,
@@ -2531,6 +2542,22 @@ async function backfillBackupRowsForVersion(
     body?: string;
     assets: GitHubReleaseAsset[];
   };
+
+  // The manifest below is verified against release.tag_name, but every row
+  // this function writes is labelled currentVersion, and on an overridden
+  // repository the deployment key signs a manifest that says
+  // `version: currentVersion`. Agents check only that signed version. A
+  // response for any other tag would therefore get an older backup's checksum
+  // signed as the current version (a downgrade), so refuse it before
+  // verifying, signing or writing anything. Same tag form as
+  // pinnedGithubReleaseTag: currentVersion is already v-stripped, and an RC
+  // suffix must match exactly.
+  const expectedTag = `v${currentVersion}`;
+  if (release.tag_name !== expectedTag) {
+    throw new Error(
+      `Asked GitHub for release ${expectedTag} to backfill backup rows but got ${release.tag_name}; refusing to register another release's backup binaries as ${currentVersion}`,
+    );
+  }
 
   const trustedManifest = await fetchTrustedReleaseManifest(release.assets);
   const fallbackChecksums = trustedManifest
