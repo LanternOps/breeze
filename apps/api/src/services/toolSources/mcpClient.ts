@@ -63,9 +63,9 @@ export class McpClientError extends Error {
 const DEFAULT_TIMEOUT_MS = 30_000;
 /**
  * Overall bound on one JSON-RPC exchange (#12788). `timeoutMs` is inactivity
- * only, and an event-stream reply can keep a slow tool call alive past it;
- * without this, safeFetch's default overall bound (30 s, or the timeout if
- * longer) would end it.
+ * only, and an event-stream reply can keep a slow tool call alive past it.
+ * One total of 5 min from the start of the call caps a tool call, in place
+ * of safeFetch's size-based default (#12788).
  */
 const MCP_REQUEST_DEADLINE_MS = 5 * 60_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;

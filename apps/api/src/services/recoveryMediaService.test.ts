@@ -113,7 +113,12 @@ describe('resolveBackupBinary (github mode, spec 3d)', () => {
     });
   });
 
-  it('bounds the binary download with a 10 min overall deadline (#12788)', async () => {
+  it('leaves the binary download to the size-scaled default bound, not a fixed total (#12788)', async () => {
+    // The binary's size is only known from the response (the manifest is read
+    // after the download), so the download sets no fixed `deadlineMs`: the
+    // default bound gives the body time for its Content-Length at 64 KiB/s
+    // (urlSafety.overallDeadline.test.ts), where a fixed 10 min would cut off a
+    // large binary on a slow link.
     const bytes = Buffer.from('backup binary bytes');
     const signed = makeSignedBackupManifest('breeze-backup-linux-amd64', bytes);
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
@@ -121,7 +126,8 @@ describe('resolveBackupBinary (github mode, spec 3d)', () => {
     redirectInits.length = 0;
 
     await resolveBackupBinary('linux', 'amd64', workingDir);
-    expect(redirectInits).toContainEqual(expect.objectContaining({ deadlineMs: 600_000 }));
+    // The first call is the binary download; the manifest pair follows it.
+    expect((redirectInits[0] as { deadlineMs?: number } | undefined)?.deadlineMs).toBeUndefined();
   });
 
   it('fails closed when the downloaded bytes do not match the manifest hash', async () => {

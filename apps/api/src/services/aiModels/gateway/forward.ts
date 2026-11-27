@@ -226,11 +226,10 @@ export async function forwardUpstream(
       // also silent while headers are pending, so the limit is never shorter
       // than the headers deadline: it must not cut that wait short.
       timeoutMs: Math.max(GATEWAY_IDLE_TIMEOUT_MS, headersTimeoutMs),
-      // safeFetch bounds every call overall, by default to 30 s or the longest
-      // of its timeouts (#12788), which would cut a live stream or a slow
-      // generation short. A generation may run as long as the server's total
-      // timer (`signal`), so the overall bound is set to that timer's default;
-      // the server's timer, armed first, ends the request first at equal values.
+      // safeFetch bounds every call overall (#12788). A generation may run as
+      // long as the server's total timer (`signal`), so the overall bound is
+      // that timer's default rather than safeFetch's size-based default; the
+      // server's timer, armed first, ends the request first at equal values.
       deadlineMs: GATEWAY_TOTAL_TIMEOUT_MS,
       allowPrivateNetwork: allow.allowPrivateNetwork,
       requirePrivateForCleartext: allow.requirePrivateForCleartext,

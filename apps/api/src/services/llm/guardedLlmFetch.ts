@@ -100,7 +100,9 @@ const MAX_RECORDED_HOST_LENGTH = 255;
  * Overall bound on one LLM request (#12788). safeFetch buffers the whole
  * completion, so a call lasts the full generation; the SDK's own timeout
  * (10 minutes unless the caller sets a shorter one) governs, and this is only
- * the backstop above it. Without it safeFetch's 30 s default would apply.
+ * the backstop above it. Without it safeFetch's default would want the
+ * response headers within 30 s, and a completion that is not streamed sends
+ * them only once the generation is done.
  */
 const LLM_FETCH_DEADLINE_MS = 15 * 60_000;
 

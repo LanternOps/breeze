@@ -71,7 +71,7 @@ const MAX_CHECKSUMS_BYTES = 1024 * 1024;
 const MAX_RELEASE_API_JSON_BYTES = 8 * 1024 * 1024;
 
 // `safeFetch` once applied NO timeout unless asked, and the bare `fetch` these
-// replaced had none either. It now bounds every call overall, 30 s by default
+// replaced had none either. It now bounds every call overall by default
 // (#12788); this constant is the separate inactivity timeout. A time limit
 // matters more here than at most call sites: every one of these runs inside a
 // held DB access context (see the note on assertOutsideHeldDbContext below), so

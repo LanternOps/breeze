@@ -217,11 +217,26 @@ const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 export const MAX_MANIFEST_BYTES = 1024 * 1024;
 
 /**
- * Overall bound on downloading one release artifact (up to a few hundred MB),
- * redirects included, when the caller's `signal` does not end it sooner.
- * Without it safeFetch's 30 s default for ordinary API calls would apply (#12788).
+ * Overall bound on downloading one release artifact, redirects included, when
+ * the caller's `signal` does not end it sooner (#12788). Sized from the signed
+ * manifest's `size`: 60 s for the redirect chain, plus the size at 64 KiB/s
+ * (about 0.5 Mbit/s, the same minimum rate safeFetch's default bound assumes),
+ * within [10 min, 2 h]. The 256 MiB helper gets about 69 min and needs about
+ * 0.5 Mbit/s; at 1 Mbit/s it takes about 36 min. The rate is restated here
+ * rather than imported because many suites replace `./urlSafety` wholesale.
  */
-const RELEASE_ARTIFACT_DOWNLOAD_DEADLINE_MS = 10 * 60_000;
+const RELEASE_ARTIFACT_DOWNLOAD_MIN_BYTES_PER_SECOND = 64 * 1024;
+const RELEASE_ARTIFACT_DOWNLOAD_HOPS_MS = 60_000;
+const RELEASE_ARTIFACT_DOWNLOAD_FLOOR_MS = 10 * 60_000;
+const RELEASE_ARTIFACT_DOWNLOAD_CEILING_MS = 2 * 60 * 60_000;
+
+export function releaseArtifactDownloadDeadlineMs(size: number): number {
+  const transferMs = Math.ceil((Math.max(0, size) * 1000) / RELEASE_ARTIFACT_DOWNLOAD_MIN_BYTES_PER_SECOND);
+  return Math.min(
+    Math.max(RELEASE_ARTIFACT_DOWNLOAD_HOPS_MS + transferMs, RELEASE_ARTIFACT_DOWNLOAD_FLOOR_MS),
+    RELEASE_ARTIFACT_DOWNLOAD_CEILING_MS,
+  );
+}
 const PUBLIC_KEY_ENV_NAMES = [
   "RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS",
   "BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS",
@@ -1076,7 +1091,7 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
 
   const response = await safeFetchFollowingRedirects(args.assetUrl, {
     maxBytes: selected.size,
-    deadlineMs: RELEASE_ARTIFACT_DOWNLOAD_DEADLINE_MS,
+    deadlineMs: releaseArtifactDownloadDeadlineMs(selected.size),
     ...(args.signal ? { signal: args.signal } : {}),
   });
   if (!response.ok) {

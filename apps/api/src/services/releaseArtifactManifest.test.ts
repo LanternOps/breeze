@@ -11,6 +11,7 @@ vi.mock("./urlSafety", () => ({
 
 import {
   fetchVerifiedGithubReleaseArtifact,
+  releaseArtifactDownloadDeadlineMs,
   verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
@@ -386,6 +387,50 @@ describe("releaseArtifactManifest", () => {
     expect(safeFetchFollowingRedirectsMock).toHaveBeenCalledWith(
       "https://example.com/breeze-agent.msi",
       expect.objectContaining({ deadlineMs: 600_000 }),
+    );
+  });
+
+  it.each([
+    // [size from the signed manifest, expected deadline]: 60 s for the redirect
+    // chain plus the size at 64 KiB/s, within [10 min, 2 h].
+    [1024 * 1024, 600_000],
+    [16 * 1024 * 1024, 600_000],
+    [128 * 1024 * 1024, 60_000 + 2048 * 1000],
+    [256 * 1024 * 1024, 60_000 + 4096 * 1000],
+    [1024 * 1024 * 1024, 2 * 60 * 60_000],
+  ])("sizes the asset download deadline from the manifest size %i (#12788)", (size, expected) => {
+    expect(releaseArtifactDownloadDeadlineMs(size)).toBe(expected);
+  });
+
+  it("a 256 MiB helper at 1 Mbit/s fits its deadline with room to spare (#12788)", () => {
+    const size = 256 * 1024 * 1024;
+    const atOneMegabit = (size / 125_000) * 1000;
+    expect(releaseArtifactDownloadDeadlineMs(size)).toBeGreaterThan(1.5 * atOneMegabit);
+  });
+
+  it("passes the manifest-sized deadline to a large asset download (#12788)", async () => {
+    const asset = Buffer.alloc(48 * 1024 * 1024, 7);
+    const signed = makeSignedManifest({ assetName: "breeze-helper.msi", assetBuffer: asset });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    safeFetchFollowingRedirectsMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".ed25519")) return new Response(signed.signature);
+      if (url.endsWith("breeze-helper.msi")) return new Response(new Uint8Array(asset));
+      return new Response(signed.manifest);
+    });
+
+    await fetchVerifiedGithubReleaseArtifact({
+      assetName: "breeze-helper.msi",
+      assetUrl: "https://example.com/breeze-helper.msi",
+      manifestUrl: "https://example.com/release-artifact-manifest.json",
+      signatureUrl: "https://example.com/release-artifact-manifest.json.ed25519",
+      expectedRepository: "lanternops/breeze",
+      expectedRelease: "v1.2.3",
+      maxAssetBytes: 64 * 1024 * 1024,
+    });
+
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenCalledWith(
+      "https://example.com/breeze-helper.msi",
+      expect.objectContaining({ maxBytes: asset.length, deadlineMs: 60_000 + 768 * 1000 }),
     );
   });
 

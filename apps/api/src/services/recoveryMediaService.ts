@@ -96,9 +96,6 @@ function sha256Hex(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
-/** Overall bound on downloading the backup binary, redirects included. */
-const BACKUP_BINARY_DOWNLOAD_DEADLINE_MS = 10 * 60_000;
-
 /**
  * The GitHub release asset URL this is called with (`getGithubBackupUrl`) 302s
  * to `objects.githubusercontent.com`, so a bare `safeFetch` — which follows
@@ -108,9 +105,12 @@ const BACKUP_BINARY_DOWNLOAD_DEADLINE_MS = 10 * 60_000;
  * so a redirect into link-local/metadata/private space is still rejected.
  */
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
-  // A multi-megabyte binary: give the download its own overall bound rather
-  // than safeFetch's 30 s default for ordinary API calls (#12788).
-  const response = await safeFetchFollowingRedirects(url, { deadlineMs: BACKUP_BINARY_DOWNLOAD_DEADLINE_MS });
+  // No fixed `deadlineMs` (#12788): the binary's size is known only from the
+  // response (the manifest is read after the download), and safeFetch's
+  // default bound sizes the body's allowance from its Content-Length at
+  // 64 KiB/s (at least 5 min, at most 60 min). A fixed total would cut off a
+  // large binary on a slow link.
+  const response = await safeFetchFollowingRedirects(url);
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }
