@@ -4566,7 +4566,7 @@
         "outcome_unknown_reissue_manually": "Le résultat n'a jamais été confirmé; vérifiez la console du fournisseur avant de réessayer",
         "not_sent_or_rejected": "Le fournisseur indique qu'elle n'a pas été appliquée",
         "detached_unsettled": "L'association de l'entreprise a changé avant la fin",
-        "vendor_status_timeout": "La tâche du fournisseur ne s'est pas terminée en 24 heures",
+        "vendor_status_timeout": "Le fournisseur n'a pas confirmé la fin de la tâche en 24 heures; vérifiez la console du fournisseur",
         "vendor_task_failed": "Le fournisseur a signalé que la tâche a échoué",
         "isolation_unconfirmed": "Acceptée, mais l'appareil ne l'a pas confirmée en 24 heures. La tâche du fournisseur peut encore s'appliquer quand l'appareil se reconnectera; vérifiez la console du fournisseur",
         "unknown": "L'action ne s'est pas terminée"

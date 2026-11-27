@@ -4566,7 +4566,7 @@
         "outcome_unknown_reissue_manually": "Das Ergebnis wurde nie bestätigt; prüfen Sie die Anbieterkonsole, bevor Sie es erneut versuchen",
         "not_sent_or_rejected": "Laut Anbieter wurde die Aktion nicht angewendet",
         "detached_unsettled": "Die Unternehmenszuordnung hat sich vor dem Abschluss geändert",
-        "vendor_status_timeout": "Die Aufgabe des Anbieters wurde nicht innerhalb von 24 Stunden abgeschlossen",
+        "vendor_status_timeout": "Der Anbieter hat innerhalb von 24 Stunden nicht bestätigt, dass die Aufgabe abgeschlossen ist; prüfen Sie die Konsole des Anbieters",
         "vendor_task_failed": "Der Anbieter hat gemeldet, dass die Aufgabe fehlgeschlagen ist",
         "isolation_unconfirmed": "Angenommen, aber das Gerät hat es nicht innerhalb von 24 Stunden bestätigt. Die Aufgabe des Anbieters kann noch greifen, wenn sich das Gerät wieder verbindet; prüfen Sie die Anbieterkonsole",
         "unknown": "Die Aktion wurde nicht abgeschlossen"

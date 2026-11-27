@@ -474,6 +474,14 @@ describe('GravityZoneClient write calls', () => {
     expect(c.calls[0]!.body).toMatchObject({ id: ACT, method: 'createScanTask', params: { targetIds: ['ep1'] } });
   });
 
+  it('#12822: a scan is a quick scan named after the action, and asks for every task id', async () => {
+    const c = makeFetch([{ body: fx('action-scan-accepted-live.json') }]);
+    await makeClient(c.impl).client.createScanTask('ep1', ACT);
+    expect(c.calls[0]!.body.params).toEqual({
+      targetIds: ['ep1'], type: 1, name: `Breeze scan ${ACT}`, returnAllTaskIds: true,
+    });
+  });
+
   it('acquires the actions operation class', async () => {
     const { impl } = makeFetch([{ body: fx('action-isolate-ok.json') }]);
     const { client, limiter } = makeClient(impl);
@@ -516,8 +524,18 @@ describe('GravityZoneClient write calls', () => {
     expect(await makeClient(arr.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'task', taskId: '6a0000000000000000000b01' });
     const str = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: '6a0000000000000000000b02' }) }]);
     expect(await makeClient(str.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'task', taskId: '6a0000000000000000000b02' });
-    const bool = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: true }) }]);
+    const bool = makeFetch([{ body: fx('action-scan-accepted-live.json') }]);
     expect(await makeClient(bool.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'accepted' });
+    // Several tasks for one request: none of them alone stands for it; they are found by name.
+    const many = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: ['6a0000000000000000000b01', '6a0000000000000000000b02'] }) }]);
+    expect(await makeClient(many.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'accepted' });
+  });
+
+  it('an uninterpretable scan result is outcome_unknown', async () => {
+    for (const result of [false, null, {}, [], [1], '']) {
+      const { impl } = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result }) }]);
+      await expect(makeClient(impl).client.createScanTask('ep1', ACT)).rejects.toMatchObject({ code: 'outcome_unknown' });
+    }
   });
 
   it('an uninterpretable 2xx result is outcome_unknown (the vendor may have acted)', async () => {
@@ -551,27 +569,35 @@ describe('GravityZoneClient getAccountDetails (#12821)', () => {
   });
 });
 
-describe('GravityZoneClient getScanTaskStatus', () => {
-  it('reads network.getScanTasksList filtered by task id and maps the status code', async () => {
-    const { impl, calls } = makeFetch([{ body: fx('action-scan-task-status.json') }]);
-    expect(await makeClient(impl).client.getScanTaskStatus('6a0000000000000000000b01')).toBe('finished');
+describe('GravityZoneClient listScanTasksNamed (#12822)', () => {
+  const NAME = 'Breeze scan 7f0c0000-0000-4000-8000-00000000a003';
+
+  it('reads network.getScanTasksList by name (no taskId: the vendor rejects it) and keeps exact-name tasks only', async () => {
+    const live = JSON.parse(fx('action-scan-task-status.json'));
+    live.result.items.push({ id: 'x2', name: `${NAME}-other`, startDate: '2026-11-27T17:00:00', status: 1 });
+    live.result.total = 2;
+    const { impl, calls } = makeFetch([{ body: JSON.stringify(live) }]);
+    expect(await makeClient(impl).client.listScanTasksNamed(NAME)).toEqual([{ id: '6a0000000000000000000b01', status: 3 }]);
     expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/network`);
-    expect(calls[0]!.body.method).toBe('getScanTasksList');
-    expect(calls[0]!.body.params).toMatchObject({ taskId: '6a0000000000000000000b01' });
+    expect(calls[0]!.body).toMatchObject({ method: 'getScanTasksList', params: { name: NAME, page: 1, perPage: 100 } });
+    expect(calls[0]!.body.params).not.toHaveProperty('taskId');
   });
 
-  it.each([[1, 'pending'], [2, 'in_progress'], [3, 'finished'], [4, 'failed'], [99, 'unknown']])(
-    'status code %s -> %s', async (code, expected) => {
-      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { items: [{ id: 't1', status: code }] } });
-      expect(await makeClient(makeFetch([{ body }]).impl).client.getScanTaskStatus('t1')).toBe(expected);
-    },
-  );
+  it('an empty list is an empty answer', async () => {
+    const { impl } = makeFetch([{ body: fx('scan-tasks-list-empty.json') }]);
+    expect(await makeClient(impl).client.listScanTasksNamed(NAME)).toEqual([]);
+  });
 
-  it('absent task / missing status -> unknown', async () => {
-    for (const result of [{ items: [] }, { items: [{ id: 't1' }] }, { items: [{ id: 'other', status: 3 }] }, null]) {
-      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result });
-      expect(await makeClient(makeFetch([{ body }]).impl).client.getScanTaskStatus('t1')).toBe('unknown');
+  it('a list with no items array is malformed_response, not "no task"', async () => {
+    for (const result of [null, {}, { items: 'x' }]) {
+      const { impl } = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result }) }]);
+      await expect(makeClient(impl).client.listScanTasksNamed(NAME)).rejects.toMatchObject({ code: 'malformed_response' });
     }
+  });
+
+  it('more tasks under the name than one page holds is malformed_response (the name is per action)', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { total: 101, page: 1, perPage: 100, pagesCount: 2, items: [{ id: 'a', name: NAME, status: 3 }] } });
+    await expect(makeClient(makeFetch([{ body }]).impl).client.listScanTasksNamed(NAME)).rejects.toMatchObject({ code: 'malformed_response' });
   });
 });
 

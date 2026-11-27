@@ -131,6 +131,15 @@ describe('EdrActionHistory', () => {
     expect(screen.queryByTestId('edr-action-vendor-reason-a1')).toBeNull();
   });
 
+  it('#12822: a vendor task never confirmed finished reads as unconfirmed, not as "did not finish"', async () => {
+    fetchEdrActions.mockResolvedValue([row('a1', { action: 'scan', status: 'failed', error: 'vendor_status_timeout' })]);
+    render(<EdrActionHistory deviceId="dev-1" />);
+    await flush();
+    const text = screen.getByTestId('edr-action-failure-a1').textContent ?? '';
+    expect(text).toMatch(/did not confirm the task finished within 24 hours.*check the vendor console/i);
+    expect(text).not.toMatch(/did not finish/i);
+  });
+
   it('#12789: an accepted isolate reads as awaiting confirmation, not as done', async () => {
     fetchEdrActions.mockResolvedValue([row('a1', { status: 'submitted', awaitingConfirmation: true })]);
     render(<EdrActionHistory deviceId="dev-1" />);

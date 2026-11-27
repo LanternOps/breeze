@@ -261,6 +261,18 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
             note: 'The vendor accepted the request, but the endpoint has not confirmed it yet (it may be offline and apply it when it reconnects). Tell the person it was accepted and is waiting for the endpoint; do not report the device as isolated or released until Breeze confirms it. Do not retry.',
           });
         }
+        if (outcome.status === 'submitted' && !outcome.outcomeUnknown) {
+          // #12822: the vendor accepted a task (a scan) that has not finished. Like an isolation
+          // awaiting confirmation, it is neither a success nor a failure, so no `success` key.
+          return JSON.stringify({
+            state: 'in_progress',
+            accepted: true,
+            actionId: outcome.actionId,
+            status: outcome.status,
+            outcomeUnknown: false,
+            note: 'The vendor accepted the request, but its task has not finished. Tell the person it was requested and is running; Breeze records the result when the vendor reports the task finished. Do not report it as complete. Do not retry.',
+          });
+        }
         return JSON.stringify({
           success: outcome.status !== 'failed' && !outcome.outcomeUnknown,
           actionId: outcome.actionId,

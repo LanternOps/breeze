@@ -4566,7 +4566,7 @@
         "outcome_unknown_reissue_manually": "Il risultato non è mai stato confermato; controlla la console del fornitore prima di riprovare",
         "not_sent_or_rejected": "Secondo il fornitore non è stata applicata",
         "detached_unsettled": "L'associazione dell'azienda è cambiata prima del completamento",
-        "vendor_status_timeout": "L'attività del fornitore non si è conclusa entro 24 ore",
+        "vendor_status_timeout": "Il fornitore non ha confermato entro 24 ore che l'attività sia terminata; controlla la console del fornitore",
         "vendor_task_failed": "Il fornitore ha segnalato che l'attività non è riuscita",
         "isolation_unconfirmed": "Accettata, ma il dispositivo non l’ha confermata entro 24 ore. L’attività del fornitore potrebbe ancora essere applicata quando il dispositivo si riconnette; controlla la console del fornitore",
         "unknown": "L'azione non è stata completata"

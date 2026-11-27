@@ -24,6 +24,7 @@ import {
   GravityZoneClient,
   GZ_HOST_ALLOWLIST,
   GZ_INSTALLER_HOST_ALLOWLIST,
+  gzScanTaskName,
   type GzAccountDetails,
   type GzIncident,
   type GzQuarantineItem,
@@ -129,6 +130,22 @@ function accountTimeZone(ctx: EdrAdapterContext): Promise<AccountTimeZone> {
 /** The sync warning for detections whose times could not be stored. */
 function timesNotStoredWarning(stream: 'incidents' | 'quarantine', reason: string): string {
   return `${stream}: times not stored (${reason === 'api_not_enabled' ? 'Accounts API not enabled on key' : 'account timezone unavailable'})`;
+}
+
+// ---- scan reference (#12822) --------------------------------------------------
+
+/**
+ * A scan's `vendor_action_id`: `scan:<edr_actions id>`, plus `:<task id>` when the vendor returned
+ * exactly one. The action id gives the task's name in GravityZone (gzScanTaskName). Opaque outside
+ * this adapter.
+ */
+function scanRef(actionId: string, taskId: string | null): string {
+  return taskId ? `scan:${actionId}:${taskId}` : `scan:${actionId}`;
+}
+
+function parseScanRef(value: string): { actionId: string; taskId: string | null } | null {
+  const m = /^scan:([^:]+)(?::([^:]+))?$/.exec(value);
+  return m ? { actionId: m[1]!, taskId: m[2] ?? null } : null;
 }
 
 // ---- installer --------------------------------------------------------------
@@ -428,22 +445,33 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     }
     const client = clientFor(ctx);
     const id = req.target.vendorEndpointId;
-    const r = req.action === 'isolate' ? await client.createIsolateEndpointTask(id, traceId)
-      : req.action === 'unisolate' ? await client.createRestoreEndpointFromIsolationTask(id, traceId)
-        : await client.createScanTask(id, traceId);
-    // Only a scan has a pollable task (getScanTasksList). For isolate/restore any
-    // accepted answer — boolean or task id ([U]) — means "the vendor took it";
-    // completion is observed by the reconciler through a live reconcileAction read (#12789).
-    if (req.action !== 'scan' || r.kind === 'accepted') return { status: 'succeeded' };
-    return { status: 'submitted', vendorActionId: r.taskId };
+    if (req.action === 'scan') {
+      // The vendor only accepted it (live: a quick scan stays pending for minutes). It stays
+      // submitted until getActionStatus sees its task finished, or fails at the submitted timeout.
+      const r = await client.createScanTask(id, traceId);
+      return { status: 'submitted', vendorActionId: scanRef(traceId, r.kind === 'task' ? r.taskId : null) };
+    }
+    await (req.action === 'isolate'
+      ? client.createIsolateEndpointTask(id, traceId)
+      : client.createRestoreEndpointFromIsolationTask(id, traceId));
+    // Any accepted answer, boolean or task id ([U]), means "the vendor took it"; dispatch records
+    // it submitted and the reconciler confirms it through a live reconcileAction read (#12789).
+    return { status: 'succeeded' };
   },
 
+  /**
+   * A scan's state, read from the scan task list by the task name Breeze sent (#12822). It is
+   * `succeeded` only when the vendor lists the task (or, with no task id, every task under that
+   * name) as finished (status 3). Pending, running, an undocumented status, or no task listed yet
+   * all stay `submitted`; the reconciler then fails the row at the submitted timeout as
+   * `vendor_status_timeout`, so an unconfirmed scan never ends as a success.
+   */
   async getActionStatus(ctx, _tenant, vendorActionId) {
-    switch (await clientFor(ctx).getScanTaskStatus(vendorActionId)) {
-      case 'finished': return { status: 'succeeded' };
-      case 'failed': return { status: 'failed', code: 'vendor_task_failed', message: 'Scan task failed' };
-      default: return { status: 'submitted' };
-    }
+    const ref = parseScanRef(vendorActionId);
+    if (!ref) return { status: 'submitted' };
+    const tasks = await clientFor(ctx).listScanTasksNamed(gzScanTaskName(ref.actionId));
+    const mine = ref.taskId ? tasks.filter((t) => t.id === ref.taskId) : tasks;
+    return mine.length > 0 && mine.every((t) => t.status === 3) ? { status: 'succeeded' } : { status: 'submitted' };
   },
 
   async reconcileAction(ctx, _tenant, req): Promise<EdrReconcileVerdict> {

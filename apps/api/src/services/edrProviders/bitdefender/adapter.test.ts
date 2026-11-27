@@ -580,8 +580,12 @@ describe('response actions', () => {
     const routes: Array<['isolate' | 'unisolate' | 'scan', string, Reply, unknown]> = [
       ['isolate', 'incidents.createIsolateEndpointTask', ok('action-isolate-ok.json'), { status: 'succeeded' }],
       ['unisolate', 'incidents.createRestoreEndpointFromIsolationTask', ok('action-restore-ok.json'), { status: 'succeeded' }],
-      ['scan', 'network.createScanTask', ok('action-scan-ok.json'), { status: 'submitted', vendorActionId: '6a0000000000000000000b01' }],
-      ['scan', 'network.createScanTask', rpc(true), { status: 'succeeded' }],
+      // #12822: a scan the vendor accepted is never recorded as done. It stays submitted, keyed by
+      // the task name Breeze sent (plus the task id when the vendor returns one), until the scan
+      // task list shows it finished.
+      ['scan', 'network.createScanTask', ok('action-scan-ok.json'), { status: 'submitted', vendorActionId: `scan:${ACT}:6a0000000000000000000b01` }],
+      ['scan', 'network.createScanTask', ok('action-scan-accepted-live.json'), { status: 'submitted', vendorActionId: `scan:${ACT}` }],
+      ['scan', 'network.createScanTask', rpc(['6a0000000000000000000b01', '6a0000000000000000000b02']), { status: 'submitted', vendorActionId: `scan:${ACT}` }],
       // Review fix: a task-id answer to isolate/restore is still "accepted" — completion is
       // observed through inventory isIsolated / reconcileAction, never the scan-task list.
       ['isolate', 'incidents.createIsolateEndpointTask', rpc(['6a0000000000000000000c01']), { status: 'succeeded' }],
@@ -613,14 +617,58 @@ describe('response actions', () => {
     });
   });
 
-  describe('getActionStatus', () => {
-    it.each([[1, { status: 'submitted' }], [2, { status: 'submitted' }], [99, { status: 'submitted' }],
-      [3, { status: 'succeeded' }], [4, { status: 'failed', code: 'vendor_task_failed', message: 'Scan task failed' }]])(
+  describe('getActionStatus (#12822)', () => {
+    const NAME = `Breeze scan ${ACT}`;
+    const list = (...items: Array<{ id: string; name?: string; status?: unknown }>) =>
+      rpc({ total: items.length, page: 1, perPage: 100, pagesCount: items.length ? 1 : 0,
+        items: items.map((i) => ({ name: NAME, startDate: '2026-11-27T16:58:02', ...i })) });
+
+    it('finds the task by the name Breeze gave it, never by a taskId parameter (the vendor rejects one)', async () => {
+      const FX_ACT = '7f0c0000-0000-4000-8000-00000000a003'; // the action the live-shape fixture's task is named after
+      const { ctx, calls } = makeCtx({ 'network.getScanTasksList': ok('action-scan-task-status.json') });
+      expect(await adapter.getActionStatus!(ctx, T, `scan:${FX_ACT}:6a0000000000000000000b01`)).toEqual({ status: 'succeeded' });
+      expect(calls[0]!.params).toEqual({ name: `Breeze scan ${FX_ACT}`, page: 1, perPage: 100 });
+      expect(calls[0]!.params).not.toHaveProperty('taskId');
+    });
+
+    it.each([[1, { status: 'submitted' }], [2, { status: 'submitted' }], [3, { status: 'succeeded' }],
+      // Undocumented codes are not read as a failure or a success: the row waits for the timeout.
+      [4, { status: 'submitted' }], [99, { status: 'submitted' }], [undefined, { status: 'submitted' }]])(
       'vendor status %s -> %j', async (code, expected) => {
-        const { ctx } = makeCtx({ 'network.getScanTasksList': rpc({ items: [{ id: 't1', status: code }] }) });
-        expect(await adapter.getActionStatus!(ctx, T, 't1')).toEqual(expected);
+        const { ctx } = makeCtx({ 'network.getScanTasksList': list({ id: 't1', status: code }) });
+        expect(await adapter.getActionStatus!(ctx, T, `scan:${ACT}`)).toEqual(expected);
       },
     );
+
+    it('not listed yet (or never) -> still submitted; the 24 h timeout then fails it as unconfirmed', async () => {
+      const { ctx } = makeCtx({ 'network.getScanTasksList': ok('scan-tasks-list-empty.json') });
+      expect(await adapter.getActionStatus!(ctx, T, `scan:${ACT}`)).toEqual({ status: 'submitted' });
+    });
+
+    it('a task whose name only starts with ours is not ours (the vendor filter is a prefix match)', async () => {
+      const { ctx } = makeCtx({ 'network.getScanTasksList': list({ id: 't9', name: `${NAME}-copy`, status: 3 }) });
+      expect(await adapter.getActionStatus!(ctx, T, `scan:${ACT}`)).toEqual({ status: 'submitted' });
+    });
+
+    it('with a vendor task id, only that task counts', async () => {
+      const { ctx } = makeCtx({ 'network.getScanTasksList': list({ id: 'other', status: 3 }, { id: 't1', status: 2 }) });
+      expect(await adapter.getActionStatus!(ctx, T, `scan:${ACT}:t1`)).toEqual({ status: 'submitted' });
+      const done = makeCtx({ 'network.getScanTasksList': list({ id: 'other', status: 1 }, { id: 't1', status: 3 }) });
+      expect(await adapter.getActionStatus!(done.ctx, T, `scan:${ACT}:t1`)).toEqual({ status: 'succeeded' });
+    });
+
+    it('several tasks under our name and no id: succeeded only when every one finished', async () => {
+      const { ctx } = makeCtx({ 'network.getScanTasksList': list({ id: 'a', status: 3 }, { id: 'b', status: 1 }) });
+      expect(await adapter.getActionStatus!(ctx, T, `scan:${ACT}`)).toEqual({ status: 'submitted' });
+      const done = makeCtx({ 'network.getScanTasksList': list({ id: 'a', status: 3 }, { id: 'b', status: 3 }) });
+      expect(await adapter.getActionStatus!(done.ctx, T, `scan:${ACT}`)).toEqual({ status: 'succeeded' });
+    });
+
+    it('a reference it does not recognise is left submitted with no vendor call', async () => {
+      const { ctx, calls } = makeCtx({});
+      expect(await adapter.getActionStatus!(ctx, T, '6a0000000000000000000b01')).toEqual({ status: 'submitted' });
+      expect(calls).toHaveLength(0);
+    });
   });
 
   describe('reconcileAction (read-only)', () => {
