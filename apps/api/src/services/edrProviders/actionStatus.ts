@@ -202,11 +202,13 @@ export async function pollEdrActionStatus(
   const deadline = Date.now() + (opts.budgetMs ?? EDR_ACTION_STATUS_RUN_BUDGET_MS);
   let checked = 0;
   let settled = 0;
+  // A row is read from the vendor at most once per run, even if its stamp did not land.
+  const seen = new Set<string>();
   for (;;) {
-    const page = await pollPage(connectionId, adapter, ctx, now, runStartedAt);
+    const page = await pollPage(connectionId, adapter, ctx, now, runStartedAt, seen);
     checked += page.checked;
     settled += page.settled;
-    if (page.checked < BATCH || Date.now() >= deadline) break;
+    if (page.loaded < BATCH || page.checked === 0 || Date.now() >= deadline) break;
   }
   return { checked, settled };
 }
@@ -218,7 +220,8 @@ async function pollPage(
   ctx: EdrAdapterContext,
   now: Date,
   runStartedAt: Date,
-): Promise<{ checked: number; settled: number }> {
+  seen: Set<string>,
+): Promise<{ loaded: number; checked: number; settled: number }> {
   // ---- phase 1 (system tx, short) ----
   const { rows, tenants } = await withSystemDbAccessContext(async () => {
     const page = (await db
@@ -257,12 +260,15 @@ async function pollPage(
       .where(inArray(edrTenants.id, tenantIds));
     return { rows: page, tenants: new Map(tenantRows.map((t) => [t.id, t])) };
   }, 'edrActionStatus.load');
-  if (rows.length === 0) return { checked: 0, settled: 0 };
+  const loaded = rows.length;
+  const fresh = rows.filter((r) => !seen.has(r.id));
+  for (const r of fresh) seen.add(r.id);
+  if (fresh.length === 0) return { loaded, checked: 0, settled: 0 };
 
   // ---- phase 2 (vendor reads, NO DB) ----
   const settlements: Settlement[] = await runOutsideDbContext(async () => {
     const out: Settlement[] = [];
-    for (const row of rows) {
+    for (const row of fresh) {
       const t = row.tenantId ? tenants.get(row.tenantId) : undefined;
       const s = await settleOne(adapter, ctx, t && { vendorTenantId: t.vendorTenantId, apiHost: t.apiHost }, row, now);
       if (s) out.push({ ...s, id: row.id, orgId: row.orgId, observed: row.status, requestedBy: row.requestedBy });
@@ -285,7 +291,7 @@ async function pollPage(
     // reach the rows behind them. Only still-open rows: a concurrent outcome
     // write owns a row it settled.
     const settledIds = new Set(settlements.map((s) => s.id));
-    const stillOpen = rows.filter((r) => !settledIds.has(r.id)).map((r) => r.id);
+    const stillOpen = fresh.filter((r) => !settledIds.has(r.id)).map((r) => r.id);
     if (stillOpen.length > 0) {
       await db.update(edrActions)
         .set({ updatedAt: new Date() })
@@ -314,5 +320,5 @@ async function pollPage(
       initiatedBy: 'automation',
     });
   }
-  return { checked: rows.length, settled: settledRows.length };
+  return { loaded, checked: fresh.length, settled: settledRows.length };
 }

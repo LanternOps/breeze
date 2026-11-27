@@ -325,6 +325,13 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
       expect(JSON.stringify(stamp.where)).toContain('"act-2"');
     });
 
+    it('a page of rows already read this run (a stamp that did not land) ends the run: each row is read once', async () => {
+      h.state.selects = [[connection], many(50, 0), [tenant], many(50, 0), [tenant], many(50, 0), [tenant]];
+      h.reconcileAction.mockResolvedValue('unknown');
+      expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 50, settled: 0 });
+      expect(h.reconcileAction).toHaveBeenCalledTimes(50);
+    });
+
     it('stops at the run budget; the rows it did not reach are the least recently checked next run', async () => {
       h.state.selects = [[connection], many(50, 0), [tenant], many(50, 50), [tenant]];
       h.reconcileAction.mockResolvedValue('unknown');

@@ -125,7 +125,7 @@ describe('EdrActionHistory', () => {
     ]);
     render(<EdrActionHistory deviceId="dev-1" />);
     await flush();
-    expect(screen.getByTestId('edr-action-failure-a1')).toHaveTextContent(/never confirmed/i);
+    expect(screen.getByTestId('edr-action-failure-a1')).toHaveTextContent(/did not confirm.*may still apply when the device reconnects/i);
     expect(screen.getByTestId('edr-action-failure-a2')).toHaveTextContent('The action did not complete');
     expect(screen.queryByTestId('edr-action-failure-a3')).toBeNull();
     expect(screen.queryByTestId('edr-action-vendor-reason-a1')).toBeNull();
