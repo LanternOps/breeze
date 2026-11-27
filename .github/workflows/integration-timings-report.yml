@@ -60,6 +60,7 @@ jobs:
 
       - name: Refresh into a scratch path
         id: refresh
+        if: success() || failure()
         continue-on-error: true
         run: |
           set -o pipefail
@@ -75,7 +76,6 @@ jobs:
         env:
           REFRESH_OUTCOME: ${{ steps.refresh.outcome }}
         run: |
-          pct() { jq -r '(.ratio * 1000 | floor / 10 | tostring) + "%"' "$1"; }
           {
             echo '### Integration timing coverage'
             echo
