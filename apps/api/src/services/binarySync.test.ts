@@ -558,6 +558,240 @@ describe("binarySync", () => {
       await expect(syncFromGitHub()).rejects.toThrow(/encryptSecret returned null/);
       expect(dbMocks.insertValues).not.toHaveBeenCalled();
     });
+
+    // #11028: the backup loop used to bypass applyDeploymentSigning, so on an
+    // overridden repo the backup row stored the self-hoster's raw release
+    // manifest + signature stamped with the OFFICIAL key ID. The API accepts
+    // that (its "official" set is the configured trust root, i.e. the
+    // self-hoster's key), but agents bind that ID to the embedded official
+    // key and reject it: "update manifest signature verification failed for
+    // signing key id release-artifact-manifest-ed25519". Agent upgrades went
+    // through re-signed; breeze-backup never followed.
+    describe("backup rows (#11028)", () => {
+      const agentAsset = {
+        name: "breeze-agent-linux-amd64",
+        buffer: Buffer.from("self-hoster signed agent bytes"),
+      };
+      const backupAsset = {
+        name: "breeze-backup-linux-amd64",
+        buffer: Buffer.from("self-hoster signed backup bytes"),
+      };
+      const assetUrl = (release: string, name: string) =>
+        `https://github.com/${repo}/releases/download/${release}/${name}`;
+
+      function releaseJson(
+        signed: ReturnType<typeof makeSignedReleaseManifestMulti>,
+        assets: { name: string; buffer: Buffer }[],
+      ) {
+        return JSON.stringify({
+          tag_name: signed.release,
+          body: "release notes",
+          assets: [
+            ...assets.map((a) => ({
+              name: a.name,
+              browser_download_url: assetUrl(signed.release, a.name),
+              size: a.buffer.length,
+            })),
+            {
+              name: "release-artifact-manifest.json",
+              browser_download_url: assetUrl(signed.release, "release-artifact-manifest.json"),
+              size: signed.manifest.length,
+            },
+            {
+              name: "release-artifact-manifest.json.ed25519",
+              browser_download_url: assetUrl(signed.release, "release-artifact-manifest.json.ed25519"),
+              size: signed.signature.length,
+            },
+          ],
+        });
+      }
+
+      function manifestResponses(
+        url: string,
+        signed: ReturnType<typeof makeSignedReleaseManifestMulti>,
+      ): Response {
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      }
+
+      function useRealDeploymentKey() {
+        const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+        manifestSigningMocks.signManifest.mockImplementation(
+          async (json: string) =>
+            sign(null, Buffer.from(json, "utf8"), privateKey).toString("base64"),
+        );
+        return publicKey;
+      }
+
+      afterEach(() => {
+        manifestSigningMocks.signManifest.mockImplementation(
+          async () => "test-signature-base64",
+        );
+      });
+
+      function backupInsert(): Record<string, unknown> {
+        const call = (dbMocks.insertValues.mock.calls as any[][]).find(
+          (c) => (c[0] as { component: string }).component === "backup",
+        );
+        expect(call).toBeDefined();
+        return call![0] as Record<string, unknown>;
+      }
+
+      function expectDeploySignedBackupRow(
+        row: Record<string, unknown>,
+        version: string,
+        release: string,
+        checksum: string,
+        deployPub: ReturnType<typeof useRealDeploymentKey>,
+      ) {
+        expect(row.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        expect(JSON.parse(row.releaseManifest as string)).toEqual({
+          version,
+          component: "backup",
+          platform: "linux",
+          arch: "amd64",
+          url: assetUrl(release, backupAsset.name),
+          checksum,
+          size: backupAsset.buffer.length,
+        });
+        expect(
+          verify(
+            null,
+            Buffer.from(row.releaseManifest as string, "utf8"),
+            deployPub,
+            Buffer.from(row.manifestSignature as string, "base64"),
+          ),
+        ).toBe(true);
+      }
+
+      it("syncFromGitHub re-signs the backup row with the deployment key, like every other component", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        const signed = makeSignedReleaseManifestMulti(
+          [agentAsset, backupAsset],
+          "v1.2.3",
+          repo,
+        );
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        const deployPub = useRealDeploymentKey();
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) =>
+            url.includes("/releases/latest")
+              ? new Response(releaseJson(signed, [agentAsset, backupAsset]))
+              : manifestResponses(url, signed),
+          ),
+        );
+
+        const result = await syncFromGitHub();
+        expect(result.synced).toEqual(
+          expect.arrayContaining(["agent:linux/amd64", "backup:linux/amd64"]),
+        );
+
+        const row = backupInsert();
+        expectDeploySignedBackupRow(
+          row,
+          "1.2.3",
+          "v1.2.3",
+          signed.checksums.get(backupAsset.name)!,
+          deployPub,
+        );
+
+        // The conflict-update path (an existing row for this version) carries
+        // the same re-signed fields, so a re-sync heals a row stored raw.
+        const backupSet = (dbMocks.onConflictDoUpdate.mock.calls as any[][])
+          .map((c) => c[0].set as Record<string, unknown>)
+          .find((s) => s.releaseManifest === row.releaseManifest);
+        expect(backupSet).toBeDefined();
+        expect(backupSet!.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        expect(backupSet!.manifestSignature).toBe(row.manifestSignature);
+      });
+
+      it("aborts before any write when re-signing the backup row fails", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        const signed = makeSignedReleaseManifestMulti(
+          [agentAsset, backupAsset],
+          "v1.2.3",
+          repo,
+        );
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) =>
+            url.includes("/releases/latest")
+              ? new Response(releaseJson(signed, [agentAsset, backupAsset]))
+              : manifestResponses(url, signed),
+          ),
+        );
+        manifestSigningMocks.signManifest.mockImplementation(async (json: string) => {
+          if ((JSON.parse(json) as { component: string }).component === "backup") {
+            throw new Error("decryptSecret returned null for active signing key");
+          }
+          return "test-signature-base64";
+        });
+
+        await expect(syncFromGitHub()).rejects.toThrow(/decryptSecret returned null/);
+        // Same rule as every other component: a deployment-wide signing fault
+        // must not leave the agent row promoted ahead of its backup companion.
+        expect(dbMocks.insertValues).not.toHaveBeenCalled();
+      });
+
+      it("the boot backup-only backfill re-signs the backup row with the deployment key", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        process.env.BINARY_SOURCE = "github";
+        process.env.APP_VERSION = "0.65.9";
+        // Agent row registered for this version, backup row missing: the
+        // branch that runs backfillBackupRowsForVersion.
+        dbMocks.select.mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                component: "agent",
+                platform: "linux",
+                architecture: "amd64",
+                isLatest: true,
+                edition: "self-host",
+              },
+            ]),
+          }),
+        });
+        const signed = makeSignedReleaseManifestMulti([backupAsset], "v0.65.9", repo);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        const deployPub = useRealDeploymentKey();
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) => {
+            // The unconditional initial sync sees no component assets, so it
+            // upserts nothing and the backfill is the only writer.
+            if (url.includes("/releases/latest"))
+              return new Response(releaseJson(signed, []));
+            if (url.includes("/releases/tags/v0.65.9"))
+              return new Response(releaseJson(signed, [backupAsset]));
+            return manifestResponses(url, signed);
+          }),
+        );
+
+        await syncBinaries();
+
+        const insertCalls = dbMocks.insertValues.mock.calls.map(
+          (c: any[]) => c[0] as Record<string, unknown>,
+        );
+        expect(insertCalls).toHaveLength(1);
+        expect(insertCalls[0]).toMatchObject({ component: "backup", isLatest: true });
+        expectDeploySignedBackupRow(
+          insertCalls[0]!,
+          "0.65.9",
+          "v0.65.9",
+          signed.checksums.get(backupAsset.name)!,
+          deployPub,
+        );
+        const set = (dbMocks.onConflictDoUpdate.mock.calls[0]![0] as any).set;
+        expect(set.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        expect(set.releaseManifest).toBe(insertCalls[0]!.releaseManifest);
+      });
+    });
   });
 
   // AGENT_TARGETS ends with windows/amd64, so a Windows trust failure used to

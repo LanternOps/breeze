@@ -2206,6 +2206,15 @@ async function syncFromGitHubRelease(
     { component: "helper", targets: HELPER_TARGETS },
     { component: "user-helper", targets: USER_HELPER_TARGETS },
     { component: "watchdog", targets: WATCHDOG_TARGETS },
+    // breeze-backup is resolved and deployment-signed here like every other
+    // component. It used to be a separate loop after the commit phase that
+    // skipped applyDeploymentSigning, so on an overridden release repository
+    // its row kept the self-hoster's raw release manifest under the official
+    // key ID. Agents bind that ID to the embedded official key and refused
+    // every breeze-backup download, so the backup helper never followed agent
+    // upgrades (#11028). A release that predates the backup asset simply
+    // contributes no plan entries (the `!asset` skip below).
+    { component: "backup", targets: BACKUP_TARGETS },
   ];
 
   const plan: {
@@ -2306,52 +2315,6 @@ async function syncFromGitHubRelease(
     throw new Error(
       `GitHub sync registered 0 of ${plan.length} binaries for ${version}: ${failures.join("; ")}`,
     );
-  }
-
-  // Sync backup binaries. Same per-arch asset shape as the agent/watchdog.
-  // Missing for any release predating the backup component being published —
-  // the `release.assets.find` returns undefined and the loop body
-  // short-circuits.
-  for (const target of BACKUP_TARGETS) {
-    const suffix = target.goos === "windows" ? ".exe" : "";
-    const assetName = `breeze-backup-${target.goos}-${target.goarch}${suffix}`;
-    const asset = release.assets.find((a) => a.name === assetName);
-    if (!asset) continue;
-    const metadata = await getReleaseAssetMetadata({
-      asset,
-      trustedManifest,
-      fallbackChecksums,
-      releaseTag: release.tag_name,
-    });
-    if (!metadata) {
-      // See agent loop above: `!metadata` after `!asset` passed indicates an
-      // unexpected manifest/checksums inconsistency, not a missing artifact.
-      console.warn(
-        `[binarySync] Missing metadata for backup asset (release=${release.tag_name}, asset=${assetName}, component=backup); skipping`,
-      );
-      continue;
-    }
-    const platform = GH_PLATFORM_MAP[target.goos];
-    if (!platform) continue;
-
-    try {
-      await upsertVersion(
-        version,
-        platform,
-        target.goarch,
-        "backup",
-        asset.browser_download_url,
-        metadata,
-        release.body,
-      );
-      synced.push(`backup:${platform}/${target.goarch}`);
-    } catch (err) {
-      rethrowReadOnlyDuringRetry(err);
-      console.error(
-        `[binarySync] Failed to upsert backup version for ${platform}/${target.goarch}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
   }
 
   console.log(
@@ -2610,13 +2573,28 @@ async function backfillBackupRowsForVersion(
     );
     const isLatest = siblingAgentRow?.isLatest ?? false;
 
+    // Deployment-sign BEFORE the per-target catch below, same as the main
+    // sync: on an overridden release repository the raw manifest is signed by
+    // the self-hoster's release key, which agents do not trust under the
+    // official key ID (#11028). A signing failure is deployment-wide and must
+    // not be swallowed as one target's upsert failure; it propagates to
+    // ensureCurrentVersionRegistered's catch, which logs it.
+    const signedMetadata = await applyDeploymentSigning({
+      metadata,
+      version: currentVersion,
+      component: "backup",
+      platform,
+      arch: target.goarch,
+      downloadUrl: asset.browser_download_url,
+    });
+
     try {
       await upsertBackupVersionExplicit(
         currentVersion,
         platform,
         target.goarch,
         asset.browser_download_url,
-        metadata,
+        signedMetadata,
         release.body,
         isLatest,
       );
