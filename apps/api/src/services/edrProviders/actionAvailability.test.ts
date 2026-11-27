@@ -52,7 +52,7 @@ const row = (over: Partial<EdrEndpointRowForActions> = {}): EdrEndpointRowForAct
   osPlatform: 'windows', isolationState: 'not_isolated', online: true, breezeDeviceId: 'd1', ...over,
 });
 const connection = { id: 'c1', provider: 'bitdefender', isActive: true, status: 'connected', actionsEnabled: true, capabilitiesSnapshot: [] };
-const tenant = { id: 't1', orgId: 'org-a', unsupportedActions: [], unsupportedActionsAt: null };
+const tenant = { id: 't1', orgId: 'org-a', unsupportedActions: [], unsupportedActionsAt: null, vendorMissingSince: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -64,7 +64,8 @@ describe('describeEndpointActionsForRows', () => {
     h.state.results = [[connection], [tenant]];
     h.resolveEdrReadScope.mockResolvedValue({ allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'] });
     const out = await describeEndpointActionsForRows({} as never, undefined, [row()]);
-    expect(h.state.selectCtx).toEqual(['system', 'system']);
+    // Partner-axis facts under SYSTEM; the ledger read stays in the caller's own context (#12789).
+    expect(h.state.selectCtx).toEqual(['system', 'system', 'request']);
     expect(h.runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(out.get('e1')).toEqual([{ action: 'isolate', available: true, reason: null }]);
     expect(h.describeEndpointActions).toHaveBeenCalledWith(
@@ -100,6 +101,31 @@ describe('describeEndpointActionsForRows', () => {
     const out = await describeEndpointActionsForRows({} as never, undefined, [row()]);
     expect(out.get('e1')).toEqual([]);
     expect(h.describeEndpointActions).not.toHaveBeenCalled();
+  });
+
+  it('#12789 item 4: open and just-succeeded ledger rows are read in the CALLER context and passed per endpoint', async () => {
+    const requestedAt = new Date();
+    h.state.results = [[connection], [tenant], [
+      { endpointId: 'e1', action: 'isolate', status: 'queued', error: 'dispatch_outcome_unknown', requestedAt },
+      { endpointId: 'e2', action: 'scan', status: 'submitted', error: null, requestedAt },
+    ]];
+    await describeEndpointActionsForRows({} as never, EXEC, [row(), row({ id: 'e2', vendorEndpointId: 'v2', breezeDeviceId: 'd2' })]);
+    expect(h.state.selectCtx[2]).toBe('request');
+    expect(h.describeEndpointActions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e1' }), tenant, connection,
+      expect.objectContaining({ ledger: [{ action: 'isolate', status: 'queued', error: 'dispatch_outcome_unknown', requestedAt }] }),
+    );
+    expect(h.describeEndpointActions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'e2' }), tenant, connection,
+      expect.objectContaining({ ledger: [{ action: 'scan', status: 'submitted', error: null, requestedAt }] }),
+    );
+  });
+
+  it('#12789 item 6: the tenant facts include vendorMissingSince', async () => {
+    const missing = { ...tenant, vendorMissingSince: new Date('2026-11-01T00:00:00Z') };
+    h.state.results = [[connection], [missing]];
+    await describeEndpointActionsForRows({} as never, EXEC, [row()]);
+    expect(h.describeEndpointActions).toHaveBeenLastCalledWith(expect.anything(), missing, connection, expect.anything());
   });
 
   it('no rows → no queries', async () => {

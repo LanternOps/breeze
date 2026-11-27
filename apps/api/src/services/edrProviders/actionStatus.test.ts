@@ -55,6 +55,7 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../../db/schema', () => ({
   edrActions: { id: 'id', status: 'status', connectionId: 'connection_id', detachedAt: 'detached_at', requestedAt: 'requested_at' },
   edrConnections: { id: 'id' },
+  edrEndpoints: { id: 'id', isolationState: 'isolation_state', connectionId: 'connection_id' },
   edrTenants: { id: 'id' },
 }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: h.createAuditLogAsync }));
@@ -81,11 +82,11 @@ import {
 const NOW = new Date('2026-10-13T12:00:00Z');
 const ago = (msAgo: number) => new Date(NOW.getTime() - msAgo);
 const connection = { id: 'c1', provider: 'bitdefender', isActive: true, credentialsEncrypted: 'enc', baseUrl: null, region: null };
-const tenant = { id: 't1', vendorTenantId: 'company-1', apiHost: null };
+const tenant = { id: 't1', vendorTenantId: 'company-1', apiHost: null, lastInventorySyncAt: null as Date | null };
 const row = (over: Record<string, unknown> = {}) => ({
   id: 'act-1', orgId: 'org-1', tenantId: 't1', action: 'isolate', status: 'queued', vendorActionId: null,
   payload: { target: { kind: 'endpoint', vendorEndpointId: 'ep-v' } }, requestedAt: ago(EDR_ACTION_UNKNOWN_GRACE_MS + 1000),
-  submittedAt: null, requestedBy: 'u1', detachedAt: null, ...over,
+  submittedAt: null, requestedBy: 'u1', detachedAt: null, endpointId: 'ep-1', ...over,
 });
 function arrange(rows: unknown[]) {
   h.state.selects = [[connection], rows, rows.length ? [tenant] : []];
@@ -199,6 +200,67 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
     h.getActionStatus.mockRejectedValue(new Error('502'));
     expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
     expect(h.state.updates).toHaveLength(0);
+  });
+
+  describe('#12789 item 5: an accepted isolate / un-isolate is confirmed from the next inventory sync', () => {
+    const submitted = (action: 'isolate' | 'unisolate', over: Record<string, unknown> = {}) =>
+      row({ action, status: 'submitted', vendorActionId: null, submittedAt: ago(10 * 60_000), ...over });
+    const arrangeConfirm = (r: unknown, o: { syncedAgo: number | null; isolationState: string | null }) => {
+      h.state.selects = [
+        [connection],
+        [r],
+        [{ ...tenant, lastInventorySyncAt: o.syncedAgo === null ? null : ago(o.syncedAgo) }],
+        o.isolationState === null ? [] : [{ id: 'ep-1', isolationState: o.isolationState }],
+      ];
+    };
+
+    it.each([
+      ['isolate', 'isolated'],
+      ['unisolate', 'not_isolated'],
+    ] as const)('%s + an inventory sync after submission shows %s → succeeded (CAS on submitted), audited as confirmed', async (action, state) => {
+      arrangeConfirm(submitted(action), { syncedAgo: 60_000, isolationState: state });
+      expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 1 });
+      expect(h.state.updates[0]!.set).toMatchObject({ status: 'succeeded', error: null });
+      expect(JSON.stringify(h.state.updates[0]!.where)).toContain('"submitted"');
+      expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'edr.action.succeeded', details: expect.objectContaining({ reconciled: true, confirmedBy: 'inventory' }),
+      }));
+      expect(h.getActionStatus).not.toHaveBeenCalled();
+    });
+
+    it('the target state seen only by a sync that ran BEFORE the submission does not confirm', async () => {
+      arrangeConfirm(submitted('isolate'), { syncedAgo: 20 * 60_000, isolationState: 'isolated' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+      expect(h.state.updates).toHaveLength(0);
+    });
+
+    it.each(['not_isolated', 'pending', 'unknown'])('isolate + a fresh sync still showing %s → left awaiting confirmation', async (state) => {
+      arrangeConfirm(submitted('isolate'), { syncedAgo: 60_000, isolationState: state });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+      expect(h.state.updates).toHaveLength(0);
+    });
+
+    it('never confirmed within 24 h → failed/isolation_unconfirmed (not vendor_status_timeout)', async () => {
+      arrangeConfirm(submitted('isolate', { submittedAt: ago(EDR_ACTION_SUBMITTED_TIMEOUT_MS + 1) }), { syncedAgo: 60_000, isolationState: 'not_isolated' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
+      expect(h.state.updates[0]!.set).toMatchObject({ status: 'failed', error: 'isolation_unconfirmed' });
+    });
+
+    it('a vendor task that reports success still waits for inventory; a failed task fails the row', async () => {
+      arrangeConfirm(submitted('isolate', { vendorActionId: 'task-1' }), { syncedAgo: 60_000, isolationState: 'not_isolated' });
+      h.getActionStatus.mockResolvedValue({ status: 'succeeded' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+
+      arrangeConfirm(submitted('isolate', { vendorActionId: 'task-1' }), { syncedAgo: 60_000, isolationState: 'not_isolated' });
+      h.getActionStatus.mockResolvedValue({ status: 'failed', code: 'x', message: 'y' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
+      expect(h.state.updates.at(-1)!.set).toMatchObject({ status: 'failed', error: 'vendor_task_failed' });
+    });
+
+    it('an endpoint the inventory pruned (no row) cannot confirm; it only times out', async () => {
+      arrangeConfirm(submitted('isolate', { endpointId: null }), { syncedAgo: 60_000, isolationState: null });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+    });
   });
 
   it('CAS miss (a concurrent dispatch outcome write won) → no audit for that row', async () => {

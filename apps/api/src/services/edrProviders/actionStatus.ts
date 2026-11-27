@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, isNull, lt, or } from 'drizzle-orm';
-import type { EdrActionKey, EdrActionStatus } from '@breeze/shared';
+import { isEdrInventoryConfirmedAction, type EdrActionKey, type EdrActionStatus, type EdrIsolationState } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { edrActions, edrConnections, edrTenants } from '../../db/schema';
+import { edrActions, edrConnections, edrEndpoints, edrTenants } from '../../db/schema';
 import { createAuditLogAsync } from '../auditService';
 import { buildEdrAdapterContext } from './context';
 import { decryptEdrSecret } from './credentials';
@@ -23,13 +23,18 @@ import type { EdrActionRequest, EdrAdapterContext, EdrProviderAdapter, EdrReconc
  * Three phases, as the sync job: short system tx to load; vendor reads with no
  * DB context; short system tx with compare-and-set writes (a concurrent
  * dispatch outcome write wins).
+ *
+ * An isolate / un-isolate the vendor ACCEPTED stays `submitted` (#12789): it
+ * succeeds only when an inventory sync that finished after the submission
+ * shows the endpoint in the requested isolation state, and fails as
+ * `isolation_unconfirmed` if none does within the submitted timeout.
  */
 
 /** A queued row this young may still be mid-dispatch in a request. */
 export const EDR_ACTION_UNKNOWN_GRACE_MS = 120_000;
 /** A queued row whose vendor state stays unknowable this long is failed for a human to re-issue. */
 export const EDR_ACTION_UNKNOWN_GIVEUP_MS = 30 * 60_000;
-/** A submitted vendor task still pending this long is failed. */
+/** A submitted vendor task (or an isolation inventory never confirmed) still pending this long is failed. */
 export const EDR_ACTION_SUBMITTED_TIMEOUT_MS = 24 * 3600_000;
 const BATCH = 50;
 const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
@@ -46,6 +51,13 @@ interface OpenRow {
   submittedAt: Date | null;
   requestedBy: string | null;
   detachedAt: Date | null;
+  endpointId: string | null;
+}
+
+/** What the last inventory sync recorded for an endpoint, and when that sync finished. */
+interface InventoryFacts {
+  isolationState: EdrIsolationState;
+  tenantSyncedAt: Date | null;
 }
 
 interface Settlement {
@@ -55,6 +67,24 @@ interface Settlement {
   status: 'succeeded' | 'failed';
   error: string | null;
   requestedBy: string | null;
+  confirmedBy?: 'inventory';
+}
+
+const TARGET_ISOLATION: Record<'isolate' | 'unisolate', EdrIsolationState> = { isolate: 'isolated', unisolate: 'not_isolated' };
+
+/**
+ * Inventory confirms an accepted isolate / un-isolate: the endpoint shows the
+ * requested state in a sync that finished AFTER the vendor accepted it (a
+ * sync from before cannot speak for the new request).
+ */
+export function inventoryConfirms(
+  row: Pick<OpenRow, 'action' | 'submittedAt' | 'requestedAt'>,
+  inventory: InventoryFacts | undefined,
+): boolean {
+  if (!inventory?.tenantSyncedAt || !isEdrInventoryConfirmedAction(row.action)) return false;
+  const since = ms(row.submittedAt) ?? ms(row.requestedAt);
+  if (since === null || new Date(inventory.tenantSyncedAt).getTime() <= since) return false;
+  return inventory.isolationState === TARGET_ISOLATION[row.action];
 }
 
 /** Rebuild the vendor request from the ledger row (`payload.target` was written by dispatch). */
@@ -81,6 +111,7 @@ async function settleOne(
   tenant: { vendorTenantId: string; apiHost: string | null } | undefined,
   row: OpenRow,
   now: Date,
+  inventory?: InventoryFacts,
 ): Promise<Omit<Settlement, 'id' | 'orgId' | 'observed' | 'requestedBy'> | null> {
   const age = now.getTime() - (ms(row.requestedAt) ?? now.getTime());
 
@@ -89,6 +120,23 @@ async function settleOne(
   // re-issue against the new mapping.
   if (row.detachedAt) {
     return age > EDR_ACTION_UNKNOWN_GIVEUP_MS ? { status: 'failed', error: 'detached_unsettled' } : null;
+  }
+
+  if (row.status === 'submitted' && isEdrInventoryConfirmedAction(row.action)) {
+    // Accepted isolate / un-isolate: only inventory says it took effect.
+    if (inventoryConfirms(row, inventory)) return { status: 'succeeded', error: null, confirmedBy: 'inventory' };
+    const submittedAge = now.getTime() - (ms(row.submittedAt) ?? ms(row.requestedAt) ?? now.getTime());
+    // A vendor task id, if the vendor gave one, can only fail the row early: a
+    // finished task is still not the endpoint confirming its isolation state.
+    if (row.vendorActionId && tenant && adapter.getActionStatus) {
+      try {
+        const result = await adapter.getActionStatus(ctx, tenant, row.vendorActionId);
+        if (result.status === 'failed') return { status: 'failed', error: 'vendor_task_failed' };
+      } catch (err) {
+        logVendorReadFailure(row.id, 'getActionStatus', err);
+      }
+    }
+    return submittedAge > EDR_ACTION_SUBMITTED_TIMEOUT_MS ? { status: 'failed', error: 'isolation_unconfirmed' } : null;
   }
 
   if (row.status === 'submitted') {
@@ -150,6 +198,7 @@ export async function pollEdrActionStatus(connectionId: string, now: Date): Prom
         submittedAt: edrActions.submittedAt,
         requestedBy: edrActions.requestedBy,
         detachedAt: edrActions.detachedAt,
+        endpointId: edrActions.endpointId,
       })
       .from(edrActions)
       .where(and(
@@ -163,15 +212,34 @@ export async function pollEdrActionStatus(connectionId: string, now: Date): Prom
       .limit(BATCH)) as OpenRow[];
     const tenantIds = [...new Set(rows.map((r) => r.tenantId).filter((t): t is string => !!t))];
     const tenants = tenantIds.length === 0 ? [] : await db
-      .select({ id: edrTenants.id, vendorTenantId: edrTenants.vendorTenantId, apiHost: edrTenants.apiHost })
+      .select({
+        id: edrTenants.id,
+        vendorTenantId: edrTenants.vendorTenantId,
+        apiHost: edrTenants.apiHost,
+        lastInventorySyncAt: edrTenants.lastInventorySyncAt,
+      })
       .from(edrTenants)
       .where(inArray(edrTenants.id, tenantIds));
-    return { connection, rows, tenants: new Map(tenants.map((t) => [t.id, t])) };
+    // #12789: the inventory state of endpoints with an accepted isolate / un-isolate.
+    const confirmIds = [...new Set(rows
+      .filter((r) => r.status === 'submitted' && !r.detachedAt && isEdrInventoryConfirmedAction(r.action))
+      .map((r) => r.endpointId)
+      .filter((id): id is string => !!id))];
+    const endpoints = confirmIds.length === 0 ? [] : await db
+      .select({ id: edrEndpoints.id, isolationState: edrEndpoints.isolationState })
+      .from(edrEndpoints)
+      .where(and(inArray(edrEndpoints.id, confirmIds), eq(edrEndpoints.connectionId, connectionId)));
+    return {
+      connection,
+      rows,
+      tenants: new Map(tenants.map((t) => [t.id, t])),
+      endpoints: new Map(endpoints.map((e) => [e.id, e.isolationState])),
+    };
   }, 'edrActionStatus.load');
   if (!loaded || loaded.rows.length === 0) return { checked: 0, settled: 0 };
 
   // ---- phase 2 (vendor reads, NO DB) ----
-  const { connection, rows, tenants } = loaded;
+  const { connection, rows, tenants, endpoints } = loaded;
   const settlements: Settlement[] = await runOutsideDbContext(async () => {
     const adapter = getEdrProvider(connection.provider);
     const creds = decryptEdrSecret('connection_credentials', connection.id, connection.credentialsEncrypted);
@@ -179,7 +247,9 @@ export async function pollEdrActionStatus(connectionId: string, now: Date): Prom
     const out: Settlement[] = [];
     for (const row of rows) {
       const t = row.tenantId ? tenants.get(row.tenantId) : undefined;
-      const s = await settleOne(adapter, ctx, t && { vendorTenantId: t.vendorTenantId, apiHost: t.apiHost }, row, now);
+      const isolationState = row.endpointId ? endpoints.get(row.endpointId) : undefined;
+      const inventory = isolationState && t ? { isolationState, tenantSyncedAt: t.lastInventorySyncAt ?? null } : undefined;
+      const s = await settleOne(adapter, ctx, t && { vendorTenantId: t.vendorTenantId, apiHost: t.apiHost }, row, now, inventory);
       if (s) out.push({ ...s, id: row.id, orgId: row.orgId, observed: row.status, requestedBy: row.requestedBy });
     }
     return out;
@@ -208,7 +278,13 @@ export async function pollEdrActionStatus(connectionId: string, now: Date): Prom
       action: `edr.action.${s.status}`,
       resourceType: 'edr_action',
       resourceId: s.id,
-      details: { reconciled: true, error: s.error, requestedBy: s.requestedBy, connectionId },
+      details: {
+        reconciled: true,
+        error: s.error,
+        requestedBy: s.requestedBy,
+        connectionId,
+        ...(s.confirmedBy ? { confirmedBy: s.confirmedBy } : {}),
+      },
       result: s.status === 'succeeded' ? 'success' : 'failure',
       initiatedBy: 'automation',
     });

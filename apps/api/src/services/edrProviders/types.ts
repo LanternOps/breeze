@@ -162,7 +162,9 @@ export type EdrActionRequest =
  * `succeeded` = the vendor accepted (and, for a synchronous call, applied) it;
  * `submitted` = the vendor queued a task to poll; `failed` = a TERMINAL vendor
  * verdict, only ever returned by `getActionStatus` (a refused `performAction`
- * throws `EdrProviderRequestError` instead).
+ * throws `EdrProviderRequestError` instead). For an isolate / un-isolate the
+ * ledger never takes `succeeded` from here: dispatch records it `submitted`
+ * and the reconciler confirms it from inventory `isolation_state` (#12789).
  */
 export type EdrActionResult =
   | { status: 'succeeded' }

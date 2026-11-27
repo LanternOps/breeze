@@ -67,6 +67,24 @@ export default function DeviceEdrGenericSection({ deviceId, orgId, timezone }: P
     };
   }, [deviceId, orgId]);
 
+  // After a request, re-read the endpoints quietly (no loading flash) so each
+  // button's availability reflects the new in-flight row (#12789).
+  useEffect(() => {
+    if (actionTick === 0) return;
+    let cancelled = false;
+    fetchEdrEndpoints({ deviceId, state: "linked" })
+      .then((rows) => {
+        if (!cancelled) setEndpoints(rows);
+      })
+      .catch((err) => {
+        // Keep the previous list; dispatch still refuses a duplicate (409).
+        console.warn("[DeviceEdrGenericSection] endpoint refresh failed", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actionTick, deviceId]);
+
   if (loading || allDenied) return null;
   if (!failed && endpoints.length === 0 && detections.length === 0) return null;
 

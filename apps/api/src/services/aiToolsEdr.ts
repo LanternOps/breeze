@@ -254,9 +254,13 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
           outcomeUnknown: outcome.outcomeUnknown,
           ...(outcome.error ? { error: outcome.error } : {}),
           ...(outcome.retryAfterSeconds !== undefined ? { retryAfterSeconds: outcome.retryAfterSeconds } : {}),
+          ...(outcome.awaitingConfirmation ? { awaitingConfirmation: true } : {}),
           ...(outcome.outcomeUnknown
             ? { note: 'The vendor did not confirm the request; Breeze is checking whether it took effect. Do not retry.' }
-            : {}),
+            : outcome.awaitingConfirmation
+              // #12789: the vendor accepting the task is not the endpoint being isolated.
+              ? { note: 'The vendor accepted the request, but the endpoint has not confirmed it yet (it may be offline). Do not report the device as isolated or released until an inventory sync confirms it. Do not retry.' }
+              : {}),
         });
       } catch (err) {
         if (err instanceof EdrActionError) {

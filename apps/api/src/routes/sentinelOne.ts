@@ -23,6 +23,7 @@ import { escapeLike } from '../utils/sql';
 import { checkSsrfSafe } from '../services/ssrfGuard';
 import {
   activeIntegrationIds,
+  activeIntegrationIdsOfReadableAgents,
   clearS1SiteRegistrationTokens,
   disconnectS1Integration,
   findReconnectableS1Integration,
@@ -266,6 +267,11 @@ const sitesQuerySchema = z.object({
 const statusQuerySchema = z.object({
   partnerId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
+});
+
+const deviceStatusQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+  deviceId: z.string().guid(),
 });
 
 function normalizedHost(value: string): string {
@@ -909,6 +915,34 @@ sentinelOneRoutes.get(
         offset
       }
     });
+  }
+);
+
+// GET /device-status — is this device covered by the org's ACTIVE SentinelOne
+// integration? The device EDR panel renders the legacy isolate buttons only
+// when it is (#12789), so a device covered by another vendor shows none.
+// The rule is the one #12719/#12746 set: the org's active integration
+// (getActiveS1IntegrationForOrg, the same lookup POST /isolate uses) must be
+// behind one of the device's agent rows, read in the caller's own context.
+sentinelOneRoutes.get(
+  '/device-status',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', deviceStatusQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const orgResult = resolveOrgId(auth, query.orgId ?? requestedOrgId(c));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    if (await hasDeniedDeviceSite(orgResult.orgId, [query.deviceId], c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to device site denied' }, 403);
+    }
+    const integration = await getActiveS1IntegrationForOrg(orgResult.orgId);
+    if (!integration) return c.json({ data: { deviceId: query.deviceId, active: false } });
+    const { sentinelone } = await activeIntegrationIdsOfReadableAgents({
+      sentinelone: and(eq(s1Agents.orgId, orgResult.orgId), eq(s1Agents.deviceId, query.deviceId)),
+    });
+    return c.json({ data: { deviceId: query.deviceId, active: sentinelone.includes(integration.id) } });
   }
 );
 

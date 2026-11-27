@@ -4550,6 +4550,23 @@
         "submitted": "In Bearbeitung",
         "succeeded": "Erfolgreich",
         "failed": "Fehlgeschlagen"
+      },
+      "awaitingConfirmation": "Angenommen, Bestätigung durch das Gerät steht aus",
+      "unknownRequester": "Unbekannter Benutzer",
+      "failure": {
+        "vendor_rejected": "Vom Anbieter abgelehnt",
+        "licence": "Die Anbieterlizenz des Unternehmens umfasst diese Aktion nicht",
+        "api_not_enabled": "Dem API-Schlüssel des Anbieters fehlt die API, die diese Aktion benötigt",
+        "rate_limited": "Das Anfragelimit des Anbieters wurde erreicht; es wurde nichts gesendet",
+        "vendor_auth": "Der Anbieter hat den API-Schlüssel abgelehnt",
+        "audit_unavailable": "Nicht gesendet: Das Audit-Protokoll war nicht verfügbar",
+        "outcome_unknown_reissue_manually": "Das Ergebnis wurde nie bestätigt; prüfen Sie die Anbieterkonsole, bevor Sie es erneut versuchen",
+        "not_sent_or_rejected": "Laut Anbieter wurde die Aktion nicht angewendet",
+        "detached_unsettled": "Die Unternehmenszuordnung hat sich vor dem Abschluss geändert",
+        "vendor_status_timeout": "Die Aufgabe des Anbieters wurde nicht innerhalb von 24 Stunden abgeschlossen",
+        "vendor_task_failed": "Der Anbieter hat gemeldet, dass die Aufgabe fehlgeschlagen ist",
+        "isolation_unconfirmed": "Angenommen, aber das Gerät hat es nicht innerhalb von 24 Stunden bestätigt; prüfen Sie die Anbieterkonsole",
+        "unknown": "Die Aktion wurde nicht abgeschlossen"
       }
     }
   },

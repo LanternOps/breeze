@@ -75,6 +75,10 @@ import {
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { dispatchEdrAction } from '../../services/edrProviders/actions';
+import { describeEndpointActionsForRows } from '../../services/edrProviders/actionAvailability';
+import { listEdrActions } from '../../services/edrProviders/actionsRead';
+import { EdrProviderRequestError } from '../../services/edrProviders/types';
+import { dbAccessContextFromAuth } from '../../middleware/auth';
 import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../../services/edrProviders/actionStatus';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { connectionsWithOpenEdrActions } from '../../jobs/edrProviderSync';
@@ -309,7 +313,7 @@ describe('edr actions — tenancy and dispatch (real PostgreSQL)', () => {
 
   runDb('2b. the happy path writes one audited row through RLS and settles it', async () => {
     const a = await seedEdrTenant('happy');
-    const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'isolate' });
+    const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'scan' });
     expect(out).toMatchObject({ status: 'succeeded', httpStatus: 200 });
     const [row] = Array.from(await admin().execute(sql`
       SELECT status, requested_by, requested_via, endpoint_id, breeze_device_id FROM edr_actions WHERE id = ${out.actionId}`)) as Row[];
@@ -605,5 +609,135 @@ describe('edr actions — rows detached by a remap settle (real PostgreSQL)', ()
     const a = await seedEdrTenant('live-sweep');
     await insertActionAsSystem(a, { action: 'isolate', status: 'queued' });
     expect(await connectionsWithOpenEdrActions([a.connection.id], new Date())).toEqual([a.connection.id]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #12789 — accepted isolation, vendor reasons, requester names, availability
+// ---------------------------------------------------------------------------
+
+describe('edr actions — #12789 action states and reasons (real PostgreSQL)', () => {
+  beforeEach(() => {
+    fake.calls = 0;
+    fake.reads = 0;
+    fake.afterResolve = null;
+    fake.extraActions = [];
+    fake.performAction.mockReset();
+    fake.performAction.mockResolvedValue({ status: 'succeeded' });
+  });
+
+  const rowOf = async (id: string) => (Array.from(await admin().execute(sql`
+    SELECT status, error, completed_at, payload FROM edr_actions WHERE id = ${id}`)) as Row[])[0]!;
+  const listAs = (auth: AuthContext, q: { deviceId?: string } = {}) =>
+    withDbAccessContext(dbAccessContextFromAuth(auth), () =>
+      listEdrActions({ auth, allowedDeviceIds: null, allowedSiteIds: null }, { ...q, limit: 50, offset: 0 }));
+
+  runDb('item 5: an accepted isolate stays submitted until an inventory sync AFTER it shows the endpoint isolated', async () => {
+    const a = await seedEdrTenant('accept');
+    const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'isolate' });
+    expect(out).toMatchObject({ status: 'submitted', awaitingConfirmation: true, httpStatus: 200 });
+    expect(await rowOf(out.actionId)).toMatchObject({ status: 'submitted', completed_at: null });
+    // The read model says "awaiting confirmation", never "succeeded".
+    expect((await listAs(partnerAuth(a))).rows.find((r) => r.id === out.actionId))
+      .toMatchObject({ status: 'submitted', awaitingConfirmation: true });
+
+    // A sync that finished BEFORE the vendor accepted it cannot confirm it.
+    const before = new Date(Date.now() - 60 * 60_000);
+    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'isolated' WHERE id = ${a.endpoint.id}`);
+    await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = ${before.toISOString()}::timestamptz WHERE id = ${a.tenant.id}`);
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
+    expect((await rowOf(out.actionId)).status).toBe('submitted');
+
+    // A fresh sync still showing not_isolated (endpoint offline) leaves it waiting.
+    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'not_isolated' WHERE id = ${a.endpoint.id}`);
+    await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = now() + interval '1 second' WHERE id = ${a.tenant.id}`);
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
+
+    // The next sync shows it isolated: confirmed, audited by the system actor.
+    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'isolated' WHERE id = ${a.endpoint.id}`);
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 1 });
+    const settled = await rowOf(out.actionId);
+    expect(settled).toMatchObject({ status: 'succeeded', error: null });
+    expect(settled.completed_at).not.toBeNull();
+    // Outcome audits are written asynchronously (createAuditLogAsync).
+    const audits = await vi.waitFor(async () => {
+      const r = Array.from(await admin().execute(sql`
+        SELECT action, details FROM audit_logs WHERE resource_id = ${out.actionId} ORDER BY timestamp`)) as Row[];
+      expect(r.map((x) => x.action)).toEqual(expect.arrayContaining(['edr.action.requested', 'edr.action.submitted', 'edr.action.succeeded']));
+      return r;
+    }, { timeout: 5_000, interval: 50 });
+    expect(audits.find((r) => r.action === 'edr.action.succeeded')!.details).toMatchObject({ reconciled: true, confirmedBy: 'inventory' });
+    // Settling read no vendor API: inventory is the evidence.
+    expect(fake.reads).toBe(0);
+  });
+
+  runDb('item 2/3: the vendor reason is stored sanitised and read back with the requester name, under the caller\'s RLS', async () => {
+    const a = await seedEdrTenant('reason');
+    const b = await seedEdrTenant('reason-other');
+    fake.performAction.mockRejectedValue(new EdrProviderRequestError(
+      `GravityZone incidents.createIsolateEndpointTask failed: Endpoint <b>does not exist</b> ${'k'.repeat(24)}`,
+      { code: 'not_found', reauth: false, scope: 'tenant' },
+    ));
+    const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'isolate' });
+    expect(out).toMatchObject({ status: 'failed', error: 'vendor_rejected' });
+    const stored = await rowOf(out.actionId);
+    const reason = 'GravityZone incidents.createIsolateEndpointTask failed: Endpoint does not exist [redacted]';
+    // Merged into the dispatch payload; the dispatch target survives.
+    expect(stored.payload).toMatchObject({ vendorReason: reason, target: { kind: 'endpoint' } });
+    // The outcome audit is written asynchronously (createAuditLogAsync).
+    const failedAudit = await vi.waitFor(async () => {
+      const r = (Array.from(await admin().execute(sql`
+        SELECT details FROM audit_logs WHERE resource_id = ${out.actionId} AND action = 'edr.action.failed'`)) as Row[])[0];
+      if (!r) throw new Error('outcome audit not written yet');
+      return r;
+    }, { timeout: 5_000, interval: 50 });
+    expect(failedAudit.details).toMatchObject({ vendorReason: reason, error: 'vendor_rejected' });
+    expect(JSON.stringify(failedAudit.details)).not.toContain('k'.repeat(24));
+
+    // A row whose requester the caller cannot see (another partner's user) reads with no name.
+    await insertActionAsSystem(a, { action: 'scan', status: 'failed', requestedBy: b.user.id });
+
+    const listed = (await listAs(partnerAuth(a))).rows;
+    expect(listed.find((r) => r.id === out.actionId)).toMatchObject({
+      requestedBy: a.user.id, requestedByName: 'Test User', vendorReason: reason, awaitingConfirmation: false,
+    });
+    const foreign = listed.find((r) => r.action === 'scan')!;
+    expect(foreign.requestedBy).toBe(b.user.id);
+    expect(foreign.requestedByName).toBeNull();
+    // Nothing of org A leaks to partner B.
+    expect((await listAs(partnerAuth(b))).rows.map((r) => r.id)).not.toContain(out.actionId);
+  });
+
+  runDb('item 6: a tenant the vendor no longer lists refuses dispatch (no row) and offers no action', async () => {
+    const a = await seedEdrTenant('missing');
+    await admin().execute(sql`UPDATE edr_tenants SET vendor_missing_since = now() WHERE id = ${a.tenant.id}`);
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'scan' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EdrActionError);
+    expect((err as EdrActionError).code).toBe('tenant_missing');
+    expect(await countActions(a.org.id)).toBe(0);
+    expect(fake.calls).toBe(0);
+  });
+
+  runDb('item 4: availability reflects in-flight and outcome-unknown rows read under the caller\'s RLS', async () => {
+    const a = await seedEdrTenant('avail');
+    await insertActionAsSystem(a, { action: 'isolate', status: 'queued', error: 'dispatch_outcome_unknown' });
+    // Older than the 60 s cooldown, so dispatch refuses it as in progress (not "recently requested").
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000);
+    await insertActionAsSystem(a, { action: 'scan', status: 'submitted', vendorActionId: 'task-1', requestedAt: fiveMinAgo, submittedAt: fiveMinAgo });
+    const auth = { ...partnerAuth(a), token: { mfa: true }, mfa: true } as unknown as AuthContext;
+    const perms = { permissions: [{ resource: 'devices', action: 'read' }, { resource: 'devices', action: 'execute' }], allowedSiteIds: null } as never;
+    const [endpointRow] = Array.from(await admin().execute(sql`
+      SELECT id, org_id AS "orgId", connection_id AS "connectionId", tenant_id AS "tenantId", vendor_endpoint_id AS "vendorEndpointId",
+             os_platform AS "osPlatform", isolation_state AS "isolationState", online, breeze_device_id AS "breezeDeviceId"
+        FROM edr_endpoints WHERE id = ${a.endpoint.id}`)) as never[];
+    const out = await withDbAccessContext(dbAccessContextFromAuth(auth), () => describeEndpointActionsForRows(auth, perms, [endpointRow!]));
+    const actions = out.get(a.endpoint.id)!;
+    expect(actions.find((x) => x.action === 'isolate')).toMatchObject({ available: false, reason: expect.stringMatching(/not known yet/) });
+    expect(actions.find((x) => x.action === 'scan')).toMatchObject({ available: false, reason: 'This action is already in progress for this target' });
+    // Dispatch agrees with the list.
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'scan' })
+      .catch((e: unknown) => e);
+    expect((err as EdrActionError).code).toBe('action_in_progress');
   });
 });

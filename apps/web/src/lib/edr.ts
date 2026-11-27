@@ -109,6 +109,18 @@ export async function fetchHuntressIncidents(
   return { rows: body.data as HuntressIncident[], total: Number(body?.total ?? body.data.length) };
 }
 
+/**
+ * Whether this device is covered by its org's ACTIVE SentinelOne integration
+ * (#12789). The legacy isolate buttons target SentinelOne only, so they render
+ * only when this is true; any error reads as false (fail closed).
+ */
+export async function fetchS1DeviceActive(orgId: string, deviceId: string): Promise<boolean> {
+  const res = await fetchWithAuth(`/s1/device-status?${toParams({ orgId, deviceId })}`);
+  throwIfNotOk(res);
+  const body = await res.json();
+  return body?.data?.active === true;
+}
+
 export async function isolateDevice(orgId: string, deviceId: string, isolate: boolean): Promise<void> {
   await runAction({
     request: () =>

@@ -4550,6 +4550,23 @@
         "submitted": "En cours",
         "succeeded": "Réussie",
         "failed": "Échec"
+      },
+      "awaitingConfirmation": "Acceptée, en attente de la confirmation de l'appareil",
+      "unknownRequester": "Utilisateur inconnu",
+      "failure": {
+        "vendor_rejected": "Refusée par le fournisseur",
+        "licence": "La licence fournisseur de l'entreprise n'inclut pas cette action",
+        "api_not_enabled": "La clé d'API du fournisseur ne dispose pas de l'API requise pour cette action",
+        "rate_limited": "La limite de requêtes du fournisseur est atteinte ; rien n'a été envoyé",
+        "vendor_auth": "Le fournisseur a refusé la clé d'API",
+        "audit_unavailable": "Non envoyée : le journal d'audit n'était pas disponible",
+        "outcome_unknown_reissue_manually": "Le résultat n'a jamais été confirmé ; vérifiez la console du fournisseur avant de réessayer",
+        "not_sent_or_rejected": "Le fournisseur indique qu'elle n'a pas été appliquée",
+        "detached_unsettled": "L'association de l'entreprise a changé avant la fin",
+        "vendor_status_timeout": "La tâche du fournisseur ne s'est pas terminée en 24 heures",
+        "vendor_task_failed": "Le fournisseur a signalé l’échec de la tâche",
+        "isolation_unconfirmed": "Acceptée, mais l'appareil ne l'a jamais confirmée en 24 heures ; vérifiez la console du fournisseur",
+        "unknown": "L'action ne s'est pas terminée"
       }
     }
   },

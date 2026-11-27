@@ -229,6 +229,19 @@ describe('edr_endpoint_action — handler', () => {
     expect(h.dispatch.mock.calls[0]![0].restriction).toEqual({ allowedDeviceIds: [DEVICE], allowedSiteIds: ['s1'] });
   });
 
+  it('#12789: an accepted isolate is reported as awaiting confirmation, never as done, and not to be retried', async () => {
+    h.dispatch.mockResolvedValue({
+      actionId: 'a', status: 'submitted', outcomeUnknown: false, awaitingConfirmation: true, error: null, message: null, httpStatus: 200,
+    });
+    const approver = '00000000-0000-4000-8000-0000000000bb';
+    const out = await run({ deviceId: DEVICE, action: 'isolate' },
+      auth({ user: { id: approver, email: 'x', name: 'x', isPlatformAdmin: false } }),
+      { actionIntentId: 'intent-9', approverRelease: { approverUserId: approver } } as ToolExecutionContext);
+    expect(out).toMatchObject({ actionId: 'a', status: 'submitted', awaitingConfirmation: true });
+    expect(String(out.note)).toMatch(/not confirmed/i);
+    expect(String(out.note)).toMatch(/do not (report|tell)/i);
+  });
+
   it('an unknown vendor outcome is NOT reported as success, and tells the model not to retry', async () => {
     h.dispatch.mockResolvedValue({
       actionId: 'a', status: 'queued', outcomeUnknown: true, error: 'dispatch_outcome_unknown', message: 'x', httpStatus: 202,

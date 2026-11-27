@@ -1,10 +1,11 @@
-import { and, inArray } from 'drizzle-orm';
+import { and, eq, gt, inArray, or } from 'drizzle-orm';
 import type { EdrEndpointActionAvailability, EdrIsolationState, EdrOsPlatform } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { edrConnections, edrTenants } from '../../db/schema';
+import { edrActions, edrConnections, edrTenants } from '../../db/schema';
 import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
 import { hasPermission, PERMISSIONS, type UserPermissions } from '../permissions';
-import { describeEndpointActions } from './actions';
+import { describeEndpointActions, type EdrActionLedgerFact } from './actions';
+import { EDR_ACTION_COOLDOWN_MS } from './actionTargets';
 import { resolveEdrReadScope } from './read';
 
 /**
@@ -13,6 +14,9 @@ import { resolveEdrReadScope } from './read';
  * they need live on the partner-axis tables an org token cannot read, so the
  * connection + tenant facts are loaded under a short SYSTEM context keyed only
  * by ids taken from those authorized rows, and only non-secret columns.
+ * The endpoints' open and just-settled `edr_actions` rows are read in the
+ * CALLER's own context (shape-1 RLS), so the list reflects in-flight and
+ * outcome-unknown requests exactly as dispatch would (#12789).
  */
 export interface EdrEndpointRowForActions {
   id: string;
@@ -54,12 +58,14 @@ export async function describeEndpointActionsForRows(
         orgId: edrTenants.orgId,
         unsupportedActions: edrTenants.unsupportedActions,
         unsupportedActionsAt: edrTenants.unsupportedActionsAt,
+        vendorMissingSince: edrTenants.vendorMissingSince,
       }).from(edrTenants).where(and(inArray(edrTenants.id, tenantIds), inArray(edrTenants.orgId, orgIds))),
     ]);
     return { connections: new Map(connections.map((c) => [c.id, c])), tenants: new Map(tenants.map((t) => [t.id, t])) };
   }, 'edrActions.availability'));
 
   const now = new Date();
+  const ledger = await loadLedger(rows.map((r) => r.id), now);
   // Unresolved permissions fail closed.
   const caller = {
     canExecute: !!perms && hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
@@ -76,7 +82,37 @@ export async function describeEndpointActionsForRows(
       caller,
       restriction: { allowedDeviceIds: restriction.allowedDeviceIds, allowedSiteIds: restriction.allowedSiteIds },
       now,
+      ledger: ledger.get(row.id) ?? [],
     }));
+  }
+  return out;
+}
+
+/**
+ * The rows `lockAndRecheckEdrActionTarget` would count: open (queued /
+ * submitted) per (endpoint, action), and successes inside the cooldown.
+ * Endpoint ids come from rows the caller already read; RLS fences this read.
+ */
+async function loadLedger(endpointIds: string[], now: Date): Promise<Map<string, EdrActionLedgerFact[]>> {
+  const out = new Map<string, EdrActionLedgerFact[]>();
+  const rows = await db.select({
+    endpointId: edrActions.endpointId,
+    action: edrActions.action,
+    status: edrActions.status,
+    error: edrActions.error,
+    requestedAt: edrActions.requestedAt,
+  }).from(edrActions).where(and(
+    inArray(edrActions.endpointId, endpointIds),
+    or(
+      inArray(edrActions.status, ['queued', 'submitted']),
+      and(eq(edrActions.status, 'succeeded'), gt(edrActions.requestedAt, new Date(now.getTime() - EDR_ACTION_COOLDOWN_MS))),
+    ),
+  ));
+  for (const r of rows) {
+    if (!r.endpointId) continue;
+    const list = out.get(r.endpointId) ?? [];
+    list.push({ action: r.action, status: r.status, error: r.error ?? null, requestedAt: r.requestedAt });
+    out.set(r.endpointId, list);
   }
   return out;
 }

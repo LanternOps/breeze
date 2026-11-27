@@ -4550,6 +4550,23 @@
         "submitted": "En curso",
         "succeeded": "Correcto",
         "failed": "Fallido"
+      },
+      "awaitingConfirmation": "Aceptada, esperando la confirmación del dispositivo",
+      "unknownRequester": "Usuario desconocido",
+      "failure": {
+        "vendor_rejected": "Rechazada por el proveedor",
+        "licence": "La licencia del proveedor de la empresa no incluye esta acción",
+        "api_not_enabled": "A la clave de API del proveedor le falta la API que necesita esta acción",
+        "rate_limited": "Se alcanzó el límite de solicitudes del proveedor; no se envió nada",
+        "vendor_auth": "El proveedor rechazó la clave de API",
+        "audit_unavailable": "No se envió: el registro de auditoría no estaba disponible",
+        "outcome_unknown_reissue_manually": "El resultado nunca se confirmó; revisa la consola del proveedor antes de volver a intentarlo",
+        "not_sent_or_rejected": "El proveedor indica que no se aplicó",
+        "detached_unsettled": "La asignación de la empresa cambió antes de que esto terminara",
+        "vendor_status_timeout": "La tarea del proveedor no terminó en 24 horas",
+        "vendor_task_failed": "El proveedor informó que la tarea falló",
+        "isolation_unconfirmed": "Aceptada, pero el dispositivo no la confirmó en 24 horas; revisa la consola del proveedor",
+        "unknown": "La acción no se completó"
       }
     }
   },
