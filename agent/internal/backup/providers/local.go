@@ -350,9 +350,15 @@ func renameWithRetry(tree *os.Root, from, to string) error {
 // on a filesystem that limits a name to 255 bytes or 255 UTF-16 units.
 //
 // The random part keeps concurrent writers of different objects in one
-// directory apart (the file is also created O_EXCL). File object keys end in
-// ".gz" and control objects have fixed names, so no object takes either
-// temporary form.
+// directory apart (the file is also created O_EXCL).
+//
+// A temporary name is not reserved: any object whose leaf is not fixed by the
+// caller can take a temporary form. A system-state artifact, for one, keeps
+// the name it was collected under, with no ".gz", so the store can hold
+// ".bashrc.upload-123" or a ".breeze-upload-" name. What keeps
+// SweepStaleUploads from deleting a stored object is that no temporary form
+// ends in ".gz", and the sweep runs only on a tree where every object's leaf
+// ends in ".gz" (a snapshot's files/ tree; see SweepStaleUploads).
 //
 // List and ObjectSizes report a temporary file like any other entry, so a
 // caller that deletes a prefix by listing it removes an upload's leftover
@@ -381,17 +387,20 @@ func newLocalUploadTempName() (string, error) {
 	return localUploadTempPrefix + localUploadTempEncoding.EncodeToString(b[:]), nil
 }
 
-// isLocalUploadTempName reports whether name is a temporary upload file
-// written by UploadWithDigest, in the current form or in either form earlier
-// agents wrote: "." + leaf + ".upload-" + a decimal suffix (os.CreateTemp)
-// or + 26 base32 characters (rand.Text). The match is exact so that a real
-// object whose name merely resembles one is never taken for a leftover.
+// isLocalUploadTempName reports whether name is the temporary file of an
+// interrupted upload of an object whose leaf ends in ".gz": the current form,
+// or either form earlier agents wrote, "." + leaf + ".upload-" + a decimal
+// suffix (os.CreateTemp) or + 26 base32 characters (rand.Text). An old-form
+// name whose leaf does not end in ".gz" is not matched: such a leftover is
+// never under the files/ tree the sweep covers, while a stored object outside
+// it can have that name. The match is exact so that an object whose name
+// merely resembles a temporary name is never taken for a leftover.
 func isLocalUploadTempName(name string) bool {
 	if rest, ok := strings.CutPrefix(name, localUploadTempPrefix); ok && isBase32Text(rest, localUploadTempRandLen) {
 		return true
 	}
 	i := strings.LastIndex(name, localUploadTempMarker)
-	if !strings.HasPrefix(name, ".") || i < 2 {
+	if !strings.HasPrefix(name, ".") || i < 1 || !strings.HasSuffix(name[1:i], ".gz") {
 		return false
 	}
 	suffix := name[i+len(localUploadTempMarker):]
@@ -442,6 +451,11 @@ func gzipHeaderName(name string) string {
 // files (isLocalUploadTempName, written by UploadWithDigest of this or an
 // earlier agent) under prefix that are older than olderThan — left behind
 // when the helper stopped mid-upload. Nothing else is touched.
+//
+// The caller passes a prefix under which every object's leaf ends in ".gz"
+// (a snapshot's files/ tree). No temporary form ends in ".gz", so no object
+// there can be taken for a leftover. Under any other prefix a stored object
+// can have a temporary form (see localUploadTempPrefix) and would be deleted.
 func (p *LocalProvider) SweepStaleUploads(prefix string, olderThan time.Duration) (int, error) {
 	tree, err := p.openStore(false)
 	if errors.Is(err, fs.ErrNotExist) {

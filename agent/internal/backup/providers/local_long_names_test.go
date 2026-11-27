@@ -268,6 +268,13 @@ func TestLocalStoreSweepRemovesOldAndNewTempLeftovers(t *testing.T) {
 		upload(".breeze-upload-short"),
 		upload("breeze-upload-ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
 		upload(".z.upload-"),
+		// Old-form names whose stem does not end in ".gz": a stored object
+		// that is not a file object (a system-state artifact keeps its
+		// collected name) can have one. Every object this tree's leftovers
+		// were for ends in ".gz", so these are never taken for leftovers.
+		upload(".bashrc.upload-123"),
+		upload(".y.upload-ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+		upload(".x.upload-notes"),
 	}
 	for _, key := range objects {
 		age(key, 48*time.Hour)
@@ -418,10 +425,14 @@ func TestLocalStoreTempNameMatchIsExact(t *testing.T) {
 	b26 := "ABCDEFGHIJKLMNOPQRSTUVWX27"
 	cases := map[string]bool{
 		".breeze-upload-" + b26:                     true,
-		".a.txt.gz.upload-" + b26:                   true, // rand.Text() era
-		".a.txt.gz.upload-1":                        true, // os.CreateTemp era
-		".a.txt.gz.upload-4294967295":               true, // largest uint32
-		".a.upload-b.gz.upload-" + b26:              true, // last marker counts
+		".a.txt.gz.upload-" + b26:                   true,  // rand.Text() era
+		".a.txt.gz.upload-1":                        true,  // os.CreateTemp era
+		".a.txt.gz.upload-4294967295":               true,  // largest uint32
+		".a.upload-b.gz.upload-" + b26:              true,  // last marker counts
+		".bashrc.upload-123":                        false, // stem has no ".gz"
+		".y.upload-" + b26:                          false,
+		".gz.upload-1":                              false, // no name before ".gz"
+		"..gz.upload-1":                             true,
 		".breeze-upload-" + b26[:25]:                false,
 		".breeze-upload-" + b26 + "A":               false,
 		".breeze-upload-" + strings.ToLower(b26):    false,
@@ -465,6 +476,7 @@ func TestLocalStoreGzipHeaderName(t *testing.T) {
 		"日本語.txt":     "",
 		"😀.png":       "",
 		"bad\xff.txt": "", // invalid UTF-8 (a raw byte some filesystems allow)
+		"nul\x00.txt": "", // the header stores the name NUL-terminated
 	}
 	for in, want := range cases {
 		if got := gzipHeaderName(in); got != want {
