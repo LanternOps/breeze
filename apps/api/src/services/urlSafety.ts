@@ -165,11 +165,12 @@ export function __setConnectAttemptTimeoutForTests(ms: number | null): void {
  *   `MIN_TRANSFER_BYTES_PER_SECOND`. 30 s covers a call with no timeouts at
  *   all. Twice `timeoutMs` because two waits can each legitimately take just
  *   under it: establishing the connection, then the server's answer.
- * - **Then the body**, timed from the headers: the time to receive its
- *   expected size at that rate, within [5 min, 60 min]. The expected size is
- *   the smaller of `Content-Length` and `maxBytes`, whichever are known; with
- *   neither it is 60 min. `maxBytes` keeps a declared `Content-Length` from
- *   buying more time than the caller would accept bytes for.
+ * - **Then the body**, timed from the headers: max(60 s, 2 × `timeoutMs`) for
+ *   pauses, plus the time to receive its expected size at that rate. The
+ *   expected size is the smaller of `Content-Length` and `maxBytes`. The peer
+ *   declares `Content-Length`, so it can only buy what the caller allows: with
+ *   `maxBytes` the bound is at most 60 min; without it, at most 10 min, which
+ *   is also the bound when neither size is known.
  *
  * A caller that needs a different total sets `deadlineMs`, which replaces both
  * parts with one bound from the start of the call.
@@ -188,8 +189,12 @@ export function __setDefaultDeadlineForTests(ms: number | null): void {
  * today has twice the time it needs.
  */
 export const MIN_TRANSFER_BYTES_PER_SECOND = 64 * 1024;
-const DEFAULT_BODY_FLOOR_MS = 5 * 60_000;
-const DEFAULT_BODY_CEILING_MS = 60 * 60_000;
+/** The body's allowance for pauses, at least: two inactivity windows when `timeoutMs` is longer. */
+const DEFAULT_BODY_PAUSE_MS = 60_000;
+/** Most the body may have when the caller caps it with `maxBytes`. */
+const DEFAULT_BODY_CAPPED_CEILING_MS = 60 * 60_000;
+/** Most the body may have without `maxBytes`, whatever the peer declares. */
+const DEFAULT_BODY_UNCAPPED_CEILING_MS = 10 * 60_000;
 
 /**
  * Time to move `bytes` at `MIN_TRANSFER_BYTES_PER_SECOND`, in whole ms. For a
@@ -258,14 +263,22 @@ function requestBodyBytes(body: SafeFetchInit['body']): number {
   return 0;
 }
 
-/** The default body allowance (see `DEFAULT_REQUEST_DEADLINE_MS`). */
-function defaultBodyMs(maxBytes: number | undefined): (contentLength: number | undefined) => number {
+/**
+ * The default body allowance (see `DEFAULT_REQUEST_DEADLINE_MS`). The ceiling
+ * never undercuts the pause allowance, so it cannot cut short a body that
+ * pauses for less than the caller's own `timeoutMs`.
+ */
+function defaultBodyMs(
+  maxBytes: number | undefined,
+  timeoutMs: number
+): (contentLength: number | undefined) => number {
   const cap = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes >= 0 ? maxBytes : undefined;
+  const pauses = Math.max(DEFAULT_BODY_PAUSE_MS, 2 * timeoutMs);
+  const ceiling = Math.max(cap === undefined ? DEFAULT_BODY_UNCAPPED_CEILING_MS : DEFAULT_BODY_CAPPED_CEILING_MS, pauses);
   return (contentLength) => {
     const known = [contentLength, cap].filter((n): n is number => n !== undefined);
-    if (known.length === 0) return DEFAULT_BODY_CEILING_MS;
-    const sized = transferAllowanceMs(Math.min(...known));
-    return Math.min(Math.max(sized, DEFAULT_BODY_FLOOR_MS), DEFAULT_BODY_CEILING_MS);
+    if (known.length === 0) return ceiling;
+    return Math.min(pauses + transferAllowanceMs(Math.min(...known)), ceiling);
   };
 }
 
@@ -275,7 +288,11 @@ function requestBound(init: SafeFetchInit): RequestBound {
   const timeoutMs = positiveMs(init.timeoutMs) ?? 0;
   const responseBy = Math.max(defaultRequestDeadlineMs, positiveMs(init.headersTimeoutMs) ?? 0, 2 * timeoutMs)
     + transferAllowanceMs(requestBodyBytes(init.body));
-  return { ms: Math.min(responseBy, MAX_TIMER_MS), explicit: false, bodyMs: defaultBodyMs(init.maxBytes) };
+  return {
+    ms: Math.min(responseBy, MAX_TIMER_MS),
+    explicit: false,
+    bodyMs: defaultBodyMs(init.maxBytes, timeoutMs)
+  };
 }
 
 function boundExpired(bound: RequestBound): Error {
@@ -563,10 +580,10 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * finite, none of which can switch it off) means the default, which is sized
    * so that a slow but working request never reaches it: the response must
    * arrive within max(30 s, `headersTimeoutMs`, 2 × `timeoutMs`) plus the time
-   * to send the request body at 64 KiB/s, and the body then gets the time to
-   * receive its `Content-Length` (capped by `maxBytes`) at 64 KiB/s, within
-   * [5 min, 60 min] (60 min when the size is unknown). See
-   * `DEFAULT_REQUEST_DEADLINE_MS`. The default expires as a plain
+   * to send the request body at 64 KiB/s, and the body then gets max(60 s,
+   * 2 × `timeoutMs`) plus the time to receive its `Content-Length` (capped by
+   * `maxBytes`) at 64 KiB/s: at most 60 min with `maxBytes`, 10 min without.
+   * See `DEFAULT_REQUEST_DEADLINE_MS`. The default expires as a plain
    * `Error('request timed out after Nms')`, the error a timeout has always
    * produced. An explicit value is one total from the start of the call, so
    * it can be longer or shorter than the default.

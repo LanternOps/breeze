@@ -10,9 +10,9 @@
  * The default bound has two parts. The response (DNS, connect, TLS, sending the
  * request, waiting for the headers) must arrive within max(30 s,
  * headersTimeoutMs, 2 × timeoutMs) plus the time to send the request body at
- * the minimum transfer rate. The body then gets the time to move its expected
- * size (Content-Length, capped by maxBytes) at that rate: at least 5 min, at
- * most 60 min, and 60 min when the size is unknown. An explicit `deadlineMs`
+ * the minimum transfer rate. The body then gets max(60 s, 2 × timeoutMs) plus
+ * the time to move its expected size (Content-Length, capped by maxBytes) at
+ * that rate: at most 60 min with maxBytes, 10 min without. An explicit `deadlineMs`
  * replaces both with one total.
  *
  * Timing: every timer safeFetch arms itself (the bound, the connect and attempt
@@ -53,9 +53,9 @@ const cleanups: Array<() => void | Promise<void>> = [];
 const MIN = 60_000;
 /** The default response-by bound with no caller timeouts. */
 const RESPONSE_BY_MS = 30_000;
-/** The default body bound's floor and ceiling. */
-const BODY_FLOOR_MS = 5 * MIN;
-const BODY_CEILING_MS = 60 * MIN;
+/** The default body bound's ceilings: with maxBytes, and without it. */
+const CAPPED_CEILING_MS = 60 * MIN;
+const UNCAPPED_CEILING_MS = 10 * MIN;
 /** The minimum transfer rate the default bound assumes: 64 KiB/s. */
 const RATE = 64 * 1024;
 
@@ -474,34 +474,62 @@ describe('safeFetch — the default bound on the body', () => {
   beforeEach(useFakeClock);
 
   it.each([false, true])(
-    'a body that trickles in steadily for 90 s under a 30 s timeoutMs succeeds (streamResponse %s)',
+    'an 11 MB page arriving at 1 Mbit/s for 90 s under a 30 s timeoutMs succeeds (streamResponse %s)',
     async (streamResponse) => {
-      // One byte a second: every byte resets the 30 s inactivity timer, as it
-      // always has. Before, a 30 s total cut this off; a working slow vendor
-      // must not fail.
+      // An EDR-sized read (20 MiB cap, 30 s timeoutMs), chunked, 125,000 B a
+      // second. Data keeps arriving, so the 30 s inactivity timer never fires,
+      // as before #12788; a 30 s total cut this off. The bound for it is
+      // 60 s + 20 MiB at 64 KiB/s = 380 s.
       resolvesTo('8.8.8.8');
       const client = dialLocally();
+      const chunk = 'x'.repeat(125_000);
       const server = await rawServer((sock) => {
-        sock.write(head(90));
+        sock.write(head(null));
         let sent = 0;
         const next = (): void => {
           if (sock.destroyed) return;
           sent++;
-          if (sent === 90) sock.end('x');
-          else { sock.write('x'); setTimeout(next, 1000); }
+          sock.write(`${chunk.length.toString(16)}\r\n${chunk}\r\n`);
+          if (sent === 90) sock.end('0\r\n\r\n');
+          else setTimeout(next, 1000);
         };
         setTimeout(next, 1000);
       });
-      const t = track(safeFetch(`http://vendor.example.test:${server.port}/page`, { timeoutMs: 30_000, streamResponse })
-        .then((res) => res.text()));
+      const t = track(safeFetch(`http://vendor.example.test:${server.port}/page`, {
+        timeoutMs: 30_000, maxBytes: 20 * 1024 * 1024, streamResponse
+      }).then((res) => res.text()));
       await until(() => client.headers() === 1, 'the response headers');
       for (let s = 1; s <= 90; s++) await clockTo(s * 1000);
       await until(() => t.settled, 'the body');
       expect(t.error).toBeUndefined();
-      expect(t.value).toBe('x'.repeat(90));
+      expect(t.value).toHaveLength(90 * 125_000);
     },
     T
   );
+
+  it('a small body the server sends one byte a second for 50 s, under a 30 s timeoutMs, succeeds', async () => {
+    // The pause allowance (2 × timeoutMs = 60 s) covers a server that paces a
+    // small reply; each byte resets the inactivity timer.
+    resolvesTo('8.8.8.8');
+    const client = dialLocally();
+    const server = await rawServer((sock) => {
+      sock.write(head(50));
+      let sent = 0;
+      const next = (): void => {
+        if (sock.destroyed) return;
+        sent++;
+        if (sent === 50) sock.end('x');
+        else { sock.write('x'); setTimeout(next, 1000); }
+      };
+      setTimeout(next, 1000);
+    });
+    const t = track(safeFetch(`http://vendor.example.test:${server.port}/page`, { timeoutMs: 30_000 }));
+    await until(() => client.headers() === 1, 'the response headers');
+    for (let s = 1; s <= 50; s++) await clockTo(s * 1000);
+    await until(() => t.settled, 'the body');
+    expect(t.error).toBeUndefined();
+    expect(await t.value!.text()).toBe('x'.repeat(50));
+  }, T);
 
   it('a body that stalls completely still fails on inactivity at timeoutMs (real time)', async () => {
     // Real timers: the inactivity timer is Node's own. Only the lower bound is
@@ -529,19 +557,20 @@ describe('safeFetch — the default bound on the body', () => {
     expectTimeoutError(error, 200);
   }, T);
 
-  it.each([false, true])('a body that never finishes ends at 5 min for a small response (streamResponse %s)', async (streamResponse) => {
-    // No timeoutMs, so nothing but the bound can end it.
+  it.each([false, true])('a body that never finishes ends at 60 s plus its size (streamResponse %s)', async (streamResponse) => {
+    // No timeoutMs, so nothing but the bound can end it: 60 s + 1000 B at 64 KiB/s.
     resolvesTo('8.8.8.8');
     const client = dialLocally();
     const server = await rawServer((sock) => sock.write(`${head(1000)}abc`));
     const t = track(safeFetch(`http://vendor.example.test:${server.port}/x`, { streamResponse }).then((res) => res.text()));
     await until(() => client.headers() === 1, 'the response headers');
-    expectTimeoutError(await expectEndsAt(t, BODY_FLOOR_MS), BODY_FLOOR_MS);
+    expectTimeoutError(await expectEndsAt(t, 60_016), 60_016);
   }, T);
 
   it('a body that keeps trickling in, resetting timeoutMs, still ends at the bound', async () => {
     // Each byte resets the inactivity timer, so before #12788 the request ran
-    // as long as the peer kept sending. The trickle runs on real time.
+    // as long as the peer kept sending. The trickle runs on real time. The
+    // bound: max(60 s, 2 × 20 s) + 1,000,000 B at 64 KiB/s.
     resolvesTo('8.8.8.8');
     const client = dialLocally();
     const server = await rawServer((sock) => {
@@ -551,53 +580,72 @@ describe('safeFetch — the default bound on the body', () => {
     });
     const t = track(safeFetch(`http://vendor.example.test:${server.port}/x`, { timeoutMs: 20_000 }));
     await until(() => client.headers() === 1, 'the response headers');
-    // 1,000,000 bytes at 64 KiB/s is under the 5 min floor.
-    expectTimeoutError(await expectEndsAt(t, BODY_FLOOR_MS), BODY_FLOOR_MS);
+    expectTimeoutError(await expectEndsAt(t, 75_259), 75_259);
   }, T);
 
-  it('scales with Content-Length: 600 × 64 KiB gets 10 min', async () => {
+  it('the pause allowance is twice a longer timeoutMs', async () => {
+    resolvesTo('8.8.8.8');
+    const client = dialLocally();
+    const server = await rawServer((sock) => sock.write(`${head(6)}abc`));
+    const t = track(safeFetch(`http://vendor.example.test:${server.port}/x`, { timeoutMs: 45_000 }));
+    await until(() => client.headers() === 1, 'the response headers');
+    // 2 × 45 s + 6 B at 64 KiB/s (1 ms). The real inactivity timer (45 s) never runs out here.
+    expectTimeoutError(await expectEndsAt(t, 90_001), 90_001);
+  }, T);
+
+  it('scales with Content-Length under maxBytes: 600 × 64 KiB gets 60 s + 10 min', async () => {
     resolvesTo('8.8.8.8');
     dialLocally();
     const server = await rawServer((sock) => sock.write(`${head(600 * RATE)}abc`));
-    const res = await safeFetch(`http://vendor.example.test:${server.port}/big`, { streamResponse: true });
+    const res = await safeFetch(`http://vendor.example.test:${server.port}/big`, { streamResponse: true, maxBytes: 1024 ** 3 });
     const t = track(res.text());
-    expectTimeoutError(await expectEndsAt(t, 10 * MIN), 10 * MIN);
+    expectTimeoutError(await expectEndsAt(t, 11 * MIN), 11 * MIN);
   }, T);
 
-  it('maxBytes caps the size the bound allows for', async () => {
+  it('maxBytes caps the size the bound allows for: 1 MiB gets 60 s + 16 s', async () => {
     resolvesTo('8.8.8.8');
     dialLocally();
     const server = await rawServer((sock) => sock.write(`${head(600 * RATE)}abc`));
     const res = await safeFetch(`http://vendor.example.test:${server.port}/big`, { streamResponse: true, maxBytes: 1024 * 1024 });
     const t = track(res.text());
-    expectTimeoutError(await expectEndsAt(t, BODY_FLOOR_MS), BODY_FLOOR_MS);
+    expectTimeoutError(await expectEndsAt(t, 76_000), 76_000);
   }, T);
 
-  it('a chunked body sizes the bound from maxBytes: 20 MiB gets 320 s', async () => {
+  it('a chunked body sizes the bound from maxBytes: 20 MiB gets 60 s + 320 s', async () => {
     resolvesTo('8.8.8.8');
     dialLocally();
     const server = await rawServer((sock) => sock.write(`${head(null)}3\r\nabc\r\n`));
     const res = await safeFetch(`http://vendor.example.test:${server.port}/page`, { streamResponse: true, maxBytes: 20 * 1024 * 1024 });
     const t = track(res.text());
-    expectTimeoutError(await expectEndsAt(t, 320_000), 320_000);
+    expectTimeoutError(await expectEndsAt(t, 380_000), 380_000);
   }, T);
 
-  it('a body of unknown size, with no maxBytes, gets the 60 min ceiling', async () => {
+  it('with maxBytes, a declared size past it still ends at the 60 min ceiling', async () => {
+    resolvesTo('8.8.8.8');
+    dialLocally();
+    const server = await rawServer((sock) => sock.write(`${head(10 * 1024 ** 3)}abc`));
+    const res = await safeFetch(`http://vendor.example.test:${server.port}/huge`, { streamResponse: true, maxBytes: 4 * 1024 ** 3 });
+    const t = track(res.text());
+    expectTimeoutError(await expectEndsAt(t, CAPPED_CEILING_MS), CAPPED_CEILING_MS);
+  }, T);
+
+  it('without maxBytes, a body of unknown size ends at 10 min', async () => {
     resolvesTo('8.8.8.8');
     dialLocally();
     const server = await rawServer((sock) => sock.write(`${head(null)}3\r\nabc\r\n`));
     const res = await safeFetch(`http://vendor.example.test:${server.port}/page`, { streamResponse: true });
     const t = track(res.text());
-    expectTimeoutError(await expectEndsAt(t, BODY_CEILING_MS), BODY_CEILING_MS);
+    expectTimeoutError(await expectEndsAt(t, UNCAPPED_CEILING_MS), UNCAPPED_CEILING_MS);
   }, T);
 
-  it('a declared size past the ceiling still ends at 60 min', async () => {
+  it('without maxBytes, a declared size cannot buy more than 10 min', async () => {
+    // The peer writes Content-Length; only the caller's maxBytes may lift the bound.
     resolvesTo('8.8.8.8');
     dialLocally();
-    const server = await rawServer((sock) => sock.write(`${head(10 * 1024 * 1024 * 1024)}abc`));
+    const server = await rawServer((sock) => sock.write(`${head(10 * 1024 ** 3)}abc`));
     const res = await safeFetch(`http://vendor.example.test:${server.port}/huge`, { streamResponse: true });
     const t = track(res.text());
-    expectTimeoutError(await expectEndsAt(t, BODY_CEILING_MS), BODY_CEILING_MS);
+    expectTimeoutError(await expectEndsAt(t, UNCAPPED_CEILING_MS), UNCAPPED_CEILING_MS);
   }, T);
 
   // The clients that relied on `timeoutMs` alone before #12788, with the
@@ -605,14 +653,15 @@ describe('safeFetch — the default bound on the body', () => {
   // 1 Mbit/s (125,000 B/s), and still end a body that stops for good.
   it.each([
     // [client, timeoutMs, maxBytes, Content-Length or null (chunked), expected body bound]
-    ['EDR guarded fetch, 20 MiB chunked page', 30_000, 20 * 1024 * 1024, null, 320_000], // 168 s at 1 Mbit/s
-    ['EDR guarded fetch, 500 KB page', 30_000, 20 * 1024 * 1024, 500_000, BODY_FLOOR_MS],
-    ['PSA, 8 MiB chunked page', 20_000, 8 * 1024 * 1024, null, BODY_FLOOR_MS], // 67 s at 1 Mbit/s
-    ['UniFi, 10 MiB chunked', 15_000, 10 * 1024 * 1024, null, BODY_FLOOR_MS], // 84 s at 1 Mbit/s
-    ['GitHub release API JSON, 8 MiB', 30_000, 8 * 1024 * 1024, null, BODY_FLOOR_MS], // 67 s at 1 Mbit/s
-    ['Huntress / Pax8 page, 400 KB, no maxBytes', 20_000, undefined, 400_000, BODY_FLOOR_MS],
-    ['Huntress / Pax8 page, chunked, no maxBytes', 20_000, undefined, null, BODY_CEILING_MS],
-    ['8 MiB declared, no maxBytes', 20_000, undefined, 8 * 1024 * 1024, BODY_FLOOR_MS]
+    ['EDR guarded fetch, 20 MiB chunked page (168 s at 1 Mbit/s)', 30_000, 20 * 1024 * 1024, null, 380_000],
+    ['EDR guarded fetch, 500 KB page', 30_000, 20 * 1024 * 1024, 500_000, 67_630],
+    ['PSA, 8 MiB chunked page (67 s at 1 Mbit/s)', 20_000, 8 * 1024 * 1024, null, 188_000],
+    ['UniFi, 10 MiB chunked (84 s at 1 Mbit/s)', 15_000, 10 * 1024 * 1024, null, 220_000],
+    ['GitHub release API JSON, 8 MiB (67 s at 1 Mbit/s)', 30_000, 8 * 1024 * 1024, null, 188_000],
+    ['SSO / OIDC, 1 MiB (8 s at 1 Mbit/s)', 10_000, 1024 * 1024, null, 76_000],
+    ['Huntress / Pax8 page, 400 KB, no maxBytes', 20_000, undefined, 400_000, 66_104],
+    ['Huntress / Pax8 page, chunked, no maxBytes', 20_000, undefined, null, UNCAPPED_CEILING_MS],
+    ['8 MiB declared, no maxBytes (67 s at 1 Mbit/s)', 20_000, undefined, 8 * 1024 * 1024, 188_000]
   ])('%s', async (_client, timeoutMs, maxBytes, length, expected) => {
     resolvesTo('8.8.8.8');
     const client = dialLocally();
@@ -747,7 +796,7 @@ describe('safeFetchFollowingRedirects — the default bound covers the whole cha
     const t = track(safeFetchFollowingRedirects(`http://vendor.example.test:${redirect.port}/x`, { streamResponse })
       .then((res) => res.text()));
     await until(() => client.headers() === 2, 'the second hop\'s headers');
-    expectTimeoutError(await expectEndsAt(t, BODY_FLOOR_MS), BODY_FLOOR_MS);
+    expectTimeoutError(await expectEndsAt(t, 60_001), 60_001); // 60 s + 6 B
   }, T);
 });
 
@@ -799,11 +848,11 @@ describe('safeFetch — the bound is released and steps aside for the caller', (
     dialLocally();
     const server = await rawServer((sock) => {
       sock.write(`${head(6)}abc`);
-      setTimeout(() => sock.end('def'), 2 * BODY_CEILING_MS);
+      setTimeout(() => sock.end('def'), 2 * CAPPED_CEILING_MS);
     });
-    const res = await safeFetch(`http://vendor.example.test:${server.port}/x`, { streamResponse: true, deadlineMs: 3 * BODY_CEILING_MS });
+    const res = await safeFetch(`http://vendor.example.test:${server.port}/x`, { streamResponse: true, deadlineMs: 3 * CAPPED_CEILING_MS });
     const t = track(res.text());
-    await clockTo(2 * BODY_CEILING_MS);
+    await clockTo(2 * CAPPED_CEILING_MS);
     await until(() => t.settled, 'the body');
     expect(t.error).toBeUndefined();
     expect(t.value).toBe('abcdef');

@@ -96,6 +96,9 @@ function sha256Hex(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+/** Largest backup binary the download accepts: about 9× the current ~56 MB binaries. */
+const BACKUP_BINARY_MAX_BYTES = 512 * 1024 * 1024;
+
 /**
  * The GitHub release asset URL this is called with (`getGithubBackupUrl`) 302s
  * to `objects.githubusercontent.com`, so a bare `safeFetch` — which follows
@@ -107,10 +110,11 @@ function sha256Hex(buffer: Buffer): string {
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
   // No fixed `deadlineMs` (#12788): the binary's size is known only from the
   // response (the manifest is read after the download), and safeFetch's
-  // default bound sizes the body's allowance from its Content-Length at
-  // 64 KiB/s (at least 5 min, at most 60 min). A fixed total would cut off a
-  // large binary on a slow link.
-  const response = await safeFetchFollowingRedirects(url);
+  // default bound gives the body 60 s plus its Content-Length at 64 KiB/s
+  // (about 15 min for a 56 MB binary, which takes about 7.5 min at 1 Mbit/s).
+  // A fixed total would cut off a large binary on a slow link. The declared
+  // size counts only up to `maxBytes`, which also caps what is buffered.
+  const response = await safeFetchFollowingRedirects(url, { maxBytes: BACKUP_BINARY_MAX_BYTES });
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }
