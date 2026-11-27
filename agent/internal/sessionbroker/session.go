@@ -710,16 +710,18 @@ func (s *Session) Info() SessionInfo {
 // recvEndedBy names who ended a session's receive loop, for the disconnect
 // log (#12808): "agent" when the agent had already closed the session,
 // "helper" when the helper hung up between frames, "helper_mid_frame" when
-// the connection was cut inside a frame, and "error" for anything else (a
-// framing, HMAC or sequence failure, a transport error).
-func recvEndedBy(closedByAgent bool, err error) string {
+// it hung up inside a frame, and "error" for anything else (a framing, HMAC
+// or sequence failure, a transport error). partialFrame is the Conn's own
+// state (ipc.Conn.PartialFrame): a cut that lands in a resumed Recv surfaces
+// as plain io.EOF, so the error alone cannot tell.
+func recvEndedBy(closedByAgent, partialFrame bool, err error) string {
 	switch {
 	case closedByAgent:
 		return "agent"
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF) && partialFrame:
+		return "helper_mid_frame"
 	case errors.Is(err, io.EOF):
 		return "helper"
-	case errors.Is(err, io.ErrUnexpectedEOF):
-		return "helper_mid_frame"
 	default:
 		return "error"
 	}
@@ -733,7 +735,7 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 		env, err := s.conn.Recv()
 		if err != nil {
 			attrs := []any{"uid", s.UID, "sessionId", s.SessionID, "role", string(s.Info().HelperRole),
-				"endedBy", recvEndedBy(s.IsClosed(), err), "error", err.Error()}
+				"endedBy", recvEndedBy(s.IsClosed(), s.conn.PartialFrame(), err), "error", err.Error()}
 			if reason := s.CloseReason(); reason != "" {
 				attrs = append(attrs, "closeReason", reason)
 			}

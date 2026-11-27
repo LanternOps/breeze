@@ -254,20 +254,22 @@ pub async fn run_session_with_identity<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    run_session(stream, token, identity, desktop_ctx, None, None).await
+    run_session(stream, token, identity, desktop_ctx, None, &mut None).await
 }
 
 /// [`run_session_with_identity`] with an optional prompt bridge override
 /// (tests inject one whose tracker advertises kinds the W02 build does not)
 /// and the previous connection's loss, reported to the agent once this one is
-/// authenticated.
+/// authenticated. `drop_report` is cleared only once that report is written,
+/// so a session that dies before it (a reject, a handshake EOF) leaves it for
+/// the next one.
 async fn run_session<S>(
     stream: S,
     token: &HelperToken,
     identity: &PeerIdentity,
     desktop_ctx: Option<&DesktopCtx>,
     prompt_override: Option<std::sync::Arc<PromptBridge>>,
-    drop_report: Option<ConnectionLoss>,
+    drop_report: &mut Option<ConnectionLoss>,
 ) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -393,10 +395,11 @@ where
         )
         .await?;
     }
-    if let Some(report) = drop_report {
+    if let Some(report) = drop_report.as_ref() {
         // The previous connection's loss, told to the agent so it reaches
         // Agent Logs: Assist's own stderr goes nowhere on Windows (#12808).
-        // Best effort: a failed write ends this session like any other.
+        // A failed write ends this session like any other and keeps the
+        // report for the next one.
         let record = report.helper_log_record(tokio::time::Instant::now());
         write_frame(
             &mut stream,
@@ -407,6 +410,7 @@ where
             Some(to_raw_payload(&record)?),
         )
         .await?;
+        *drop_report = None;
     }
     let mut consent = ConsentTracker::default();
     let mut idle_since = tokio::time::Instant::now();
@@ -1246,7 +1250,9 @@ pub async fn run(
     use super::transport::{connect, current_identity, default_socket_path};
 
     let mut backoff = BACKOFF_MIN;
-    // The last connection's loss, reported on the next one (#12808).
+    // The oldest loss not yet reported, sent on the next connection that
+    // authenticates (#12808). A later loss never replaces it: the session
+    // that failed to deliver it is usually a symptom of the first.
     let mut pending_loss: Option<ConnectionLoss> = None;
 
     loop {
@@ -1324,7 +1330,7 @@ pub async fn run(
             &identity,
             Some(&desktop_ctx),
             None,
-            pending_loss.take(),
+            &mut pending_loss,
         ))
         .catch_unwind();
         let outcome = tokio::select! {
@@ -1351,12 +1357,12 @@ pub async fn run(
                     .or_else(|| panic_payload.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown panic".to_string());
                 eprintln!("[helper] IPC session panicked ({msg}); will reconnect");
-                pending_loss = Some(ConnectionLoss::panicked(started.elapsed(), tokio::time::Instant::now()));
+                pending_loss = pending_loss.take().or(Some(ConnectionLoss::panicked(started.elapsed(), tokio::time::Instant::now())));
             }
             Some(Ok(Ok(()))) => {
                 // Clean disconnect. Reset backoff if the session was healthy.
                 eprintln!("[helper] ipc: the agent ended the session; will reconnect");
-                pending_loss = ConnectionLoss::from_outcome(&Ok(()), started.elapsed(), tokio::time::Instant::now());
+                pending_loss = pending_loss.take().or(ConnectionLoss::from_outcome(&Ok(()), started.elapsed(), tokio::time::Instant::now()));
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
@@ -1372,11 +1378,12 @@ pub async fn run(
             }
             Some(Ok(Err(SessionError::Transient(e)))) => {
                 let outcome = Err(SessionError::Transient(e));
-                pending_loss = ConnectionLoss::from_outcome(&outcome, started.elapsed(), tokio::time::Instant::now());
+                let loss = ConnectionLoss::from_outcome(&outcome, started.elapsed(), tokio::time::Instant::now());
                 if let Err(e) = &outcome {
-                    let reason = pending_loss.as_ref().map(|l| l.reason()).unwrap_or("");
+                    let reason = loss.as_ref().map(|l| l.reason()).unwrap_or("");
                     eprintln!("[helper] ipc: session ended ({reason}): {e}; will reconnect");
                 }
+                pending_loss = pending_loss.take().or(loss);
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
@@ -1800,7 +1807,12 @@ mod tests {
             Duration::from_secs(30),
             tokio::time::Instant::now(),
         );
-        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, None, loss).await });
+        let session = tokio::spawn(async move {
+            let mut loss = loss;
+            let res = run_session(client_half, &token, &id, None, None, &mut loss).await;
+            assert!(loss.is_none(), "a delivered report must be cleared");
+            res
+        });
         let (mut send, mut recv) = (0u64, 0u64);
         let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
         let key = [9u8; 32];
@@ -1812,6 +1824,67 @@ mod tests {
         assert_eq!(p["level"], "warn");
         assert_eq!(p["fields"]["reason"], "frame_too_large");
         assert_eq!(p["fields"]["lostSessionMs"], "30000");
+        write_frame(&mut broker_half, &key, &mut send, "bye", "disconnect", None).await.unwrap();
+        assert!(matches!(session.await.unwrap(), Ok(())));
+    }
+
+    /// A session that dies before it can send the report (here a transient
+    /// reject) leaves the report for the next one.
+    #[tokio::test]
+    async fn test_loss_report_survives_a_session_rejected_before_sending_it() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let mut loss = ConnectionLoss::from_outcome(&Ok(()), Duration::from_secs(5), tokio::time::Instant::now());
+        let session = tokio::spawn(async move {
+            let res = run_session(client_half, &token, &id, None, None, &mut loss).await;
+            (res, loss)
+        });
+        let (mut send, mut recv) = (0u64, 0u64);
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
+        let reject = r#"{"code":"busy","reason":"try later","permanent":false}"#;
+        write_frame(&mut broker_half, &ZERO_KEY, &mut send, &env.id, "pre_auth_reject", Some(raw(reject))).await.unwrap();
+        let (res, loss) = session.await.unwrap();
+        assert!(matches!(res, Err(SessionError::Transient(_))), "{res:?}");
+        assert_eq!(loss.as_ref().map(|l| l.reason()), Some("agent_disconnect"), "the undelivered report was dropped");
+    }
+
+    /// #12808: the idle ping fires after 30 s with no frame from the agent,
+    /// once per quiet window, although the 250 ms tick restarts the loop. (The
+    /// old per-turn timeout restarted with every tick and never fired.)
+    #[tokio::test(start_paused = true)]
+    async fn test_idle_ping_fires_after_thirty_quiet_seconds_only() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move { run_session_with_identity(client_half, &token, &id, None).await });
+        let (mut send, mut recv) = (0u64, 0u64);
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
+        let key = [9u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut send, &env.id, "auth_response", Some(raw(&resp))).await.unwrap();
+        let start = tokio::time::Instant::now();
+
+        let first = tokio::time::timeout(Duration::from_secs(60), read_frame(&mut broker_half, &key, &mut recv))
+            .await
+            .expect("no idle ping within 60 s")
+            .expect("idle ping");
+        assert_eq!(first.typ, "ping");
+        let at = start.elapsed();
+        assert!(at >= READ_IDLE_TIMEOUT && at < READ_IDLE_TIMEOUT + Duration::from_secs(1), "first ping at {at:?}");
+
+        // A frame from the agent 20 s into the next window restarts it.
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        write_frame(&mut broker_half, &key, &mut send, "pong-1", "pong", None).await.unwrap();
+        let reset = tokio::time::Instant::now();
+        let second = tokio::time::timeout(Duration::from_secs(60), read_frame(&mut broker_half, &key, &mut recv))
+            .await
+            .expect("no second idle ping within 60 s")
+            .expect("second ping");
+        assert_eq!(second.typ, "ping");
+        let gap = reset.elapsed();
+        assert!(gap >= READ_IDLE_TIMEOUT && gap < READ_IDLE_TIMEOUT + Duration::from_secs(1), "second ping {gap:?} after the frame");
+
         write_frame(&mut broker_half, &key, &mut send, "bye", "disconnect", None).await.unwrap();
         assert!(matches!(session.await.unwrap(), Ok(())));
     }
@@ -1981,7 +2054,7 @@ mod tests {
         let (client_half, mut broker_half) = tokio::io::duplex(65536);
         let token = HelperToken::new();
         let id = test_identity();
-        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, prompts, None).await });
+        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, prompts, &mut None).await });
         let mut broker_send = 0u64;
         let mut broker_recv = 0u64;
         let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv).await.expect("auth_request");

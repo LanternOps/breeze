@@ -115,11 +115,90 @@ func TestSameKeyReconnectWithinGraceRestoresTheDecisionOnce(t *testing.T) {
 // A reconnect that arrives after the grace finds the prompt already moved to
 // the native helper; the restore does not run twice and the deadline holds.
 func TestSameKeyReconnectAfterGraceDoesNotDrawTwice(t *testing.T) {
-	hh, _, _, _, _ := sameKeyDrop(t, 11*time.Second)
+	hh, _, deadline, _, _ := sameKeyDrop(t, 11*time.Second)
 	hh.tick(time.Second)
 	msgs := hh.dir.take()
-	if n := len(showsTo(msgs, "user-1")) + len(showsTo(msgs, "assist-1")); n > 1 {
-		t.Fatalf("the restart prompt was drawn %d times after one drop", n)
+	native := showsTo(msgs, "user-1")
+	if len(native) != 1 || len(showsTo(msgs, "assist-1")) != 0 {
+		t.Fatalf("after the grace: native shows %d, Assist shows %d; want exactly 1 and 0",
+			len(native), len(showsTo(msgs, "assist-1")))
+	}
+	if native[0].Timing.DeadlineUnixMs != deadline.UnixMilli() {
+		t.Fatalf("the fallback moved the deadline: %d, want %d", native[0].Timing.DeadlineUnixMs, deadline.UnixMilli())
+	}
+}
+
+// Two decisions open on the dropped renderer: the reconnect restores one
+// decision surface (the oldest) and lists the other (spec §3.1, replay never
+// storms), each once and non-activating.
+func TestSameKeyReconnectRestoresOneDecisionSurface(t *testing.T) {
+	hh := newHarness(t, assistRenderer("assist-1", "restart.prompt@1"), nativeRenderer("user-1", "restart.prompt@1"))
+	var first []ipc.PromptShow
+	for _, id := range []string{"restart:a", "restart:b"} {
+		if err := hh.h.Show(restartPrompt(t, id, t0.Add(time.Hour), &promptCalls{})); err != nil {
+			t.Fatal(err)
+		}
+		hh.tick(time.Second)
+	}
+	for _, s := range showsTo(hh.dir.take(), "assist-1") {
+		hh.presented("assist-1", s)
+		first = append(first, s)
+	}
+	if len(first) != 2 {
+		t.Fatalf("setup: %d shows, want 2", len(first))
+	}
+	hh.dir.remove("assist-1")
+	hh.h.RendererDisconnected("assist-1")
+	hh.tick(2 * time.Second)
+	hh.dir.add(assistRenderer("assist-1", "restart.prompt@1"))
+	hh.h.RendererConnected(assistRenderer("assist-1", "restart.prompt@1"))
+	hh.tick(time.Second)
+	msgs := hh.dir.take()
+	re := showsTo(msgs, "assist-1")
+	if len(re) != 2 || len(showsTo(msgs, "user-1")) != 0 {
+		t.Fatalf("restored %d on Assist, %d native; want 2 and 0", len(re), len(showsTo(msgs, "user-1")))
+	}
+	cards := 0
+	for _, s := range re {
+		if s.Focus != ipc.PromptFocusNoActivate {
+			t.Fatalf("%s restored with focus %q", s.PromptID, s.Focus)
+		}
+		if s.Presentation != ipc.PromptPresentationListOnly {
+			cards++
+			if s.PromptID != "restart:a" {
+				t.Fatalf("the restored decision is %s, want the oldest (restart:a)", s.PromptID)
+			}
+		}
+	}
+	if cards != 1 {
+		t.Fatalf("%d decision cards restored, want exactly 1", cards)
+	}
+}
+
+// A same-key reconnect that can no longer draw the prompt (it stopped
+// advertising the kind) does not take it: the grace stands, and the prompt
+// falls back to the native helper once, as before.
+func TestSameKeyReconnectThatCannotDrawItKeepsTheGrace(t *testing.T) {
+	hh := newHarness(t, assistRenderer("assist-1", "restart.prompt@1"), nativeRenderer("user-1", "restart.prompt@1"))
+	if err := hh.h.Show(restartPrompt(t, "restart:9", t0.Add(time.Hour), &promptCalls{})); err != nil {
+		t.Fatal(err)
+	}
+	hh.presented("assist-1", showsTo(hh.dir.take(), "assist-1")[0])
+	hh.dir.remove("assist-1")
+	hh.h.RendererDisconnected("assist-1")
+	hh.tick(2 * time.Second)
+	hh.dir.add(assistRenderer("assist-1", "notice.info@1"))
+	hh.h.RendererConnected(assistRenderer("assist-1", "notice.info@1"))
+	hh.tick(time.Second)
+	if msgs := hh.dir.take(); len(showsTo(msgs, "assist-1")) != 0 || len(showsTo(msgs, "user-1")) != 0 {
+		t.Fatalf("drawn before the grace ran out: %+v", msgs)
+	}
+	for range 10 {
+		hh.tick(time.Second)
+	}
+	msgs := hh.dir.take()
+	if n := len(showsTo(msgs, "user-1")); n != 1 || len(showsTo(msgs, "assist-1")) != 0 {
+		t.Fatalf("after the grace: native %d, Assist %d; want 1 and 0 (orphaned or drawn twice)", n, len(showsTo(msgs, "assist-1")))
 	}
 }
 

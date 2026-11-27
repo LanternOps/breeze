@@ -89,7 +89,10 @@ func (h *Host) reclaimSameKey(r RendererSession) {
 			continue
 		}
 		for _, pl := range rec.placements {
-			if pl.path != PathPrompt || pl.renderer != r.Key || pl.graceUntil.IsZero() || pl.deferred != deferNone {
+			// The same filter the replay loop applies, so a released placement
+			// is always moved below and never left without renderer or grace.
+			if pl.path != PathPrompt || pl.renderer != r.Key || pl.graceUntil.IsZero() || pl.deferred != deferNone ||
+				!rendererServes(r, pl.owner) {
 				continue
 			}
 			if c := h.choose(rec, pl); c.Path != PathPrompt || c.Renderer.Key != r.Key {

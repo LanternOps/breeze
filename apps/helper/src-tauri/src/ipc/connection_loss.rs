@@ -1,5 +1,6 @@
-//! Why Assist's IPC connection to the agent ended, told to the agent once the
-//! next connection is up (#12808).
+//! Why Assist's IPC connection to the agent ended, told to the agent on the
+//! next connection that authenticates (#12808). The oldest unreported loss is
+//! kept until one does.
 //!
 //! On Windows Assist is a GUI-subsystem process: its stderr goes nowhere, so
 //! a connection that kept dropping left no trace on the Assist side. After a
@@ -7,8 +8,9 @@
 //! authenticated helper may use, #9266) naming the loss, so it reaches Agent
 //! Logs next to the agent's own "session recv loop ended" line.
 //!
-//! The reason is a fixed code, never an error's text: a payload parse error
-//! from serde can quote the value it choked on (a token, prompt copy).
+//! The relayed reason is a fixed code, never an error's text: a payload parse
+//! error from serde can quote the value it choked on (a token, prompt copy).
+//! (The local stderr line keeps the full error, as it always has.)
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -98,22 +100,24 @@ pub(crate) fn reason_code(e: &IpcError) -> String {
         }
         IpcError::Io(io) => format!("io_{:?}", io.kind()),
         IpcError::Protocol(m) => {
-            let code = if m.starts_with("message too large") {
+            // Prefixes only: a reject reason is the agent's text and may say
+            // anything after its prefix.
+            let code = if m.starts_with("pre_auth_reject") || m.starts_with("auth rejected") {
+                "auth_rejected"
+            } else if m.starts_with("unexpected handshake") || m.starts_with("auth_response") {
+                "bad_handshake"
+            } else if m.starts_with("message too large") {
                 "frame_too_large"
             } else if m.starts_with("zero-length") {
                 "frame_zero_length"
             } else if m.starts_with("HMAC mismatch") {
                 "hmac_mismatch"
-            } else if m.contains("sequence number") {
+            } else if m.starts_with("sequence number") || m.starts_with("invalid sequence number") {
                 "sequence"
             } else if m.starts_with("unmarshal envelope") {
                 "bad_envelope"
             } else if m.starts_with("parse payload") || m.starts_with("missing payload") {
                 "bad_payload"
-            } else if m.starts_with("pre_auth_reject") || m.starts_with("auth rejected") {
-                "auth_rejected"
-            } else if m.starts_with("unexpected handshake") || m.starts_with("auth_response") {
-                "bad_handshake"
             } else {
                 "protocol"
             };
@@ -145,6 +149,9 @@ mod tests {
             // serde quotes the bad value: the code must not.
             (IpcError::Protocol("parse payload: invalid type: string \"secret-token\", expected u32".into()), "bad_payload"),
             (IpcError::Protocol("auth rejected: busy".into()), "auth_rejected"),
+            // The agent's reason text never steers the code.
+            (IpcError::Protocol("auth rejected: sequence number reset".into()), "auth_rejected"),
+            (IpcError::Protocol("pre_auth_reject code=x reason=message too large".into()), "auth_rejected"),
             (IpcError::Protocol("unexpected handshake frame type: ping".into()), "bad_handshake"),
             (IpcError::Protocol("something new".into()), "protocol"),
         ];
