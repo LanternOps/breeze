@@ -5,9 +5,11 @@
  * The hydrator is driven for real (storage is a manifest served from memory).
  * Each snapshot's tree is checked as stored: the checkpoint entries it does
  * not tombstone plus its own rows, compared as a multiset with the manifest.
- * The round trip through the readers themselves (browse, selection, both
- * authorization reads) is added once the delta leg of the read layer is on
- * main.
+ * The round trip (plan Task 6) then checks it through every reader: browse,
+ * search, selection, the key budget (countIndexedFiles), brokered key grants
+ * (filterIndexedKeys) and recovery-download membership
+ * (authorizeExternalReference). Each must return the manifest, and the same
+ * as for a control snapshot holding the manifest in 'rows' format.
  *
  * Run:
  *   pnpm test-stack up
@@ -21,7 +23,17 @@ import { sql } from 'drizzle-orm';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import {
+  decodeBrowseCursor,
+  decodeSearchCursor,
+  listSnapshotDirectory,
+  readableSnapshotSourcePaths,
+  resolveSelectedSnapshotPathsInDb,
+  searchSnapshotFiles,
+} from '../../services/backupSnapshotBrowse';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
+import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionStore';
+import { authorizeExternalReference } from '../../services/recoveryDownloadService';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import {
   createIncomingIndexTable,
@@ -40,6 +52,7 @@ import {
   WRITE_IDENTITY,
   type WriteTenant,
 } from './backupWriteFixtures';
+import { seedRowsIndex } from './helpers/backupIndexFixtures';
 import { getTestDb } from './setup';
 
 vi.mock('../../jobs/backupSnapshotFileIndexWorker', async (importOriginal) => ({
@@ -185,6 +198,144 @@ async function waitForLockWaiters(pattern: string, n: number): Promise<void> {
     if (Date.now() > deadline) throw new Error(`fewer than ${n} backends blocked on ${pattern}`);
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+/**
+ * Tombstones that break D1: a path other than their checkpoint entry's (the
+ * read layer would then hide nothing), an entry that does not exist, or an
+ * object key or column values of their own. Read on the admin connection.
+ */
+async function malformedTombstones(snapshotDbId: string): Promise<number> {
+  const rows = (await getTestDb().execute(sql`
+    SELECT count(*)::int AS n
+      FROM backup_snapshot_files f
+      JOIN backup_snapshots s ON s.id = f.snapshot_db_id
+      LEFT JOIN backup_tree_checkpoint_entries e
+        ON e.checkpoint_id = s.file_index_checkpoint_id AND e.entry_no = f.checkpoint_entry_no
+     WHERE f.snapshot_db_id = ${snapshotDbId}::uuid AND f.checkpoint_entry_no IS NOT NULL
+       AND (e.source_path IS DISTINCT FROM f.source_path OR f.backup_path <> ''
+            OR f.size IS NOT NULL OR f.modified_at IS NOT NULL OR f.kind IS NOT NULL)
+  `)) as unknown as Array<{ n: number }>;
+  return rows[0]!.n;
+}
+
+const NOT_MEMBER = 'key is not a member of the snapshot file index';
+/** Refusals authorizeExternalReference gives only after a key passed the membership read. */
+const PAST_MEMBERSHIP = new Set([
+  'no verified origin record for this snapshot reference',
+  'origin identity does not match the recovery token',
+]);
+/** The snapshot an object key of these manifests belongs to (`snapshots/<id>/files/…`). */
+const ownerOf = (key: string) => key.split('/')[1]!;
+
+/** Every reader's answer for one snapshot, in the org's request context. */
+async function readersOf(t: WriteTenant, snapshotDbId: string, candidateKeys: string[], selectPaths: string[]) {
+  const [state] = (await getTestDb().execute(sql`
+    SELECT file_index_manifest_sha256 AS digest FROM backup_snapshots WHERE id = ${snapshotDbId}::uuid
+  `)) as unknown as Array<{ digest: string | null }>;
+  return withDbAccessContext(orgContext(t.orgId), async () => {
+    const browse: string[] = [];
+    const walk = async (segments: string[]): Promise<void> => {
+      let cursor: { rank: 0 | 1; name: string } | null = null;
+      for (let pages = 0; pages < 50; pages++) {
+        const page = await listSnapshotDirectory({ snapshotDbId, segments, limit: 100, cursor });
+        for (const e of page.entries) {
+          if (e.type === 'directory') {
+            browse.push(`${e.path}/ (${e.fileCount})`);
+            await walk([...segments, e.name]);
+          } else {
+            browse.push(`${e.path} ${e.sizeBytes ?? '-'} ${e.modifiedAt ?? '-'}`);
+          }
+        }
+        if (!page.nextCursor) return;
+        cursor = decodeBrowseCursor(page.nextCursor);
+      }
+      throw new Error(`browse of /${segments.join('/')} did not end`);
+    };
+    await walk([]);
+
+    // Search compares paths with forward slashes, so '/' matches every entry.
+    const search: string[] = [];
+    let after: string | null = null;
+    for (let pages = 0; ; pages++) {
+      if (pages > 50) throw new Error('search did not end');
+      const page = await searchSnapshotFiles({ snapshotDbId, query: '/', limit: 100, after });
+      search.push(...page.entries.map((e) => `${e.path} ${e.type} ${e.sizeBytes ?? '-'} ${e.modifiedAt ?? '-'}`));
+      if (!page.nextCursor) break;
+      after = decodeSearchCursor(page.nextCursor);
+    }
+
+    const membership: Record<string, string> = {};
+    for (const key of candidateKeys) {
+      const r = await authorizeExternalReference(db, {
+        tokenId: 'token-11736-round-trip', snapshotDbId, key, originSnapshotId: ownerOf(key),
+        orgId: t.orgId, deviceId: t.deviceId, pinnedStorageIdentity: WRITE_IDENTITY,
+      });
+      membership[key] = r.ok || PAST_MEMBERSHIP.has(r.reason) ? 'member' : r.reason;
+    }
+
+    return {
+      browse,
+      search,
+      sourcePaths: await readableSnapshotSourcePaths(snapshotDbId),
+      selection: await resolveSelectedSnapshotPathsInDb(snapshotDbId, selectPaths),
+      count: await drizzleBrokeredReadStore.countIndexedFiles(snapshotDbId),
+      keys: [...await drizzleBrokeredReadStore.filterIndexedKeys(snapshotDbId, candidateKeys, state?.digest ?? '')].sort(),
+      membership,
+    };
+  });
+}
+
+/**
+ * Plan Task 6: every reader returns exactly `entries` for the snapshot.
+ *
+ *  - Against a control: a snapshot of the same device holding `entries` in
+ *    'rows' format with the same index state (status, digest, integrity),
+ *    read by the same readers. That covers each reader's own shaping
+ *    (directory counts, ordering, pages, path normalization).
+ *  - Against the manifest itself, for a complete index: the key budget, the
+ *    grants, recovery-download membership and the readable source paths.
+ *  - Every tombstone keeps D1 (malformedTombstones).
+ *
+ * `gone` is what other snapshots of the test hold and this one must not:
+ * those keys must not authorize and those paths must not resolve.
+ */
+async function expectReadersReturnManifest(
+  t: WriteTenant,
+  snap: Snap,
+  entries: Entry[],
+  gone: { keys: string[]; paths: string[] } = { keys: [], paths: [] },
+): Promise<void> {
+  expect(await malformedTombstones(snap.dbId), 'malformed tombstones').toBe(0);
+
+  const ownKeys = [...new Set(entries.map((e) => e.backupPath).filter(Boolean))].sort();
+  const candidateKeys = [...new Set([...ownKeys, ...gone.keys, `snapshots/${snap.snapshotId}/files/never-indexed`])].sort();
+  const selectPaths = [...new Set([...entries.map((e) => e.sourcePath), ...gone.paths])];
+
+  const control = await snapshotOf(t);
+  await seedRowsIndex(control.dbId, entries.map((e) => ({
+    sourcePath: e.sourcePath, backupPath: e.backupPath, size: e.size ?? null, modifiedAt: e.modTime ?? null, kind: e.kind ?? null,
+  })), '0'.repeat(64));
+  await getTestDb().execute(sql`
+    UPDATE backup_snapshots c
+       SET file_index_status = s.file_index_status, file_index_manifest_sha256 = s.file_index_manifest_sha256,
+           integrity_status = s.integrity_status
+      FROM backup_snapshots s
+     WHERE c.id = ${control.dbId}::uuid AND s.id = ${snap.dbId}::uuid
+  `);
+
+  const published = await readersOf(t, snap.dbId, candidateKeys, selectPaths);
+  expect(published).toEqual(await readersOf(t, control.dbId, candidateKeys, selectPaths));
+
+  if ((await indexState(snap.dbId)).status !== 'complete') return;
+  const ownKeySet = new Set(ownKeys);
+  expect(published.count).toBe(entries.filter((e) => e.backupPath !== '').length);
+  expect(published.keys).toEqual(ownKeys);
+  expect(published.membership).toEqual(
+    Object.fromEntries(candidateKeys.map((k) => [k, ownKeySet.has(k) ? 'member' : NOT_MEMBER])),
+  );
+  expect([...published.sourcePaths].sort()).toEqual(entries.map((e) => e.sourcePath).sort());
+  expect(published.selection.ok, 'every path resolves only when nothing gone was asked for').toBe(gone.paths.length === 0);
 }
 
 describe('delta publish (#11736 step 2)', () => {
@@ -644,5 +795,126 @@ describe('delta publish edges (#11736 step 2)', () => {
     expect(await indexState(s0.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, adds: 0, tombstones: 0 });
     expect(await indexState(s1.dbId)).toEqual(sibling);
     expect(await storedTree(s1.dbId)).toEqual(expectedTree(base));
+  });
+});
+
+describe('round trip through the readers (#11736 step 2, plan Task 6)', () => {
+  /** A whole-second modification time, as a manifest carries it. */
+  const at = (minute: number) => new Date(Date.UTC(2026, 10, 1) + minute * 60_000).toISOString().replace(/\.\d+Z$/, 'Z');
+  const keyOf = (snap: Snap, name: string) => `snapshots/${snap.snapshotId}/files/${name}`;
+
+  runDb('every reader returns exactly the manifest of each delta and of each new checkpoint', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1, s2, s3, s4] = [await snapshotOf(t), await snapshotOf(t), await snapshotOf(t), await snapshotOf(t), await snapshotOf(t)];
+    const P = {
+      reAdded: 'C:/case/re-added.dat',
+      modified: 'C:/case/modified.dat',
+      fileToDir: 'C:/case/file-to-dir',
+      dirToFile: 'C:/case/dir-to-file',
+      deleted: 'C:/case/deleted.dat',
+    };
+    const plain = filesOf(s0.snapshotId, 195);
+    const base: Entry[] = [
+      ...plain,
+      { sourcePath: P.reAdded, backupPath: keyOf(s0, 're-added'), size: 5, modTime: at(1) },
+      { sourcePath: P.modified, backupPath: keyOf(s0, 'modified'), size: 6, modTime: at(2) },
+      { sourcePath: P.fileToDir, backupPath: keyOf(s0, 'file-to-dir'), size: 7, modTime: at(3) },
+      { sourcePath: P.dirToFile, backupPath: '', kind: 'dir' },
+      { sourcePath: P.deleted, backupPath: keyOf(s0, 'deleted'), size: 8, modTime: at(4) },
+    ];
+    // 200 entries: a delta of up to ceil(5% of 200) = 10 differences is kept.
+    expect(base).toHaveLength(200);
+
+    expect(await hydrate(s0.dbId, manifestOf(s0.snapshotId, base))).toMatchObject({ status: 'complete', checkpointEntriesWritten: 200 });
+    const [h1] = await checkpointsOfDevice(t.deviceId);
+    expect(await indexState(s0.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h1!.id, adds: 0, tombstones: 0 });
+    await expectReadersReturnManifest(t, s0, base);
+
+    // S1, one delta with every kind of change, ten differences in all:
+    //  - re-added: deleted and added again at the same path and size, as a new object;
+    //  - modified: new object, size and modification time;
+    //  - a file that became a directory (with a file beneath it), and a directory that became a file;
+    //  - deleted.
+    const tree1: Entry[] = [
+      ...plain,
+      { sourcePath: P.reAdded, backupPath: keyOf(s1, 're-added'), size: 5, modTime: at(1) },
+      { sourcePath: P.modified, backupPath: keyOf(s1, 'modified'), size: 60, modTime: at(20) },
+      { sourcePath: P.fileToDir, backupPath: '', kind: 'dir' },
+      { sourcePath: `${P.fileToDir}/child.dat`, backupPath: keyOf(s1, 'child'), size: 9, modTime: at(21) },
+      { sourcePath: P.dirToFile, backupPath: keyOf(s1, 'dir-to-file'), size: 10, modTime: at(22) },
+    ];
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h1!.id, adds: 5, tombstones: 5 });
+    await expectReadersReturnManifest(t, s1, tree1, {
+      keys: [keyOf(s0, 're-added'), keyOf(s0, 'modified'), keyOf(s0, 'file-to-dir'), keyOf(s0, 'deleted')],
+      paths: [P.deleted],
+    });
+
+    // S2, an empty delta: the tree is the checkpoint's again, so the deleted file is back.
+    await hydrate(s2.dbId, manifestOf(s2.snapshotId, base));
+    expect(await indexState(s2.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h1!.id, adds: 0, tombstones: 0 });
+    await expectReadersReturnManifest(t, s2, base, {
+      keys: [keyOf(s1, 're-added'), keyOf(s1, 'modified'), keyOf(s1, 'child'), keyOf(s1, 'dir-to-file')],
+      paths: [`${P.fileToDir}/child.dat`],
+    });
+
+    // S3, past 5%: thirty files replaced. It writes a new checkpoint and stores no rows of its own.
+    const tree3: Entry[] = [
+      ...plain.map((e, i) => (i < 30 ? { ...e, backupPath: keyOf(s3, `r-${i}`), size: 50_000 + i } : e)),
+      ...base.slice(plain.length),
+    ];
+    expect(await hydrate(s3.dbId, manifestOf(s3.snapshotId, tree3))).toMatchObject({ checkpointEntriesWritten: 200, rowsWritten: 0 });
+    const headers = await checkpointsOfDevice(t.deviceId);
+    expect(headers).toHaveLength(2);
+    const h2 = headers[1]!;
+    expect(await indexState(s3.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h2.id, adds: 0, tombstones: 0 });
+    await expectReadersReturnManifest(t, s3, tree3, { keys: plain.slice(0, 30).map((e) => e.backupPath), paths: [] });
+
+    // S4 diffs against the new checkpoint: one file replaced, one deleted.
+    const tree4: Entry[] = [
+      { ...tree3[0]!, backupPath: keyOf(s4, 'r-0'), size: 70_000 },
+      ...tree3.slice(2),
+    ];
+    await hydrate(s4.dbId, manifestOf(s4.snapshotId, tree4));
+    expect(await indexState(s4.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h2.id, adds: 1, tombstones: 2 });
+    await expectReadersReturnManifest(t, s4, tree4, {
+      keys: [keyOf(s3, 'r-0'), keyOf(s3, 'r-1'), plain[0]!.backupPath],
+      paths: [tree3[1]!.sourcePath],
+    });
+
+    // The snapshots on the first checkpoint still read their own trees.
+    await expectReadersReturnManifest(t, s1, tree1, { keys: [keyOf(s0, 'deleted')], paths: [P.deleted] });
+    await expectReadersReturnManifest(t, s2, base);
+  });
+
+  runDb('the readers follow a delta snapshot that inline agent rows reset to rows format', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'running' });
+    const s0 = await snapshotOf(t);
+    const base = filesOf(s0.snapshotId, 40);
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    expect(await indexState(s0.dbId)).toMatchObject({ format: 'delta' });
+    await expectReadersReturnManifest(t, s0, base);
+    // As a refused re-hydration leaves it.
+    await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_status = 'failed' WHERE id = ${s0.dbId}::uuid`);
+
+    const agentFiles: Entry[] = [
+      { sourcePath: 'C:/agent/one', backupPath: `snapshots/${s0.snapshotId}/files/a0`, size: 1 },
+      { sourcePath: 'C:/agent/two', backupPath: `snapshots/${s0.snapshotId}/files/a1`, size: 2 },
+    ];
+    await withDbAccessContext(orgContext(t.orgId), () => applyBackupCommandResultToJob({
+      jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+      result: {
+        snapshotId: s0.snapshotId, filesBackedUp: agentFiles.length, bytesBackedUp: 3,
+        snapshot: { id: s0.snapshotId, files: agentFiles },
+      } as never,
+      dispatchExpectationVerified: true,
+    }));
+    expect(await indexState(s0.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, status: 'agent' });
+
+    // Agent rows read as exactly themselves, the checkpoint's entries nowhere, wherever an 'agent' index is served.
+    await expectReadersReturnManifest(t, s0, agentFiles, {
+      keys: base.slice(0, 3).map((e) => e.backupPath),
+      paths: base.slice(0, 3).map((e) => e.sourcePath),
+    });
   });
 });
