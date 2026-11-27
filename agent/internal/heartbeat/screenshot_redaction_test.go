@@ -192,6 +192,11 @@ func checkSentBytes(t *testing.T, cmdType, commandID, want string, restBody []by
 //     cannot stand up. That branch is the single line
 //     `return tools.TakeScreenshotWithCapture(cmd.Payload, h.desktopCaptureFn())`
 //     (ComputerActionWithCapture for computer_action).
+//
+// Not pinned: a command that arrives over the websocket. Only the conversion
+// function toWSCommandResult is checked here; the websocket command entry
+// that calls it is not driven, so a text pass added in that entry would
+// leave this test green.
 func TestScreenshotResultsAreNotTextRedacted(t *testing.T) {
 	img, want := noiseImageWithAWSShapedBase64(t)
 	if executor.SanitizeOutput(want) == want {
