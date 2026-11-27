@@ -204,6 +204,57 @@ function invariantFailure(detail: string): Error {
   return new Error(`snapshot index delta does not reproduce the manifest: ${detail}`);
 }
 
+/** One entry as text, every indexed column, for the order-independent digest below. */
+const entryText = (alias: string) => sql.raw(
+  `ROW(${alias}.source_path, ${alias}.backup_path, ${alias}.size, ${alias}.modified_at, ${alias}.kind)::text`,
+);
+
+/**
+ * D9 by content: the tree the readers will rebuild for this snapshot, and the
+ * manifest in the temp table, as a count and a sum of 64-bit row hashes each.
+ * Equal digests mean equal multisets of (source_path, backup_path, size,
+ * modified_at, kind), up to a hash collision; the sum keeps duplicates.
+ *
+ * The tree is read from what was stored, the way snapshotIndexEntries reads it:
+ * the checkpoint's entries minus those a stored tombstone names by entry_no
+ * and source_path, plus the stored adds. It does not use SAME_ENTRY, so a diff
+ * that pairs entries wrongly (a column left out of SAME_ENTRY, say) shows up
+ * here even though the two anti-joins still agree on the counts.
+ *
+ * Cost: one pass over the temp table and one over the checkpoint's entries
+ * (its primary key range), with the snapshot's own rows hashed for the
+ * anti-join. Sums, so no sort.
+ */
+async function treeAndManifestDigests(tx: Tx, snapshotDbId: string, checkpointId: string) {
+  const rows = (await tx.execute(sql`
+    SELECT tree.n::bigint AS tree_n, tree.h::text AS tree_h, manifest.n::bigint AS manifest_n, manifest.h::text AS manifest_h
+      FROM (
+        SELECT count(*) AS n, coalesce(sum(hashtextextended(${entryText('x')}, 0)), 0) AS h
+          FROM (
+            SELECT e.source_path, e.backup_path, e.size, e.modified_at, e.kind
+              FROM backup_tree_checkpoint_entries e
+             WHERE e.checkpoint_id = ${checkpointId}::uuid
+               AND NOT EXISTS (
+                 SELECT 1 FROM backup_snapshot_files t
+                  WHERE t.snapshot_db_id = ${snapshotDbId}::uuid
+                    AND t.checkpoint_entry_no = e.entry_no
+                    AND t.source_path = e.source_path
+               )
+            UNION ALL
+            SELECT f.source_path, f.backup_path, f.size, f.modified_at, f.kind
+              FROM backup_snapshot_files f
+             WHERE f.snapshot_db_id = ${snapshotDbId}::uuid AND f.checkpoint_entry_no IS NULL
+          ) x
+      ) tree,
+      (
+        SELECT count(*) AS n, coalesce(sum(hashtextextended(${entryText('x')}, 0)), 0) AS h
+          FROM snapshot_index_incoming x
+      ) manifest
+  `)) as unknown as Array<{ tree_n: string | number; tree_h: string; manifest_n: string | number; manifest_h: string }>;
+  const r = rows[0]!;
+  return { treeN: Number(r.tree_n), treeH: r.tree_h, manifestN: Number(r.manifest_n), manifestH: r.manifest_h };
+}
+
 /**
  * Publish the temp table's entries for `snapshotDbId` as a delta against the
  * lineage's newest checkpoint, or as a new checkpoint (D4).
@@ -217,8 +268,11 @@ function invariantFailure(detail: string): Error {
  * Lock order: the snapshot row (the caller), then the lineage's advisory lock,
  * then the newest header FOR KEY SHARE. Checkpoint GC takes the header FOR
  * UPDATE SKIP LOCKED, so it passes over a header a publisher is diffing
- * against, and a header GC holds is gone by the time this read returns: the
- * publisher then writes a new checkpoint (correct, only costlier).
+ * against. When this read waits on a header GC holds and GC deletes it, the
+ * deleted row is skipped and the read returns the next-older header of the
+ * lineage, which the publisher then diffs against (a new checkpoint only if
+ * no older header is left, or if the diff passes 5%). Either way the D9
+ * checks below compare the result with the manifest.
  */
 export async function publishDeltaIndex(
   tx: Tx,
@@ -351,6 +405,16 @@ export async function publishDeltaIndex(
   if (checkpoint.entryCount - tombstones + adds !== eligibleEntries) {
     throw invariantFailure(
       `${checkpoint.entryCount} checkpoint entries - ${tombstones} tombstones + ${adds} additions is not the manifest's ${eligibleEntries}`,
+    );
+  }
+
+  // D9 by content: the counts above hold by construction (both anti-joins use
+  // SAME_ENTRY), so the rebuilt tree is also compared with the manifest.
+  const digests = await treeAndManifestDigests(tx, snapshotDbId, checkpoint.id);
+  if (digests.treeN !== digests.manifestN || digests.treeH !== digests.manifestH) {
+    throw invariantFailure(
+      `the rebuilt tree's content differs from the manifest's (${digests.treeN} entries against ${digests.manifestN}; `
+      + `snapshot ${snapshotDbId}, checkpoint ${checkpoint.id})`,
     );
   }
 

@@ -95,6 +95,8 @@ function fakeTx(opts: {
   tombstones?: number;
   written?: { adds: number; tombstones: number; misnamed?: number };
   checkpointEntriesInserted?: number;
+  /** The content check's answer; by default the rebuilt tree equals the manifest. */
+  digests?: { tree_n: number; tree_h: string; manifest_n: number; manifest_h: string };
 }) {
   const statements: string[] = [];
   const params: unknown[][] = [];
@@ -114,6 +116,9 @@ function fakeTx(opts: {
     if (/INSERT INTO backup_tree_checkpoint_entries/.test(text)) return rows([], opts.checkpointEntriesInserted ?? 0);
     if (/INSERT INTO backup_snapshot_files/.test(text)) {
       return rows([opts.written ?? { adds: opts.adds ?? 0, tombstones: opts.tombstones ?? 0 }]);
+    }
+    if (/AS tree_n/.test(text)) {
+      return rows([opts.digests ?? { tree_n: 3, tree_h: '-42', manifest_n: 3, manifest_h: '-42' }]);
     }
     return rows([]);
   });
@@ -196,6 +201,35 @@ describe('publishDeltaIndex', () => {
     expect(write).toMatch(/RETURNING checkpoint_entry_no, source_path/);
     expect(write).toMatch(/LEFT JOIN backup_tree_checkpoint_entries e\s+ON e\.checkpoint_id = \$\d+::uuid AND e\.entry_no = w\.checkpoint_entry_no/);
     expect(write).toMatch(/e\.source_path IS DISTINCT FROM w\.source_path/);
+  });
+
+  it('refuses a delta whose rebuilt tree differs from the manifest in content, the counts balancing (D9)', async () => {
+    for (const digests of [
+      { tree_n: 1_000, tree_h: '123', manifest_n: 1_000, manifest_h: '124' },
+      { tree_n: 999, tree_h: '123', manifest_n: 1_000, manifest_h: '123' },
+    ]) {
+      const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 5, tombstones: 5, digests });
+      await expect(publishDeltaIndex(tx, args(1_000)))
+        .rejects.toThrow(/the rebuilt tree's content differs from the manifest's/);
+      // Refused before the header is marked as in use.
+      expect(statements.some((s) => /SET last_referenced_at/.test(s))).toBe(false);
+    }
+  });
+
+  it('reads the rebuilt tree from the stored rows, not through the diff\'s pairing', async () => {
+    const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 1, tombstones: 1 });
+    await publishDeltaIndex(tx, args(1_000));
+    const write = statements.findIndex((s) => /INSERT INTO backup_snapshot_files/.test(s));
+    const check = statements.findIndex((s) => /AS tree_n/.test(s));
+    expect(check).toBeGreaterThan(write);
+    const text = statements[check]!;
+    // The read layer's shape: entries a stored tombstone names by entry_no and path are hidden; stored adds are added.
+    expect(text).toMatch(/t\.checkpoint_entry_no = e\.entry_no\s+AND t\.source_path = e\.source_path/);
+    expect(text).toMatch(/f\.checkpoint_entry_no IS NULL/);
+    // Every indexed column on both sides, and none of the diff's numbering.
+    expect(text.match(/ROW\(x\.source_path, x\.backup_path, x\.size, x\.modified_at, x\.kind\)::text/g)).toHaveLength(2);
+    expect(text).toMatch(/FROM snapshot_index_incoming x/);
+    expect(text).not.toMatch(/\bord\b|row_number/);
   });
 
   it('refuses a checkpoint whose entry count is not the manifest\'s', async () => {

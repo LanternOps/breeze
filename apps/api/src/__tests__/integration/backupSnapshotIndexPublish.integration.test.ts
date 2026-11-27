@@ -704,20 +704,57 @@ describe('delta publish edges (#11736 step 2)', () => {
     }
   });
 
-  runDb('a change of modification time or kind alone is a changed entry', async () => {
+  runDb('a change of size, modification time or kind alone is a changed entry', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const sized: Entry = { sourcePath: 'C:/m/sized', backupPath: `snapshots/${s0.snapshotId}/files/sized`, size: 4 };
     const stamped: Entry = { sourcePath: 'C:/m/stamped', backupPath: `snapshots/${s0.snapshotId}/files/stamped`, size: 3, modTime: '2026-01-02T03:04:05Z' };
     const link: Entry = { sourcePath: 'C:/m/link', backupPath: '', kind: 'dir' };
-    const base = [...filesOf(s0.snapshotId, 60), stamped, link];
+    // 103 entries: up to ceil(5% of 103) = 6 differences stay a delta.
+    const base = [...filesOf(s0.snapshotId, 100), sized, stamped, link];
     await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
 
-    const tree1 = [...filesOf(s0.snapshotId, 60), { ...stamped, modTime: '2026-01-02T03:04:06Z' }, { ...link, kind: 'symlink' as const }];
+    const tree1 = [
+      ...filesOf(s0.snapshotId, 100),
+      { ...sized, size: 5 },
+      { ...stamped, modTime: '2026-01-02T03:04:06Z' },
+      { ...link, kind: 'symlink' as const },
+    ];
     await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
 
-    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', adds: 2, tombstones: 2 });
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', adds: 3, tombstones: 3 });
     expect(await storedTree(s1.dbId)).toEqual(expectedTree(tree1));
     expect(await storedTree(s0.dbId)).toEqual(expectedTree(base));
+  });
+
+  runDb('stored rows that differ from the manifest in content alone fail the publish (D9 by content)', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const base = filesOf(s0.snapshotId, 80);
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    const before = await indexState(s1.dbId);
+    const headersBefore = await checkpointsOfDevice(t.deviceId);
+
+    // The publisher's own rows are altered as they are stored: every add of s1 gets one more byte.
+    // The counts are the ones the diff expects, so a count check passes; only the content differs.
+    const fn = `test_corrupt_adds_${randomBytes(6).toString('hex')}`;
+    await getTestDb().execute(sql.raw(`
+      CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN NEW.size := NEW.size + 1; RETURN NEW; END $$;
+      CREATE TRIGGER ${fn} BEFORE INSERT ON backup_snapshot_files FOR EACH ROW
+        WHEN (NEW.snapshot_db_id = '${s1.dbId}'::uuid AND NEW.checkpoint_entry_no IS NULL)
+        EXECUTE FUNCTION ${fn}();
+    `));
+    try {
+      const tree1 = [...base.slice(1), ...filesOf(s1.snapshotId, 2, 400)];
+      await expect(hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1)))
+        .rejects.toThrow(/snapshot index delta does not reproduce the manifest: the rebuilt tree's content/);
+    } finally {
+      await getTestDb().execute(sql.raw(`DROP TRIGGER IF EXISTS ${fn} ON backup_snapshot_files; DROP FUNCTION IF EXISTS ${fn}();`));
+    }
+
+    expect(await indexState(s1.dbId)).toEqual({ ...before, status: 'failed' });
+    expect(await checkpointsOfDevice(t.deviceId)).toEqual(headersBefore);
   });
 
   runDb('an empty manifest publishes an empty tree, and the next snapshot gets a checkpoint of its own', async () => {
