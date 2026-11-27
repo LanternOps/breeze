@@ -40,7 +40,8 @@ export function BuiltinIconTile({ size = "md" }: { size?: keyof typeof TILE_SIZE
   );
 }
 
-const CHIP = "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium";
+const CHIP =
+  "inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium";
 
 export function BuiltinPill({ testId = "builtin-pill" }: { testId?: string }) {
   useTranslation("policies");

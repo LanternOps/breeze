@@ -705,7 +705,7 @@ export default function SoftwareCatalog() {
             <div
               key={item.id}
               data-testid={`catalog-card-${item.id}`}
-              className="group rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
+              className="group flex flex-col rounded-lg border bg-card p-5 shadow-xs transition hover:-translate-y-1 hover:shadow-md"
               role="button"
               tabIndex={0}
               onClick={() => {
@@ -719,16 +719,16 @@ export default function SoftwareCatalog() {
                 }
               }}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
                   {isBuiltinItem(item) ? (
                     <BuiltinIconTile />
                   ) : (
-                    <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
                       <Package className="h-5 w-5 text-muted-foreground" />
                     </div>
                   )}
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-sm font-semibold">{item.name}</p>
                     <p className="text-xs text-muted-foreground">
                       {item.vendor ||
@@ -738,10 +738,11 @@ export default function SoftwareCatalog() {
                     </p>
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1.5">
+                <div className="flex shrink-0 flex-col items-end gap-1.5">
                   {/* Partner-wide custom packages (#2135) wear the canonical
                       ownership badge; a built-in wears the Built-in pill
-                      instead, plus its setup state when one can be checked. */}
+                      instead. Its setup state sits in the footer, beside the
+                      Deploy button it explains. */}
                   {!item.orgId && item.partnerId && !isBuiltinItem(item) && (
                     <ScopeBadge
                       orgId={null}
@@ -749,20 +750,11 @@ export default function SoftwareCatalog() {
                       isSystem={false}
                     />
                   )}
-                  {isBuiltinItem(item) && (
-                    <div className="flex items-center gap-1.5">
-                      {isIntegrationProvider(item.integrationProvider) && (
-                        <ReadinessPill
-                          status={readinessMap[item.integrationProvider].status}
-                        />
-                      )}
-                      <BuiltinPill />
-                    </div>
-                  )}
+                  {isBuiltinItem(item) && <BuiltinPill />}
                   {item.category && (
                     <span
                       className={cn(
-                        "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
+                        "inline-flex items-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium",
                         categoryStyles[item.category] ??
                           "bg-muted text-muted-foreground",
                       )}
@@ -796,13 +788,21 @@ export default function SoftwareCatalog() {
                 </div>
               )}
 
-              <div className="mt-4 flex items-center justify-between gap-2">
+              {/* Footer pinned to the card's bottom edge so Deploy lines up
+                  across a row whatever each card's description length. The
+                  left slot says why Deploy is or is not ready: the missing
+                  installer when that is the gap, otherwise the setup state. */}
+              <div className="mt-auto flex items-center justify-between gap-2 pt-4">
                 {needsInstallerUpload(item) ? (
                   <p className="text-xs text-muted-foreground">
                     {i18n.t(
                       "policies:software.softwareCatalog.uploadInstallerToEnableDeploy",
                     )}
                   </p>
+                ) : isIntegrationProvider(item.integrationProvider) ? (
+                  <ReadinessPill
+                    status={readinessMap[item.integrationProvider].status}
+                  />
                 ) : (
                   <span />
                 )}
