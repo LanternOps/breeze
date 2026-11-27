@@ -21,7 +21,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sha2::Sha256;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -185,6 +185,12 @@ pub fn encode_frame(
 }
 
 /// Writes a framed envelope to `w`. See [`encode_frame`] for framing details.
+///
+/// The frame (header and body) goes out as one buffer. A dropped call can
+/// still leave part of it on the wire, which desyncs the peer for good, so it
+/// is NOT cancellation safe: the session loop writes only from `select!`
+/// handlers (which run after the other branches are dropped), never as a
+/// branch, and a session cancelled mid-write drops its stream with it.
 pub async fn write_frame<W: AsyncWriteExt + Unpin>(
     w: &mut W,
     key: &[u8],
@@ -203,11 +209,101 @@ pub async fn write_frame<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+/// How much [`FrameReader`] asks the stream for at once.
+const READ_CHUNK: usize = 64 * 1024;
+
+/// Reads framed envelopes from one stream, safely inside `tokio::select!`.
+///
+/// [`read_frame`] is two `read_exact` calls, and a `read_exact` future that is
+/// dropped part-way loses the bytes it already consumed. The session loop
+/// races its read against a 250 ms tick and five channels, so on a pipe that
+/// delivered a frame in pieces the tick could win mid-frame: the next read
+/// then took body bytes (`{"id`) as a length, the session ended with
+/// "message too large", and Assist reconnected, losing any open prompt
+/// (#12808). This reader keeps every byte it has taken from the stream in its
+/// own buffer, and its only await is `read_buf`, which is cancellation safe
+/// (no data is read if it is dropped), so a cancelled
+/// [`FrameReader::read_frame`] resumes the same frame on the next call.
+///
+/// Use one reader per connection, for every frame of it (the handshake
+/// included): it may hold bytes of the next frame.
+#[derive(Debug, Default)]
+pub struct FrameReader {
+    buf: Vec<u8>,
+}
+
+impl FrameReader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reads, validates and parses the next frame, with the same checks as
+    /// [`read_frame`]. Cancellation safe: see the type docs.
+    ///
+    /// A clean end of stream between frames is `UnexpectedEof` "closed
+    /// between frames"; one that cuts a frame is "closed mid-frame".
+    pub async fn read_frame<R: AsyncRead + Unpin>(
+        &mut self,
+        r: &mut R,
+        key: &[u8],
+        recv_seq: &mut u64,
+    ) -> Result<Envelope, IpcError> {
+        loop {
+            if let Some(length) = self.buffered_frame_len()? {
+                let rest = self.buf.split_off(4 + length);
+                let frame = std::mem::replace(&mut self.buf, rest);
+                return parse_and_verify(&frame[4..], key, recv_seq);
+            }
+            let wanted = match self.header_len() {
+                Some(length) => 4 + length - self.buf.len(),
+                None => 4 - self.buf.len(),
+            };
+            self.buf.reserve(wanted.clamp(4, READ_CHUNK));
+            if r.read_buf(&mut self.buf).await? == 0 {
+                let at = if self.buf.is_empty() { "between frames" } else { "mid-frame" };
+                return Err(IpcError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("connection closed {at}"),
+                )));
+            }
+        }
+    }
+
+    /// The frame length the buffered header announces, once 4 bytes are in.
+    fn header_len(&self) -> Option<usize> {
+        let header: [u8; 4] = self.buf.get(..4)?.try_into().ok()?;
+        Some(u32::from_be_bytes(header) as usize)
+    }
+
+    /// The length of a whole buffered frame, or `None` while it is short. An
+    /// impossible length is an error as soon as the header is in: the stream
+    /// has lost sync and the session ends.
+    fn buffered_frame_len(&self) -> Result<Option<usize>, IpcError> {
+        let Some(length) = self.header_len() else {
+            return Ok(None);
+        };
+        if length == 0 {
+            return Err(IpcError::Protocol("zero-length message".to_string()));
+        }
+        if length > MAX_MESSAGE_SIZE {
+            return Err(IpcError::Protocol(format!(
+                "message too large: {} > {}",
+                length, MAX_MESSAGE_SIZE
+            )));
+        }
+        Ok((self.buf.len() >= 4 + length).then_some(length))
+    }
+}
+
 /// Reads, validates, and parses one framed envelope from `r`.
 ///
 /// Enforces: length in `(0, MAX_MESSAGE_SIZE]`, HMAC match (constant-time),
 /// `seq > 0`, and `seq` strictly greater than the previous `recv_seq` (replay
 /// protection). On success updates `*recv_seq` and returns the envelope.
+///
+/// NOT cancellation safe (a dropped call loses the bytes it consumed): never
+/// race it in `tokio::select!`. The session loop uses [`FrameReader`]; this
+/// stays for the broker side of tests, which reads one frame at a time.
 pub async fn read_frame<R: AsyncReadExt + Unpin>(
     r: &mut R,
     key: &[u8],
@@ -528,5 +624,81 @@ mod tests {
             });
             assert!(found, "agent message.go has no `{name} = \"{value}\"`");
         }
+    }
+
+    // #12808: the session loop races reads against a 250 ms tick. A frame cut
+    // anywhere (inside the header, between header and body, inside the body)
+    // with the tick firing in every gap must still come out whole and in order.
+    #[tokio::test(start_paused = true)]
+    async fn frame_reader_survives_cancellation_at_every_cut() {
+        use std::time::Duration;
+        let key = [7u8; 32];
+        let (mut reader_half, mut writer_half) = tokio::io::duplex(64);
+        let mut seq = 0u64;
+        let frames: Vec<Vec<u8>> = (1..=4)
+            .map(|i| encode_frame(&key, &mut seq, &format!("f{i}"), "ping", Some(raw(&format!(r#"{{"n":{i},"pad":"{}"}}"#, "x".repeat(150))))).unwrap())
+            .collect();
+        let cuts: Vec<Vec<usize>> = vec![vec![2], vec![4], vec![4 + 20], vec![1, 3, 4, 5, 90, 150]];
+        let writer = {
+            let frames = frames.clone();
+            tokio::spawn(async move {
+                for (frame, cuts) in frames.iter().zip(cuts) {
+                    let mut at = 0;
+                    for cut in cuts.into_iter().chain(std::iter::once(frame.len())) {
+                        writer_half.write_all(&frame[at..cut]).await.unwrap();
+                        at = cut;
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                    }
+                }
+                writer_half
+            })
+        };
+        let mut fr = FrameReader::new();
+        let mut recv = 0u64;
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        let (mut got, mut ticks) = (Vec::new(), 0);
+        while got.len() < frames.len() {
+            tokio::select! {
+                _ = tick.tick() => ticks += 1,
+                r = fr.read_frame(&mut reader_half, &key, &mut recv) => got.push(r.expect("frame").id),
+            }
+        }
+        assert_eq!(got, vec!["f1", "f2", "f3", "f4"]);
+        assert!(ticks > 10, "the tick must have cancelled reads mid-frame ({ticks} ticks)");
+        drop(writer.await.unwrap());
+        let end = fr.read_frame(&mut reader_half, &key, &mut recv).await.unwrap_err();
+        assert!(end.to_string().contains("closed between frames"), "{end}");
+    }
+
+    #[tokio::test]
+    async fn frame_reader_keeps_the_next_frame_it_read_ahead() {
+        let key = [7u8; 32];
+        let mut seq = 0u64;
+        let mut both = encode_frame(&key, &mut seq, "a", "ping", None).unwrap();
+        both.extend(encode_frame(&key, &mut seq, "b", "ping", None).unwrap());
+        let (mut r, mut w) = tokio::io::duplex(4096);
+        w.write_all(&both).await.unwrap();
+        let mut fr = FrameReader::new();
+        let mut recv = 0u64;
+        assert_eq!(fr.read_frame(&mut r, &key, &mut recv).await.unwrap().id, "a");
+        assert_eq!(fr.read_frame(&mut r, &key, &mut recv).await.unwrap().id, "b");
+    }
+
+    #[tokio::test]
+    async fn frame_reader_reports_a_cut_frame_and_a_bad_length() {
+        let key = [7u8; 32];
+        let mut seq = 0u64;
+        let frame = encode_frame(&key, &mut seq, "a", "ping", None).unwrap();
+        let (mut r, mut w) = tokio::io::duplex(4096);
+        w.write_all(&frame[..10]).await.unwrap();
+        drop(w);
+        let err = FrameReader::new().read_frame(&mut r, &key, &mut 0).await.unwrap_err();
+        assert!(err.to_string().contains("closed mid-frame"), "{err}");
+
+        // `{"id` as a length: refused at the header, before any body is read.
+        let (mut r, mut w) = tokio::io::duplex(4096);
+        w.write_all(br#"{"id"#).await.unwrap();
+        let err = FrameReader::new().read_frame(&mut r, &key, &mut 0).await.unwrap_err();
+        assert_eq!(err.to_string(), "ipc protocol error: message too large: 2065852772 > 16777216");
     }
 }

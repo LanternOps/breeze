@@ -2,7 +2,9 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -705,6 +707,24 @@ func (s *Session) Info() SessionInfo {
 	}
 }
 
+// recvEndedBy names who ended a session's receive loop, for the disconnect
+// log (#12808): "agent" when the agent had already closed the session,
+// "helper" when the helper hung up between frames, "helper_mid_frame" when
+// the connection was cut inside a frame, and "error" for anything else (a
+// framing, HMAC or sequence failure, a transport error).
+func recvEndedBy(closedByAgent bool, err error) string {
+	switch {
+	case closedByAgent:
+		return "agent"
+	case errors.Is(err, io.EOF):
+		return "helper"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "helper_mid_frame"
+	default:
+		return "error"
+	}
+}
+
 // RecvLoop reads messages from the connection and dispatches them.
 // It calls onMessage for each received envelope.
 // Returns when the connection is closed or an error occurs.
@@ -712,7 +732,12 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 	for {
 		env, err := s.conn.Recv()
 		if err != nil {
-			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err.Error())
+			attrs := []any{"uid", s.UID, "sessionId", s.SessionID, "role", string(s.Info().HelperRole),
+				"endedBy", recvEndedBy(s.IsClosed(), err), "error", err.Error()}
+			if reason := s.CloseReason(); reason != "" {
+				attrs = append(attrs, "closeReason", reason)
+			}
+			log.Info("session recv loop ended", attrs...)
 			return
 		}
 		// A Linux desktop helper is filtered before anything else sees the

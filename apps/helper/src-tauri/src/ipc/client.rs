@@ -24,7 +24,8 @@ use super::desktop::{self, ConsentBridge};
 use super::message::{
     MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
 };
-use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
+use super::connection_loss::{ConnectionLoss, HELPER_LOG_TYPE};
+use super::envelope::{write_frame, FrameReader, IpcError, PROTOCOL_VERSION};
 use super::prompt::{
     self as prompt, Addressed, ClosedReason, CloseOutcome, Decoded, PromptBridge, PromptClose, PromptRef, PromptShow,
     PromptUpdate, ShowOutcome, UpdateOutcome, ADVERTISED_PROMPT_KINDS, PROMPT_PROTOCOL_VERSION,
@@ -41,6 +42,8 @@ const ZERO_KEY: [u8; 32] = [0u8; 32];
 
 /// Keepalive interval: if no frame arrives within this window we send a `ping`
 /// to keep the connection alive (mirrors the userhelper keepalive pattern).
+/// Measured from the last frame received (or the last ping sent), not from
+/// the last loop turn: the 250 ms tick restarts the loop far more often.
 const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Reconnect backoff floor and ceiling.
@@ -251,17 +254,20 @@ pub async fn run_session_with_identity<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    run_session(stream, token, identity, desktop_ctx, None).await
+    run_session(stream, token, identity, desktop_ctx, None, None).await
 }
 
-/// [`run_session_with_identity`] with an optional prompt bridge override:
-/// tests inject one whose tracker advertises kinds the W02 build does not.
+/// [`run_session_with_identity`] with an optional prompt bridge override
+/// (tests inject one whose tracker advertises kinds the W02 build does not)
+/// and the previous connection's loss, reported to the agent once this one is
+/// authenticated.
 async fn run_session<S>(
     stream: S,
     token: &HelperToken,
     identity: &PeerIdentity,
     desktop_ctx: Option<&DesktopCtx>,
     prompt_override: Option<std::sync::Arc<PromptBridge>>,
+    drop_report: Option<ConnectionLoss>,
 ) -> Result<(), SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -269,6 +275,10 @@ where
     let mut stream = stream;
     let mut send_seq = 0u64;
     let mut recv_seq = 0u64;
+    // Every frame of this connection is read through one cancellation-safe
+    // reader, the handshake included: it may already hold bytes of the next
+    // frame (#12808).
+    let mut frames = FrameReader::new();
 
     // --- Handshake (ZERO key) ---
     let auth_req = build_auth_request(identity);
@@ -285,7 +295,7 @@ where
 
     // The auth_response / pre_auth_reject is still HMAC'd with the ZERO key:
     // the broker calls SetSessionKey only AFTER sending it.
-    let env = read_frame(&mut stream, &ZERO_KEY, &mut recv_seq).await?;
+    let env = frames.read_frame(&mut stream, &ZERO_KEY, &mut recv_seq).await?;
     let session_key: [u8; 32] = match env.typ.as_str() {
         "pre_auth_reject" => {
             let r: PreAuthReject = parse_payload(&env.payload)?;
@@ -383,7 +393,23 @@ where
         )
         .await?;
     }
+    if let Some(report) = drop_report {
+        // The previous connection's loss, told to the agent so it reaches
+        // Agent Logs: Assist's own stderr goes nowhere on Windows (#12808).
+        // Best effort: a failed write ends this session like any other.
+        let record = report.helper_log_record(tokio::time::Instant::now());
+        write_frame(
+            &mut stream,
+            &session_key,
+            &mut send_seq,
+            "",
+            HELPER_LOG_TYPE,
+            Some(to_raw_payload(&record)?),
+        )
+        .await?;
+    }
     let mut consent = ConsentTracker::default();
+    let mut idle_since = tokio::time::Instant::now();
 
     // --- Receive loop (session key) ---
     loop {
@@ -479,15 +505,8 @@ where
                 }
                 continue;
             }
-            r = tokio::time::timeout(
-                READ_IDLE_TIMEOUT,
-                read_frame(&mut stream, &session_key, &mut recv_seq),
-            ) => r,
-        };
-
-        let env = match res {
             // Idle: send a keepalive ping and keep listening.
-            Err(_elapsed) => {
+            _ = tokio::time::sleep_until(idle_since + READ_IDLE_TIMEOUT) => {
                 write_frame(
                     &mut stream,
                     &session_key,
@@ -497,12 +516,20 @@ where
                     None,
                 )
                 .await?;
+                idle_since = tokio::time::Instant::now();
                 continue;
             }
-            Ok(Ok(env)) => env,
-            // Transport/protocol error: bubble up so the driver reconnects.
-            Ok(Err(e)) => return Err(SessionError::Transient(e)),
+            // Cancellation safe: when another branch wins, a frame that is
+            // part-read stays in `frames` and the next turn finishes it.
+            r = frames.read_frame(&mut stream, &session_key, &mut recv_seq) => r,
         };
+
+        let env = match res {
+            Ok(env) => env,
+            // Transport/protocol error: bubble up so the driver reconnects.
+            Err(e) => return Err(SessionError::Transient(e)),
+        };
+        idle_since = tokio::time::Instant::now();
 
         match env.typ.as_str() {
             "helper_token_update" => {
@@ -1219,6 +1246,8 @@ pub async fn run(
     use super::transport::{connect, current_identity, default_socket_path};
 
     let mut backoff = BACKOFF_MIN;
+    // The last connection's loss, reported on the next one (#12808).
+    let mut pending_loss: Option<ConnectionLoss> = None;
 
     loop {
         if *stop.borrow() {
@@ -1289,11 +1318,13 @@ pub async fn run(
         // The future is still `select!`ed against `stop.changed()` so a stop
         // request mid-session is honored promptly.
         use futures_util::FutureExt;
-        let session_fut = std::panic::AssertUnwindSafe(run_session_with_identity(
+        let session_fut = std::panic::AssertUnwindSafe(run_session(
             stream,
             &token,
             &identity,
             Some(&desktop_ctx),
+            None,
+            pending_loss.take(),
         ))
         .catch_unwind();
         let outcome = tokio::select! {
@@ -1320,9 +1351,12 @@ pub async fn run(
                     .or_else(|| panic_payload.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown panic".to_string());
                 eprintln!("[helper] IPC session panicked ({msg}); will reconnect");
+                pending_loss = Some(ConnectionLoss::panicked(started.elapsed(), tokio::time::Instant::now()));
             }
             Some(Ok(Ok(()))) => {
                 // Clean disconnect. Reset backoff if the session was healthy.
+                eprintln!("[helper] ipc: the agent ended the session; will reconnect");
+                pending_loss = ConnectionLoss::from_outcome(&Ok(()), started.elapsed(), tokio::time::Instant::now());
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
@@ -1337,7 +1371,12 @@ pub async fn run(
                 return;
             }
             Some(Ok(Err(SessionError::Transient(e)))) => {
-                eprintln!("[helper] ipc: session ended: {}", e);
+                let outcome = Err(SessionError::Transient(e));
+                pending_loss = ConnectionLoss::from_outcome(&outcome, started.elapsed(), tokio::time::Instant::now());
+                if let Err(e) = &outcome {
+                    let reason = pending_loss.as_ref().map(|l| l.reason()).unwrap_or("");
+                    eprintln!("[helper] ipc: session ended ({reason}): {e}; will reconnect");
+                }
                 if started.elapsed() >= HEALTHY_SESSION {
                     backoff = BACKOFF_MIN;
                 }
@@ -1678,6 +1717,114 @@ mod tests {
         assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
     }
 
+    /// #12808: a frame that arrives in pieces, with a pause longer than the
+    /// session loop's 250 ms tick between them, is read whole. Before the fix
+    /// the tick won the `select!` while `read_frame` had consumed part of the
+    /// frame, the partial bytes were dropped with the cancelled future, and
+    /// the next read took body bytes for a length: the session ended and
+    /// Assist reconnected, losing any open prompt. The paused clock makes the
+    /// tick fire inside every gap, deterministically.
+    #[tokio::test(start_paused = true)]
+    async fn test_frames_split_across_ticks_are_not_lost() {
+        use crate::ipc::envelope::encode_frame;
+        use tokio::io::AsyncWriteExt;
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move {
+            run_session_with_identity(client_half, &token, &id, None).await
+        });
+
+        let mut broker_send = 0u64;
+        let mut broker_recv = 0u64;
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv)
+            .await
+            .expect("read auth_request");
+        let session_key = [9u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(session_key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut broker_send, &env.id, "auth_response", Some(raw(&resp)))
+            .await
+            .expect("write auth_response");
+
+        let gap = Duration::from_millis(600); // > the 250 ms tick, twice over
+        // (ping id, split points into the encoded frame)
+        let cases: [(&str, fn(usize) -> Vec<usize>); 4] = [
+            ("p-header-then-body", |_| vec![4]),
+            ("p-inside-header", |_| vec![2]),
+            ("p-inside-body", |n| vec![4 + (n - 4) / 2]),
+            ("p-every-boundary", |n| vec![1, 3, 4, 10, n - 1]),
+        ];
+        for (ping_id, splits) in cases {
+            let frame = encode_frame(&session_key, &mut broker_send, ping_id, "ping", None).expect("encode");
+            let mut at = 0usize;
+            for cut in splits(frame.len()).into_iter().chain(std::iter::once(frame.len())) {
+                broker_half.write_all(&frame[at..cut]).await.expect("write piece");
+                broker_half.flush().await.expect("flush");
+                at = cut;
+                if at < frame.len() {
+                    tokio::time::sleep(gap).await;
+                }
+            }
+            let pong = match tokio::time::timeout(
+                Duration::from_secs(5),
+                read_frame(&mut broker_half, &session_key, &mut broker_recv),
+            )
+            .await
+            {
+                Ok(Ok(pong)) => pong,
+                _ => {
+                    // Say why the session ended: the cause, not the symptom.
+                    let ended = tokio::time::timeout(Duration::from_secs(1), session).await;
+                    panic!("{ping_id}: no pong; the session ended with {ended:?}");
+                }
+            };
+            assert_eq!((pong.typ.as_str(), pong.id.as_str()), ("pong", ping_id));
+        }
+
+        write_frame(&mut broker_half, &session_key, &mut broker_send, "bye", "disconnect", None)
+            .await
+            .expect("write disconnect");
+        let res = session.await.expect("join");
+        assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
+    }
+
+    /// #12808: the previous connection's loss is told to the agent as one
+    /// helper_log record right after the next auth, with a fixed reason code.
+    #[tokio::test]
+    async fn test_previous_loss_is_reported_after_the_next_auth() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let loss = ConnectionLoss::from_outcome(
+            &Err(SessionError::Transient(IpcError::Protocol("message too large: 2065852772 > 16777216".into()))),
+            Duration::from_secs(30),
+            tokio::time::Instant::now(),
+        );
+        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, None, loss).await });
+        let (mut send, mut recv) = (0u64, 0u64);
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
+        let key = [9u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut send, &env.id, "auth_response", Some(raw(&resp))).await.unwrap();
+        let log = read_frame(&mut broker_half, &key, &mut recv).await.expect("helper_log");
+        assert_eq!(log.typ, "helper_log");
+        let p: serde_json::Value = serde_json::from_str(log.payload.as_ref().unwrap().get()).unwrap();
+        assert_eq!(p["level"], "warn");
+        assert_eq!(p["fields"]["reason"], "frame_too_large");
+        assert_eq!(p["fields"]["lostSessionMs"], "30000");
+        write_frame(&mut broker_half, &key, &mut send, "bye", "disconnect", None).await.unwrap();
+        assert!(matches!(session.await.unwrap(), Ok(())));
+    }
+
+    /// The relay type must equal the agent's `ipc.TypeHelperLog` literally.
+    #[test]
+    fn helper_log_type_matches_the_go_constant() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agent/internal/ipc/helperlog.go");
+        let go = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        let want = format!("const TypeHelperLog = \"{HELPER_LOG_TYPE}\"");
+        assert!(go.lines().any(|l| l.trim() == want), "agent helperlog.go has no `{want}`");
+    }
+
     /// The capabilities frame is camelCase on the wire (frozen contract).
     #[test]
     fn test_capabilities_wire_shape() {
@@ -1834,7 +1981,7 @@ mod tests {
         let (client_half, mut broker_half) = tokio::io::duplex(65536);
         let token = HelperToken::new();
         let id = test_identity();
-        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, prompts).await });
+        let session = tokio::spawn(async move { run_session(client_half, &token, &id, None, prompts, None).await });
         let mut broker_send = 0u64;
         let mut broker_recv = 0u64;
         let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv).await.expect("auth_request");

@@ -33,6 +33,7 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 		c   Choice
 	}
 	var moves []move
+	h.reclaimSameKey(r)
 	for _, rec := range h.sortedRecords() {
 		if !rec.lingerUntil.IsZero() || rec.neverReask() {
 			continue // a NeverReask prompt stays where it was drawn
@@ -66,6 +67,39 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 				s.Focus = ipc.PromptFocusNoActivate
 				ob.steps[n-1].send.payload = s
 			}
+		}
+	}
+}
+
+// reclaimSameKey releases, for the replay, every decision still waiting out
+// its disconnect grace on r's own key (#12808). Assist reconnects under the
+// same key (role, user, pid) when only its connection dropped; without this
+// the replay skipped those placements (they still named r), and each decision
+// sat invisible until the grace sent it to the native helper.
+//
+// The release bumps the lease epoch, so a click from the window of the lost
+// connection is stale, and sends no prompt_close: the new connection holds no
+// window for the old lease (Assist closes every card when a connection ends).
+// Only a placement the selector would hand back to r is released; any other
+// keeps its grace and falls back as before. NeverReask prompts never get
+// here: they were lost at the disconnect. Called with mu held.
+func (h *Host) reclaimSameKey(r RendererSession) {
+	for _, rec := range h.sortedRecords() {
+		if !rec.lingerUntil.IsZero() || rec.neverReask() {
+			continue
+		}
+		for _, pl := range rec.placements {
+			if pl.path != PathPrompt || pl.renderer != r.Key || pl.graceUntil.IsZero() || pl.deferred != deferNone {
+				continue
+			}
+			if c := h.choose(rec, pl); c.Path != PathPrompt || c.Renderer.Key != r.Key {
+				continue
+			}
+			h.log.Info("prompt renderer reconnected within its grace; restoring", "promptId", rec.show.PromptID,
+				"kind", rec.show.Kind, "renderer", r.Key)
+			pl.epoch++
+			pl.renderer = ""
+			pl.graceUntil = time.Time{}
 		}
 	}
 }

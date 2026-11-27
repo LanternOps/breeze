@@ -6,6 +6,7 @@
 pub mod caller_verify;
 pub mod chat;
 pub mod client;
+pub mod connection_loss;
 pub mod consent;
 pub mod desktop;
 pub mod envelope;
