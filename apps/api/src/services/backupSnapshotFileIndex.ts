@@ -884,10 +884,12 @@ async function verifyOriginsAndWrite(
 
       // The publisher throws when its result would not reproduce the
       // manifest (D9), which rolls back the whole publish: the previous rows
-      // and format stay.
-      const published = format === 'delta'
+      // and format stay. It publishes 'rows' instead of a delta when the
+      // lineage is at its bound of unreferenced checkpoints.
+      const publishedIndex = format === 'delta'
         ? await publishDeltaIndex(tx, { snapshotDbId, lineage: lineage!, manifestSha256, eligibleEntries })
         : null;
+      const published = publishedIndex?.format === 'delta' ? publishedIndex : null;
 
       const externalCount = [...originCounts.values()].reduce((a, b) => a + b, 0);
       await tx.delete(backupSnapshotOrigins).where(eq(backupSnapshotOrigins.snapshotDbId, snapshotDbId));

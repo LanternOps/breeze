@@ -24,8 +24,17 @@ import { captureException } from './sentry';
 /** How long an unreferenced newest header of a lineage is kept. */
 export const CHECKPOINT_ORPHAN_TTL_MS = 7 * 24 * 3600 * 1000;
 
-/** Headers one run tries at most. Each is one statement plus its entries' cascade. */
-export const CHECKPOINT_GC_MAX_HEADERS = 100;
+/**
+ * Headers one run tries at most; the run's time budget and each delete's
+ * timeout bound it first. A million-entry cascade took about 0.44 s on a warm
+ * local Postgres 16, so 5,000 of the largest headers take about 37 minutes,
+ * well inside the half of the cleanup budget checkpoint GC gets at least
+ * (two hours of the default four), with room for a cold cache. Four runs a day
+ * collect up to 20,000 headers, above the 2,000 to 10,000 a day estimated for
+ * 10,000 lineages. The cap bounds the candidate list and one run's burst of
+ * deletes.
+ */
+export const CHECKPOINT_GC_MAX_HEADERS = 5_000;
 
 /**
  * The longest one header delete may run, cascade included. A million-entry
@@ -78,18 +87,25 @@ function collectable(cutoff: Date): SQL {
 }
 
 /**
- * The run's candidates, oldest first, chosen once: one scan of the headers per
- * run, not one per header. No index serves the order, and none is needed at
- * that rate. Not locked: each is re-checked under its row lock before delete.
+ * The run's candidates, chosen once: one scan of the headers per run, not one
+ * per header. Fair across orgs: each org's oldest candidate first, then each
+ * org's second, and so on, so one org's backlog cannot take the whole run and
+ * an org with a few candidates has them in its first turns. No index serves
+ * the order, and none is needed at that rate. Not locked: each is re-checked
+ * under its row lock before delete.
  */
 async function selectCandidates(cutoff: Date, limit: number): Promise<string[]> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db.transaction(async (tx) => {
         const rows = (await tx.execute(sql`
-          SELECT c.id FROM backup_tree_checkpoints c
-           WHERE ${collectable(cutoff)}
-           ORDER BY c.created_at, c.id
+          SELECT k.id FROM (
+            SELECT c.id, c.created_at,
+                   row_number() OVER (PARTITION BY c.org_id ORDER BY c.created_at, c.id) AS org_turn
+              FROM backup_tree_checkpoints c
+             WHERE ${collectable(cutoff)}
+          ) k
+           ORDER BY k.org_turn, k.created_at, k.id
            LIMIT ${limit}
         `)) as unknown as Array<{ id: string }>;
         return rows.map((r) => r.id);
@@ -127,8 +143,8 @@ async function deleteCandidate(id: string, cutoff: Date, timeoutMs: number): Pro
 
 /**
  * Collects unreferenced checkpoints: up to `maxHeaders` candidates, chosen
- * once, each tried once, until `deadlineMs` (wall clock). `now` sets the TTL
- * cutoff.
+ * once and shared across orgs in turn, each tried once, until `deadlineMs`
+ * (wall clock). `now` sets the TTL cutoff.
  *
  * One header never stops the run. A refusal by the snapshot pointer FK is
  * defensive (a writer that set a pointer without the publisher's lock): it is

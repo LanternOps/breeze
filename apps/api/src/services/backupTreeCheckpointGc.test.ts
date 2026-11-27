@@ -33,6 +33,7 @@ vi.mock('./sentry', () => ({ captureException }));
 
 import {
   CHECKPOINT_GC_DELETE_TIMEOUT_MS,
+  CHECKPOINT_GC_MAX_HEADERS,
   CHECKPOINT_ORPHAN_TTL_MS,
   collectUnreferencedCheckpoints,
 } from './backupTreeCheckpointGc';
@@ -40,7 +41,7 @@ import {
 const dialect = new PgDialect();
 const render = (q: SQL) => dialect.sqlToQuery(q);
 const text = (q: SQL) => render(q).sql;
-const isCandidates = (q: SQL) => /^\s*SELECT c\.id FROM backup_tree_checkpoints c/.test(text(q)) && /\bLIMIT\b/.test(text(q));
+const isCandidates = (q: SQL) => /^\s*SELECT k\.id FROM \(/.test(text(q)) && /\bLIMIT\b/.test(text(q));
 const isLock = (q: SQL) => /^\s*SELECT c\.id FROM backup_tree_checkpoints c/.test(text(q)) && /FOR UPDATE OF c SKIP LOCKED/.test(text(q));
 const isTimeout = (q: SQL) => /set_config\(\s*'statement_timeout'/.test(text(q));
 const isDelete = (q: SQL) => /^\s*DELETE FROM backup_tree_checkpoints/.test(text(q));
@@ -100,7 +101,7 @@ describe('collectUnreferencedCheckpoints', () => {
     expect(transactions.outside).toBe(3);
   });
 
-  it('selects candidates the way D8 describes, oldest first, bounded', async () => {
+  it('selects candidates the way D8 describes, one per org in turn, oldest first within each turn, bounded', async () => {
     candidates([]);
     const now = new Date('2030-01-08T00:00:00.000Z');
     await collectUnreferencedCheckpoints({ deadlineMs: farDeadline(), now, maxHeaders: 7 });
@@ -112,7 +113,10 @@ describe('collectUnreferencedCheckpoints', () => {
     expect(s).toMatch(/n\.key_prefix IS NOT DISTINCT FROM c\.key_prefix/);
     expect(s).toMatch(/c\.last_referenced_at < /);
     expect(params).toContain(new Date(now.getTime() - CHECKPOINT_ORPHAN_TTL_MS).toISOString());
-    expect(s).toMatch(/ORDER BY c\.created_at, c\.id\s+LIMIT \$\d+/);
+    // Fair across orgs: each org's oldest candidate first, then each org's second, and so on, so one
+    // org's backlog cannot take the whole run.
+    expect(s).toMatch(/row_number\(\) OVER \(PARTITION BY c\.org_id ORDER BY c\.created_at, c\.id\) AS org_turn/);
+    expect(s).toMatch(/ORDER BY k\.org_turn, k\.created_at, k\.id\s+LIMIT \$\d+/);
     expect(params.at(-1)).toBe(7);
   });
 
@@ -256,8 +260,9 @@ describe('collectUnreferencedCheckpoints', () => {
     expect(transactions.opened).toBe(0);
   });
 
-  it('defaults to 100 headers a run', async () => {
-    candidates(Array.from({ length: 150 }, (_, i) => `h${i}`));
-    expect(await collectUnreferencedCheckpoints({ deadlineMs: farDeadline() })).toEqual({ ...zero, deleted: 100 });
+  it('defaults to CHECKPOINT_GC_MAX_HEADERS (5,000) headers a run', async () => {
+    expect(CHECKPOINT_GC_MAX_HEADERS).toBe(5_000);
+    candidates(Array.from({ length: CHECKPOINT_GC_MAX_HEADERS + 50 }, (_, i) => `h${i}`));
+    expect(await collectUnreferencedCheckpoints({ deadlineMs: farDeadline() })).toEqual({ ...zero, deleted: CHECKPOINT_GC_MAX_HEADERS });
   });
 });

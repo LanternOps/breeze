@@ -32,6 +32,28 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export const CHECKPOINT_REBASE_RATIO = 0.05;
 
 /**
+ * A publish writes a new checkpoint only while fewer than this many of the
+ * lineage's headers are referenced by no snapshot; at the bound the snapshot
+ * publishes 'rows' instead, which adds nothing to the shared checkpoint tables.
+ *
+ * Normally a lineage has at most one unreferenced header: the newest, kept for
+ * CHECKPOINT_ORPHAN_TTL_MS once its snapshots retire. Older ones lose their
+ * last reference when retention deletes their snapshots, and checkpoint GC
+ * runs right after retention in the same cleanup run. Three leaves room for
+ * that one plus re-hydrations between runs; more means checkpoints are being
+ * written faster than they are used or collected.
+ *
+ * Only a write adds a header, a written header starts referenced, and a write
+ * needs fewer than three unreferenced ones under the lineage lock. So after any
+ * write the lineage holds at most three headers more than it has delta
+ * snapshots: at most three extra copies of the file list, where 'rows' keeps
+ * one copy per snapshot. Counted only when a write is due, with
+ * backup_tree_checkpoints_lineage_idx and
+ * backup_snapshots_file_index_checkpoint_idx.
+ */
+export const CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE = 3;
+
+/**
  * The longest a publish waits for its lineage's lock. A waiter holds a pooled
  * connection, its snapshot's row lock and a loaded temp table, so the wait is
  * bounded: past it the publish fails as a retryable provider error and is
@@ -138,7 +160,19 @@ export async function loadIncomingBatch(tx: Tx, batch: IndexRowJson[]): Promise<
   return extractRowCount(loaded);
 }
 
-export type PublishedIndex = {
+export type PublishedIndex = PublishedDelta | PublishedRows;
+
+/**
+ * The lineage was at CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE, so the manifest
+ * was written as the snapshot's own rows, the format used with the flag off.
+ */
+export type PublishedRows = {
+  format: 'rows';
+  rows: number;
+  reason: 'unreferenced_checkpoint_bound';
+};
+
+export type PublishedDelta = {
   format: 'delta';
   checkpointId: string;
   /** A new checkpoint was written (the snapshot's own delta is then empty). */
@@ -200,6 +234,64 @@ async function countTombstones(tx: Tx, checkpointId: string, limit: number): Pro
   return Number(rows[0]?.n ?? 0);
 }
 
+type CheckpointHeader = { id: string; entryCount: number };
+
+function headerOf(rows: Array<{ id: string; entry_count: number }>): CheckpointHeader | null {
+  return rows[0] ? { id: rows[0].id, entryCount: Number(rows[0].entry_count) } : null;
+}
+
+/** Whether the temp table differs from `header` by more than 5% of it (D4). */
+async function diffExceedsRebase(tx: Tx, header: CheckpointHeader): Promise<boolean> {
+  // Counted up to one past the threshold: past it the exact number does not matter.
+  const threshold = rebaseThreshold(header.entryCount);
+  const adds = await countAdds(tx, header.id, threshold + 1);
+  const tombstones = adds > threshold ? 0 : await countTombstones(tx, header.id, threshold + 1 - adds);
+  return exceedsRebase(adds, tombstones, header.entryCount);
+}
+
+/**
+ * The lineage's headers no snapshot references, counted up to `limit`. The
+ * first three equalities are backup_tree_checkpoints_lineage_idx's prefix
+ * (device_id, config_id, storage_identity), so this reads one lineage's
+ * headers only; each reference probe uses
+ * backup_snapshots_file_index_checkpoint_idx.
+ */
+async function countUnreferencedHeaders(tx: Tx, lineage: LineageKey, limit: number): Promise<number> {
+  const rows = (await tx.execute(sql`
+    SELECT count(*)::int AS unreferenced FROM (
+      SELECT 1 FROM backup_tree_checkpoints c
+       WHERE c.device_id = ${lineage.deviceId}::uuid
+         AND c.config_id = ${lineage.configId}::uuid
+         AND c.storage_identity = ${lineage.storageIdentity}
+         AND c.org_id = ${lineage.orgId}::uuid
+         AND c.backup_type = ${lineage.backupType}::backup_type
+         AND c.key_layout = ${lineage.keyLayout}
+         AND c.key_prefix IS NOT DISTINCT FROM ${lineage.keyPrefix}::text
+         AND NOT EXISTS (SELECT 1 FROM backup_snapshots s WHERE s.file_index_checkpoint_id = c.id)
+       LIMIT ${limit}
+    ) u
+  `)) as unknown as Array<{ unreferenced: number }>;
+  return Number(rows[0]?.unreferenced ?? 0);
+}
+
+/**
+ * The 'rows' format, from the temp table: the snapshot's own rows, as the
+ * hydrator writes them with the flag off. The caller has already deleted the
+ * snapshot's previous rows, and its publishing update sets the format to
+ * 'rows' and clears the pointer.
+ */
+async function publishRows(tx: Tx, snapshotDbId: string, eligibleEntries: number): Promise<PublishedRows> {
+  const rows = extractRowCount(await tx.execute(sql`
+    INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path, size, modified_at, kind)
+    SELECT ${snapshotDbId}::uuid, i.source_path, i.backup_path, i.size, i.modified_at, i.kind
+      FROM snapshot_index_incoming i
+  `));
+  if (rows !== eligibleEntries) {
+    throw invariantFailure(`the snapshot's rows are ${rows} entries, the manifest ${eligibleEntries}`);
+  }
+  return { format: 'rows', rows, reason: 'unreferenced_checkpoint_bound' };
+}
+
 function invariantFailure(detail: string): Error {
   return new Error(`snapshot index delta does not reproduce the manifest: ${detail}`);
 }
@@ -257,16 +349,19 @@ async function treeAndManifestDigests(tx: Tx, snapshotDbId: string, checkpointId
 
 /**
  * Publish the temp table's entries for `snapshotDbId` as a delta against the
- * lineage's newest checkpoint, or as a new checkpoint (D4).
+ * checkpoint the snapshot already uses or the lineage's newest, or as a new
+ * checkpoint (D4), or, when the lineage is at
+ * CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE, as the snapshot's own rows.
  *
  * Precondition: the caller holds the snapshot's row lock, has deleted its
  * previous backup_snapshot_files rows and has filled snapshot_index_incoming.
  * The caller then sets the snapshot's format and pointer in its publishing
- * update. Throws, rolling the caller's transaction back, when the result
- * would not reproduce the manifest (D9).
+ * update, from the result's format. Throws, rolling the caller's transaction
+ * back, when the result would not reproduce the manifest (D9).
  *
  * Lock order: the snapshot row (the caller), then the lineage's advisory lock,
- * then the newest header FOR KEY SHARE. Checkpoint GC takes the header FOR
+ * then the snapshot's own header (referenced, so GC never takes it) and the
+ * newest header, each FOR KEY SHARE. Checkpoint GC takes the header FOR
  * UPDATE SKIP LOCKED, so it passes over a header a publisher is diffing
  * against. When this read waits on a header GC holds and GC deletes it, the
  * deleted row is skipped and the read returns the next-older header of the
@@ -285,8 +380,8 @@ export async function publishDeltaIndex(
   // snapshot's pointer update and at commit; this refuses it before anything
   // is written.
   const owner = (await tx.execute(sql`
-    SELECT org_id, device_id FROM backup_snapshots WHERE id = ${snapshotDbId}::uuid
-  `)) as unknown as Array<{ org_id: string; device_id: string }>;
+    SELECT org_id, device_id, file_index_checkpoint_id FROM backup_snapshots WHERE id = ${snapshotDbId}::uuid
+  `)) as unknown as Array<{ org_id: string; device_id: string; file_index_checkpoint_id: string | null }>;
   if (!owner[0]) throw new Error(`snapshot ${snapshotDbId} not found while publishing its index`);
   if (owner[0].org_id !== lineage.orgId || owner[0].device_id !== lineage.deviceId) {
     throw new Error(`snapshot ${snapshotDbId}: the index lineage names another org or device than the snapshot`);
@@ -302,31 +397,55 @@ export async function publishDeltaIndex(
     await tx.execute(sql`SELECT set_config('lock_timeout', ${`${priorLockTimeoutMs}ms`}, true)`);
   }
 
-  const newest = (await tx.execute(sql`
-    SELECT id, entry_count FROM backup_tree_checkpoints
-     WHERE org_id = ${lineage.orgId}::uuid
+  const inLineage = sql`org_id = ${lineage.orgId}::uuid
        AND device_id = ${lineage.deviceId}::uuid
        AND config_id = ${lineage.configId}::uuid
        AND storage_identity = ${lineage.storageIdentity}
        AND backup_type = ${lineage.backupType}::backup_type
        AND key_layout = ${lineage.keyLayout}
-       AND key_prefix IS NOT DISTINCT FROM ${lineage.keyPrefix}::text
-     ORDER BY created_at DESC, id DESC
-     LIMIT 1
-     FOR KEY SHARE
-  `)) as unknown as Array<{ id: string; entry_count: number }>;
-  const header = newest[0] ? { id: newest[0].id, entryCount: Number(newest[0].entry_count) } : null;
+       AND key_prefix IS NOT DISTINCT FROM ${lineage.keyPrefix}::text`;
 
-  let rebase = header === null;
-  if (header) {
-    // Counted up to one past the threshold: past it the exact number does not matter.
-    const threshold = rebaseThreshold(header.entryCount);
-    const adds = await countAdds(tx, header.id, threshold + 1);
-    const tombstones = adds > threshold ? 0 : await countTombstones(tx, header.id, threshold + 1 - adds);
-    rebase = exceedsRebase(adds, tombstones, header.entryCount);
+  // The checkpoint to diff against (D4). First the one this snapshot already
+  // uses, when it is still of this lineage: a rebuild of an unchanged manifest
+  // then reproduces the delta it had and writes no checkpoint, whatever other
+  // snapshots of the lineage wrote since. Then the lineage's newest.
+  let base: CheckpointHeader | null = null;
+  let own: CheckpointHeader | null = null;
+  const ownId = owner[0].file_index_checkpoint_id;
+  if (ownId) {
+    own = headerOf((await tx.execute(sql`
+      SELECT id, entry_count FROM backup_tree_checkpoints
+       WHERE id = ${ownId}::uuid
+         AND ${inLineage}
+       FOR KEY SHARE
+    `)) as unknown as Array<{ id: string; entry_count: number }>);
+    if (own && !(await diffExceedsRebase(tx, own))) base = own;
+  }
+  if (!base) {
+    const newest = headerOf((await tx.execute(sql`
+      SELECT id, entry_count FROM backup_tree_checkpoints
+       WHERE ${inLineage}
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1
+       FOR KEY SHARE
+    `)) as unknown as Array<{ id: string; entry_count: number }>);
+    if (newest && newest.id !== own?.id && !(await diffExceedsRebase(tx, newest))) base = newest;
   }
 
-  if (rebase) {
+  if (!base) {
+    // Under the lineage lock, so two publishers cannot both pass the bound;
+    // the statement starts after the lock is held, so it sees every reference
+    // a previous holder committed.
+    const unreferenced = await countUnreferencedHeaders(tx, lineage, CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE);
+    if (unreferenced >= CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE) {
+      console.warn(
+        `[BackupSnapshotIndexPublish] The backup lineage of org ${lineage.orgId}, device ${lineage.deviceId}, `
+        + `config ${lineage.configId} has ${unreferenced} unreferenced checkpoints (bound `
+        + `${CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE}); snapshot ${snapshotDbId} publishes its file index as rows `
+        + 'until checkpoint GC collects them',
+      );
+      return publishRows(tx, snapshotDbId, eligibleEntries);
+    }
     const inserted = (await tx.execute(sql`
       INSERT INTO backup_tree_checkpoints
         (org_id, device_id, config_id, storage_identity, backup_type, key_layout, key_prefix,
@@ -354,7 +473,7 @@ export async function publishDeltaIndex(
     return { format: 'delta', checkpointId, checkpointWritten: true, adds: 0, tombstones: 0, checkpointEntries: entries };
   }
 
-  const checkpoint = header!;
+  const checkpoint = base;
   // One statement, so adds and tombstones come from the same numbering.
   // Tombstones name no object (D1) and copy source_path from the checkpoint
   // entry they name, read in this same statement, never from the manifest.

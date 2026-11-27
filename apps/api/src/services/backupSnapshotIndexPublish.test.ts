@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
+  CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE,
   CHECKPOINT_REBASE_RATIO,
   LINEAGE_LOCK_TIMEOUT_MS,
   exceedsRebase,
@@ -21,6 +22,7 @@ const DEVICE = '22222222-2222-4222-8222-222222222222';
 const CONFIG = '33333333-3333-4333-8333-333333333333';
 const SNAPSHOT = '44444444-4444-4444-8444-444444444444';
 const HEADER = '55555555-5555-4555-8555-555555555555';
+const OWN = '77777777-7777-4777-8777-777777777777';
 
 const snapshotFields = {
   orgId: ORG,
@@ -89,10 +91,18 @@ describe('exceedsRebase (D4)', () => {
  * the shape postgres-js returns: an array of rows with a `count`.
  */
 function fakeTx(opts: {
-  snapshot?: { org_id: string; device_id: string } | null;
+  snapshot?: { org_id: string; device_id: string; file_index_checkpoint_id?: string | null } | null;
   header?: { id: string; entry_count: number } | null;
+  /** The snapshot's own checkpoint, as the lineage-checked read of its pointer answers it. */
+  own?: { id: string; entry_count: number } | null;
   adds?: number;
   tombstones?: number;
+  /** Per checkpoint id: the diff's counts against that checkpoint (else adds / tombstones). */
+  diffs?: Record<string, { adds: number; tombstones: number }>;
+  /** The lineage's headers no snapshot references. */
+  unreferenced?: number;
+  /** Rows the rows-format fallback copies from the temp table. */
+  rowsInserted?: number;
   written?: { adds: number; tombstones: number; misnamed?: number };
   checkpointEntriesInserted?: number;
   /** The content check's answer; by default the rebuilt tree equals the manifest. */
@@ -105,15 +115,19 @@ function fakeTx(opts: {
     const { sql: text, params: p } = render(q);
     statements.push(text);
     params.push(p);
-    if (/^\s*SELECT org_id, device_id FROM backup_snapshots/.test(text)) {
-      return rows(opts.snapshot === null ? [] : [opts.snapshot ?? { org_id: ORG, device_id: DEVICE }]);
+    if (/^\s*SELECT org_id, device_id, file_index_checkpoint_id FROM backup_snapshots/.test(text)) {
+      return rows(opts.snapshot === null ? [] : [{ org_id: ORG, device_id: DEVICE, file_index_checkpoint_id: null, ...opts.snapshot }]);
     }
+    if (/FROM backup_tree_checkpoints\s+WHERE id = \$\d+::uuid[\s\S]*FOR KEY SHARE/.test(text)) return rows(opts.own ? [opts.own] : []);
     if (/FROM backup_tree_checkpoints\b[\s\S]*FOR KEY SHARE/.test(text)) return rows(opts.header ? [opts.header] : []);
-    // A count stops at its LIMIT (the last parameter), as Postgres would.
-    if (/AS n FROM \(\s*SELECT 1 FROM incoming i WHERE NOT EXISTS/.test(text)) return rows([{ n: Math.min(opts.adds ?? 0, Number(p.at(-1))) }]);
-    if (/AS n FROM \(\s*SELECT 1 FROM checkpoint c WHERE NOT EXISTS/.test(text)) return rows([{ n: Math.min(opts.tombstones ?? 0, Number(p.at(-1))) }]);
+    // A count stops at its LIMIT (the last parameter), as Postgres would. The checkpoint is the first parameter.
+    const diff = opts.diffs?.[String(p[0])] ?? { adds: opts.adds ?? 0, tombstones: opts.tombstones ?? 0 };
+    if (/AS n FROM \(\s*SELECT 1 FROM incoming i WHERE NOT EXISTS/.test(text)) return rows([{ n: Math.min(diff.adds, Number(p.at(-1))) }]);
+    if (/AS n FROM \(\s*SELECT 1 FROM checkpoint c WHERE NOT EXISTS/.test(text)) return rows([{ n: Math.min(diff.tombstones, Number(p.at(-1))) }]);
+    if (/AS unreferenced/.test(text)) return rows([{ unreferenced: Math.min(opts.unreferenced ?? 0, Number(p.at(-1))) }]);
     if (/INSERT INTO backup_tree_checkpoints\b/.test(text)) return rows([{ id: 'new-header' }]);
     if (/INSERT INTO backup_tree_checkpoint_entries/.test(text)) return rows([], opts.checkpointEntriesInserted ?? 0);
+    if (/INSERT INTO backup_snapshot_files[\s\S]*FROM snapshot_index_incoming/.test(text)) return rows([], opts.rowsInserted ?? 0);
     if (/INSERT INTO backup_snapshot_files/.test(text)) {
       return rows([opts.written ?? { adds: opts.adds ?? 0, tombstones: opts.tombstones ?? 0 }]);
     }
@@ -328,5 +342,152 @@ describe('publishDeltaIndex: bounds and lineage', () => {
     // The new header carries the same key root.
     const header = statements.findIndex((s) => /INSERT INTO backup_tree_checkpoints\b/.test(s));
     expect(params[header]).toEqual(expect.arrayContaining(['prefixed_flat', 'tenant-a']));
+  });
+});
+
+describe('publishDeltaIndex: bounded checkpoint creation', () => {
+  const K = CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE;
+
+  it('allows three unreferenced headers a lineage', () => {
+    expect(K).toBe(3);
+  });
+
+  it('at the bound, publishes rows: the manifest becomes the snapshot\'s own rows and no header is written', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // An empty newest checkpoint: any entry is past 5%, so this would rebase.
+      const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 0 }, adds: 7, unreferenced: K, rowsInserted: 7 });
+
+      const published = await publishDeltaIndex(tx, args(7));
+
+      expect(published).toEqual({ format: 'rows', rows: 7, reason: 'unreferenced_checkpoint_bound' });
+      expect(statements.some((s) => /INSERT INTO backup_tree_checkpoints\b/.test(s))).toBe(false);
+      expect(statements.some((s) => /INSERT INTO backup_tree_checkpoint_entries/.test(s))).toBe(false);
+      expect(statements.some((s) => /SET last_referenced_at/.test(s))).toBe(false);
+      const copy = statements.find((s) => /INSERT INTO backup_snapshot_files/.test(s))!;
+      expect(copy).toMatch(/\(snapshot_db_id, source_path, backup_path, size, modified_at, kind\)/);
+      expect(copy).toMatch(/FROM snapshot_index_incoming i/);
+      expect(copy).not.toMatch(/checkpoint_entry_no/);
+      // Logged once, with the lineage's org and device, so an operator can see it.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain(ORG);
+      expect(String(warn.mock.calls[0]![0])).toContain(DEVICE);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('below the bound, still writes a new checkpoint', async () => {
+    const { tx } = fakeTx({ header: { id: HEADER, entry_count: 0 }, adds: 7, unreferenced: K - 1, checkpointEntriesInserted: 7 });
+    expect(await publishDeltaIndex(tx, args(7))).toMatchObject({ format: 'delta', checkpointId: 'new-header', checkpointWritten: true });
+  });
+
+  it('counts the lineage\'s unreferenced headers under its lock, by every lineage part, up to the bound', async () => {
+    const lineage = lineageKeyOf({ ...snapshotFields, keyLayout: 'prefixed_flat', keyPrefix: 'tenant-a' })!;
+    const { tx, statements, params } = fakeTx({ header: null, unreferenced: 0, checkpointEntriesInserted: 1 });
+    await publishDeltaIndex(tx, { ...args(1), lineage });
+    const lock = statements.findIndex((s) => /pg_advisory_xact_lock/.test(s));
+    const count = statements.findIndex((s) => /AS unreferenced/.test(s));
+    const insert = statements.findIndex((s) => /INSERT INTO backup_tree_checkpoints\b/.test(s));
+    expect(lock).toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(lock);
+    expect(insert).toBeGreaterThan(count);
+    const text = statements[count]!;
+    // backup_tree_checkpoints_lineage_idx (device_id, config_id, storage_identity, created_at DESC) serves the
+    // prefix; backup_snapshots_file_index_checkpoint_idx serves the reference probe.
+    expect(text).toMatch(/c\.device_id = \$\d+::uuid\s+AND c\.config_id = \$\d+::uuid\s+AND c\.storage_identity = \$\d+/);
+    for (const column of ['org_id', 'backup_type', 'key_layout']) expect(text).toMatch(new RegExp(`c\\.${column} = \\$\\d+`));
+    expect(text).toMatch(/c\.key_prefix IS NOT DISTINCT FROM \$\d+::text/);
+    expect(text).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM backup_snapshots s WHERE s\.file_index_checkpoint_id = c\.id\s*\)/);
+    expect(params[count]).toEqual([DEVICE, CONFIG, 's3::bucket', ORG, 'file', 'prefixed_flat', 'tenant-a', K]);
+  });
+
+  it('does not count when it writes no checkpoint', async () => {
+    const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 1, tombstones: 1 });
+    await publishDeltaIndex(tx, args(1_000));
+    expect(statements.some((s) => /AS unreferenced/.test(s))).toBe(false);
+  });
+
+  it('refuses rows that do not reproduce the manifest\'s entry count', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { tx } = fakeTx({ header: { id: HEADER, entry_count: 0 }, adds: 7, unreferenced: K, rowsInserted: 6 });
+      await expect(publishDeltaIndex(tx, args(7))).rejects.toThrow(/does not reproduce the manifest/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('publishDeltaIndex: a re-hydration diffs against its own checkpoint first', () => {
+  it('an unchanged manifest reuses its own checkpoint and writes no header, whatever the newest is', async () => {
+    const { tx, statements } = fakeTx({
+      snapshot: { org_id: ORG, device_id: DEVICE, file_index_checkpoint_id: OWN },
+      own: { id: OWN, entry_count: 100 },
+      header: { id: HEADER, entry_count: 100 },
+      diffs: { [OWN]: { adds: 0, tombstones: 0 }, [HEADER]: { adds: 100, tombstones: 100 } },
+      written: { adds: 0, tombstones: 0 },
+      digests: { tree_n: 100, tree_h: '9', manifest_n: 100, manifest_h: '9' },
+    });
+
+    const published = await publishDeltaIndex(tx, args(100));
+
+    expect(published).toEqual({ format: 'delta', checkpointId: OWN, checkpointWritten: false, adds: 0, tombstones: 0, checkpointEntries: 100 });
+    expect(statements.some((s) => /INSERT INTO backup_tree_checkpoints\b/.test(s))).toBe(false);
+    // The newest is not read when the snapshot's own checkpoint will do.
+    expect(statements.some((s) => /ORDER BY created_at DESC/.test(s))).toBe(false);
+  });
+
+  it('reads its own checkpoint after the lineage lock, by every lineage part, and holds it FOR KEY SHARE', async () => {
+    const { tx, statements, params } = fakeTx({
+      snapshot: { org_id: ORG, device_id: DEVICE, file_index_checkpoint_id: OWN },
+      own: { id: OWN, entry_count: 10 },
+      written: { adds: 0, tombstones: 0 },
+      digests: { tree_n: 10, tree_h: '9', manifest_n: 10, manifest_h: '9' },
+    });
+    await publishDeltaIndex(tx, args(10));
+    const lock = statements.findIndex((s) => /pg_advisory_xact_lock/.test(s));
+    const own = statements.findIndex((s) => /WHERE id = \$\d+::uuid[\s\S]*FOR KEY SHARE/.test(s));
+    expect(lock).toBeGreaterThan(-1);
+    expect(own).toBeGreaterThan(lock);
+    for (const column of ['org_id', 'device_id', 'config_id', 'storage_identity', 'backup_type', 'key_layout']) {
+      expect(statements[own]).toMatch(new RegExp(`\\b${column} = \\$\\d+`));
+    }
+    expect(statements[own]).toMatch(/key_prefix IS NOT DISTINCT FROM \$\d+::text/);
+    expect(params[own]![0]).toBe(OWN);
+  });
+
+  it('falls back to the newest checkpoint when its own is of another lineage or past 5%', async () => {
+    // Another lineage: the lineage-checked read finds nothing.
+    const other = fakeTx({
+      snapshot: { org_id: ORG, device_id: DEVICE, file_index_checkpoint_id: OWN },
+      own: null,
+      header: { id: HEADER, entry_count: 1_000 },
+      adds: 1, tombstones: 1,
+    });
+    expect(await publishDeltaIndex(other.tx, args(1_000))).toMatchObject({ checkpointId: HEADER, checkpointWritten: false });
+
+    // Its own past 5%, the newest within it.
+    const past = fakeTx({
+      snapshot: { org_id: ORG, device_id: DEVICE, file_index_checkpoint_id: OWN },
+      own: { id: OWN, entry_count: 1_000 },
+      header: { id: HEADER, entry_count: 1_000 },
+      diffs: { [OWN]: { adds: 51, tombstones: 0 }, [HEADER]: { adds: 1, tombstones: 1 } },
+      written: { adds: 1, tombstones: 1 },
+    });
+    expect(await publishDeltaIndex(past.tx, args(1_000))).toMatchObject({ checkpointId: HEADER, checkpointWritten: false });
+  });
+
+  it('diffs only once when its own checkpoint is the newest', async () => {
+    const { tx, statements } = fakeTx({
+      snapshot: { org_id: ORG, device_id: DEVICE, file_index_checkpoint_id: HEADER },
+      own: { id: HEADER, entry_count: 1_000 },
+      header: { id: HEADER, entry_count: 1_000 },
+      adds: 51,
+      unreferenced: 0,
+      checkpointEntriesInserted: 1_051,
+    });
+    expect(await publishDeltaIndex(tx, args(1_051))).toMatchObject({ checkpointWritten: true });
+    expect(statements.filter((s) => /SELECT 1 FROM incoming i WHERE NOT EXISTS/.test(s) && /AS n/.test(s))).toHaveLength(1);
   });
 });

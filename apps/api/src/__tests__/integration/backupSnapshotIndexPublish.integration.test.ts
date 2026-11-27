@@ -36,6 +36,7 @@ import { drizzleBrokeredReadStore } from '../../services/backupStorageSessionSto
 import { authorizeExternalReference } from '../../services/recoveryDownloadService';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import {
+  CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE,
   createIncomingIndexTable,
   lineageKeyOf,
   lineageLockKey,
@@ -173,6 +174,37 @@ async function checkpointsOfDevice(deviceId: string) {
 async function checkpointExists(id: string): Promise<boolean> {
   const rows = (await getTestDb().execute(sql`SELECT 1 FROM backup_tree_checkpoints WHERE id = ${id}::uuid`)) as unknown as unknown[];
   return rows.length === 1;
+}
+
+/**
+ * `n` empty checkpoint headers of `t`'s lineage that no snapshot references,
+ * newer than every header written so far. Empty, so any non-empty manifest is
+ * past 5% of the newest and would write a new checkpoint.
+ */
+async function insertUnreferencedHeaders(t: WriteTenant, n: number, opts: { lastReferencedAt?: Date } = {}): Promise<string[]> {
+  const ids: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const rows = (await getTestDb().execute(sql`
+      INSERT INTO backup_tree_checkpoints
+        (org_id, device_id, config_id, storage_identity, backup_type, key_layout, key_prefix,
+         entry_count, source_manifest_sha256, created_at, last_referenced_at)
+      VALUES (${t.orgId}::uuid, ${t.deviceId}::uuid, ${t.configId}::uuid, ${WRITE_IDENTITY}, 'file', 'legacy_flat', NULL,
+              0, ${'0'.repeat(64)}, clock_timestamp(), ${(opts.lastReferencedAt ?? new Date()).toISOString()}::timestamptz)
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    ids.push(rows[0]!.id);
+  }
+  return ids;
+}
+
+/** Headers of the device that no snapshot references. */
+async function unreferencedOfDevice(deviceId: string): Promise<number> {
+  const rows = (await getTestDb().execute(sql`
+    SELECT count(*)::int AS n FROM backup_tree_checkpoints c
+     WHERE c.device_id = ${deviceId}::uuid
+       AND NOT EXISTS (SELECT 1 FROM backup_snapshots s WHERE s.file_index_checkpoint_id = c.id)
+  `)) as unknown as Array<{ n: number }>;
+  return rows[0]!.n;
 }
 
 async function expectRefusedAsForeignKey(fn: () => Promise<unknown>) {
@@ -1079,5 +1111,168 @@ describe('round trip through the readers (#11736 step 2, plan Task 6)', () => {
     // Agent rows are not server-verified: no grant, and no membership past the index-state gate.
     expect(read.keys).toEqual([]);
     expect(new Set(Object.values(read.membership))).toEqual(new Set(['file index not complete']));
+  });
+});
+
+describe('checkpoint creation is bounded per lineage (#11736 step 2)', () => {
+  const K = CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE;
+  const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1 });
+  afterAll(async () => { await adminSql.end({ timeout: 5 }); });
+
+  runDb('below the bound a past-5% publish writes a checkpoint; at it, the snapshot publishes rows and no header is written', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s1, s2] = [await snapshotOf(t), await snapshotOf(t)];
+    await insertUnreferencedHeaders(t, K - 1);
+
+    const tree1 = filesOf(s1.snapshotId, 50);
+    expect(await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1)))
+      .toMatchObject({ status: 'complete', entryCount: 50, rowsWritten: 0, checkpointEntriesWritten: 50 });
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', status: 'complete' });
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(K);
+
+    // One more unreferenced header (newer, empty): the lineage is at its bound.
+    await insertUnreferencedHeaders(t, 1);
+    expect(await unreferencedOfDevice(t.deviceId)).toBe(K);
+    const tree2 = filesOf(s2.snapshotId, 60, 5_000);
+    const warn = vi.spyOn(console, 'warn');
+    let published: Awaited<ReturnType<typeof hydrate>>;
+    try {
+      published = await hydrate(s2.dbId, manifestOf(s2.snapshotId, tree2));
+      const bound = warn.mock.calls.filter((c) => String(c[0]).includes('unreferenced checkpoints'));
+      expect(bound).toHaveLength(1);
+      expect(String(bound[0]![0])).toContain(t.orgId);
+      expect(String(bound[0]![0])).toContain(t.deviceId);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(published).toMatchObject({ status: 'complete', entryCount: 60, rowsWritten: 60, checkpointEntriesWritten: 0 });
+    expect(await indexState(s2.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, status: 'complete', adds: 60, tombstones: 0 });
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(K + 1);
+    expect(await storedTree(s2.dbId)).toEqual(expectedTree(tree2));
+
+    // (e) Every reader returns the manifest of the snapshot that fell back to rows, and of the delta one.
+    await expectReadersReturnManifest(t, s2, tree2, { keys: tree1.map((e) => e.backupPath), paths: [] });
+    await expectReadersReturnManifest(t, s1, tree1, { keys: tree2.map((e) => e.backupPath), paths: [] });
+
+    // A forced rebuild of the rows snapshot while the lineage is still at its bound stays rows and writes nothing.
+    expect(await hydrate(s2.dbId, manifestOf(s2.snapshotId, tree2))).toMatchObject({ status: 'complete', checkpointEntriesWritten: 0 });
+    expect(await indexState(s2.dbId)).toMatchObject({ format: 'rows', adds: 60 });
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(K + 1);
+  });
+
+  runDb('a forced rebuild of an unchanged delta snapshot reuses its own checkpoint and writes nothing new', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [a, b] = [await snapshotOf(t), await snapshotOf(t)];
+    const treeA = filesOf(a.snapshotId, 40);
+    const treeB = filesOf(b.snapshotId, 40, 1_000); // disjoint from A: past 5% of A's checkpoint
+    await hydrate(a.dbId, manifestOf(a.snapshotId, treeA));
+    await hydrate(b.dbId, manifestOf(b.snapshotId, treeB));
+    const before = await checkpointsOfDevice(t.deviceId);
+    expect(before).toHaveLength(2);
+    const [ownA, ownB] = [(await indexState(a.dbId)).checkpoint_id, (await indexState(b.dbId)).checkpoint_id];
+
+    // The scan's scenario: repeated forced rebuilds, alternating two snapshots of one lineage.
+    for (let i = 0; i < 6; i++) {
+      expect(await hydrate(a.dbId, manifestOf(a.snapshotId, treeA))).toMatchObject({ status: 'complete', rowsWritten: 0, checkpointEntriesWritten: 0 });
+      expect(await hydrate(b.dbId, manifestOf(b.snapshotId, treeB))).toMatchObject({ status: 'complete', rowsWritten: 0, checkpointEntriesWritten: 0 });
+    }
+
+    expect(await unreferencedOfDevice(t.deviceId)).toBeLessThanOrEqual(K);
+    expect((await checkpointsOfDevice(t.deviceId)).map((h) => h.id)).toEqual(before.map((h) => h.id));
+    expect(await indexState(a.dbId)).toMatchObject({ format: 'delta', checkpoint_id: ownA, adds: 0, tombstones: 0 });
+    expect(await indexState(b.dbId)).toMatchObject({ format: 'delta', checkpoint_id: ownB, adds: 0, tombstones: 0 });
+    expect(await storedTree(a.dbId)).toEqual(expectedTree(treeA));
+    expect(await storedTree(b.dbId)).toEqual(expectedTree(treeB));
+  });
+
+  runDb('rebuilds that each change the manifest past 5% stop writing checkpoints at the bound', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const s = await snapshotOf(t);
+    // Each rebuild is disjoint from the last, so each would move the snapshot to a new checkpoint
+    // and leave its previous one unreferenced. A lineage holds at most K headers no snapshot
+    // references plus one per snapshot that references one: here K + 1 in all.
+    let last: Entry[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let i = 0; i < K + 4; i++) {
+        last = filesOf(s.snapshotId, 30, i * 1_000);
+        expect(await hydrate(s.dbId, manifestOf(s.snapshotId, last))).toMatchObject({ status: 'complete', entryCount: 30 });
+        expect((await checkpointsOfDevice(t.deviceId)).length).toBeLessThanOrEqual(K + 1);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(K + 1);
+    expect(await indexState(s.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, adds: 30 });
+    expect(await storedTree(s.dbId)).toEqual(expectedTree(last));
+  });
+
+  runDb('two concurrent publishers one below the bound: only one writes a checkpoint', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [s1, s2] = [await snapshotOf(t), await snapshotOf(t)];
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, filesOf(s1.snapshotId, 40)));
+    await hydrate(s2.dbId, manifestOf(s2.snapshotId, filesOf(s2.snapshotId, 40, 1_000)));
+    // Each snapshot references its own checkpoint; the lineage is one below its bound.
+    await insertUnreferencedHeaders(t, K - 1);
+    expect(await unreferencedOfDevice(t.deviceId)).toBe(K - 1);
+    const headersBefore = (await checkpointsOfDevice(t.deviceId)).length;
+
+    // Both rebuild past 5% of everything, so each would write a checkpoint and release its old one.
+    const tree1 = filesOf(s1.snapshotId, 40, 2_000);
+    const tree2 = filesOf(s2.snapshotId, 40, 3_000);
+    const lineage = lineageKeyOf({ ...t, storageIdentity: WRITE_IDENTITY, backupType: 'file', keyLayout: 'legacy_flat', keyPrefix: null })!;
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>((r) => { locked = r; });
+    const lockTx = adminSql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lineageLockKey(lineage)}, 0))`;
+      locked();
+      await held;
+    });
+    await lockHeld;
+    let both: Promise<unknown[]> | undefined;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      try {
+        both = Promise.all([hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1)), hydrate(s2.dbId, manifestOf(s2.snapshotId, tree2))]);
+        await waitForLockWaiters('%pg_advisory_xact_lock%', 2);
+      } finally {
+        release();
+        await lockTx;
+      }
+      expect(await both).toMatchObject([{ status: 'complete' }, { status: 'complete' }]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(await checkpointsOfDevice(t.deviceId)).toHaveLength(headersBefore + 1);
+    const formats = [(await indexState(s1.dbId)).format, (await indexState(s2.dbId)).format].sort();
+    expect(formats).toEqual(['delta', 'rows']);
+    expect(await storedTree(s1.dbId)).toEqual(expectedTree(tree1));
+    expect(await storedTree(s2.dbId)).toEqual(expectedTree(tree2));
+  });
+
+  runDb('checkpoint GC shares a run across orgs: one org\'s backlog does not crowd out another\'s', async () => {
+    const pastTtl = new Date(Date.now() + CHECKPOINT_ORPHAN_TTL_MS + 60_000);
+    const [busy, quiet] = [await seedWriteTenant({ jobStatus: 'completed' }), await seedWriteTenant({ jobStatus: 'completed' })];
+    // Past the TTL every unreferenced header is collectable, so the run's candidates come from
+    // every org that has one. A cap of one candidate per such org, plus room for one more.
+    const orgs = (await getTestDb().execute(sql`
+      SELECT count(DISTINCT c.org_id)::int AS n FROM backup_tree_checkpoints c
+       WHERE NOT EXISTS (SELECT 1 FROM backup_snapshots s WHERE s.file_index_checkpoint_id = c.id)
+    `)) as unknown as Array<{ n: number }>;
+    const maxHeaders = orgs[0]!.n + 3;
+    // The busy org's backlog is older than the quiet org's one header, and longer than the run.
+    const backlog = await insertUnreferencedHeaders(busy, maxHeaders + 10, { lastReferencedAt: new Date(Date.now() - 3_600_000) });
+    const [quietHeader] = await insertUnreferencedHeaders(quiet, 1);
+
+    const result = await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000, now: pastTtl, maxHeaders });
+
+    expect(result.deleted).toBeLessThanOrEqual(maxHeaders);
+    expect(await checkpointExists(quietHeader!)).toBe(false);
+    const left = (await Promise.all(backlog.map(checkpointExists))).filter(Boolean).length;
+    expect(left).toBeGreaterThanOrEqual(backlog.length - maxHeaders);
+    expect(left).toBeLessThan(backlog.length);
   });
 });
