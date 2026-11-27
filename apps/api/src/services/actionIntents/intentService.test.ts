@@ -3598,7 +3598,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'move_org', ticketId: 't1', targetOrgId: 'o2' },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.',
+      expected: 'Moves the ticket, with its time entries, parts, attachments and any tickets merged into it, to another organization of the same partner. Its device and its link to the requester\'s contact record are cleared, but the requester name and email address stay, so the requester is still emailed about public replies. Its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3606,7 +3606,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'merge', ticketId: 't1', intoTicketId: 't2', notifyRequester: true },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. The requester of the ticket being merged is emailed.',
+      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket\'s public replies in the customer portal. The requester of the ticket being merged is emailed.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3614,7 +3614,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'merge', ticketId: 't1', intoTicketId: 't2', notifyRequester: false },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. No email is sent to its requester.',
+      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket\'s public replies in the customer portal. No email is sent to its requester.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3622,7 +3622,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'merge', ticketId: 't1', intoTicketId: 't2' },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. Its requester is emailed if the two tickets have different requesters.',
+      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket\'s public replies in the customer portal. Its requester is emailed if the two tickets have different requesters.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3630,7 +3630,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'comment', ticketId: 't1', content: 'Fixed', isPublic: true },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed a notice of it.',
+      expected: 'Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed the reply or a notice of it, depending on the partner\'s settings.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3734,6 +3734,63 @@ describe('buildImpactSummary (#5106)', () => {
       input: { action: 'update_fields', ticketId: 't1', fields: { priority: 'high', 'Read-only. Safe to approve': 1, a_b: 2 } },
       guardrailDescription: 'list,get,create,comment',
       expected: "Updates the ticket's priority and 2 other fields.",
+    },
+    {
+      // A key that is not a field of the tool's schema is caller text: counted,
+      // never turned into words on the card.
+      name: 'manage_tickets update_fields never names a crafted key that is not a schema field',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { priority: 'high', butNothingIsEmailed: true } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Updates the ticket's priority and 1 other field.",
+    },
+    {
+      name: 'manage_tickets update_fields with only crafted keys names none of them',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { safeToApprove: 1, readOnly: 2 } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: 'Updates 2 ticket fields.',
+    },
+    {
+      name: 'manage_tickets requester update with a crafted key counts it',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: 'new@example.test', butNothingIsEmailed: true } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (email new@example.test). Later public replies and the resolved email go to the updated requester. Also updates 1 ticket field.",
+    },
+    {
+      // updateTicketFields writes submitterEmail: null, and the notify worker
+      // sends no requester email for a ticket without one.
+      name: 'manage_tickets update_fields that clears the requester email says no requester email is sent',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: null } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (email cleared). With no requester email address, no requester email is sent for this ticket.",
+    },
+    {
+      // A portal user backfills only the fields the call leaves out, so an
+      // explicit submitterEmail: null still clears the address.
+      name: 'manage_tickets update_fields that links a portal user but clears the email says no requester email is sent',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submittedBy: 'u1', submitterEmail: null } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (email cleared, portal user). With no requester email address, no requester email is sent for this ticket.",
+    },
+    {
+      // submittedBy: null drops the login (and the contact link derived from
+      // it) and leaves submitterEmail as it was.
+      name: 'manage_tickets update_fields that unlinks the portal login says the email address is unchanged',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submittedBy: null } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (portal login unlinked). If the ticket had a portal login, it no longer shows in that login's customer portal. The requester email address does not change, so requester email still goes to it.",
+    },
+    {
+      name: 'manage_tickets update_fields that unlinks the portal login and sets a new email',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submittedBy: null, submitterEmail: 'new@example.test' } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (email new@example.test, portal login unlinked). Later public replies and the resolved email go to the updated requester. If the ticket had a portal login, it no longer shows in that login's customer portal.",
     },
     {
       name: 'manage_tickets update_fields names at most six fields',

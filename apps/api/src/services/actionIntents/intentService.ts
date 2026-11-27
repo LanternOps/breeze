@@ -38,6 +38,7 @@ import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth
 import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
 import { TICKET_REQUESTER_FIELD_KEYS, TOOL_ACTION_INPUT_KEYS, resolveActionForTool } from '../aiToolActionKey';
+import { manageTicketsFieldsSchema } from '../aiToolSchemasTicketFields';
 import {
   checkAgentGuardrails,
   checkGuardrails,
@@ -592,8 +593,13 @@ export interface ImpactSummaryContext {
 
 type ImpactSummaryBuilder = (input: Record<string, unknown>, ctx: ImpactSummaryContext) => string | null;
 
-/** A field key safe to name in the impact line: caller input, so anything else is only counted. */
-const NAMEABLE_FIELD_KEY = /^[A-Za-z][A-Za-z0-9]{0,40}$/;
+/**
+ * The keys of `manage_tickets` `fields`, from the schema the tool validates
+ * with: the only keys the impact line names. Field keys are caller input, so
+ * a key outside the schema (`butNothingIsEmailed`) is counted, never put into
+ * words.
+ */
+const TICKET_FIELD_KEYS: ReadonlySet<string> = new Set(Object.keys(manageTicketsFieldsSchema.shape));
 
 // Caller-supplied values echoed into the line must not be able to carry a
 // sentence of their own ("…". Nothing is emailed. "…"): a name has no quotes
@@ -617,10 +623,13 @@ function joinWords(words: string[]): string {
   return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
 }
 
+/** "the ticket's priority and 1 other field", or "2 ticket fields" when none can be named. */
 function describeFieldList(keys: string[]): string {
-  const named = keys.filter((k) => NAMEABLE_FIELD_KEY.test(k)).slice(0, 6).map(fieldWords);
+  const named = keys.filter((k) => TICKET_FIELD_KEYS.has(k)).slice(0, 6).map(fieldWords);
   const rest = keys.length - named.length;
-  return joinWords(rest > 0 ? [...named, `${rest} other field${rest === 1 ? '' : 's'}`] : named);
+  const plural = rest === 1 ? '' : 's';
+  if (named.length === 0) return `${rest} ticket field${plural}`;
+  return `the ticket's ${joinWords(rest > 0 ? [...named, `${rest} other field${plural}`] : named)}`;
 }
 
 /**
@@ -635,22 +644,37 @@ function describeTicketFieldUpdate(fieldsValue: unknown): string | null {
   const requesterKeys: readonly string[] = TICKET_REQUESTER_FIELD_KEYS;
   const others = keys.filter((k) => !requesterKeys.includes(k));
   if (!keys.some((k) => requesterKeys.includes(k))) {
-    return others.length > 0 ? `Updates the ticket's ${describeFieldList(others)}.` : null;
+    return others.length > 0 ? `Updates ${describeFieldList(others)}.` : null;
   }
+  const hasEmail = Object.hasOwn(fields, 'submitterEmail');
+  const hasLogin = Object.hasOwn(fields, 'submittedBy');
   const parts: string[] = [];
-  if (Object.hasOwn(fields, 'submitterEmail')) {
+  if (hasEmail) {
     const email = echoable(fields.submitterEmail, ECHOABLE_EMAIL);
-    parts.push(email ? `email ${email}` : 'email');
+    parts.push(fields.submitterEmail === null ? 'email cleared' : email ? `email ${email}` : 'email');
   }
   if (Object.hasOwn(fields, 'submitterName')) {
     const name = echoable(fields.submitterName, ECHOABLE_NAME);
     parts.push(name ? `name "${name}"` : 'name');
   }
-  if (Object.hasOwn(fields, 'submittedBy')) parts.push('portal user');
-  // A name-only edit leaves the address that requester email goes to unchanged.
-  const redirectsEmail = Object.hasOwn(fields, 'submitterEmail') || Object.hasOwn(fields, 'submittedBy');
-  const head = `Changes the ticket's requester (${parts.join(', ')}).${redirectsEmail ? ' Later public replies and the resolved email go to the updated requester.' : ''}`;
-  return others.length > 0 ? `${head} Also updates the ticket's ${describeFieldList(others)}.` : head;
+  if (hasLogin) parts.push(fields.submittedBy === null ? 'portal login unlinked' : 'portal user');
+  // updateTicketFields (ticketService.ts): an explicit submitterEmail wins,
+  // null included, and the notify worker sends no requester email without
+  // one. A portal user backfills the address only when the call leaves it
+  // out. submittedBy: null drops the login and the contact link derived from
+  // it, and keeps the address. A name-only edit changes no address.
+  const sentences: string[] = [];
+  if (hasEmail && fields.submitterEmail === null) {
+    sentences.push('With no requester email address, no requester email is sent for this ticket.');
+  } else if (hasEmail || (hasLogin && fields.submittedBy !== null)) {
+    sentences.push('Later public replies and the resolved email go to the updated requester.');
+  }
+  if (hasLogin && fields.submittedBy === null) {
+    sentences.push("If the ticket had a portal login, it no longer shows in that login's customer portal.");
+    if (!hasEmail) sentences.push('The requester email address does not change, so requester email still goes to it.');
+  }
+  const head = [`Changes the ticket's requester (${parts.join(', ')}).`, ...sentences].join(' ');
+  return others.length > 0 ? `${head} Also updates ${describeFieldList(others)}.` : head;
 }
 
 /**
@@ -775,20 +799,26 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, ImpactSummaryBuilder> = {
       case 'delete_comment':
         return 'Deletes a comment from the ticket, so staff and, for a public comment, the requester no longer see it. No email is sent; its text is kept in the audit log.';
       // moveTicketOrg: same partner only; re-stamps the ticket's child rows,
-      // clears device_id and requester_contact_id, deletes every ticket_links
-      // row touching it, and revalidateTicketAssignee clears an assignee who
-      // is not eligible in the target org.
+      // carries every ticket merged into it (carryMergedTombstonesInTx),
+      // clears device_id and requester_contact_id but keeps submitter_name /
+      // submitter_email (which the notify worker mails), deletes every
+      // ticket_links row touching it, and revalidateTicketAssignee clears an
+      // assignee who is not eligible in the target org.
       case 'move_org':
-        return 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.';
+        return "Moves the ticket, with its time entries, parts, attachments and any tickets merged into it, to another organization of the same partner. Its device and its link to the requester's contact record are cleared, but the requester name and email address stay, so the requester is still emailed about public replies. Its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.";
       // mergeTickets (#8972): no undo (D4); the source is closed as a
       // tombstone; notifyRequester defaults to "the requesters differ" (D6).
+      // Moved comments keep isPublic, so the survivor's requester reads the
+      // merged ticket's public replies, and portalTicketReadAccess
+      // (routes/portal/ticketReadAccess.ts) grants the merged ticket's
+      // requester the survivor.
       case 'merge': {
         const notify = input.notifyRequester === true
           ? 'The requester of the ticket being merged is emailed.'
           : input.notifyRequester === false
             ? 'No email is sent to its requester.'
             : 'Its requester is emailed if the two tickets have different requesters.';
-        return `Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. ${notify}`;
+        return `Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket's public replies in the customer portal. ${notify}`;
       }
       // Same expression the handler writes (isPublic === true). An agent run's
       // release goes through addAiTriageNote, which is always internal. The
@@ -796,7 +826,7 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, ImpactSummaryBuilder> = {
       // fullMessageReply), and none goes out without a submitterEmail.
       case 'comment':
         return input.isPublic === true && !ctx.agentRun
-          ? 'Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed a notice of it.'
+          ? "Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed the reply or a notice of it, depending on the partner's settings."
           : 'Adds an internal note to the ticket. The requester does not see it.';
       // ticketNotifyWorker emails the requester on a change to resolved; a
       // custom statusName maps to a core status only in the database.

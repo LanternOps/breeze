@@ -10,8 +10,12 @@
  *     for a single-action tool, its catalog sentence. Pairs called with only
  *     their action key, as this test calls them, that got the generic line
  *     when this test was written sit in IMPACT_SUMMARY_BASELINE, which is
- *     FROZEN and shrink-only: never add an entry. A new approval-gated action
- *     ships with its own impact text.
+ *     FROZEN and shrink-only: never add an entry. IMPACT_SUMMARY_BASELINE_MAX
+ *     caps its size, so it cannot grow without an edit of that number. A new
+ *     approval-gated action ships with its own impact text.
+ *
+ * Rule 1 also covers the Tier-2 pairs an AI agent run files as approval cards
+ * (not read-only by isReadOnlyResolution); see agentCardTier2Pairs.
  *
  * Input-aware Tier 3 (TIER3_INPUT_AWARE_ACTIONS) is classified on argument
  * content, so each such pair is checked with a sample that escalates it.
@@ -20,10 +24,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { TIER3_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, checkGuardrails } from '../aiGuardrails';
+import { TIER3_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, checkGuardrails, isReadOnlyResolution } from '../aiGuardrails';
 import { TOOL_ACTION_INPUT_KEYS } from '../aiToolActionKey';
 import { toolActionEnum } from '../aiToolActions';
 import { getAllRegisteredToolNames } from '../aiTools';
+import { toolInputSchemas } from '../aiToolSchemas';
+import { TICKET_REQUESTER_FIELD_KEYS } from '../aiToolActionKey';
 import { buildImpactSummary, genericImpactSummary, isProseImpactText } from './intentService';
 
 /** One escalating input per TIER3_INPUT_AWARE_ACTIONS entry. */
@@ -160,6 +166,12 @@ const IMPACT_SUMMARY_BASELINE: Readonly<Record<string, readonly string[]>> = {
   send_endpoint_message: ['send'],
   system_cleanup: ['cancel', 'run'],
 };
+/**
+ * Upper bound on the baseline's size, so it cannot grow without an edit of
+ * this number that a reviewer sees. When you remove entries, lower it to the
+ * new count. Never raise it: write an impact line for the new action instead.
+ */
+const IMPACT_SUMMARY_BASELINE_MAX = 256;
 const BASELINE_KEYS: ReadonlySet<string> = new Set(
   Object.entries(IMPACT_SUMMARY_BASELINE).flatMap(([toolName, actions]) => actions.map((a) => `${toolName}:${a}`)),
 );
@@ -189,7 +201,29 @@ function approvalGatedPairs(): Pair[] {
   return [...pairs.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
+/**
+ * Tier-2 pairs that are not read-only. An AI agent run files each such call
+ * as a supervised approval card, through the same buildImpactSummary, so its
+ * line must be prose too. Rule 2 stays Tier 3 only: an agent-run card for one
+ * of these shows the generic line until its tool gets a builder, which names
+ * the tool and action and claims nothing it cannot know.
+ */
+function agentCardTier2Pairs(): Pair[] {
+  const pairs: Pair[] = [];
+  for (const toolName of getAllRegisteredToolNames()) {
+    for (const action of toolActionEnum(toolName) ?? [undefined]) {
+      const input = actionInput(toolName, action);
+      const check = checkGuardrails(toolName, input);
+      if (check.tier === 2 && !isReadOnlyResolution(toolName, check)) {
+        pairs.push({ key: action === undefined ? toolName : `${toolName}:${action}`, toolName, action, input });
+      }
+    }
+  }
+  return pairs.sort((a, b) => a.key.localeCompare(b.key));
+}
+
 const pairs = approvalGatedPairs();
+const tier2Pairs = agentCardTier2Pairs();
 const summaries = new Map(pairs.map((p) => [p.key, buildImpactSummary(p.toolName, p.input, checkGuardrails(p.toolName, p.input))]));
 
 describe('approval impact lines (#12774)', () => {
@@ -212,6 +246,24 @@ describe('approval impact lines (#12774)', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('Tier-2 calls an agent run files for approval never show an action list, identifier or schema fragment', () => {
+    expect(tier2Pairs.length).toBeGreaterThan(20);
+    const offenders = tier2Pairs
+      .map((p) => ({ key: p.key, line: buildImpactSummary(p.toolName, p.input, checkGuardrails(p.toolName, p.input), { agentRun: true }) }))
+      .filter(({ line }) => !isProseImpactText(line))
+      .map(({ key, line }) => `${key}: ${line}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('the baseline cannot grow past its pinned size', () => {
+    expect(
+      BASELINE_KEYS.size,
+      `IMPACT_SUMMARY_BASELINE has ${BASELINE_KEYS.size} entries, more than IMPACT_SUMMARY_BASELINE_MAX (${IMPACT_SUMMARY_BASELINE_MAX}). `
+        + 'Do not add approval-gated actions to the baseline: give the new action an impact line in IMPACT_SUMMARY_BUILDERS '
+        + '(intentService.ts) and remove it from the baseline.',
+    ).toBeLessThanOrEqual(IMPACT_SUMMARY_BASELINE_MAX);
+  });
+
   it('every approval-gated pair outside the frozen baseline has its own impact text', () => {
     const missing = pairs
       .filter((p) => !BASELINE_KEYS.has(p.key))
@@ -227,6 +279,19 @@ describe('approval impact lines (#12774)', () => {
       return !p || summaries.get(key) !== genericImpactSummary(p.toolName, p.action);
     });
     expect(stale).toEqual([]);
+  });
+
+  it('manage_tickets update_fields names every field of the tool schema, and only those', () => {
+    const shape = (toolInputSchemas.manage_tickets as unknown as { shape: { fields: { unwrap(): { shape: object } } } }).shape;
+    const requesterKeys: readonly string[] = TICKET_REQUESTER_FIELD_KEYS;
+    const keys = Object.keys(shape.fields.unwrap().shape).filter((k) => !requesterKeys.includes(k));
+    expect(keys.length).toBeGreaterThan(5);
+    for (const key of keys) {
+      const input = { action: 'update_fields', ticketId: 't1', fields: { [key]: 1 } };
+      expect(buildImpactSummary('manage_tickets', input, checkGuardrails('manage_tickets', input)), key).not.toMatch(/ticket field/);
+    }
+    const crafted = { action: 'update_fields', ticketId: 't1', fields: { butNothingIsEmailed: 1 } };
+    expect(buildImpactSummary('manage_tickets', crafted, checkGuardrails('manage_tickets', crafted))).toBe('Updates 1 ticket field.');
   });
 
   it('manage_tickets has impact text for every approval-gated action', () => {
