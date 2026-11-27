@@ -120,25 +120,35 @@ func (l *dellLane) ToolVersion(path string) (string, error) { return l.host.file
 // -updateType, so even a driver-only run may write firmware.
 func (l *dellLane) FlashesOutsideFilter() bool { return true }
 
-// detect looks for dcu-cli.exe under both Program Files directories, 64-bit
-// first. An unreadable version is reported as "", which is never in range.
-func (l *dellLane) detect() ToolState {
+// toolPath finds dcu-cli.exe under both Program Files directories, 64-bit
+// first, by file stat alone: it never opens or starts the tool.
+func (l *dellLane) toolPath() (string, bool) {
 	for _, base := range l.host.programFiles() {
 		if base == "" {
 			continue
 		}
 		path := strings.TrimRight(base, `\`) + `\Dell\CommandUpdate\dcu-cli.exe`
-		if !l.host.exists(path) {
-			continue
+		if l.host.exists(path) {
+			return path, true
 		}
-		version, err := l.host.fileVersion(path)
-		if err != nil {
-			log.Debug("dcu-cli.exe version unreadable", "path", path, "error", err.Error())
-			version = ""
-		}
-		return ToolState{Present: true, Path: path, Version: version}
 	}
-	return ToolState{}
+	return "", false
+}
+
+// detect reports the tool found by toolPath with its PE version, read from the
+// file's version resource without running it. An unreadable version is
+// reported as "", which is never in range.
+func (l *dellLane) detect() ToolState {
+	path, ok := l.toolPath()
+	if !ok {
+		return ToolState{}
+	}
+	version, err := l.host.fileVersion(path)
+	if err != nil {
+		log.Debug("dcu-cli.exe version unreadable", "path", path, "error", err.Error())
+		version = ""
+	}
+	return ToolState{Present: true, Path: path, Version: version}
 }
 
 func (l *dellLane) Filter(cats []string, blocked []string) (FilterPlan, error) {

@@ -278,6 +278,9 @@ const TOOL_CONFIG_WORDS: Record<OemToolConfigErrorCode, string> = {
   vendor_schedule_policy_not_manual:
     'did not start because a policy sets the vendor tool\'s own update schedule to something other than manual updates',
   vendor_schedule_unreadable: 'did not start because the vendor tool\'s update schedule could not be read',
+  vendor_schedule_policy_unknown:
+    'did not start because a policy manages the vendor tool in a layout Breeze cannot interpret',
+  vendor_tool_not_installed: 'did not start because the vendor tool is not installed',
 };
 
 export function emitRunFailingAlert(input: {

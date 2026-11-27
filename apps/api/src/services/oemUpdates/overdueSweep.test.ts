@@ -612,6 +612,8 @@ describe('runOemOverdueSweep: run failing', () => {
     ['vendor_schedule_not_manual', 'did not start because the vendor tool\'s own update schedule is not set to manual updates'],
     ['vendor_schedule_policy_not_manual', 'did not start because a policy sets the vendor tool\'s own update schedule to something other than manual updates'],
     ['vendor_schedule_unreadable', 'did not start because the vendor tool\'s update schedule could not be read'],
+    ['vendor_schedule_policy_unknown', 'did not start because a policy manages the vendor tool in a layout Breeze cannot interpret'],
+    ['vendor_tool_not_installed', 'did not start because the vendor tool is not installed'],
   ])('names the tool-config refusal %s in words', async (lastErrorCode, words) => {
     h.failingRows = [failing({ lastOutcome: 'tool_unavailable', lastErrorCode })];
     await runOemOverdueSweep(NOW);

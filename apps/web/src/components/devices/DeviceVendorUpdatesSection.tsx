@@ -121,6 +121,10 @@ function toolConfigLabel(code: OemToolConfigErrorCode, t: DevicesT): string {
       return t('vendorUpdates.toolConfigOutcome.policyNotManual');
     case 'vendor_schedule_unreadable':
       return t('vendorUpdates.toolConfigOutcome.unreadable');
+    case 'vendor_schedule_policy_unknown':
+      return t('vendorUpdates.toolConfigOutcome.policyUnknown');
+    case 'vendor_tool_not_installed':
+      return t('vendorUpdates.toolConfigOutcome.toolNotInstalled');
   }
 }
 
@@ -132,6 +136,10 @@ function toolConfigHelp(code: OemToolConfigErrorCode, t: DevicesT): string {
       return t('vendorUpdates.toolConfigHelp.policyNotManual');
     case 'vendor_schedule_unreadable':
       return t('vendorUpdates.toolConfigHelp.unreadable');
+    case 'vendor_schedule_policy_unknown':
+      return t('vendorUpdates.toolConfigHelp.policyUnknown');
+    case 'vendor_tool_not_installed':
+      return t('vendorUpdates.toolConfigHelp.toolNotInstalled');
   }
 }
 

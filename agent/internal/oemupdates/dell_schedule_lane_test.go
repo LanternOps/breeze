@@ -21,18 +21,33 @@ func testDellLaneWithRegistry(t *testing.T, present map[string]string, reg *fake
 
 func notManualRegistries() map[string]*fakeRegistry {
 	return map[string]*fakeRegistry{
-		"absent":       newFakeRegistry(),
-		"empty key":    newFakeRegistry().setKeyOnly(dellScheduleKey, dellScheduleModeValue),
-		"Auto":         newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Auto"),
-		"Daily":        newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Daily"),
-		"Weekly":       newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Weekly"),
-		"Monthly":      newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Monthly"),
-		"unknown":      newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Sometimes"),
-		"wrong type":   newFakeRegistry().setWrongType(dellScheduleKey, dellScheduleModeValue),
-		"denied":       newFakeRegistry().fail(dellScheduleKey, dellScheduleModeValue, errAccessDenied),
-		"policy Auto":  manualDellRegistry().setString(dellPolicyKey, dellScheduleModeValue, "Auto"),
-		"policy error": manualDellRegistry().fail(dellPolicyKey, dellScheduleModeValue, errAccessDenied),
+		"absent":                newFakeRegistry(),
+		"empty key":             newFakeRegistry().setKeyOnly(dellScheduleKey, dellScheduleModeValue),
+		"Auto":                  newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Auto"),
+		"Daily":                 newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Daily"),
+		"Weekly":                newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Weekly"),
+		"Monthly":               newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Monthly"),
+		"unknown":               newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Sometimes"),
+		"wrong type":            newFakeRegistry().setWrongType(dellScheduleKey, dellScheduleModeValue),
+		"denied":                newFakeRegistry().fail(dellScheduleKey, dellScheduleModeValue, errAccessDenied),
+		"policy Auto":           manualDellRegistry().setString(dellPolicyKey, dellScheduleModeValue, "Auto"),
+		"policy error":          manualDellRegistry().fail(dellPolicyKey, dellScheduleModeValue, errAccessDenied),
+		"policy unknown layout": manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue),
+		"embedded NUL":          newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "ManualUpdates\x00Auto"),
 	}
+}
+
+// notManualCode is the errorCode each notManualRegistries entry must report.
+func notManualCode(name string) string {
+	switch name {
+	case "denied", "policy error":
+		return codeScheduleUnreadable
+	case "policy Auto":
+		return codeSchedulePolicyNotManual
+	case "policy unknown layout":
+		return codeSchedulePolicyUnknown
+	}
+	return codeScheduleNotManual
 }
 
 func TestDellRunRefusesWhenTheToolIsNotInManualMode(t *testing.T) {
@@ -53,10 +68,7 @@ func TestDellRunRefusesWhenTheToolIsNotInManualMode(t *testing.T) {
 				if r.Outcome != OutcomeToolUnavailable {
 					t.Fatalf("outcome = %q, want tool_unavailable", r.Outcome)
 				}
-				want := map[bool]string{true: codeScheduleUnreadable, false: codeScheduleNotManual}[name == "denied" || name == "policy error"]
-				if name == "policy Auto" {
-					want = codeSchedulePolicyNotManual
-				}
+				want := notManualCode(name)
 				if got := errCode(r); got != want {
 					t.Fatalf("errorCode = %q, want %q", got, want)
 				}
@@ -108,22 +120,59 @@ func TestDellRunInManualModeRunsAsBefore(t *testing.T) {
 }
 
 // A machine without the tool is not given one: a fresh install is in
-// automatic mode, and Breeze may not change the tool's schedule.
-func TestDellNotManualNeverInstallsTheTool(t *testing.T) {
-	f := newRunFixture(t)
-	fetch := &fakeFetcher{}
-	f.deps.Fetcher = fetch
-	f.req.Tool = toolSpec()
-	l := testDellLaneWithRegistry(t, map[string]string{}, newFakeRegistry())
-	r := Run(context.Background(), f.req, l, f.deps)
-	if got := fetch.Fetched(); len(got) != 0 {
-		t.Fatalf("fetched %v for a tool that is not in manual mode", got)
+// automatic mode, and Breeze may not change the tool's schedule. The absence is
+// its own reason, so the admin is told to install the tool, not to change a
+// schedule that does not exist yet. It is found by a file stat, before the
+// registry is read, whatever the registry holds.
+func TestDellRunRefusesWhenTheToolIsNotInstalled(t *testing.T) {
+	regs := map[string]*fakeRegistry{
+		"manual left by an earlier install": manualDellRegistry(),
+		"absent":                            newFakeRegistry(),
+		"Auto":                              newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Auto"),
+		"policy unknown layout":             manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue),
 	}
-	if calls := f.exec.Calls(); len(calls) != 0 {
-		t.Fatalf("ran %+v", calls)
+	for _, trigger := range []string{TriggerScheduled, TriggerOnDemand} {
+		for name, reg := range regs {
+			t.Run(trigger+"/"+name, func(t *testing.T) {
+				f := newRunFixture(t)
+				f.req.Trigger = trigger
+				if trigger == TriggerScheduled {
+					key := "2026-11"
+					f.req.OccurrenceKey = &key
+				}
+				fetch := &fakeFetcher{}
+				f.deps.Fetcher = fetch
+				f.req.Tool = toolSpec()
+				l := testDellLaneWithRegistry(t, map[string]string{}, reg)
+				r := Run(context.Background(), f.req, l, f.deps)
+				if got := fetch.Fetched(); len(got) != 0 {
+					t.Fatalf("fetched %v for a device without the tool", got)
+				}
+				if calls := f.exec.Calls(); len(calls) != 0 {
+					t.Fatalf("ran %+v", calls)
+				}
+				if r.Outcome != OutcomeToolUnavailable || errCode(r) != codeToolNotInstalled {
+					t.Fatalf("result = %+v, want tool_unavailable / %s", r, codeToolNotInstalled)
+				}
+				if err := r.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				if n := countReads(reg, ""); n != 0 {
+					t.Fatalf("read the registry %q for a device without the tool", reg.reads)
+				}
+				if _, active := f.guard.Active(); active {
+					t.Fatal("a refused run left a flash-guard section open")
+				}
+			})
+		}
 	}
-	if r.Outcome != OutcomeToolUnavailable || errCode(r) != codeScheduleNotManual {
-		t.Fatalf("result = %+v", r)
+}
+
+// The tool under the 32-bit Program Files counts as installed.
+func TestDellToolUnderProgramFilesX86IsInstalled(t *testing.T) {
+	l := testDellLaneWithRegistry(t, map[string]string{dcu32: "5.7.2"}, manualDellRegistry())
+	if outcome, err := l.CheckToolConfig(); outcome != "" || err != nil {
+		t.Fatalf("CheckToolConfig = %q, %v", outcome, err)
 	}
 }
 
@@ -144,14 +193,14 @@ func TestDellNotManualNeverReplacesAnOldTool(t *testing.T) {
 	}
 }
 
-// The mode is read again after the tool step: an install that leaves the tool
-// in its default (automatic) mode is caught before the tool runs.
-func TestDellInstallThatResetsTheModeIsCaughtBeforeTheRun(t *testing.T) {
+// The mode is read again after the tool step: an upgrade that leaves the
+// tool in its default (automatic) mode is caught before the tool runs.
+func TestDellUpgradeThatResetsTheModeIsCaughtBeforeTheRun(t *testing.T) {
 	f := newRunFixture(t)
 	f.req.Tool = toolSpec()
 	f.req.Categories = []string{CategoryDriver}
-	present := map[string]string{}
-	reg := manualDellRegistry() // a value left by an earlier install
+	present := map[string]string{dcu64: "5.7.0"} // below the floor: replaced
+	reg := manualDellRegistry()
 	l := testDellLaneWithRegistry(t, present, reg)
 	f.exec.run = func(_ context.Context, spec ExecSpec) (ExecResult, error) {
 		if filepath.Base(spec.Path) == "tool.exe" {
@@ -241,7 +290,7 @@ func countReads(reg *fakeRegistry, key string) int {
 	defer reg.mu.Unlock()
 	n := 0
 	for _, r := range reg.reads {
-		if strings.HasPrefix(r, key+"|") {
+		if key == "" || strings.HasPrefix(r, key+"|") {
 			n++
 		}
 	}

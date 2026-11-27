@@ -110,11 +110,20 @@ export type OemOutcome = (typeof OEM_OUTCOMES)[number];
  *   the automatic default, `Auto`, `Daily`, `Weekly`, `Monthly`, or a value it cannot read as one).
  * - `vendor_schedule_policy_not_manual`: a policy value for the tool sets something else.
  * - `vendor_schedule_unreadable`: the registry could not be read.
+ * - `vendor_schedule_policy_unknown`: the tool's policy key exists, but no `ScheduleMode` of exactly
+ *   `ManualUpdates` was found where the agent looks. The policy layout is undocumented, so the agent
+ *   refuses rather than risk running beside a second scheduler.
+ * - `vendor_tool_not_installed`: the tool is not installed. The agent does not install it, because a
+ *   fresh install schedules its own updates.
+ *
+ * The order is compared by an agent-side parity test: append, never reorder.
  */
 export const OEM_TOOL_CONFIG_ERROR_CODES = [
   'vendor_schedule_not_manual',
   'vendor_schedule_policy_not_manual',
   'vendor_schedule_unreadable',
+  'vendor_schedule_policy_unknown',
+  'vendor_tool_not_installed',
 ] as const;
 export type OemToolConfigErrorCode = (typeof OEM_TOOL_CONFIG_ERROR_CODES)[number];
 

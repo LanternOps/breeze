@@ -150,6 +150,8 @@ describe('DeviceVendorUpdatesSection', () => {
     ['vendor_schedule_not_manual', /not in manual-updates mode/i, /dcu-cli \/configure -scheduleManual/],
     ['vendor_schedule_policy_not_manual', /set by policy/i, /policy/i],
     ['vendor_schedule_unreadable', /schedule unreadable/i, /could not read/i],
+    ['vendor_schedule_policy_unknown', /unrecognised policy/i, /cannot interpret/i],
+    ['vendor_tool_not_installed', /tool not installed/i, /is not installed on this device/i],
   ])('%s names the cause and the fix, on the last run and in history', async (code, label, help) => {
     answer(
       statusBody({

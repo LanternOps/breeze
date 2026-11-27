@@ -107,7 +107,13 @@ describe('oemUpdateRunResultSchema', () => {
   // #12267: the manual-mode refusal is an errorCode on an existing outcome, so this
   // schema (and an older API's copy of it) accepts it, and nothing new is required.
   it('accepts every tool-config refusal on tool_unavailable, with no new field', () => {
-    expect(OEM_TOOL_CONFIG_ERROR_CODES.length).toBe(3);
+    expect(OEM_TOOL_CONFIG_ERROR_CODES).toEqual([
+      'vendor_schedule_not_manual',
+      'vendor_schedule_policy_not_manual',
+      'vendor_schedule_unreadable',
+      'vendor_schedule_policy_unknown',
+      'vendor_tool_not_installed',
+    ]);
     for (const errorCode of OEM_TOOL_CONFIG_ERROR_CODES) {
       const refused = {
         ...sample, outcome: 'tool_unavailable', errorCode, rawExitCode: null,
@@ -122,6 +128,8 @@ describe('oemUpdateRunResultSchema', () => {
     expect(isOemToolConfigErrorCode('tool_absent')).toBe(false);
     expect(isOemToolConfigErrorCode(null)).toBe(false);
     expect(isOemToolConfigErrorCode('vendor_schedule_not_manual')).toBe(true);
+    expect(isOemToolConfigErrorCode('vendor_schedule_policy_unknown')).toBe(true);
+    expect(isOemToolConfigErrorCode('vendor_tool_not_installed')).toBe(true);
   });
 });
 

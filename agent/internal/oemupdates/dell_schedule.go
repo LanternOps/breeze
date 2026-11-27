@@ -3,6 +3,7 @@ package oemupdates
 import (
 	"errors"
 	"fmt"
+	"unicode/utf16"
 )
 
 // Dell Command | Update's own schedule mode (#12267). The lane requires the
@@ -20,10 +21,22 @@ import (
 //
 // The policy key is named by the tool's settings assembly as supporting
 // ScheduleMode, but it did not exist on the lab unit. Its layout and its
-// precedence over the settings key are NOT verified. The reading below is
-// conservative: a policy ScheduleMode that is anything but ManualUpdates refuses,
-// a policy ManualUpdates never stands in for the settings value, and a policy
-// key with no ScheduleMode where this looks is reported, not interpreted.
+// precedence over the settings key are NOT verified. The reading below fails
+// closed:
+//   - a policy ScheduleMode that is anything but ManualUpdates refuses
+//     (vendor_schedule_policy_not_manual);
+//   - a policy key that exists, with no ScheduleMode of exactly ManualUpdates
+//     at a path this knows, refuses (vendor_schedule_policy_unknown): the real
+//     layout may hold a schedule this does not read, such as one that forces
+//     automatic updates;
+//   - a policy ManualUpdates never stands in for the settings value; both must
+//     read manual.
+// This trades refusing some policy-managed devices for never running beside a
+// second scheduler. A policy key that does not exist changes nothing.
+//
+// The value is compared as stored: only the single terminating NUL of a
+// REG_SZ is dropped, so "ManualUpdates\x00Auto" or "ManualUpdates " is not
+// manual (decodeRegSZ).
 
 // Registry keys, all under HKLM in the 64-bit view.
 const (
@@ -44,6 +57,10 @@ const (
 	codeScheduleNotManual       = "vendor_schedule_not_manual"
 	codeSchedulePolicyNotManual = "vendor_schedule_policy_not_manual"
 	codeScheduleUnreadable      = "vendor_schedule_unreadable"
+	codeSchedulePolicyUnknown   = "vendor_schedule_policy_unknown"
+	// codeToolNotInstalled: dcu-cli.exe is not on the device. Breeze does not
+	// install it, because a fresh install schedules its own updates.
+	codeToolNotInstalled = "vendor_tool_not_installed"
 )
 
 // regRead is one registry value as read: whether its key and the value exist,
@@ -53,7 +70,43 @@ type regRead struct {
 	ValueExists bool
 	// String is set only for a REG_SZ value; any other type leaves it false.
 	String bool
-	Value  string
+	// Value is the whole REG_SZ as stored (decodeRegSZ), embedded NULs included.
+	Value string
+}
+
+// maxRegSZBytes bounds the read. ManualUpdates is 28 bytes with its NUL; a
+// longer value cannot be a mode name and is reported as a read error.
+const maxRegSZBytes = 512
+
+// decodeRegSZ decodes a REG_SZ's raw bytes (UTF-16LE). Exactly one terminating
+// NUL is dropped; everything else is kept, embedded NULs included, so
+// "ManualUpdates\x00Auto" never compares equal to ManualUpdates (a string
+// conversion that stops at the first NUL would make it). An odd byte count is
+// not a REG_SZ string and reports false.
+func decodeRegSZ(raw []byte) (string, bool) {
+	if len(raw)%2 != 0 {
+		return "", false
+	}
+	u := make([]uint16, len(raw)/2)
+	for i := range u {
+		u[i] = uint16(raw[2*i]) | uint16(raw[2*i+1])<<8
+	}
+	if n := len(u); n > 0 && u[n-1] == 0 {
+		u = u[:n-1]
+	}
+	return string(utf16.Decode(u)), true
+}
+
+// shownMode is a mode as it is logged and reported: quoted with every control
+// character and non-ASCII rune escaped, and its stored length, so a refused
+// "ManualUpdates " or "ManualUpdates\x00Auto" cannot look like the passing
+// value. Bounded for the log.
+func shownMode(s string) string {
+	shown := s
+	if len(shown) > 2*maxVersionLen {
+		shown = shown[:2*maxVersionLen]
+	}
+	return fmt.Sprintf("%+q (%d bytes)", shown, len(s))
 }
 
 // regReader reads one named value under HKLM in the 64-bit view with query
@@ -92,8 +145,12 @@ type dellScheduleMode struct {
 	State  scheduleValueState
 	// Mode is the REG_SZ text as read, untrusted; "" when absent or another type.
 	Mode string
-	// Note is a detail for the log, such as a policy key that was not interpreted.
+	// Note is a detail for the log, such as a policy key in a layout this does
+	// not recognise.
 	Note string
+	// PolicyUnknown: the policy key exists but holds no ScheduleMode of exactly
+	// ManualUpdates at a path this knows.
+	PolicyUnknown bool
 	// Err is a read failure, never an absent key or value.
 	Err error
 }
@@ -111,6 +168,8 @@ func (m dellScheduleMode) refusalCode() string {
 		return ""
 	case m.Err != nil:
 		return codeScheduleUnreadable
+	case m.PolicyUnknown:
+		return codeSchedulePolicyUnknown
 	case m.Source == scheduleSourcePolicy:
 		return codeSchedulePolicyNotManual
 	}
@@ -138,7 +197,8 @@ func readDellScheduleMode(read regReader) dellScheduleMode {
 	}
 	// Policy first. ScheduleMode is looked for directly under the policy key
 	// and under the settings-shaped path beneath it; neither layout is
-	// verified, and looking in both can only add refusals.
+	// verified. Opening the policy key tells whether any policy is present: a
+	// subkey cannot exist without it.
 	policyKeyExists, policyManual := false, false
 	for _, key := range []string{dellPolicyKey, dellPolicyScheduleKey} {
 		r, err := read(key, dellScheduleModeValue)
@@ -159,12 +219,14 @@ func readDellScheduleMode(read regReader) dellScheduleMode {
 			return dellScheduleMode{Source: scheduleSourcePolicy, State: st, Mode: mode}
 		}
 	}
+	if policyKeyExists && !policyManual {
+		// Fail closed: the real layout may set a schedule this does not read.
+		return dellScheduleMode{Source: scheduleSourcePolicy, PolicyUnknown: true,
+			Note: "policy key present, layout not recognised: no ScheduleMode of ManualUpdates where Breeze looks"}
+	}
 	m := dellScheduleMode{Source: scheduleSourceSettings}
-	switch {
-	case policyManual:
+	if policyManual {
 		m.Note = "policy ScheduleMode is ManualUpdates; its precedence is not verified, the settings value decides"
-	case policyKeyExists:
-		m.Note = "policy key present, not interpreted"
 	}
 	r, err := read(dellScheduleKey, dellScheduleModeValue)
 	if err != nil {
@@ -178,9 +240,18 @@ func readDellScheduleMode(read regReader) dellScheduleMode {
 	return m
 }
 
-// CheckToolConfig refuses unless the tool is in manual-updates mode. It only
-// reads the registry: it spawns nothing and writes nothing.
+// CheckToolConfig refuses unless the tool is installed and in manual-updates
+// mode. It only stats files and reads the registry: it spawns nothing and
+// writes nothing.
 func (l *dellLane) CheckToolConfig() (Outcome, error) {
+	// Presence first, by file stat (the same check the availability gate
+	// uses), so a device without the tool is told to install it rather than to
+	// change a schedule it does not have yet.
+	if _, ok := l.toolPath(); !ok {
+		log.Warn("Dell Command | Update is not installed; the vendor update run is refused and Breeze does not install it, because a new install schedules its own updates",
+			"errorCode", codeToolNotInstalled)
+		return OutcomeToolUnavailable, runErr(codeToolNotInstalled, errors.New(`Dell Command | Update is not installed under either Program Files\Dell\CommandUpdate`))
+	}
 	m := readDellScheduleMode(l.host.registry)
 	if m.Manual() {
 		if m.Note != "" {
@@ -189,13 +260,18 @@ func (l *dellLane) CheckToolConfig() (Outcome, error) {
 		return "", nil
 	}
 	code := m.refusalCode()
-	mode := sanitizeToolText(m.Mode, maxVersionLen)
 	if m.Err != nil {
 		log.Warn("could not read Dell Command | Update's schedule mode; the vendor update run is refused and the tool is not started",
 			"errorCode", code, "source", m.Source, "error", m.Err.Error(), "note", m.Note)
 		return OutcomeToolUnavailable, runErr(code, m.Err)
 	}
+	if m.PolicyUnknown {
+		log.Warn("a Dell Command | Update policy is present in a layout Breeze does not recognise; the vendor update run is refused and the tool is not started",
+			"errorCode", code, "policyKey", `HKLM\`+dellPolicyKey, "note", m.Note)
+		return OutcomeToolUnavailable, runErr(code, fmt.Errorf(`policy key HKLM\%s is present with no ScheduleMode of %q where Breeze looks`, dellPolicyKey, dellManualUpdates))
+	}
+	mode := shownMode(m.Mode)
 	log.Warn("Dell Command | Update is not in manual-updates mode; the vendor update run is refused and the tool is not started",
 		"errorCode", code, "source", m.Source, "state", m.State.String(), "mode", mode, "note", m.Note)
-	return OutcomeToolUnavailable, runErr(code, fmt.Errorf("%s ScheduleMode is %s %q, want %q", m.Source, m.State, mode, dellManualUpdates))
+	return OutcomeToolUnavailable, runErr(code, fmt.Errorf("%s ScheduleMode is %s %s, want %q", m.Source, m.State, mode, dellManualUpdates))
 }

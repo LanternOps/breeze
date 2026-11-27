@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf16"
 )
 
 // The refusal codes are the API's and the console's vocabulary too
@@ -27,7 +28,8 @@ func TestDellScheduleCodesMatchShared(t *testing.T) {
 	for _, q := range regexp.MustCompile(`'([a-z_]+)'`).FindAllSubmatch(m[1], -1) {
 		shared = append(shared, string(q[1]))
 	}
-	agent := []string{codeScheduleNotManual, codeSchedulePolicyNotManual, codeScheduleUnreadable}
+	agent := []string{codeScheduleNotManual, codeSchedulePolicyNotManual, codeScheduleUnreadable,
+		codeSchedulePolicyUnknown, codeToolNotInstalled}
 	if strings.Join(shared, ",") != strings.Join(agent, ",") {
 		t.Fatalf("shared codes %q, agent codes %q", shared, agent)
 	}
@@ -123,6 +125,10 @@ func TestDellScheduleModeStates(t *testing.T) {
 			state: scheduleValueString, mode: "manualupdates", source: scheduleSourceSettings, code: codeScheduleNotManual},
 		{name: "padded", reg: newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, " ManualUpdates"),
 			state: scheduleValueString, mode: " ManualUpdates", source: scheduleSourceSettings, code: codeScheduleNotManual},
+		{name: "embedded NUL after the name", reg: newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "ManualUpdates\x00Auto"),
+			state: scheduleValueString, mode: "ManualUpdates\x00Auto", source: scheduleSourceSettings, code: codeScheduleNotManual},
+		{name: "trailing space", reg: newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "ManualUpdates "),
+			state: scheduleValueString, mode: "ManualUpdates ", source: scheduleSourceSettings, code: codeScheduleNotManual},
 		{name: "the enum number as text", reg: newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "0"),
 			state: scheduleValueString, mode: "0", source: scheduleSourceSettings, code: codeScheduleNotManual},
 		{name: "wrong value type", reg: newFakeRegistry().setWrongType(dellScheduleKey, dellScheduleModeValue),
@@ -148,15 +154,39 @@ func TestDellScheduleModeStates(t *testing.T) {
 			reg:   newFakeRegistry().setString(dellPolicyKey, dellScheduleModeValue, "ManualUpdates"),
 			state: scheduleValueAbsent, source: scheduleSourceSettings, code: codeScheduleNotManual,
 			noteSubstr: "precedence is not verified"},
-		{name: "policy key present without ScheduleMode, settings manual", manual: true,
+		// A policy key in a layout this does not know fails closed: refusing a
+		// policy-managed device beats running beside a second scheduler.
+		{name: "policy key present without ScheduleMode, settings manual",
 			reg:   manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue),
-			state: scheduleValueString, mode: "ManualUpdates", source: scheduleSourceSettings,
-			noteSubstr: "policy key present, not interpreted"},
+			state: scheduleValueAbsent, source: scheduleSourcePolicy, code: codeSchedulePolicyUnknown,
+			noteSubstr: "layout not recognised"},
 		{name: "policy key present without ScheduleMode, settings Auto",
 			reg: newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Auto").
 				setKeyOnly(dellPolicyKey, dellScheduleModeValue),
+			state: scheduleValueAbsent, source: scheduleSourcePolicy, code: codeSchedulePolicyUnknown,
+			noteSubstr: "layout not recognised"},
+		{name: "only the settings-shaped policy subkey, without ScheduleMode",
+			reg:   manualDellRegistry().setKeyOnly(dellPolicyScheduleKey, dellScheduleModeValue),
+			state: scheduleValueAbsent, source: scheduleSourcePolicy, code: codeSchedulePolicyUnknown,
+			noteSubstr: "layout not recognised"},
+		{name: "both policy keys present, neither has ScheduleMode",
+			reg: manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue).
+				setKeyOnly(dellPolicyScheduleKey, dellScheduleModeValue),
+			state: scheduleValueAbsent, source: scheduleSourcePolicy, code: codeSchedulePolicyUnknown,
+			noteSubstr: "layout not recognised"},
+		{name: "policy manual in the subkey, top policy key without a value", manual: true,
+			reg: manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue).
+				setString(dellPolicyScheduleKey, dellScheduleModeValue, "ManualUpdates"),
+			state: scheduleValueString, mode: "ManualUpdates", source: scheduleSourceSettings,
+			noteSubstr: "precedence is not verified"},
+		{name: "policy manual, settings Auto",
+			reg: newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Auto").
+				setString(dellPolicyKey, dellScheduleModeValue, "ManualUpdates"),
 			state: scheduleValueString, mode: "Auto", source: scheduleSourceSettings, code: codeScheduleNotManual,
-			noteSubstr: "policy key present, not interpreted"},
+			noteSubstr: "precedence is not verified"},
+		{name: "policy value with an embedded NUL",
+			reg:   manualDellRegistry().setString(dellPolicyKey, dellScheduleModeValue, "ManualUpdates\x00Auto"),
+			state: scheduleValueString, mode: "ManualUpdates\x00Auto", source: scheduleSourcePolicy, code: codeSchedulePolicyNotManual},
 		{name: "policy key unreadable",
 			reg:    manualDellRegistry().fail(dellPolicyKey, dellScheduleModeValue, errAccessDenied),
 			source: scheduleSourcePolicy, readErr: true, code: codeScheduleUnreadable},
@@ -239,6 +269,71 @@ func TestDellScheduleModeReadsOnlyTheNamedKeys(t *testing.T) {
 	for _, k := range dellRegistryKeys {
 		if !strings.HasPrefix(k, `SOFTWARE\Dell\`) && !strings.HasPrefix(k, `SOFTWARE\Policies\Dell\`) {
 			t.Fatalf("registry read list holds a key outside Dell's: %q", k)
+		}
+	}
+}
+
+// The REG_SZ bytes are compared whole (#12267 review): only the one
+// terminating NUL is dropped. A string conversion that stops at the first NUL
+// would read "ManualUpdates\x00Auto" as manual.
+func TestDecodeRegSZKeepsEverythingAfterTheName(t *testing.T) {
+	utf16le := func(s string) []byte {
+		var b []byte
+		for _, u := range utf16.Encode([]rune(s)) {
+			b = append(b, byte(u), byte(u>>8))
+		}
+		return b
+	}
+	cases := []struct {
+		name string
+		raw  []byte
+		want string
+		ok   bool
+	}{
+		{"terminated", utf16le("ManualUpdates\x00"), "ManualUpdates", true},
+		{"unterminated", utf16le("ManualUpdates"), "ManualUpdates", true},
+		{"embedded NUL", utf16le("ManualUpdates\x00Auto\x00"), "ManualUpdates\x00Auto", true},
+		{"embedded NUL, unterminated", utf16le("ManualUpdates\x00Auto"), "ManualUpdates\x00Auto", true},
+		{"two terminating NULs", utf16le("ManualUpdates\x00\x00"), "ManualUpdates\x00", true},
+		{"trailing space", utf16le("ManualUpdates \x00"), "ManualUpdates ", true},
+		{"empty", nil, "", true},
+		{"just a NUL", utf16le("\x00"), "", true},
+		{"odd byte count", append(utf16le("ManualUpdates"), 0), "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := decodeRegSZ(tc.raw)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("decodeRegSZ = %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
+			}
+			if tc.want != dellManualUpdates && ok {
+				reg := newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, got)
+				if readDellScheduleMode(reg.read).Manual() {
+					t.Fatalf("%q read as manual", got)
+				}
+			}
+		})
+	}
+}
+
+// A refused value is shown as it is, not trimmed into the passing one: a
+// trailing space or an embedded NUL must be visible in the log and the error.
+func TestDellRefusalShowsTheValueAsRead(t *testing.T) {
+	for raw, want := range map[string]string{
+		"ManualUpdates ":        `"ManualUpdates " (14 bytes)`,
+		"ManualUpdates\x00Auto": `"ManualUpdates\x00Auto" (18 bytes)`,
+	} {
+		l := testDellLane(t, map[string]string{dcu64: "5.7.2"})
+		l.host.registry = newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, raw).read
+		outcome, err := l.CheckToolConfig()
+		if outcome != OutcomeToolUnavailable || err == nil {
+			t.Fatalf("%q: outcome %q, err %v", raw, outcome, err)
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("%q: error %q does not show %s", raw, err.Error(), want)
+		}
+		if got := shownMode(raw); got != want {
+			t.Fatalf("shownMode(%q) = %s, want %s", raw, got, want)
 		}
 	}
 }

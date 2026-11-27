@@ -70,4 +70,21 @@ func TestDellScheduleReadIsReadOnlyAndSpawnsNothing(t *testing.T) {
 	if !strings.Contains(text, "slices.Contains(dellRegistryKeys, key)") {
 		t.Fatal("the reader must refuse a key that is not on the read list")
 	}
+	// The value is read as raw bytes and decoded whole (#12267 review):
+	// GetStringValue stops at the first NUL, so "ManualUpdates\x00Auto"
+	// would read as manual.
+	if strings.Contains(text, "GetStringValue") {
+		t.Fatal("dell_schedule_windows.go must not read the mode with GetStringValue, which truncates at the first NUL")
+	}
+	if !strings.Contains(text, "decodeRegSZ(") {
+		t.Fatal("dell_schedule_windows.go must decode the raw REG_SZ bytes with decodeRegSZ")
+	}
+	// The read list is fixed: the settings key, the policy key and its
+	// settings-shaped subkey. A policy subkey cannot exist without the policy
+	// key, so opening the policy key is enough to know whether any policy is
+	// present; nothing is enumerated.
+	want := []string{dellScheduleKey, dellPolicyKey, dellPolicyScheduleKey}
+	if strings.Join(dellRegistryKeys, "|") != strings.Join(want, "|") {
+		t.Fatalf("dellRegistryKeys = %q, want %q", dellRegistryKeys, want)
+	}
 }
