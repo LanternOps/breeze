@@ -91,7 +91,7 @@
     "argon2": "^0.45.1",
     "bullmq": "^5.81.2",
     "drizzle-orm": "^0.45.4",
-    "fast-xml-parser": "^5.9.3",
+    "fast-xml-parser": "^5.12.1",
     "firebase-admin": "^14.5.0",
     "google-auth-library": "^11.3.4",
     "hono": "^4.13.19",
