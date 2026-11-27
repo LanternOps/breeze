@@ -55,6 +55,32 @@ func TestRendererFromSessionOwner(t *testing.T) {
 	}
 }
 
+// #12808 review: the adapter passes each session's connection serial on both
+// notices, so a late "left" for an earlier connection under the same session
+// id never clears the one that replaced it.
+func TestAdapterLateLeftForAnEarlierConnectionKeepsTheNewOne(t *testing.T) {
+	hh := newHarness(t)
+	old := &sessionbroker.Session{SessionID: "assist-1", HelperRole: ipc.HelperRoleAssist}
+	cur := &sessionbroker.Session{SessionID: "assist-1", HelperRole: ipc.HelperRoleAssist}
+	live := func() (uint64, bool) {
+		hh.h.mu.Lock()
+		defer hh.h.mu.Unlock()
+		v, ok := hh.h.live["assist-1"]
+		return v, ok
+	}
+
+	hh.h.PromptRendererConnected(old)
+	hh.h.PromptRendererConnected(cur)
+	hh.h.PromptRendererDisconnected(old)
+	if v, ok := live(); !ok || v != cur.ConnSerial() {
+		t.Fatalf("after a late left for the old connection: live = %d (%v), want the new connection %d", v, ok, cur.ConnSerial())
+	}
+	hh.h.PromptRendererDisconnected(cur)
+	if v, ok := live(); ok {
+		t.Fatalf("after the new connection left: live = %d, want none", v)
+	}
+}
+
 func TestDormantHostSendsNothing(t *testing.T) {
 	// Production wiring in W02: no kind enabled server-side and no renderer
 	// advertising one. Every prompt takes the legacy path.

@@ -104,6 +104,9 @@ type Session struct {
 	// closes the session (under mu, with closed), so the teardown can report
 	// what happened instead of guessing (#11044). Nil for any other close.
 	closeReason atomic.Pointer[string]
+	// connSerial tells this connection apart from any other, also one with
+	// the same SessionID; see ConnSerial.
+	connSerial atomic.Uint64
 
 	// backupHelperExited closes once the backup helper process behind this
 	// session has exited and been reaped (#12193). ClearBackupSession sets it;
@@ -191,6 +194,21 @@ func (s *Session) CloseReason() string {
 		return *r
 	}
 	return ""
+}
+
+// connSerials hands out ConnSerial values.
+var connSerials atomic.Uint64
+
+// ConnSerial is a nonzero number unique to this connection in this agent
+// process. A helper that reconnects keeps its SessionID, so the prompt host
+// uses this to tell a late notice for the old connection from the new one
+// (#12808).
+func (s *Session) ConnSerial() uint64 {
+	if v := s.connSerial.Load(); v != 0 {
+		return v
+	}
+	s.connSerial.CompareAndSwap(0, connSerials.Add(1))
+	return s.connSerial.Load()
 }
 
 // LastPongAge returns how long it has been since the helper last responded

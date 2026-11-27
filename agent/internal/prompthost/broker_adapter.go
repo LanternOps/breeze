@@ -29,7 +29,7 @@ func (h *Host) PromptRendererConnected(s *sessionbroker.Session) {
 
 // PromptRendererDisconnected satisfies sessionbroker.PromptSessionObserver.
 func (h *Host) PromptRendererDisconnected(s *sessionbroker.Session) {
-	h.RendererDisconnected(s.SessionID)
+	h.rendererLeft(s.SessionID, s.ConnSerial())
 }
 
 // BrokerDirectory is the production RendererDirectory over the session broker.
@@ -102,6 +102,7 @@ func RendererFromSession(s *sessionbroker.Session, goos string) RendererSession 
 		Version:     s.RendererVersion(),
 		ConnectedAt: s.ConnectedAt,
 		UILocale:    s.UILocale(),
+		Conn:        s.ConnSerial(),
 	}
 	if goos == "windows" {
 		ws, _ := strconv.ParseUint(s.WinSessionID, 10, 32)

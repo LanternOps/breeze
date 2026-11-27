@@ -228,6 +228,9 @@ type RendererSession struct {
 	ConnectedAt time.Time
 	// UILocale is the UI language the renderer reported at auth ("" = unknown).
 	UILocale string
+	// Conn tells this connection apart from an earlier one under the same Key
+	// (Session.ConnSerial); 0 = unknown.
+	Conn uint64
 }
 
 // RendererDirectory is the host's view of the broker.
