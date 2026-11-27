@@ -2,7 +2,9 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,6 +104,9 @@ type Session struct {
 	// closes the session (under mu, with closed), so the teardown can report
 	// what happened instead of guessing (#11044). Nil for any other close.
 	closeReason atomic.Pointer[string]
+	// connSerial tells this connection apart from any other, also one with
+	// the same SessionID; see ConnSerial.
+	connSerial atomic.Uint64
 
 	// backupHelperExited closes once the backup helper process behind this
 	// session has exited and been reaped (#12193). ClearBackupSession sets it;
@@ -189,6 +194,21 @@ func (s *Session) CloseReason() string {
 		return *r
 	}
 	return ""
+}
+
+// connSerials hands out ConnSerial values.
+var connSerials atomic.Uint64
+
+// ConnSerial is a nonzero number unique to this connection in this agent
+// process. A helper that reconnects keeps its SessionID, so the prompt host
+// uses this to tell a late notice for the old connection from the new one
+// (#12808).
+func (s *Session) ConnSerial() uint64 {
+	if v := s.connSerial.Load(); v != 0 {
+		return v
+	}
+	s.connSerial.CompareAndSwap(0, connSerials.Add(1))
+	return s.connSerial.Load()
 }
 
 // LastPongAge returns how long it has been since the helper last responded
@@ -705,6 +725,26 @@ func (s *Session) Info() SessionInfo {
 	}
 }
 
+// recvEndedBy names who ended a session's receive loop, for the disconnect
+// log (#12808): "agent" when the agent had already closed the session,
+// "helper" when the helper hung up between frames, "helper_mid_frame" when
+// it hung up inside a frame, and "error" for anything else (a framing, HMAC
+// or sequence failure, a transport error). partialFrame is the Conn's own
+// state (ipc.Conn.PartialFrame): a cut that lands in a resumed Recv surfaces
+// as plain io.EOF, so the error alone cannot tell.
+func recvEndedBy(closedByAgent, partialFrame bool, err error) string {
+	switch {
+	case closedByAgent:
+		return "agent"
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF) && partialFrame:
+		return "helper_mid_frame"
+	case errors.Is(err, io.EOF):
+		return "helper"
+	default:
+		return "error"
+	}
+}
+
 // RecvLoop reads messages from the connection and dispatches them.
 // It calls onMessage for each received envelope.
 // Returns when the connection is closed or an error occurs.
@@ -712,7 +752,12 @@ func (s *Session) RecvLoop(onMessage func(*Session, *ipc.Envelope)) {
 	for {
 		env, err := s.conn.Recv()
 		if err != nil {
-			log.Info("session recv loop ended", "uid", s.UID, "sessionId", s.SessionID, "error", err.Error())
+			attrs := []any{"uid", s.UID, "sessionId", s.SessionID, "role", string(s.Info().HelperRole),
+				"endedBy", recvEndedBy(s.IsClosed(), s.conn.PartialFrame(), err), "error", err.Error()}
+			if reason := s.CloseReason(); reason != "" {
+				attrs = append(attrs, "closeReason", reason)
+			}
+			log.Info("session recv loop ended", attrs...)
 			return
 		}
 		// A Linux desktop helper is filtered before anything else sees the

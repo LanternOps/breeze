@@ -72,6 +72,9 @@ type Host struct {
 	limiter   *cardLimiter
 	locked    map[uint32]bool
 	connected map[string]RendererSession // renderers awaiting replay at the next tick
+	// live is the connection (RendererSession.Conn) last announced for each
+	// renderer key and not yet reported gone.
+	live map[string]uint64
 	// revFloor is the last rev of each closed prompt, kept for the
 	// tombstone TTL: a renderer drops any rev not greater than the last it
 	// applied for an id, also across a close, so a Reshowable prompt shown
@@ -162,6 +165,7 @@ func New(deps Deps) *Host {
 		limiter:   newCardLimiter(),
 		locked:    map[uint32]bool{},
 		connected: map[string]RendererSession{},
+		live:      map[string]uint64{},
 		revFloor:  map[string]revMark{},
 	}
 	if h.clock == nil {
@@ -343,20 +347,55 @@ func (h *Host) Close(id string, reason ipc.PromptCloseReason) error {
 // RendererConnected queues a replay into a renderer that just authenticated.
 // The replay runs at the next tick (within a second) so the broker's
 // connection goroutine never waits on the host.
+//
+// The broker tells the host a session left only after it has removed that
+// session from its maps and released its lock, so a new connection under the
+// same key (Assist's is role-user-pid) can be announced first (#12808). The
+// broker admits one session per key, so a new connection means the earlier
+// one is gone: it is handled as gone here, and its late notice is ignored by
+// rendererLeft.
 func (h *Host) RendererConnected(r RendererSession) {
 	h.mu.Lock()
+	prev, ok := h.live[r.Key]
+	h.live[r.Key] = r.Conn
+	if !ok || prev == r.Conn {
+		h.connected[r.Key] = r
+		h.mu.Unlock()
+		return
+	}
+	h.log.Info("prompt renderer reconnected before its earlier connection was reported closed",
+		"renderer", r.Key)
+	ob := &outbox{}
+	h.rendererGoneLocked(r.Key, h.clock.Now(), ob)
 	h.connected[r.Key] = r
-	h.mu.Unlock()
+	h.unlockAndFlush(ob)
+}
+
+// rendererLeft reports that connection conn of renderer key ended. A notice
+// for an earlier connection than the one announced last is ignored: that
+// connection was handled as gone when the newer one was announced. conn 0
+// (unknown) always applies.
+func (h *Host) rendererLeft(key string, conn uint64) {
+	ob := &outbox{}
+	h.mu.Lock()
+	defer h.unlockAndFlush(ob)
+	if cur, ok := h.live[key]; ok && conn != 0 && cur != conn {
+		h.log.Info("ignoring a late disconnect for an earlier connection of a prompt renderer", "renderer", key)
+		return
+	}
+	delete(h.live, key)
+	h.rendererGoneLocked(key, h.clock.Now(), ob)
 }
 
 // RendererDisconnected starts the grace period for open decisions on that
 // renderer; non-decision prompts wait for a replay. A NeverReask prompt on
 // it is lost at once: there is nothing to wait for, since it is never moved.
 func (h *Host) RendererDisconnected(sessionKey string) {
-	ob := &outbox{}
-	h.mu.Lock()
-	defer h.unlockAndFlush(ob)
-	now := h.clock.Now()
+	h.rendererLeft(sessionKey, 0)
+}
+
+// rendererGoneLocked is RendererDisconnected's work. Called with mu held.
+func (h *Host) rendererGoneLocked(sessionKey string, now time.Time, ob *outbox) {
 	delete(h.connected, sessionKey)
 	for _, rec := range h.sortedRecords() {
 		for _, pl := range rec.placements {

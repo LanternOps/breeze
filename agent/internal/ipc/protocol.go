@@ -242,17 +242,22 @@ func (c *Conn) Send(env *Envelope) error {
 	// stale deadline onto any later write.
 	defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
 
-	header := make([]byte, 4)
-	binary.BigEndian.PutUint32(header, uint32(len(data)))
+	// Header and body go out as ONE write (#12808). Two writes put the header
+	// on a named pipe on its own, and a peer that reads it apart from the
+	// body is exposed to any reader bug that drops a half-read frame — Assist
+	// lost the header that way when a timer cancelled it between its header
+	// read and its body read. c.mu already keeps frames from interleaving; this keeps each one
+	// whole in a single delivery wherever the transport allows. The copy is
+	// bounded by MaxMessageSize, like the marshal above.
+	frame := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(frame, uint32(len(data)))
+	copy(frame[4:], data)
 
 	// A Write that errors (deadline exceeded, reset) may have already put a
 	// partial frame on the wire, so poison the Conn — subsequent Sends fail
 	// fast rather than piling more frames onto a desynced stream.
-	if _, err := c.conn.Write(header); err != nil {
-		return c.poison(fmt.Errorf("ipc: write header: %w", err))
-	}
-	if _, err := c.conn.Write(data); err != nil {
-		return c.poison(fmt.Errorf("ipc: write payload: %w", err))
+	if _, err := c.conn.Write(frame); err != nil {
+		return c.poison(fmt.Errorf("ipc: write frame: %w", err))
 	}
 	return nil
 }
@@ -451,6 +456,16 @@ func (c *Conn) beginFrame() error {
 		return c.recvErr
 	}
 	return nil
+}
+
+// PartialFrame reports whether Recv holds part of a frame: some header or
+// body bytes read, the rest not yet. After a Recv error it tells a peer that
+// hung up between frames from one cut inside a frame, which the error alone
+// cannot when the cut falls in a later, resumed Recv (io.ReadFull then sees
+// zero bytes and returns io.EOF). Call it only from the goroutine that calls
+// Recv.
+func (c *Conn) PartialFrame() bool {
+	return c.rhdrN > 0 || c.rbody != nil
 }
 
 // frameReadError wraps a read failure. A timeout while a frame deadline is

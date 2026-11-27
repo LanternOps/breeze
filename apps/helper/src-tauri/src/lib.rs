@@ -2874,6 +2874,7 @@ mod tests {
             ("ipc/caller_verify.rs", prod_of(include_str!("ipc/caller_verify.rs"))),
             ("ipc/chat.rs", prod_of(include_str!("ipc/chat.rs"))),
             ("ipc/client.rs", prod_of(include_str!("ipc/client.rs"))),
+            ("ipc/connection_loss.rs", prod_of(include_str!("ipc/connection_loss.rs"))),
             ("ipc/consent.rs", prod_of(include_str!("ipc/consent.rs"))),
             ("ipc/desktop.rs", prod_of(include_str!("ipc/desktop.rs"))),
             ("ipc/envelope.rs", prod_of(include_str!("ipc/envelope.rs"))),
