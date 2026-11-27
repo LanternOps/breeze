@@ -92,6 +92,9 @@ export async function describeEndpointActionsForRows(
  * The rows `lockAndRecheckEdrActionTarget` would count: open (queued /
  * submitted) per (endpoint, action), and successes inside the cooldown.
  * Endpoint ids come from rows the caller already read; RLS fences this read.
+ * Keyed by endpoint only: this list offers endpoint actions, whose dispatch
+ * lock is per (endpoint, action). Detection actions lock per detection and
+ * would need their own read if they ever appear in an availability list.
  */
 async function loadLedger(endpointIds: string[], now: Date): Promise<Map<string, EdrActionLedgerFact[]>> {
   const out = new Map<string, EdrActionLedgerFact[]>();

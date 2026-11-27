@@ -121,7 +121,12 @@ export async function fetchS1DeviceActive(orgId: string, deviceId: string): Prom
   return body?.data?.active === true;
 }
 
-export async function isolateDevice(orgId: string, deviceId: string, isolate: boolean): Promise<void> {
+export async function isolateDevice(
+  orgId: string,
+  deviceId: string,
+  isolate: boolean,
+  messages?: { success: string; error: string },
+): Promise<void> {
   await runAction({
     request: () =>
       fetchWithAuth('/s1/isolate', {
@@ -129,8 +134,10 @@ export async function isolateDevice(orgId: string, deviceId: string, isolate: bo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orgId, deviceIds: [deviceId], isolate }),
       }),
-    errorFallback: isolate ? 'Failed to isolate device' : 'Failed to remove isolation',
-    successMessage: isolate ? 'Device isolated' : 'Isolation removed',
+    errorFallback: messages?.error ?? (isolate ? 'Failed to isolate device' : 'Failed to remove isolation'),
+    // SentinelOne accepting the request is not the device being isolated
+    // (it may be offline): say "requested", never "isolated" (#12789).
+    successMessage: messages?.success ?? (isolate ? 'Isolation requested' : 'Isolation removal requested'),
   });
 }
 

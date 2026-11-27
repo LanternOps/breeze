@@ -98,6 +98,10 @@ describe('DeviceEdrPanel isolate', () => {
     // confirm modal
     fireEvent.click(await screen.findByTestId('edr-isolate-confirm'));
     await waitFor(() => expect(isolateBody).toEqual({ orgId: 'org-1', deviceIds: ['dev-1'], isolate: true }));
+    // #12789: SentinelOne accepting the request is not the device being isolated.
+    const { showToast } = await import('../shared/Toast');
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Isolation requested' })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Device isolated' }));
   });
 });
 

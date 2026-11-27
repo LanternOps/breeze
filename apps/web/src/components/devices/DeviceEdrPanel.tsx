@@ -113,7 +113,14 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   const doIsolate = async (isolate: boolean) => {
     setIsolating(true);
     try {
-      await isolateDevice(orgId, deviceId, isolate);
+      await isolateDevice(orgId, deviceId, isolate, {
+        success: isolate
+          ? t("deviceEdrPanel.isolationRequested")
+          : t("deviceEdrPanel.isolationRemovalRequested"),
+        error: isolate
+          ? t("deviceEdrPanel.failedToIsolateDevice")
+          : t("deviceEdrPanel.failedToRemoveIsolation"),
+      });
       await load();
     } catch (err) {
       handleActionError(

@@ -248,7 +248,8 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
         });
         // Breeze-generated fields only; vendor text never reaches the model.
         return JSON.stringify({
-          success: outcome.status !== 'failed' && !outcome.outcomeUnknown,
+          // #12789: an accepted-but-unconfirmed isolate is not a success yet.
+          success: outcome.status !== 'failed' && !outcome.outcomeUnknown && !outcome.awaitingConfirmation,
           actionId: outcome.actionId,
           status: outcome.status,
           outcomeUnknown: outcome.outcomeUnknown,

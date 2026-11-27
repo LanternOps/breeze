@@ -632,6 +632,32 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     withDbAccessContext(dbAccessContextFromAuth(auth), () =>
       listEdrActions({ auth, allowedDeviceIds: null, allowedSiteIds: null }, { ...q, limit: 50, offset: 0 }));
 
+  const execPerms = { permissions: [{ resource: 'devices', action: 'read' }, { resource: 'devices', action: 'execute' }], allowedSiteIds: null } as never;
+  const listActionsFor = async (t: Tenant, auth: AuthContext) => {
+    const [endpointRow] = Array.from(await admin().execute(sql`
+      SELECT id, org_id AS "orgId", connection_id AS "connectionId", tenant_id AS "tenantId", vendor_endpoint_id AS "vendorEndpointId",
+             os_platform AS "osPlatform", isolation_state AS "isolationState", online, breeze_device_id AS "breezeDeviceId"
+        FROM edr_endpoints WHERE id = ${t.endpoint.id}`)) as never[];
+    const out = await withDbAccessContext(dbAccessContextFromAuth(auth), () => describeEndpointActionsForRows(auth, execPerms, [endpointRow!]));
+    return out.get(t.endpoint.id)!;
+  };
+
+  runDb('item 5: an accepted un-isolate is confirmed only by a later sync showing not_isolated', async () => {
+    const a = await seedEdrTenant('accept-release');
+    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'isolated' WHERE id = ${a.endpoint.id}`);
+    const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'unisolate' });
+    expect(out).toMatchObject({ status: 'submitted', awaitingConfirmation: true });
+    // The list says it is awaiting confirmation, and dispatch refuses a second release.
+    expect((await listActionsFor(a, partnerAuth(a))).find((x) => x.action === 'unisolate'))
+      .toMatchObject({ available: false, reason: expect.stringMatching(/waiting for the endpoint to confirm/) });
+    // A fresh sync still showing the endpoint isolated does not confirm a release.
+    await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = now() + interval '1 second' WHERE id = ${a.tenant.id}`);
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
+    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'not_isolated' WHERE id = ${a.endpoint.id}`);
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 1 });
+    expect((await rowOf(out.actionId)).status).toBe('succeeded');
+  });
+
   runDb('item 5: an accepted isolate stays submitted until an inventory sync AFTER it shows the endpoint isolated', async () => {
     const a = await seedEdrTenant('accept');
     const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'isolate' });
@@ -706,6 +732,30 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     expect(foreign.requestedByName).toBeNull();
     // Nothing of org A leaks to partner B.
     expect((await listAs(partnerAuth(b))).rows.map((r) => r.id)).not.toContain(out.actionId);
+
+    // An org-scope caller sees the rows of its org; a requester it cannot see
+    // under the users RLS (another partner's user) still reads as no name.
+    const orgUser = await createUser({ partnerId: a.partner.id, orgId: a.org.id, email: `edr-org-${randomUUID()}@example.com`, name: 'Org Viewer' });
+    const orgAuth = {
+      principal: { kind: 'user_session' },
+      user: { id: orgUser.id, email: 'org@example.com', name: 'Org Viewer', isPlatformAdmin: false },
+      token: { mfa: true },
+      scope: 'organization',
+      partnerId: a.partner.id,
+      orgId: a.org.id,
+      accessibleOrgIds: [a.org.id],
+      canAccessOrg: (id: string) => id === a.org.id,
+      orgCondition: () => undefined,
+    } as unknown as AuthContext;
+    const asOrg = (await listAs(orgAuth)).rows;
+    expect(asOrg.find((r) => r.id === foreign.id)).toMatchObject({ requestedBy: b.user.id, requestedByName: null });
+    expect(asOrg.find((r) => r.id === out.actionId)!.vendorReason).toBe(reason);
+
+    // A deleted requester: requested_by is set null by the FK, and no id or name is shown.
+    const gone = await createUser({ partnerId: a.partner.id, orgId: a.org.id, email: `edr-gone-${randomUUID()}@example.com`, name: 'Gone User' });
+    const goneRow = await insertActionAsSystem(a, { action: 'unisolate', status: 'failed', requestedBy: gone.id });
+    await admin().execute(sql`DELETE FROM users WHERE id = ${gone.id}`);
+    expect((await listAs(partnerAuth(a))).rows.find((r) => r.id === goneRow.id)).toMatchObject({ requestedBy: null, requestedByName: null });
   });
 
   runDb('item 6: a tenant the vendor no longer lists refuses dispatch (no row) and offers no action', async () => {
@@ -717,6 +767,10 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     expect((err as EdrActionError).code).toBe('tenant_missing');
     expect(await countActions(a.org.id)).toBe(0);
     expect(fake.calls).toBe(0);
+    // The real tenant read carries vendor_missing_since into the list.
+    for (const x of await listActionsFor(a, partnerAuth(a))) {
+      expect(x).toMatchObject({ available: false, reason: expect.stringMatching(/no longer lists this company/) });
+    }
   });
 
   runDb('item 4: availability reflects in-flight and outcome-unknown rows read under the caller\'s RLS', async () => {

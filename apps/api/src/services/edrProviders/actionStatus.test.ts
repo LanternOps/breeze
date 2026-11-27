@@ -257,6 +257,22 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
       expect(h.state.updates.at(-1)!.set).toMatchObject({ status: 'failed', error: 'vendor_task_failed' });
     });
 
+    it('a sync that finished at exactly the submission instant does not confirm (strictly after)', async () => {
+      const at = ago(10 * 60_000);
+      arrangeConfirm(submitted('isolate', { submittedAt: at }), { syncedAgo: 10 * 60_000, isolationState: 'isolated' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+    });
+
+    it('a detached submitted isolate never confirms from inventory; it only gets the give-up', async () => {
+      arrangeConfirm(submitted('isolate', { detachedAt: ago(60_000), tenantId: null, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS - 1000) }),
+        { syncedAgo: 60_000, isolationState: 'isolated' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+      arrangeConfirm(submitted('isolate', { detachedAt: ago(60_000), tenantId: null, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000) }),
+        { syncedAgo: 60_000, isolationState: 'isolated' });
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
+      expect(h.state.updates.at(-1)!.set).toMatchObject({ status: 'failed', error: 'detached_unsettled' });
+    });
+
     it('an endpoint the inventory pruned (no row) cannot confirm; it only times out', async () => {
       arrangeConfirm(submitted('isolate', { endpointId: null }), { syncedAgo: 60_000, isolationState: null });
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);

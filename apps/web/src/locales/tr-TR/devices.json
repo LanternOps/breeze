@@ -1028,7 +1028,9 @@
     "cancel": "İptal",
     "isolate": "İzole",
     "managedSecurityAgents": "Yönetilen güvenlik aracıları",
-    "since": "{{date}} tarihinden beri"
+    "since": "{{date}} tarihinden beri",
+    "isolationRequested": "Yalıtım istendi",
+    "isolationRemovalRequested": "Yalıtımın kaldırılması istendi"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Etkili yapılandırma yükleniyor...",

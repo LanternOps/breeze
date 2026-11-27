@@ -1028,7 +1028,9 @@
     "cancel": "Annulla",
     "isolate": "Isola",
     "managedSecurityAgents": "Agent di sicurezza gestiti",
-    "since": "Dal {{date}}"
+    "since": "Dal {{date}}",
+    "isolationRequested": "Isolamento richiesto",
+    "isolationRemovalRequested": "Rimozione dell'isolamento richiesta"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Caricamento della configurazione effettiva...",

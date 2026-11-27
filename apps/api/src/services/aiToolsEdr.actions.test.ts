@@ -237,7 +237,7 @@ describe('edr_endpoint_action — handler', () => {
     const out = await run({ deviceId: DEVICE, action: 'isolate' },
       auth({ user: { id: approver, email: 'x', name: 'x', isPlatformAdmin: false } }),
       { actionIntentId: 'intent-9', approverRelease: { approverUserId: approver } } as ToolExecutionContext);
-    expect(out).toMatchObject({ actionId: 'a', status: 'submitted', awaitingConfirmation: true });
+    expect(out).toMatchObject({ success: false, actionId: 'a', status: 'submitted', awaitingConfirmation: true });
     expect(String(out.note)).toMatch(/not confirmed/i);
     expect(String(out.note)).toMatch(/do not (report|tell)/i);
   });
