@@ -2,20 +2,45 @@ package procoutput
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
+// PowerShell is started with -Command so the UTF-8 bootstrap runs first.
+// Under -Command the process exit code is only 0 or 1 ($? of the last
+// statement), so the line ends by passing on the code the script gave to
+// `exit` (#12798). The whole line is pinned, quoting included.
 func TestWindowsScriptCommandPowerShellQuotesPath(t *testing.T) {
 	path := "C:\\Users\\Se\u00e1n O\u2019Brien\\AppData\\Local\\Temp\\breeze-scripts-1\\breeze_2.ps1"
+	for _, shell := range []string{"powershell.exe", "PWSH.EXE"} {
+		got := windowsScriptCommand(shell, []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File"}, path)
+		want := ScriptCommand{Name: shell, Args: []string{
+			"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+			"[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+				"& " + psscript.Quote(path) + "; " +
+				"if (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }",
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s:\ngot  %#v\nwant %#v", shell, got, want)
+		}
+	}
+}
+
+// A single quote in the path is doubled inside the PowerShell literal, so
+// the path cannot end the literal early and run the rest as code.
+func TestWindowsScriptCommandPowerShellPathWithSingleQuote(t *testing.T) {
+	path := `C:\Users\it's me\AppData\Local\Temp\breeze-scripts-1\breeze_2.ps1`
 	got := windowsScriptCommand("powershell.exe", []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File"}, path)
-	want := ScriptCommand{Name: "powershell.exe", Args: []string{
-		"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-		powershellUTF8Bootstrap + "& " + psscript.Quote(path),
-	}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v\nwant %#v", got, want)
+	if len(got.Args) != 5 {
+		t.Fatalf("args = %#v", got.Args)
+	}
+	if want := `& 'C:\Users\it''s me\AppData\Local\Temp\breeze-scripts-1\breeze_2.ps1'; `; !strings.Contains(got.Args[4], want) {
+		t.Fatalf("command %q does not contain %q", got.Args[4], want)
+	}
+	if got.CmdLine != "" || got.Env != nil {
+		t.Fatalf("PowerShell launch must not set CmdLine or Env: %#v", got)
 	}
 }
 

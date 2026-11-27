@@ -9,6 +9,24 @@ import (
 
 const powershellUTF8Bootstrap = "[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
 
+// powershellExitCodeSuffix follows the call to the script on the -Command
+// line. Under -Command the process exit code is only 0 or 1: it is $? of the
+// last statement, so `exit 3010` in the script reached the agent as 1
+// (#12798). After `& 'script'`, $? is false when the script ran `exit` with a
+// non-zero code, and $LASTEXITCODE then holds that code, so it is passed on.
+// The result matches powershell -File for the same script:
+//
+//   - `exit N` reports N.
+//   - A script that ends without `exit` reports 0, even when its last native
+//     command failed. $? is true then, and a stale $LASTEXITCODE from a
+//     native command is not reported.
+//   - A thrown or other terminating error never reaches this suffix; the host
+//     reports 1 for it.
+//
+// When $? is false and $LASTEXITCODE is 0 or not set, the run still reports
+// 1, so no outcome that was a failure before this suffix becomes a success.
+const powershellExitCodeSuffix = "; if (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }"
+
 // ScriptPathEnv is the environment variable a cmd.exe command line reads the
 // script path from.
 const ScriptPathEnv = "BREEZE_SCRIPT_FILE"
@@ -26,13 +44,15 @@ type ScriptCommand struct {
 }
 
 // windowsScriptCommand adjusts how a script is started on Windows so its
-// output is UTF-8 before it is captured.
+// output is UTF-8 before it is captured. PowerShell is started with -Command
+// rather than -File so the bootstrap can run first; powershellExitCodeSuffix
+// keeps the script's own exit code.
 func windowsScriptCommand(shellCmd string, shellArgs []string, scriptPath string) ScriptCommand {
 	switch strings.ToLower(filepath.Base(shellCmd)) {
 	case "powershell.exe", "pwsh.exe":
 		return ScriptCommand{Name: shellCmd, Args: []string{
 			"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-			powershellUTF8Bootstrap + "& " + psscript.Quote(scriptPath),
+			powershellUTF8Bootstrap + "& " + psscript.Quote(scriptPath) + powershellExitCodeSuffix,
 		}}
 	case "cmd.exe":
 		return cmdScriptCommand(shellCmd, shellArgs, scriptPath)
