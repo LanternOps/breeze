@@ -7,11 +7,11 @@
  *     (aiTools.descriptionBudget.contract.test.ts) is model-facing text, and
  *     `manage_tickets` showed approvers its comma-joined action enum.
  *  2. The pair has its own impact text: an IMPACT_SUMMARY_BUILDERS line, or,
- *     for a single-action tool, its catalog sentence. Pairs that had neither
- *     when this test was written get the generic line naming the tool and
- *     action and sit in IMPACT_SUMMARY_BASELINE, which is FROZEN and
- *     shrink-only: never add an entry. A new approval-gated action ships
- *     with its own impact text.
+ *     for a single-action tool, its catalog sentence. Pairs called with only
+ *     their action key, as this test calls them, that got the generic line
+ *     when this test was written sit in IMPACT_SUMMARY_BASELINE, which is
+ *     FROZEN and shrink-only: never add an entry. A new approval-gated action
+ *     ships with its own impact text.
  *
  * Input-aware Tier 3 (TIER3_INPUT_AWARE_ACTIONS) is classified on argument
  * content, so each such pair is checked with a sample that escalates it.
@@ -47,8 +47,11 @@ const INPUT_AWARE_SAMPLES: Record<string, Record<string, unknown>> = {
 
 /**
  * Frozen on 2026-11-27 (#12774): 256 approval-gated actions on 81 tools
- * with no impact text of their own; each shows the generic line. Shrink-only:
- * delete an action when its builder line lands. Never add one.
+ * that show the generic line when called with only the action key. Most have
+ * no builder; a few have one that needs more arguments (manage_services
+ * restart without serviceName, manage_processes kill without a process).
+ * Shrink-only: delete an action when it gets a line from its key alone.
+ * Never add one.
  */
 const IMPACT_SUMMARY_BASELINE: Readonly<Record<string, readonly string[]>> = {
   apply_cis_remediation: ['apply', 'rollback'],

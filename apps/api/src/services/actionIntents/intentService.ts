@@ -595,6 +595,18 @@ type ImpactSummaryBuilder = (input: Record<string, unknown>, ctx: ImpactSummaryC
 /** A field key safe to name in the impact line: caller input, so anything else is only counted. */
 const NAMEABLE_FIELD_KEY = /^[A-Za-z][A-Za-z0-9]{0,40}$/;
 
+// Caller-supplied values echoed into the line must not be able to carry a
+// sentence of their own ("…". Nothing is emailed. "…"): a name has no quotes
+// or sentence punctuation, an email address has the address shape. A value
+// of any other shape is left out; the approver still sees it in the arguments.
+const ECHOABLE_NAME = /^[\p{L}\p{N}][\p{L}\p{N} '\-&]{0,59}$/u;
+const ECHOABLE_EMAIL = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}$/;
+
+function echoable(value: unknown, shape: RegExp): string | null {
+  const text = nonEmptyString(value);
+  return text && shape.test(text) ? text : null;
+}
+
 /** `categoryId` → `category`, `ticketType` → `ticket type`. Display only. */
 function fieldWords(key: string): string {
   return key.replace(/Id$/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
@@ -627,15 +639,17 @@ function describeTicketFieldUpdate(fieldsValue: unknown): string | null {
   }
   const parts: string[] = [];
   if (Object.hasOwn(fields, 'submitterEmail')) {
-    const email = nonEmptyString(fields.submitterEmail);
-    parts.push(email ? `email ${truncate(email)}` : 'email');
+    const email = echoable(fields.submitterEmail, ECHOABLE_EMAIL);
+    parts.push(email ? `email ${email}` : 'email');
   }
   if (Object.hasOwn(fields, 'submitterName')) {
-    const name = nonEmptyString(fields.submitterName);
-    parts.push(name ? `name "${truncate(name)}"` : 'name');
+    const name = echoable(fields.submitterName, ECHOABLE_NAME);
+    parts.push(name ? `name "${name}"` : 'name');
   }
   if (Object.hasOwn(fields, 'submittedBy')) parts.push('portal user');
-  const head = `Changes the ticket's requester (${parts.join(', ')}). Later public replies and the resolved email go to the updated requester.`;
+  // A name-only edit leaves the address that requester email goes to unchanged.
+  const redirectsEmail = Object.hasOwn(fields, 'submitterEmail') || Object.hasOwn(fields, 'submittedBy');
+  const head = `Changes the ticket's requester (${parts.join(', ')}).${redirectsEmail ? ' Later public replies and the resolved email go to the updated requester.' : ''}`;
   return others.length > 0 ? `${head} Also updates the ticket's ${describeFieldList(others)}.` : head;
 }
 
@@ -762,32 +776,37 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, ImpactSummaryBuilder> = {
         return 'Deletes a comment from the ticket, so staff and, for a public comment, the requester no longer see it. No email is sent; its text is kept in the audit log.';
       // moveTicketOrg: same partner only; re-stamps the ticket's child rows,
       // clears device_id and requester_contact_id, deletes every ticket_links
-      // row touching it.
+      // row touching it, and revalidateTicketAssignee clears an assignee who
+      // is not eligible in the target org.
       case 'move_org':
-        return 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, and its links to other tickets are removed.';
+        return 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.';
       // mergeTickets (#8972): no undo (D4); the source is closed as a
       // tombstone; notifyRequester defaults to "the requesters differ" (D6).
       case 'merge': {
         const notify = input.notifyRequester === true
-          ? 'The requester of the merged ticket is emailed.'
+          ? 'The requester of the ticket being merged is emailed.'
           : input.notifyRequester === false
             ? 'No email is sent to its requester.'
             : 'Its requester is emailed if the two tickets have different requesters.';
         return `Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. ${notify}`;
       }
       // Same expression the handler writes (isPublic === true). An agent run's
-      // release goes through addAiTriageNote, which is always internal.
+      // release goes through addAiTriageNote, which is always internal. The
+      // requester email is a notice (the reply text only with the partner's
+      // fullMessageReply), and none goes out without a submitterEmail.
       case 'comment':
         return input.isPublic === true && !ctx.agentRun
-          ? 'Posts a public reply on the ticket. The requester can see it and is emailed a copy.'
+          ? 'Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed a notice of it.'
           : 'Adds an internal note to the ticket. The requester does not see it.';
       // ticketNotifyWorker emails the requester on a change to resolved; a
       // custom statusName maps to a core status only in the database.
       case 'update_status': {
         const status = nonEmptyString(input.status);
-        const statusName = nonEmptyString(input.statusName);
         if (status === 'resolved') return 'Resolves the ticket and emails the requester, including the resolution note if one is given.';
-        if (statusName) return `Sets the ticket to the custom status "${truncate(statusName)}". If that status counts as resolved, the requester is emailed.`;
+        if (nonEmptyString(input.statusName)) {
+          const statusName = echoable(input.statusName, ECHOABLE_NAME);
+          return `Sets the ticket to ${statusName ? `the custom status "${statusName}"` : 'a custom status'}. If that status counts as resolved, the requester is emailed.`;
+        }
         if (status && /^[a-z_]{1,32}$/.test(status)) return `Changes the ticket status to ${status.replace(/_/g, ' ')}.`;
         return null;
       }

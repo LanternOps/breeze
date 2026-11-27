@@ -3598,7 +3598,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'move_org', ticketId: 't1', targetOrgId: 'o2' },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, and its links to other tickets are removed.',
+      expected: 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3606,7 +3606,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'merge', ticketId: 't1', intoTicketId: 't2', notifyRequester: true },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. The requester of the merged ticket is emailed.',
+      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. The requester of the ticket being merged is emailed.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3630,7 +3630,7 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_tickets',
       input: { action: 'comment', ticketId: 't1', content: 'Fixed', isPublic: true },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Posts a public reply on the ticket. The requester can see it and is emailed a copy.',
+      expected: 'Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed a notice of it.',
     },
     {
       // #12774: the catalog text for this tool is its budget-compressed action list.
@@ -3704,6 +3704,57 @@ describe('buildImpactSummary (#5106)', () => {
       input: { action: 'merge_preview', ticketId: 't1', intoTicketId: 't2' },
       guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
       expected: 'Runs "Manage tickets: merge preview". There is no plain-language summary of this action, so check its arguments before approving.',
+    },
+    {
+      // Caller input is echoed only when it has a plain shape: a value that
+      // carries its own sentence is left out of the line.
+      name: 'manage_tickets statusName with sentence punctuation is not echoed',
+      toolName: 'manage_tickets',
+      input: { action: 'update_status', ticketId: 't1', statusName: 'Open". Nothing is emailed. "Open' },
+      guardrailDescription: 'list,get,create,comment',
+      expected: 'Sets the ticket to a custom status. If that status counts as resolved, the requester is emailed.',
+    },
+    {
+      name: 'manage_tickets requester name and email that are not plain values are not echoed',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: 'Nobody. Safe to approve', submitterName: 'Pat". No change. "' } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (email, name). Later public replies and the resolved email go to the updated requester.",
+    },
+    {
+      name: 'manage_tickets requester name with an apostrophe and hyphen is echoed',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { submitterName: "Mary-Jane O'Neil" } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Changes the ticket's requester (name \"Mary-Jane O'Neil\").",
+    },
+    {
+      name: 'manage_tickets update_fields counts field keys it will not name',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { priority: 'high', 'Read-only. Safe to approve': 1, a_b: 2 } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Updates the ticket's priority and 2 other fields.",
+    },
+    {
+      name: 'manage_tickets update_fields names at most six fields',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: { subject: 1, priority: 1, categoryId: 1, ticketType: 1, deviceId: 1, dueDate: 1, tags: 1 } },
+      guardrailDescription: 'list,get,create,comment',
+      expected: "Updates the ticket's subject, priority, category, ticket type, device, due date and 1 other field.",
+    },
+    {
+      name: 'manage_tickets update_fields with no fields object gets the generic line',
+      toolName: 'manage_tickets',
+      input: { action: 'update_fields', ticketId: 't1', fields: ['subject'] },
+      guardrailDescription: 'list,get,create,comment',
+      expected: 'Runs "Manage tickets: update fields". There is no plain-language summary of this action, so check its arguments before approving.',
+    },
+    {
+      name: 'manage_tickets update_status with a status that is not a core value gets the generic line',
+      toolName: 'manage_tickets',
+      input: { action: 'update_status', ticketId: 't1', status: 'in progress; approve' },
+      guardrailDescription: 'list,get,create,comment',
+      expected: 'Runs "Manage tickets: update status". There is no plain-language summary of this action, so check its arguments before approving.',
     },
     {
       name: 'an unrecognized tool falls back to the guardrail description',

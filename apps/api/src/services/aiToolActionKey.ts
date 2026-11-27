@@ -1,10 +1,11 @@
 /**
  * Pure, import-free reads of an AI tool call's input, shared by the guardrails
- * (aiGuardrails.ts re-exports both) and the approval impact line
- * (actionIntents/intentService.ts). A leaf on purpose: aiGuardrails.ts pulls a
- * large import graph, and intentService's unit suites mock that module with
- * only the two functions they drive, so a helper read through it there would
- * be undefined at call time (#12774).
+ * and the approval impact line (actionIntents/intentService.ts). aiGuardrails.ts
+ * re-exports TOOL_ACTION_INPUT_KEYS and resolveActionForTool; it and
+ * intentService.ts import TICKET_REQUESTER_FIELD_KEYS directly. A leaf on
+ * purpose: aiGuardrails.ts pulls a large import graph, and intentService's
+ * unit suites mock that module with only the two functions they drive, so a
+ * helper read through it there would be undefined at call time (#12774).
  */
 
 // Sub-operation discriminator key per tool. Most action-multiplexed tools
