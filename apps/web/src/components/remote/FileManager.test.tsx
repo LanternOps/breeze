@@ -448,6 +448,48 @@ describe('FileManager directory load errors', () => {
     expect(screen.queryByText('The device is offline.')).not.toBeInTheDocument();
   });
 
+  it("keeps the agent's own reason for a folder it could not open instead of the generic unreachable text (#12800)", async () => {
+    const reason = 'failed to open directory: open C:\\does-not-exist: The system cannot find the file specified.';
+    mockFetchWithAuth.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: reason, code: 'AGENT_EXECUTION_FAILED' }),
+    });
+
+    render(
+      <FileManager
+        deviceId="device-1"
+        deviceHostname="workstation-1"
+        initialPath="C:\\does-not-exist"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(reason)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Unable to reach the device's agent")).not.toBeInTheDocument();
+  });
+
+  it('keeps the translation for an agent failure code that carries no reason text', async () => {
+    mockFetchWithAuth.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ code: 'AGENT_EXECUTION_FAILED' }),
+    });
+
+    render(
+      <FileManager
+        deviceId="device-1"
+        deviceHostname="workstation-1"
+        initialPath="/"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Unable to reach the device's agent")).toBeInTheDocument();
+    });
+  });
+
   it('falls back to the raw error string when the code has no translation', async () => {
     mockFetchWithAuth.mockResolvedValue({
       ok: false,
