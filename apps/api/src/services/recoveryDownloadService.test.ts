@@ -762,11 +762,17 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       const { sql } = await import('drizzle-orm');
       const dialect = new PgDialect();
       // Membership reads the snapshot's entries through the read layer
-      // (#11736), scoped to this snapshot in the derived table itself.
+      // (#11736), scoped to this snapshot in the derived table itself: its
+      // own rows and, for a delta snapshot, its checkpoint's entries
+      // (#11736 step 2). Every bound value is this snapshot's id.
       const source = dialect.sqlToQuery(sql`select 1 from ${froms[2] as any}`);
-      expect(source.sql.toLowerCase().replace(/\s+/g, ' ')).toContain('"backup_snapshot_files"."snapshot_db_id" = $');
+      const sourceText = source.sql.toLowerCase().replace(/\s+/g, ' ');
+      expect(sourceText).toContain('"sie_union"."snapshot_db_id" = $');
+      expect(sourceText).toContain('"backup_snapshot_files" "sie_file"');
+      expect(sourceText).toContain('"backup_tree_checkpoint_entries" "sie_entry"');
       expect(source.sql).toContain('"snapshot_index_entries"');
-      expect(source.params).toEqual(['snapshot-db-current']);
+      expect(source.params.length).toBeGreaterThan(0);
+      expect(new Set(source.params)).toEqual(new Set(['snapshot-db-current']));
       const query = dialect.sqlToQuery(wheres[2] as any);
       const text = query.sql.toLowerCase().replace(/\s+/g, ' ');
       expect(text).toContain('"snapshot_index_entries"."backup_path" = $');

@@ -28,6 +28,36 @@ import { loadOriginKeyRootRows, type KeyRootPair } from './backupOriginKeyRoots'
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
 
+type Executor = Pick<typeof db, 'select'>;
+
+/**
+ * Which of `keys` are objects of the snapshot's file index, for a brokered
+ * read (filterIndexedKeys). The index's state is re-read in the same
+ * statement as its entries: entries of an index being rebuilt (status
+ * 'hydrating') or rebuilt from other bytes since the caller checked it never
+ * count. Exported, unexecuted, so a test can EXPLAIN this exact statement
+ * (backupSnapshotIndexPlans.integration.test.ts).
+ */
+export function indexedKeysQuery(
+  snapshotDbId: string,
+  keys: string[],
+  boundManifestSha256: string | null,
+  executor: Executor = db,
+) {
+  const entries = snapshotIndexEntries(snapshotDbId);
+  return executor
+    .select({ backupPath: entries.backupPath })
+    .from(entries)
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+    .where(and(
+      inArray(entries.backupPath, keys),
+      // A content-less row (#11235) names no object, whatever key is asked.
+      ne(entries.backupPath, ''),
+      boundIndexCondition(boundManifestSha256),
+    ));
+}
+
 // Built lazily: some unit suites mock '../db/schema' with a partial table set,
 // and this module is on the command-delivery import path.
 const snapshotColumns = () => ({
@@ -200,21 +230,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
 
   async filterIndexedKeys(snapshotDbId, keys, boundManifestSha256) {
     if (keys.length === 0) return new Set();
-    // The index's state is re-read in the same statement as its rows: rows of
-    // an index being rebuilt (status 'hydrating') or rebuilt from other bytes
-    // since the caller checked it never count.
-    const entries = snapshotIndexEntries(snapshotDbId);
-    const rows = await db
-      .select({ backupPath: entries.backupPath })
-      .from(entries)
-      .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
-      .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
-      .where(and(
-        inArray(entries.backupPath, keys),
-        // A content-less row (#11235) names no object, whatever key is asked.
-        ne(entries.backupPath, ''),
-        boundIndexCondition(boundManifestSha256),
-      ));
+    const rows = await indexedKeysQuery(snapshotDbId, keys, boundManifestSha256);
     return new Set(rows.map((r) => r.backupPath));
   },
 

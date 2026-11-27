@@ -27,6 +27,7 @@ import {
   STATISTICS_REFRESH_MIN_ROWS,
 } from '../../services/backupSnapshotFileIndexStatistics';
 import { insertSnapshotRow, orgContext, seedWriteTenant } from './backupWriteFixtures';
+import { flattenPlan, scansOf, type PlanNode } from './helpers/backupIndexFixtures';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -213,7 +214,13 @@ describe('hydration refreshes statistics after a large publish (#11209)', () => 
     expect(freshEstimate).toBeGreaterThan(rowCount / 2);
     expect(freshPlan).toContain('"Index Name":"backup_snapshot_files_snapshot_source_idx"');
     expect(freshPlan).toContain('"Node Type":"Index Scan"');
-    expect(freshPlan).not.toContain('"Node Type":"Sort"');
+    // No Sort over this snapshot's rows: they come back ordered from the
+    // index. The read layer's checkpoint leg (#11736 step 2) is in the plan
+    // too, possibly under a Sort of its own; for a rows snapshot its one-time
+    // gate is false, so it is never executed.
+    const nodes = flattenPlan((JSON.parse(freshPlan) as Array<{ Plan: PlanNode }>)[0]!.Plan);
+    const rowScans = scansOf(nodes, 'sie_file');
+    expect(rowScans.map((n) => [n['Index Name'], n.underSort])).toEqual([['backup_snapshot_files_snapshot_source_idx', false]]);
   });
 });
 
