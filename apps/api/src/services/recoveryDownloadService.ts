@@ -12,7 +12,7 @@ import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestati
 import { resolveSnapshotPhysicalKey, snapshotKeyRootOf } from './backupKeyLayout';
 import { loadOriginKeyRoots } from './backupOriginKeyRoots';
 import { boundIndexCondition, indexMatchesAttestation } from './backupRestoreIntegrity';
-import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
+import { disableJitForIndexReads, snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
@@ -119,6 +119,7 @@ export async function authorizeExternalReference(
     return refuse('file index does not match the snapshot attestation');
   }
 
+  await disableJitForIndexReads(dbHandle);
   const [membership] = await referenceMembershipQuery(args.snapshotDbId, args.key, boundDigest, dbHandle);
   if (!membership) {
     return refuse('key is not a member of the snapshot file index');

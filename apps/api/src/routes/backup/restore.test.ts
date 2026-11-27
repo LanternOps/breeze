@@ -36,6 +36,8 @@ const transactionMock = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => f
 
 vi.mock('../../db', () => ({
   db: {
+    // disableJitForIndexReads before an index read (#12741).
+    execute: async () => [],
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),

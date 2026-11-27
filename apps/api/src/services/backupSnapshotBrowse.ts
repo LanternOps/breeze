@@ -5,7 +5,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { readableIndexCondition } from './backupRestoreIntegrity';
-import { snapshotIndexEntries, type SnapshotIndexEntries } from './backupSnapshotIndexEntries';
+import { disableJitForIndexReads, snapshotIndexEntries, type SnapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { createSelectionResolver, normalizeSnapshotPath, type SelectedSnapshotPathsResolution } from './backupSelectedPaths';
 import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
 
@@ -58,6 +58,8 @@ async function withStatementTimeout<T>(boundMs: number, query: (tx: Executor) =>
   try {
     return await db.transaction(async (tx) => {
       const priorMs = await tightenStatementTimeout(tx, boundMs);
+      // Every query run here reads the file index.
+      await disableJitForIndexReads(tx);
       const result = await query(tx);
       if (lockTimeoutWasChanged(priorMs, boundMs)) {
         await tx.execute(sql`SELECT set_config('statement_timeout', ${`${priorMs}ms`}, true)`);

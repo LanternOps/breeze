@@ -55,6 +55,8 @@ let authState = {
 
 vi.mock('../../db', () => ({
   db: {
+    // disableJitForIndexReads before an index read (#12741).
+    execute: async () => [],
     select: (...args: unknown[]) => selectMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
