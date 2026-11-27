@@ -791,6 +791,61 @@ describe("binarySync", () => {
         expect(set.signingKeyId).toBe("deploy-test-aaaaaaaa");
         expect(set.releaseManifest).toBe(insertCalls[0]!.releaseManifest);
       });
+
+      // Signing sits OUTSIDE the backfill's per-target catch: a deployment-wide
+      // signing fault must reach ensureCurrentVersionRegistered's catch (one
+      // "Failed to auto-sync" line) rather than be logged as one target's
+      // upsert failure, and must never fall back to writing the raw row.
+      it("a signing failure in the boot backfill writes nothing and is logged as a sync failure", async () => {
+        process.env.BINARY_GITHUB_REPOSITORY = repo;
+        process.env.BINARY_SOURCE = "github";
+        process.env.APP_VERSION = "0.65.9";
+        dbMocks.select.mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                component: "agent",
+                platform: "linux",
+                architecture: "amd64",
+                isLatest: true,
+                edition: "self-host",
+              },
+            ]),
+          }),
+        });
+        const signed = makeSignedReleaseManifestMulti([backupAsset], "v0.65.9", repo);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (url: string) => {
+            if (url.includes("/releases/latest"))
+              return new Response(releaseJson(signed, []));
+            if (url.includes("/releases/tags/v0.65.9"))
+              return new Response(releaseJson(signed, [backupAsset]));
+            return manifestResponses(url, signed);
+          }),
+        );
+        manifestSigningMocks.signManifest.mockRejectedValue(
+          new Error("decryptSecret returned null for active signing key"),
+        );
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        try {
+          await syncBinaries();
+          expect(dbMocks.insertValues).not.toHaveBeenCalled();
+          const messages = errorSpy.mock.calls.map((args) => args.map(String).join(" "));
+          expect(
+            messages.some(
+              (m) =>
+                m.includes("Failed to auto-sync version 0.65.9") &&
+                m.includes("decryptSecret returned null"),
+            ),
+          ).toBe(true);
+          expect(messages.some((m) => m.includes("Failed to backfill backup version"))).toBe(false);
+        } finally {
+          errorSpy.mockRestore();
+        }
+      });
     });
   });
 
@@ -1889,7 +1944,13 @@ describe("binarySync", () => {
         // Mirrors the sibling agent row's isLatest instead of running
         // through upsertVersion's auto-promote demote/insert logic.
         isLatest: true,
+        // Official repository: the raw release manifest under the official
+        // key ID, never a deployment re-sign (#11028 must not change this).
+        signingKeyId: "release-artifact-manifest-ed25519",
+        releaseManifest: signed.manifest.toString("utf8"),
       });
+      expect(manifestSigningMocks.ensureActiveSigningKey).not.toHaveBeenCalled();
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
 
       // No demote UPDATE ran — the backfill never touches another row's
       // isLatest.
@@ -2990,6 +3051,56 @@ describe("binarySync", () => {
         (call: any[]) => (call[0] as { component: string }).component === "backup",
       );
       expect(backupInserts).toHaveLength(0);
+    });
+
+    // Backup shares the commit phase with every other component (#11028): a
+    // failed backup upsert is isolated from the agent row AND reported in
+    // `failed`, where the old standalone loop only logged it.
+    it("reports a failed backup upsert in `failed` without blocking the agent row", async () => {
+      const agentAsset = {
+        name: "breeze-agent-linux-amd64",
+        buffer: Buffer.from("trusted linux agent bytes"),
+      };
+      const backupAsset = {
+        name: "breeze-backup-linux-amd64",
+        buffer: Buffer.from("trusted linux backup bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([agentAsset, backupAsset]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([
+          [agentAsset.name, agentAsset.buffer],
+          [backupAsset.name, backupAsset.buffer],
+        ]),
+      );
+
+      const defaultTxImpl = async (fn: (tx: any) => Promise<void>) => fn(dbMocks.tx);
+      dbMocks.transaction.mockImplementation(async (fn: (tx: any) => Promise<void>) => {
+        const insertWrap = vi.fn((row: Record<string, unknown>) => {
+          if (row.component === "backup") {
+            throw new Error("simulated backup upsert failure");
+          }
+          return (dbMocks.insertValues as any)(row);
+        });
+        return fn({
+          update: dbMocks.tx.update,
+          insert: vi.fn(() => ({ values: insertWrap })),
+        });
+      });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        const result = await syncFromGitHub();
+        expect(result.synced).toEqual(["agent:linux/amd64"]);
+        expect(result.failed).toHaveLength(1);
+        expect(result.failed[0]).toMatch(
+          /^backup:linux\/amd64 \(simulated backup upsert failure\)$/,
+        );
+      } finally {
+        errorSpy.mockRestore();
+        dbMocks.transaction.mockImplementation(defaultTxImpl);
+      }
     });
   });
 
