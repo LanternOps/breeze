@@ -34,11 +34,13 @@ import (
 // (peakLiveHeapDuring), so memory held only until it returns counts too.
 // The measurement runs alone in a child process (this test binary, this
 // test only): live heap counts every goroutine's allocations, and earlier
-// tests in this package can leave goroutines running.
+// tests in this package can leave goroutines running. The child runs with
+// every collection stopping the world (stopTheWorldGODEBUG): see
+// peakLiveHeapDuring for why.
 func TestOriginalsGuard_MemoryFollowsSelection(t *testing.T) {
 	if os.Getenv(guardMemoryChildEnv) == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestOriginalsGuard_MemoryFollowsSelection$", "-test.v", "-test.count=1", "-test.timeout=5m")
-		cmd.Env = append(os.Environ(), guardMemoryChildEnv+"=1")
+		cmd.Env = append(os.Environ(), guardMemoryChildEnv+"=1", stopTheWorldGODEBUG(os.Getenv("GODEBUG")))
 		out, err := cmd.CombinedOutput()
 		t.Logf("isolated measurement:\n%s", out)
 		if err != nil {
@@ -48,6 +50,9 @@ func TestOriginalsGuard_MemoryFollowsSelection(t *testing.T) {
 			t.Fatal("the isolated measurement did not run")
 		}
 		return
+	}
+	if !gcStopsTheWorld(os.Getenv("GODEBUG")) {
+		t.Fatalf("the measurement needs every collection to stop the world; GODEBUG is %q", os.Getenv("GODEBUG"))
 	}
 
 	target := "/nonexistent-12638/srv"
@@ -75,7 +80,9 @@ func TestOriginalsGuard_MemoryFollowsSelection(t *testing.T) {
 	t.Logf("%s: peak live heap growth %d bytes for 10k originals, %d bytes for 200k", guardMemoryMeasuredMarker, small, large)
 	// 1 MiB over 190,000 more originals is under 6 bytes each: holding
 	// anything per original (a string, an 8-byte hash, a map entry) exceeds
-	// it, while collection timing moves the peak by well under that.
+	// it (8 bytes each measures 1.5 MB), while with every collection
+	// stopping the world the difference stayed under 160 KB in every run
+	// measured for #12816 (default, GOMAXPROCS=1 and -race).
 	if large-small > 1<<20 {
 		t.Fatalf("the restore holds %d more bytes for 200k originals than for 10k: the guard's memory grows with the snapshot", large-small)
 	}
@@ -85,6 +92,17 @@ func TestOriginalsGuard_MemoryFollowsSelection(t *testing.T) {
 // largest live heap any garbage collection found while it ran: collection
 // runs often (GOGC 5), and a finalizer re-armed at every cycle reads the
 // heap that cycle left live.
+//
+// The figure is exact only when every collection stops the world
+// (stopTheWorldGODEBUG). A concurrent collection also counts as live
+// whatever is allocated while it marks, garbage included, so the peak over
+// the hundreds of cycles a 200k-original restore runs is set by whichever
+// cycle marked longest: with concurrent collection the 200k figure spread
+// from 0.5 MB to 2.9 MB over 200 runs of the same code (to 4.1 MB under
+// -race), with no trend across a run's cycles and nothing from the restore
+// in a heap profile taken at the peak. With every collection stopping the
+// world it spread from 24 KB to 201 KB over 450 runs (default, GOMAXPROCS=1
+// and -race).
 func peakLiveHeapDuring(fn func()) (before, peak int64) {
 	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
 	read := func() int64 {
@@ -124,6 +142,43 @@ const (
 	guardMemoryChildEnv       = "BREEZE_TEST_GUARD_MEMORY_CHILD"
 	guardMemoryMeasuredMarker = "guard memory measured"
 )
+
+// stopTheWorldGODEBUG is the GODEBUG entry for the measurement's child: the
+// parent's settings with gcstoptheworld=1 last, so it wins over any earlier
+// gcstoptheworld the parent had.
+func stopTheWorldGODEBUG(parent string) string {
+	if parent == "" {
+		return "GODEBUG=gcstoptheworld=1"
+	}
+	return "GODEBUG=" + parent + ",gcstoptheworld=1"
+}
+
+// gcStopsTheWorld reports whether godebug makes every collection stop the
+// world: its last gcstoptheworld setting, the one the runtime applies, is
+// 1 or 2.
+func gcStopsTheWorld(godebug string) bool {
+	setting := ""
+	for kv := range strings.SplitSeq(godebug, ",") {
+		if v, ok := strings.CutPrefix(kv, "gcstoptheworld="); ok {
+			setting = v
+		}
+	}
+	return setting == "1" || setting == "2"
+}
+
+// The child's GODEBUG stops the world whatever the parent's says, and the
+// child's check reads the setting the runtime applies (the last one).
+func TestStopTheWorldGODEBUG_OverridesParent(t *testing.T) {
+	for parent, want := range map[string]bool{"": false, "gcstoptheworld=1": true, "x=1,gcstoptheworld=2": true, "gcstoptheworld=1,gcstoptheworld=0": false, "gcstoptheworld=10": false} {
+		if got := gcStopsTheWorld(parent); got != want {
+			t.Errorf("gcStopsTheWorld(%q) = %v, want %v", parent, got, want)
+		}
+		child, ok := strings.CutPrefix(stopTheWorldGODEBUG(parent), "GODEBUG=")
+		if !ok || !gcStopsTheWorld(child) || !strings.HasPrefix(child, parent) {
+			t.Errorf("parent GODEBUG %q: child gets %q; want the parent's settings kept and every collection stopping the world", parent, child)
+		}
+	}
+}
 
 // writeOriginalsManifest stores a manifest of n+2 originals beneath target:
 // the entry to select first, the nested copy collision last. It is written
