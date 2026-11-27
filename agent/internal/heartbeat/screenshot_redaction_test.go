@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"image"
 	"io"
 	"math/rand"
@@ -12,7 +13,6 @@ import (
 	"runtime"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -180,16 +180,25 @@ func checkSentBytes(t *testing.T, cmdType, commandID, want string, restBody []by
 //
 // What each subtest pins, up to the bytes posted to the server and the
 // websocket form of the same result:
-//   - via_helper (the service-mode path): on Windows and macOS, the whole of
-//     processCommand: handler routing, executeToolViaHelper and its IPC
-//     decode, and submitCommandResult. On Linux the handler routes to the
-//     direct path (no helper there), so the test calls executeToolViaHelper
-//     and submitCommandResult itself. The helper end is a fake that does what
-//     the user helper's executeToolCommand does.
-//   - direct: the capture call the handler's direct branch makes, then the
-//     send path. The handler itself is not driven: its direct branch captures
-//     through the active desktop session (h.desktopCaptureFn), which a test
-//     cannot stand up. That branch is the single line
+//   - via_helper (the service-mode path): the whole of processCommand:
+//     handler routing, executeToolViaHelper (helper lookup, IPC send, IPC
+//     decode), and submitCommandResult. The helper end is a fake that does
+//     what the user helper's executeToolCommand does. The broker snapshot is
+//     republished after the fake is registered, so FindCapableSession (the
+//     helper lookup on every OS) finds it as it would a registered helper;
+//     on macOS the preferred-desktop lookup also sees it. A lookup miss fails
+//     the test; it never spawns a real helper.
+//     Run on macOS. On Windows it compiles, but CI's Windows job runs only a
+//     named list of heartbeat tests, and this is not one of them.
+//     Skipped on Linux, because production never takes this path there:
+//     handleTakeScreenshot and handleComputerAction send these commands to
+//     the helper only when runtime.GOOS != "linux", and they are the only
+//     callers of executeToolViaHelper.
+//   - direct (every OS, and the only path on Linux): the capture call the
+//     handler's direct branch makes, then the send path. The handler itself
+//     is not driven: its direct branch captures through the active desktop
+//     session (h.desktopCaptureFn), which a test cannot stand up. That branch
+//     is the single line
 //     `return tools.TakeScreenshotWithCapture(cmd.Payload, h.desktopCaptureFn())`
 //     (ComputerActionWithCapture for computer_action).
 //
@@ -219,19 +228,24 @@ func TestScreenshotResultsAreNotTextRedacted(t *testing.T) {
 		}
 
 		t.Run(cmdType+"/via_helper", func(t *testing.T) {
+			if runtime.GOOS == "linux" {
+				t.Skip("on Linux the handlers never send take_screenshot or computer_action to a helper (runtime.GOOS gate); the direct subtest covers Linux")
+			}
 			srv, rs := newResultServer(t)
 			h := newResultSubmitHeartbeat(srv.URL)
 			h.isService = true
-			h.sessionBroker = newTestBrokerWithSessions(t, newFakeToolHelper(t, capFn))
-			cmd := Command{ID: "cmd-helper-" + cmdType, Type: cmdType, Payload: payload()}
-			if runtime.GOOS != "linux" {
-				h.processCommand(cmd)
-			} else {
-				res := h.executeToolViaHelper(cmdType, cmd.Payload, time.Now())
-				if err := h.submitCommandResult(cmd.ID, res); err != nil {
-					t.Fatalf("submitCommandResult: %v", err)
-				}
+			broker := newTestBrokerWithSessions(t, newFakeToolHelper(t, capFn))
+			// newTestBrokerWithSessions fills the live session maps, but the
+			// lock-free snapshot that FindCapableSession reads still holds the
+			// empty maps New() published. SetConsoleUser republishes it from
+			// the live maps, so the lookup sees the fake as a registered helper.
+			broker.SetConsoleUser("")
+			h.sessionBroker = broker
+			h.spawnHelper = func(string) error {
+				return errors.New("test: helper lookup missed the fake helper; refusing to spawn a real one")
 			}
+			cmd := Command{ID: "cmd-helper-" + cmdType, Type: cmdType, Payload: payload()}
+			h.processCommand(cmd)
 			checkSentBytes(t, cmdType, cmd.ID, want, rs.onlyBody(t))
 		})
 
