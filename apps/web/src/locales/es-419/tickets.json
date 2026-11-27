@@ -524,6 +524,7 @@
       "pickerLabel": "Ticket de destino",
       "searchPlaceholder": "Buscar por número o asunto",
       "pickerHint": "Solo se muestran los tickets abiertos de esta organización, del más antiguo al más reciente.",
+      "pickerHintAll": "Se muestran los tickets abiertos, resueltos y cerrados de esta organización, los más antiguos primero.",
       "includeClosed": "Incluir tickets resueltos y cerrados",
       "reopenFirst": "{{number}} está cerrado. Reábralo antes de combinar en él, para que las respuestas sigan asociándose correctamente.",
       "reopen": "Reabrir {{number}}",
@@ -533,6 +534,7 @@
       "loading": "Cargando tickets…",
       "candidatesFailed": "No se pudieron cargar los tickets. Cierre el cuadro de diálogo e inténtelo de nuevo.",
       "noCandidates": "No hay otros tickets abiertos en esta organización.",
+      "noCandidatesAll": "No hay otros tickets en esta organización.",
       "previewLoading": "Comprobando la fusión…",
       "previewFailed": "No se pudo comprobar esta fusión. Vuelva a elegir el ticket para reintentar.",
       "side": {

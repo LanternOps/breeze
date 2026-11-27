@@ -524,6 +524,7 @@
       "pickerLabel": "Hedef bilet",
       "searchPlaceholder": "Numaraya veya konuya göre ara",
       "pickerHint": "Yalnızca bu kuruluşun açık biletleri, en eskiden başlayarak listelenir.",
+      "pickerHintAll": "Bu kuruluştaki açık, çözülmüş ve kapatılmış talepler, en eskiden başlayarak listelenir.",
       "includeClosed": "Çözülmüş ve kapatılmış talepleri dahil et",
       "reopenFirst": "{{number}} kapatılmış. Yanıtların doğru eşleşmesi için içine birleştirmeden önce yeniden açın.",
       "reopen": "{{number}} talebini yeniden aç",
@@ -533,6 +534,7 @@
       "loading": "Biletler yükleniyor…",
       "candidatesFailed": "Biletler yüklenemedi. İletişim kutusunu kapatıp tekrar deneyin.",
       "noCandidates": "Bu kuruluşta başka açık bilet yok.",
+      "noCandidatesAll": "Bu kuruluşta başka talep yok.",
       "previewLoading": "Birleştirme kontrol ediliyor…",
       "previewFailed": "Bu birleştirme kontrol edilemedi. Yeniden denemek için bileti tekrar seçin.",
       "side": {

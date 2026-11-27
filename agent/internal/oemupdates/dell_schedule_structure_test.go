@@ -79,11 +79,13 @@ func TestDellScheduleReadIsReadOnlyAndSpawnsNothing(t *testing.T) {
 	if !strings.Contains(text, "decodeRegSZ(") {
 		t.Fatal("dell_schedule_windows.go must decode the raw REG_SZ bytes with decodeRegSZ")
 	}
-	// The read list is fixed: the settings key, the policy key and its
-	// settings-shaped subkey. A policy subkey cannot exist without the policy
-	// key, so opening the policy key is enough to know whether any policy is
-	// present; nothing is enumerated.
-	want := []string{dellScheduleKey, dellPolicyKey, dellPolicyScheduleKey}
+	// The read list is fixed: the settings key; the default policy root and
+	// its settings-shaped subkey; and the Client Device Manager parent, its
+	// CommandUpdate root and that root's settings-shaped subkey. A subkey
+	// cannot exist without its parents, so opening each root is enough to
+	// know whether any policy is present under it; nothing is enumerated.
+	want := []string{dellScheduleKey, dellPolicyKey, dellPolicyScheduleKey,
+		dellCDMParentKey, dellCDMPolicyKey, dellCDMPolicyScheduleKey}
 	if strings.Join(dellRegistryKeys, "|") != strings.Join(want, "|") {
 		t.Fatalf("dellRegistryKeys = %q, want %q", dellRegistryKeys, want)
 	}

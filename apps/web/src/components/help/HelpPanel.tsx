@@ -22,8 +22,16 @@ export default function HelpPanel() {
   // first open means zero docs traffic until the user asks for help, and it
   // stays mounted afterwards so reopening on the same page is instant.
   const [hasOpened, setHasOpened] = useState(isOpen);
-  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  // The origin is only known in the browser. Reading it during render made the
+  // first client render differ from the server HTML (SSR assumes embeddable),
+  // which failed hydration on every page for non-embeddable origins. Start from
+  // the server's answer and resolve the real origin after mount.
+  const [currentOrigin, setCurrentOrigin] = useState('');
   const canEmbedDocs = currentOrigin ? isDocsEmbeddableOrigin(currentOrigin) : true;
+
+  useEffect(() => {
+    setCurrentOrigin(window.location.origin);
+  }, []);
   const localizedLabel = label === 'Documentation'
     ? t('longTail.help.HelpPanel.documentation')
     : label;

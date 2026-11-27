@@ -329,7 +329,7 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
             ) : candidatesFailed ? (
               <li className="px-3 py-2 text-sm text-destructive" data-testid="ticket-merge-picker-error">{t('ticketWorkbench.merge.candidatesFailed')}</li>
             ) : candidates.length === 0 ? (
-              <li className="px-3 py-2 text-sm text-muted-foreground" data-testid="ticket-merge-picker-empty">{t('ticketWorkbench.merge.noCandidates')}</li>
+              <li className="px-3 py-2 text-sm text-muted-foreground" data-testid="ticket-merge-picker-empty">{includeClosed ? t('ticketWorkbench.merge.noCandidatesAll') : t('ticketWorkbench.merge.noCandidates')}</li>
             ) : candidates.map((c) => (
               <li key={c.id}>
                 <button
@@ -348,7 +348,7 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
               </li>
             ))}
           </ul>
-          <p className="mt-1 text-xs text-muted-foreground">{t('ticketWorkbench.merge.pickerHint')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{includeClosed ? t('ticketWorkbench.merge.pickerHintAll') : t('ticketWorkbench.merge.pickerHint')}</p>
         </div>
 
         {target && target.status === 'closed' && (

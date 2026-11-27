@@ -524,6 +524,7 @@
       "pickerLabel": "Target ticket",
       "searchPlaceholder": "Search by number or subject",
       "pickerHint": "Only open tickets in this organization are listed, oldest first.",
+      "pickerHintAll": "Open, resolved and closed tickets in this organization are listed, oldest first.",
       "includeClosed": "Include resolved and closed tickets",
       "reopenFirst": "{{number}} is closed. Reopen it before merging into it, so replies to it keep threading correctly.",
       "reopen": "Reopen {{number}}",
@@ -533,6 +534,7 @@
       "loading": "Loading tickets…",
       "candidatesFailed": "Could not load tickets. Close the dialog and try again.",
       "noCandidates": "No other open tickets in this organization.",
+      "noCandidatesAll": "No other tickets in this organization.",
       "previewLoading": "Checking the merge…",
       "previewFailed": "Could not check this merge. Pick the ticket again to retry.",
       "side": {
