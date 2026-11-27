@@ -246,11 +246,15 @@ export default function FileManager({
         // — shared ERROR_CODES, #6317) alongside an English `error` string.
         // Prefer the localized copy for the code when one exists; fall back to
         // the server's English string, then the generic fallback.
+        // An agent-side failure keeps the agent's own reason (a folder that
+        // does not exist, a denied path) the same way the mutations do: the
+        // code's translation says the agent could not be reached (#12800).
         const code: unknown = json?.code;
+        const reason = typeof code === 'string' ? agentReason(code, '', json) : undefined;
         const translated = typeof code === 'string' && i18n.exists(`errors:${code}`)
           ? i18n.t(/* i18n-dynamic */ `errors:${code}`)
           : undefined;
-        throw new Error(translated || json.error || t('fileManager.errors.loadDirectory'));
+        throw new Error(reason || translated || json.error || t('fileManager.errors.loadDirectory'));
       }
       const json = await response.json();
       if (requestId !== directoryRequestId.current) return;
