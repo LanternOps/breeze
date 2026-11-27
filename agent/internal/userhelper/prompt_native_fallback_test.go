@@ -152,8 +152,9 @@ func TestNativeNoticeDialogIsShortLived(t *testing.T) {
 }
 
 // A notice never covers or stacks over a dialog that needs a decision, and
-// notice dialogs never stack on each other: the notice stays in the agent's
-// list and is reported presented but not visible.
+// notice dialogs never stack on each other: a notice that must wait is
+// reported presented but not visible, and is drawn when the screen clears
+// (#12794 review: deferred, never dropped).
 func TestNativeNoticeDialogNeverStacks(t *testing.T) {
 	os := &fakeNoticeOS{toastOK: false}
 	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 4)}
@@ -163,28 +164,33 @@ func TestNativeNoticeDialogNeverStacks(t *testing.T) {
 	r.handle(envelopeFor(t, ipc.TypePromptShow, restart))
 	sink.waitFor(t, ipc.TypePromptPresented)
 
-	r.handle(envelopeFor(t, ipc.TypePromptShow, sessionEndedShow(t, "notice:session_ended:c")))
-	waitUntil(t, func() bool { return sink.count(ipc.TypePromptPresented) == 2 }, "the notice's presented")
+	c := sessionEndedShow(t, "notice:session_ended:c")
+	r.handle(envelopeFor(t, ipc.TypePromptShow, c))
+	waitUntil(t, func() bool { return len(presentedFor(sink, c.PromptID)) == 1 }, "the notice's presented")
 	if fake.shown() != 1 {
 		t.Fatalf("a notice dialog was drawn over the restart question (%d dialogs)", fake.shown())
 	}
-	if vis := presentedVisibility(sink); vis[1] {
-		t.Fatal("a notice not drawn is reported presented{visible:false}")
+	if vis := presentedFor(sink, c.PromptID); vis[0] {
+		t.Fatal("a notice not drawn yet was reported visible")
 	}
 
-	// The restart is answered; a notice may now be a dialog, but only one.
+	// The restart is answered: the waiting notice is drawn, and only it.
 	fake.outcome <- nativeOutcome{ActionID: "postpone"}
-	waitUntil(t, func() bool { return r.activeCount() == 0 }, "the restart dialog to end")
-	r.handle(envelopeFor(t, ipc.TypePromptShow, sessionEndedShow(t, "notice:session_ended:d")))
-	waitUntil(t, func() bool { return fake.shown() == 2 }, "the notice dialog")
-	r.handle(envelopeFor(t, ipc.TypePromptShow, sessionEndedShow(t, "notice:session_ended:e")))
-	waitUntil(t, func() bool { return sink.count(ipc.TypePromptPresented) == 4 }, "the second notice's presented")
-	if vis := presentedVisibility(sink); vis[3] {
-		t.Fatal("the second notice was reported visible: notice dialogs stacked")
+	waitUntil(t, func() bool { return fake.shown() == 2 }, "the waiting notice's dialog")
+	if got := fake.promptAt(1); got != c.PromptID {
+		t.Fatalf("second dialog = %q, want the waiting notice", got)
 	}
-	time.Sleep(20 * time.Millisecond)
-	if fake.shown() != 2 {
-		t.Fatalf("notice dialogs stacked: %d dialogs", fake.shown())
+	d := sessionEndedShow(t, "notice:session_ended:d")
+	r.handle(envelopeFor(t, ipc.TypePromptShow, d))
+	waitUntil(t, func() bool { return len(presentedFor(sink, d.PromptID)) == 1 }, "the second notice's presented")
+	if vis := presentedFor(sink, d.PromptID); vis[0] || fake.shown() != 2 {
+		t.Fatalf("visible %v, dialogs %d: notice dialogs stacked", vis, fake.shown())
+	}
+	// The first notice is acknowledged: the second one follows.
+	fake.outcome <- nativeOutcome{ActionID: "ok"}
+	waitUntil(t, func() bool { return fake.shown() == 3 }, "the second notice's dialog")
+	if got := fake.promptAt(2); got != d.PromptID {
+		t.Fatalf("third dialog = %q, want the second notice", got)
 	}
 }
 

@@ -21,10 +21,15 @@ func showNativePromptOS(ctx context.Context, m nativePromptModel, presented func
 	if err := cmd.Start(); err != nil {
 		return nativeOutcome{Err: err}
 	}
-	presented()
-	err := cmd.Wait()
+	// Reported on screen only once osascript outlives its startup window: a
+	// script that fails at once is never reported visible (#12794 review).
+	reported, err := runNativeProcess(cmd.Wait, nativeStartupWindow, presented)
 	if ctx.Err() != nil {
 		return nativeOutcome{Hidden: true}
 	}
-	return classifyNativeOsascript(m, out.String(), err != nil)
+	o := classifyNativeOsascript(m, out.String(), err != nil)
+	if !reported && o.Err == nil {
+		presented() // answered within the window: it was on screen
+	}
+	return o
 }

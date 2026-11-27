@@ -590,6 +590,13 @@ type nativePromptRenderer struct {
 	// again (#12794).
 	ended      map[string]ipc.PromptShow
 	endedOrder []string
+	// freed (guarded by mu) is closed and replaced whenever a dialog leaves
+	// the screen (a prompt leaves active, or a pill's confirm step ends), so
+	// a notice waiting for the screen to clear tries again (#12794).
+	freed chan struct{}
+	// goAsync runs work that must not hold up the IPC reader (an OS
+	// notification); tests run it inline.
+	goAsync func(func())
 
 	// Notice delivery (notice_delivery.go): the session's notification
 	// state (nil where the platform has no such query: the notice is a
@@ -612,6 +619,7 @@ type nativePromptRenderer struct {
 
 func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func(string, any) error, now func() time.Time) *nativePromptRenderer {
 	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{},
+		freed: make(chan struct{}), goAsync: func(f func()) { go f() },
 		noticeState: platformNotificationState, toast: showNotification, noticeRepoll: defaultNoticeRepoll,
 		indicatorShow: showNativeIndicator, indicatorHide: hideNativeIndicator}
 	for _, ad := range advertised {
@@ -629,6 +637,7 @@ func (r *nativePromptRenderer) closeAll() {
 	r.mu.Lock()
 	active := r.active
 	r.active = map[string]*nativeActive{}
+	r.signalFreedLocked()
 	r.mu.Unlock()
 	for _, a := range active {
 		a.cancel()
@@ -645,6 +654,22 @@ func (r *nativePromptRenderer) rememberEndedLocked(p ipc.PromptShow) {
 		delete(r.ended, r.endedOrder[0])
 		r.endedOrder = r.endedOrder[1:]
 	}
+}
+
+// signalFreedLocked wakes every notice waiting for the screen to clear.
+// Caller holds mu.
+func (r *nativePromptRenderer) signalFreedLocked() {
+	close(r.freed)
+	r.freed = make(chan struct{})
+}
+
+// freedSignal is the channel the next signalFreedLocked closes. Take it
+// before checking the screen, so a dialog that ends in between still wakes
+// the waiter.
+func (r *nativePromptRenderer) freedSignal() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.freed
 }
 
 func (r *nativePromptRenderer) activeCount() int {
@@ -784,6 +809,7 @@ func (r *nativePromptRenderer) onUpdate(u ipc.PromptUpdate) {
 		if r.active[u.PromptID] == nil {
 			r.rememberEndedLocked(merged)
 			r.mu.Unlock()
+			r.announceUpdate(merged)
 			return
 		}
 		r.mu.Unlock()
@@ -807,6 +833,9 @@ func (r *nativePromptRenderer) takeDown(promptID string) {
 	r.mu.Lock()
 	cur := r.active[promptID]
 	delete(r.active, promptID)
+	if cur != nil {
+		r.signalFreedLocked()
+	}
 	r.mu.Unlock()
 	if cur != nil {
 		cur.cancel()
@@ -878,15 +907,13 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 				r.endWithoutDialog(ctx, p.PromptID, act)
 				return
 			}
-			// It must be a dialog (the notification failed, or Windows quiet
-			// hours). Never over a question that needs an answer, never
-			// stacked on another notice, and short-lived.
-			if !r.claimNoticeDialog(p.PromptID, act) {
-				if r.endWithoutDialog(ctx, p.PromptID, act) {
-					log.Info("notice not drawn: another dialog is on screen; it stays in the agent's list", "promptId", p.PromptID)
-					r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: false})
-				}
-				return
+			// It must be a dialog (the notification failed, Windows quiet
+			// hours or nobody present, or an action a notification cannot
+			// carry). Never over a question that needs an answer, never
+			// stacked on another notice, and short-lived: it waits for the
+			// screen to clear, and is never dropped.
+			if !r.awaitNoticeDialog(ctx, p, act, lease) {
+				return // closed or replaced by the agent while it waited
 			}
 			m = shortLivedNotice(m, r.now())
 		}
@@ -905,6 +932,7 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 		current := r.active[p.PromptID] == act
 		if current {
 			delete(r.active, p.PromptID)
+			r.signalFreedLocked()
 			if out.Err == nil {
 				r.rememberEndedLocked(act.show)
 			}
@@ -957,29 +985,6 @@ func (r *nativePromptRenderer) takeNoticeDialogsLocked(promptID string) []*nativ
 	return out
 }
 
-// claimNoticeDialog lets a notice become a dialog only when no other dialog
-// is on screen: no question that needs an answer (any active prompt that is
-// neither a notice nor a session pill) and no other notice dialog. It
-// reports false when the notice must not be drawn, or was closed or
-// replaced meanwhile.
-func (r *nativePromptRenderer) claimNoticeDialog(promptID string, act *nativeActive) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.active[promptID] != act {
-		return false
-	}
-	for id, a := range r.active {
-		if id == promptID || a.indicator != nil {
-			continue
-		}
-		if a.noticeDialog || !isNoticeShow(a.show) {
-			return false
-		}
-	}
-	act.noticeDialog = true
-	return true
-}
-
 // endWithoutDialog retires a notice that drew no dialog. It reports whether
 // the notice was still current (not closed or replaced by the agent).
 func (r *nativePromptRenderer) endWithoutDialog(ctx context.Context, promptID string, act *nativeActive) bool {
@@ -989,6 +994,7 @@ func (r *nativePromptRenderer) endWithoutDialog(ctx context.Context, promptID st
 		return false
 	}
 	delete(r.active, promptID)
+	r.signalFreedLocked()
 	if ctx.Err() != nil {
 		return false
 	}

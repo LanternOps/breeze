@@ -1,6 +1,8 @@
 package prompthost
 
 import (
+	"time"
+
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/promptcatalog"
 )
@@ -60,6 +62,10 @@ func (h *Host) PromptPathAvailableVia(kind string, version int, o Owner, roles [
 	c := selectRendererVia(kind, []int{version}, roles, h.dir.Renderers(o), enabled, nil, false, false)
 	return c.Path == PathPrompt
 }
+
+// Now is the host's clock: a domain that times something against the
+// host's prompts (how long a notice has been open) uses it.
+func (h *Host) Now() time.Time { return h.clock.Now() }
 
 // IsOpen reports whether a prompt is open (shown and not yet closed; a
 // decided prompt in its terminal linger is not open). A caller that re-reports

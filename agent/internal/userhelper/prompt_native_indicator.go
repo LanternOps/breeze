@@ -185,18 +185,29 @@ func (r *nativePromptRenderer) drawIndicator(p ipc.PromptShow) {
 	// when the step is over.
 	var startConfirm bool
 	var confirmCtx context.Context
+	var covered []*nativeActive
 	switch {
 	case m.Confirm == nil && ind.confirmCancel != nil:
 		ind.confirmCancel()
 		ind.confirmCancel, ind.confirmRev = nil, 0
+		r.signalFreedLocked() // a notice waiting for the confirm may now draw
 	case m.Confirm != nil && ind.confirmRev == 0:
 		confirmCtx, ind.confirmCancel = context.WithCancel(ind.ctx)
 		ind.confirmRev = p.Rev
 		startConfirm = true
+		// The confirm is a decision: it takes a notice dialog down, as any
+		// question that needs an answer does (draw), and a notice dialog
+		// waits for it (screenBusyLocked).
+		covered = r.takeNoticeDialogsLocked(p.PromptID)
 	}
 	r.mu.Unlock()
 	if prev != nil {
 		prev.cancel() // a dialog for this id (never expected): one window per prompt
+	}
+	for _, c := range covered {
+		log.Info("notice dialog taken down for the End session confirm; it stays in the agent's list",
+			"promptId", c.show.PromptID, "for", p.PromptID)
+		c.cancel()
 	}
 
 	if !r.indicatorShow(p.PromptID, m, func() { r.indicatorClicked(p.PromptID) }) {
@@ -251,6 +262,7 @@ func (r *nativePromptRenderer) runIndicatorConfirm(ctx context.Context, promptID
 	if current {
 		show = act.show
 		act.indicator.confirmCancel, act.indicator.confirmRev = nil, 0
+		r.signalFreedLocked() // a notice waiting for the confirm may now draw
 	}
 	r.mu.Unlock()
 	if !current {

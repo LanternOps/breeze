@@ -450,7 +450,12 @@ func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *o
 		rec.everPrompt = true
 		if !pl.rateChecked {
 			pl.rateChecked = true
-			if rec.show.Presentation == ipc.PromptPresentationCard && !h.limiter.allow(pl.owner.Key(), now) {
+			// The limiter limits notices. A prompt that needs the person's
+			// answer (a restart question or its closing card, a consent or
+			// elevation request) is never made list-only by it, and does not
+			// spend its budget: the native renderer has no list, so a list-only
+			// decision would never be asked there (#12794).
+			if rec.show.Presentation == ipc.PromptPresentationCard && !rec.needsDecision() && !h.limiter.allow(pl.owner.Key(), now) {
 				pl.listOnly = true
 			}
 		}
