@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptanceBreaches,
+  apiLocalDestinationDir,
   hydrationManifestChunks,
   hydrationRunBreaches,
   largestFolderEntries,
@@ -119,6 +120,9 @@ describe('acceptanceBreaches', () => {
     expect(acceptanceBreaches({ ...healthy, statisticsRefreshed: false })).toEqual([
       'the publish did not ANALYZE backup_snapshot_files, so the readings ran on stale statistics',
     ]);
+    expect(acceptanceBreaches({ ...healthy, statisticsRefreshed: false, analyzedTable: 'backup_tree_checkpoint_entries' })).toEqual([
+      'the publish did not ANALYZE backup_tree_checkpoint_entries, so the readings ran on stale statistics',
+    ]);
   });
 });
 
@@ -137,5 +141,16 @@ describe('summarizeRuns', () => {
 
   it('never passes on no runs', () => {
     expect(summarizeRuns([], { heapLimited: false }).pass).toBe(false);
+  });
+});
+
+describe('apiLocalDestinationDir', () => {
+  it('is the API-side layout: the operator root, then the org id, then the config id', () => {
+    expect(apiLocalDestinationDir('/srv/backups', 'org-1', 'config-2')).toBe('/srv/backups/org-1/config-2');
+  });
+
+  it('refuses an id that would leave the operator root', () => {
+    expect(() => apiLocalDestinationDir('/srv/backups', '..', 'config-2')).toThrow(/org id/);
+    expect(() => apiLocalDestinationDir('/srv/backups', 'org-1', 'a/b')).toThrow(/config id/);
   });
 });
