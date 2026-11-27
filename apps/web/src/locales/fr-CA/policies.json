@@ -1836,7 +1836,6 @@
       "issueArgsUnsupportedForFileType": "Les arguments d’installation silencieuse ne sont pas pris en charge pour ce type d’installateur."
     },
     "builtinPackageDetail": {
-      "managedBuiltIn": "Intégré géré",
       "website": "Site web",
       "checkingSetup": "Vérification de l’installation...",
       "couldnTVerifySetupDeployWillConfirm": "Je n’ai pas pu vérifier la configuration — le déploiement confirmera sur le serveur.",
@@ -2466,27 +2465,21 @@
     },
     "builtinPackagesPanel": {
       "title": "Packages intégrés",
-      "description": "Clients de filtrage DNS épinglés et vérifiés par Breeze. Ajoutez-en un à votre catalogue, définissez sa variable pour chaque organisation, puis déployez-le comme n’importe quel autre package.",
-      "colPackage": "Package",
-      "colPlatform": "Plateforme",
-      "colPinnedVersion": "Version épinglée",
-      "colRequiredVariables": "Variables requises",
-      "colUninstallCommand": "Commande de désinstallation",
-      "colStatus": "État",
+      "description": "Packages que Breeze maintient pour vous. Ajoutez-en un à votre catalogue ou connectez son intégration, puis déployez-le comme n’importe quel autre package.",
       "addToCatalog": "Ajouter au catalogue",
       "adding": "Ajout en cours…",
-      "inCatalog": "Dans le catalogue",
       "archived": "Archivé",
       "restoreToCatalog": "Restaurer",
       "addedToCatalog": "{{name}} a été ajouté au catalogue",
       "couldNotAddToCatalog": "Impossible d’ajouter {{name}} au catalogue",
       "couldNotLoadBuiltinPackages": "Impossible de charger les packages intégrés",
-      "loadingBuiltinPackages": "Chargement des packages intégrés…",
       "setVariablesPerOrganization": "À définir par organisation dans Paramètres → Variables",
       "copyUninstallCommand": "Copier la commande de désinstallation",
       "uninstallCommandCopied": "Commande de désinstallation copiée",
       "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un.",
-      "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement."
+      "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement.",
+      "addedWhenConnected": "Ajouté à votre catalogue lorsque vous connectez {{provider}}.",
+      "connectInIntegrations": "Connecter dans Intégrations"
     },
     "policyCoverage": {
       "appliesTo_one": "S'applique à {{count}} appareil",

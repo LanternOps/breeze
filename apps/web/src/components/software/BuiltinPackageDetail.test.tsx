@@ -31,7 +31,7 @@ const missingKey: EdrReadiness = {
 describe('BuiltinPackageDetail', () => {
   it('shows a confident ready state and fires onDeploy', () => {
     const onDeploy = vi.fn();
-    render(<BuiltinPackageDetail name="Huntress EDR Agent" provider="huntress" readiness={ready} onDeploy={onDeploy} />);
+    render(<BuiltinPackageDetail provider="huntress" readiness={ready} onDeploy={onDeploy} />);
     expect(screen.getByText(/Ready to deploy to 2 mapped orgs/i)).toBeInTheDocument();
     // No prereq warnings when ready.
     expect(screen.queryByText(/account key in Integrations/i)).not.toBeInTheDocument();
@@ -42,17 +42,24 @@ describe('BuiltinPackageDetail', () => {
   });
 
   it('surfaces exactly the one missing step and disables Deploy', () => {
-    render(<BuiltinPackageDetail name="Huntress EDR Agent" provider="huntress" readiness={missingKey} onDeploy={vi.fn()} />);
+    render(<BuiltinPackageDetail provider="huntress" readiness={missingKey} onDeploy={vi.fn()} />);
     expect(screen.getByText(/Add your Huntress account key in Integrations/i)).toBeInTheDocument();
     const deploy = screen.getByRole('button', { name: /^Deploy$/ });
     expect(deploy).toBeDisabled();
     expect(deploy).toHaveAttribute('title', expect.stringMatching(/account key/i));
   });
 
+  it('leaves the package identity to the dialog header (no second name, icon tile or label)', () => {
+    render(<BuiltinPackageDetail provider="huntress" readiness={ready} onDeploy={vi.fn()} />);
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Managed built-in/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Built-in$/)).not.toBeInTheDocument();
+  });
+
   it('defers to the server when readiness is unknown (Deploy stays enabled)', () => {
     render(
       <BuiltinPackageDetail
-        name="Huntress EDR Agent"
+       
         provider="huntress"
         readiness={{ status: 'unknown', checks: [] }}
         onDeploy={vi.fn()}

@@ -64,7 +64,7 @@ function serve(list: BuiltinPackageRow[], postStatus = 201) {
 describe('BuiltinPackagesPanel (#6958)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('lists each visible package with version, required variables (linked to Variables) and the uninstall command', async () => {
+  it('lists each package not yet in the catalog with what it needs, and leaves out the ones already there', async () => {
     serve([CONTROLD, NEXTDNS]);
     render(<BuiltinPackagesPanel />);
     await waitFor(() => expect(screen.getByTestId('builtin-package-row-controld_windows')).toBeInTheDocument());
@@ -74,12 +74,47 @@ describe('BuiltinPackagesPanel (#6958)', () => {
     expect(row.textContent).toContain('Control D (Windows)');
     expect(row.textContent).toContain('1.5.8');
     expect(row.textContent).toContain('controld_provisioning_code');
-    expect(row.textContent).toContain('C:\\ControlD\\ctrld.exe uninstall');
     const varsLink = screen.getByTestId('builtin-package-vars-link-controld_windows') as HTMLAnchorElement;
     expect(varsLink.getAttribute('href')).toBe('/settings/variables');
-
     expect(screen.getByTestId('builtin-package-add-controld_windows')).toBeInTheDocument();
-    expect(screen.getByTestId('builtin-package-in-catalog-nextdns_windows')).toBeInTheDocument();
+
+    // Already in the catalog: its card in the library is its home, not a second row here.
+    expect(screen.queryByTestId('builtin-package-row-nextdns_windows')).not.toBeInTheDocument();
+    // One list for every built-in; the uninstall command lives on the package's detail.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(row.textContent).not.toContain('uninstall');
+  });
+
+  it('offers an integration built-in that is not in the catalog yet, with a link to connect it', async () => {
+    serve([CONTROLD]);
+    render(<BuiltinPackagesPanel providersInCatalog={[]} />);
+    const huntress = await screen.findByTestId('builtin-package-row-huntress');
+    expect(huntress.textContent).toContain('Huntress');
+    expect(screen.getByTestId('builtin-package-connect-huntress').getAttribute('href')).toBe('/integrations#huntress');
+    expect(screen.getByTestId('builtin-package-connect-sentinelone').getAttribute('href')).toBe('/integrations#sentinelone');
+  });
+
+  it('leaves out an integration built-in whose package is already in the catalog', async () => {
+    serve([CONTROLD]);
+    render(<BuiltinPackagesPanel providersInCatalog={['huntress']} />);
+    expect(await screen.findByTestId('builtin-package-row-sentinelone')).toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-huntress')).not.toBeInTheDocument();
+  });
+
+  it('does not offer integration built-ins before the catalog has loaded', async () => {
+    serve([CONTROLD]);
+    render(<BuiltinPackagesPanel />);
+    await screen.findByTestId('builtin-package-row-controld_windows');
+    expect(screen.queryByTestId('builtin-package-row-huntress')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-sentinelone')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing once every built-in is in the catalog', async () => {
+    serve([NEXTDNS]);
+    const onPackagesLoaded = vi.fn();
+    render(<BuiltinPackagesPanel providersInCatalog={['huntress', 'sentinelone']} onPackagesLoaded={onPackagesLoaded} />);
+    await waitFor(() => expect(onPackagesLoaded).toHaveBeenCalled());
+    expect(screen.queryByTestId('builtin-packages-panel')).not.toBeInTheDocument();
   });
 
   it('Add to catalog POSTs through runAction, toasts success, refreshes the list and the parent', async () => {
@@ -101,14 +136,6 @@ describe('BuiltinPackagesPanel (#6958)', () => {
     expect((await screen.findByTestId('builtin-package-row-controld_windows')).textContent).toContain('Archived');
     fireEvent.click(screen.getByTestId('builtin-package-restore-controld_windows'));
     await waitFor(() => expect(posts).toEqual(['/software/builtin-packages/controld_windows']));
-  });
-
-  it('In catalog opens the catalog item', async () => {
-    serve([NEXTDNS]);
-    const onOpenCatalogItem = vi.fn();
-    render(<BuiltinPackagesPanel onOpenCatalogItem={onOpenCatalogItem} />);
-    fireEvent.click(await screen.findByTestId('builtin-package-in-catalog-nextdns_windows'));
-    expect(onOpenCatalogItem).toHaveBeenCalledWith('cat-nextdns');
   });
 
   it('a 403 (e.g. missing devices.execute) is toasted by runAction and nothing refreshes', async () => {
@@ -160,17 +187,6 @@ describe('BuiltinPackagesPanel (#6958)', () => {
     expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(1);
     release(res(201, { catalogId: 'cat-new', versionId: 'ver-new' }));
     await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
-  });
-
-  it('a clipboard failure is reported, not swallowed', async () => {
-    serve([CONTROLD]);
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
-    });
-    render(<BuiltinPackagesPanel />);
-    fireEvent.click(await screen.findByTestId('builtin-package-copy-controld_windows'));
-    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   });
 
   it('shows an inline error when the list cannot load', async () => {

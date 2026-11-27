@@ -21,13 +21,19 @@ import DeploymentProgress from "./DeploymentProgress";
 import SoftwareVersionManager from "./SoftwareVersionManager";
 import AddPackageModal, { type CreatedPackage } from "./AddPackageModal";
 import {
-  getProviderBranding,
   isIntegrationProvider,
   type IntegrationProvider,
 } from "./providerBranding";
 import { asList } from '@/lib/asList';
-import { useEdrReadiness, type EdrReadiness } from "./useEdrReadiness";
+import { useEdrReadiness } from "./useEdrReadiness";
 import BuiltinPackageDetail from "./BuiltinPackageDetail";
+import KeyedBuiltinDetail from "./KeyedBuiltinDetail";
+import {
+  BuiltinIconTile,
+  BuiltinPill,
+  ReadinessPill,
+  isBuiltinItem,
+} from "./builtinPresentation";
 import BuiltinPackagesPanel, { type BuiltinPackageRow } from "./BuiltinPackagesPanel";
 import { useDefaultOwnerScope } from "../../hooks/useDefaultOwnerScope";
 import { useTranslation } from "react-i18next";
@@ -153,88 +159,6 @@ const categoryStyles: Record<string, string> = {
   compression: "bg-orange-500/20 text-orange-700 border-orange-500/40",
   media: "bg-pink-500/20 text-pink-700 border-pink-500/40",
 };
-/** Small at-a-glance readiness chip for a built-in EDR card. */
-function ReadinessPill({ status }: { status: EdrReadiness["status"] }) {
-  useTranslation("policies");
-  if (status === "ready")
-    return (
-      <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-        {i18n.t("policies:software.softwareCatalog.ready")}
-      </span>
-    );
-  if (status === "incomplete")
-    return (
-      <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-        {i18n.t("policies:software.softwareCatalog.setupNeeded")}
-      </span>
-    );
-  if (status === "loading")
-    return (
-      <span className="text-xs text-muted-foreground">
-        {i18n.t("policies:software.softwareCatalog.checking")}
-      </span>
-    );
-  return null;
-}
-/**
- * Detail body for a Breeze-pinned built-in (#6958). Edit/delete/new-version are
- * not offered (the API answers 403 outside system scope); the row's required
- * tenant variables and the documented uninstall command come from
- * GET /software/builtin-packages (partner scope only).
- */
-function KeyedBuiltinDetail({
-  row,
-  onDeploy,
-}: {
-  row: BuiltinPackageRow | undefined;
-  onDeploy: () => void;
-}) {
-  return (
-    <div data-testid="builtin-catalog-detail" className="space-y-4">
-      <p className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-        {i18n.t("policies:software.softwareCatalog.managedByBreezeHint")}
-      </p>
-      {row && (
-        <dl className="grid gap-3 text-sm sm:grid-cols-[max-content_1fr]">
-          <dt className="font-medium">
-            {i18n.t("policies:software.softwareCatalog.requiredVariables")}
-          </dt>
-          <dd className="flex flex-wrap items-center gap-1">
-            {row.requiredVars.map((name) => (
-              <code key={name} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                {name}
-              </code>
-            ))}
-            <a href="/settings/variables" className="text-xs text-primary hover:underline">
-              {i18n.t("policies:software.builtinPackagesPanel.setVariablesPerOrganization")}
-            </a>
-          </dd>
-          <dt className="font-medium">
-            {i18n.t("policies:software.softwareCatalog.uninstallCommand")}
-          </dt>
-          <dd>
-            <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs select-all">
-              {row.uninstallCommand}
-            </code>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {i18n.t("policies:software.builtinPackagesPanel.breezeDoesNotUninstall")}
-            </p>
-          </dd>
-        </dl>
-      )}
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={onDeploy}
-          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          {i18n.t("policies:software.softwareCatalog.deploy2")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
   return {
     id: String(item.id),
@@ -287,6 +211,9 @@ export default function SoftwareCatalog() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [detailTab, setDetailTab] = useState<"details" | "versions">("details");
   const [catalogItems, setCatalogItems] = useState<SoftwareItem[]>([]);
+  // Latched on the first successful catalog load. The built-in panel offers
+  // "connect Huntress" only for a provider known to be absent from the catalog.
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [confirmDelete, setConfirmDelete] = useState<SoftwareItem | null>(null);
@@ -435,6 +362,7 @@ export default function SoftwareCatalog() {
       const data = asList(payload);
       if (Array.isArray(data)) {
         setCatalogItems(data.map(toSoftwareItem));
+        setCatalogLoaded(true);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load catalog");
@@ -750,15 +678,10 @@ export default function SoftwareCatalog() {
 
       {isPartnerScope && (
         <BuiltinPackagesPanel
+          providersInCatalog={catalogLoaded ? builtinProviders : undefined}
           onPackagesLoaded={setBuiltinRows}
           onProvisioned={() => {
             void fetchCatalog();
-          }}
-          onOpenCatalogItem={(catalogId) => {
-            const item = catalogItems.find((candidate) => candidate.id === catalogId);
-            if (!item) return;
-            setDetailTab("details");
-            setSelectedSoftware(item);
           }}
         />
       )}
@@ -798,23 +721,8 @@ export default function SoftwareCatalog() {
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  {isIntegrationProvider(item.integrationProvider) ? (
-                    (() => {
-                      const branding = getProviderBranding(
-                        item.integrationProvider,
-                      );
-                      const Icon = branding.icon;
-                      return (
-                        <div
-                          className={cn(
-                            "flex h-10 w-10 items-center justify-center rounded-md border",
-                            branding.accent,
-                          )}
-                        >
-                          <Icon className="h-5 w-5" />
-                        </div>
-                      );
-                    })()
+                  {isBuiltinItem(item) ? (
+                    <BuiltinIconTile />
                   ) : (
                     <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
                       <Package className="h-5 w-5 text-muted-foreground" />
@@ -832,38 +740,23 @@ export default function SoftwareCatalog() {
                 </div>
                 <div className="flex flex-col items-end gap-1.5">
                   {/* Partner-wide custom packages (#2135) wear the canonical
-                      ownership badge; built-ins keep their own pill below. */}
-                  {!item.orgId &&
-                    item.partnerId &&
-                    !isIntegrationProvider(item.integrationProvider) &&
-                    !item.builtinPackageKey && (
-                      <ScopeBadge
-                        orgId={null}
-                        partnerId={item.partnerId}
-                        isSystem={false}
-                      />
-                    )}
-                  {item.builtinPackageKey && (
-                    <span
-                      data-testid="builtin-pill"
-                      className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
-                    >
-                      {i18n.t("policies:software.softwareCatalog.builtIn")}
-                    </span>
+                      ownership badge; a built-in wears the Built-in pill
+                      instead, plus its setup state when one can be checked. */}
+                  {!item.orgId && item.partnerId && !isBuiltinItem(item) && (
+                    <ScopeBadge
+                      orgId={null}
+                      partnerId={item.partnerId}
+                      isSystem={false}
+                    />
                   )}
-                  {isIntegrationProvider(item.integrationProvider) && (
+                  {isBuiltinItem(item) && (
                     <div className="flex items-center gap-1.5">
-                      <ReadinessPill
-                        status={readinessMap[item.integrationProvider].status}
-                      />
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
-                          getProviderBranding(item.integrationProvider).accent,
-                        )}
-                      >
-                        {i18n.t("policies:software.softwareCatalog.builtIn")}
-                      </span>
+                      {isIntegrationProvider(item.integrationProvider) && (
+                        <ReadinessPill
+                          status={readinessMap[item.integrationProvider].status}
+                        />
+                      )}
+                      <BuiltinPill />
                     </div>
                   )}
                   {item.category && (
@@ -958,9 +851,13 @@ export default function SoftwareCatalog() {
           <div className="border-b px-6 pt-5">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
-                  <Package className="h-6 w-6 text-muted-foreground" />
-                </div>
+                {isBuiltinItem(selectedSoftware) ? (
+                  <BuiltinIconTile size="lg" />
+                ) : (
+                  <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
+                    <Package className="h-6 w-6 text-muted-foreground" />
+                  </div>
+                )}
                 <div>
                   <h2
                     id="software-detail-title"
@@ -987,16 +884,16 @@ export default function SoftwareCatalog() {
                 )}
                 {!selectedSoftware.orgId &&
                   selectedSoftware.partnerId &&
-                  !selectedSoftware.builtinPackageKey &&
-                  !isIntegrationProvider(
-                    selectedSoftware.integrationProvider,
-                  ) && (
+                  !isBuiltinItem(selectedSoftware) && (
                     <ScopeBadge
                       orgId={null}
                       partnerId={selectedSoftware.partnerId}
                       isSystem={false}
                     />
                   )}
+                {isBuiltinItem(selectedSoftware) && (
+                  <BuiltinPill testId="builtin-detail-pill" />
+                )}
               </div>
               <button
                 type="button"
@@ -1041,7 +938,6 @@ export default function SoftwareCatalog() {
             {detailTab === "details" &&
               (isIntegrationProvider(selectedSoftware.integrationProvider) ? (
                 <BuiltinPackageDetail
-                  name={selectedSoftware.name}
                   provider={selectedSoftware.integrationProvider}
                   readiness={readinessMap[selectedSoftware.integrationProvider]}
                   onDeploy={() => {

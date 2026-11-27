@@ -1836,7 +1836,6 @@
       "issueArgsUnsupportedForFileType": "Silent install arguments are not supported for this installer type."
     },
     "builtinPackageDetail": {
-      "managedBuiltIn": "Managed built-in",
       "website": "website",
       "checkingSetup": "Checking setup…",
       "couldnTVerifySetupDeployWillConfirm": "Couldn't verify setup — deploy will confirm on the server.",
@@ -2466,27 +2465,21 @@
     },
     "builtinPackagesPanel": {
       "title": "Built-in packages",
-      "description": "DNS filtering clients pinned and verified by Breeze. Add one to your catalog, set its variable for each organization, then deploy it like any other package.",
-      "colPackage": "Package",
-      "colPlatform": "Platform",
-      "colPinnedVersion": "Pinned version",
-      "colRequiredVariables": "Required variables",
-      "colUninstallCommand": "Uninstall command",
-      "colStatus": "Status",
+      "description": "Packages Breeze maintains for you. Add one to your catalog, or connect its integration, then deploy it like any other package.",
       "addToCatalog": "Add to catalog",
       "adding": "Adding…",
-      "inCatalog": "In catalog",
       "archived": "Archived",
       "restoreToCatalog": "Restore",
       "addedToCatalog": "{{name}} added to the catalog",
       "couldNotAddToCatalog": "Could not add {{name}} to the catalog",
       "couldNotLoadBuiltinPackages": "Could not load built-in packages",
-      "loadingBuiltinPackages": "Loading built-in packages…",
       "setVariablesPerOrganization": "Set per organization in Settings → Variables",
       "copyUninstallCommand": "Copy uninstall command",
       "uninstallCommandCopied": "Uninstall command copied",
       "breezeDoesNotUninstall": "Breeze does not uninstall these clients. Run the command on the device to remove one.",
-      "copyFailed": "Copy failed. Select the command and copy it manually."
+      "copyFailed": "Copy failed. Select the command and copy it manually.",
+      "addedWhenConnected": "Added to your catalog when you connect {{provider}}.",
+      "connectInIntegrations": "Connect in Integrations"
     },
     "policyCoverage": {
       "appliesTo_one": "Applies to {{count}} device",

@@ -2,14 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { getProviderBranding, isIntegrationProvider } from './providerBranding';
 
 describe('providerBranding', () => {
-  it('returns label, icon, accent, and blurb for huntress', () => {
+  it('returns label, blurb and the Integrations deep link for huntress', () => {
     const b = getProviderBranding('huntress');
     expect(b.label).toBe('Huntress');
-    // lucide icons are forwardRef components (objects in this version), not plain functions
-    expect(b.icon).toBeDefined();
-    expect(['function', 'object']).toContain(typeof b.icon);
-    expect(b.accent).toMatch(/\S/);
     expect(b.blurb.length).toBeGreaterThan(0);
+    expect(b.setupHref).toBe('/integrations#huntress');
+  });
+
+  it('carries no per-vendor colour or icon: every built-in shares one presentation', () => {
+    expect(getProviderBranding('huntress')).not.toHaveProperty('accent');
+    expect(getProviderBranding('sentinelone')).not.toHaveProperty('icon');
   });
 
   it('returns branding for sentinelone', () => {

@@ -1836,7 +1836,6 @@
       "issueArgsUnsupportedForFileType": "Argumente für die stille Installation werden für diesen Installationstyp nicht unterstützt."
     },
     "builtinPackageDetail": {
-      "managedBuiltIn": "Verwaltet integriert",
       "website": "Website",
       "checkingSetup": "Setup wird überprüft…",
       "couldnTVerifySetupDeployWillConfirm": "Das Setup konnte nicht überprüft werden – die Bereitstellung wird auf dem Server bestätigt.",
@@ -2466,27 +2465,21 @@
     },
     "builtinPackagesPanel": {
       "title": "Integrierte Pakete",
-      "description": "DNS-Filter-Clients, die von Breeze fixiert und geprüft werden. Fügen Sie einen zu Ihrem Katalog hinzu, legen Sie seine Variable für jede Organisation fest und stellen Sie ihn dann wie jedes andere Paket bereit.",
-      "colPackage": "Paket",
-      "colPlatform": "Plattform",
-      "colPinnedVersion": "Fixierte Version",
-      "colRequiredVariables": "Erforderliche Variablen",
-      "colUninstallCommand": "Deinstallationsbefehl",
-      "colStatus": "Status",
+      "description": "Pakete, die Breeze für Sie pflegt. Fügen Sie eines zu Ihrem Katalog hinzu oder verbinden Sie seine Integration und stellen Sie es dann wie jedes andere Paket bereit.",
       "addToCatalog": "Zum Katalog hinzufügen",
       "adding": "Wird hinzugefügt…",
-      "inCatalog": "Im Katalog",
       "archived": "Archiviert",
       "restoreToCatalog": "Wiederherstellen",
       "addedToCatalog": "{{name}} wurde zum Katalog hinzugefügt",
       "couldNotAddToCatalog": "{{name}} konnte nicht zum Katalog hinzugefügt werden",
       "couldNotLoadBuiltinPackages": "Integrierte Pakete konnten nicht geladen werden",
-      "loadingBuiltinPackages": "Integrierte Pakete werden geladen…",
       "setVariablesPerOrganization": "Pro Organisation unter Einstellungen → Variablen festlegen",
       "copyUninstallCommand": "Deinstallationsbefehl kopieren",
       "uninstallCommandCopied": "Deinstallationsbefehl kopiert",
       "breezeDoesNotUninstall": "Breeze deinstalliert diese Clients nicht. Führen Sie den Befehl auf dem Gerät aus, um einen zu entfernen.",
-      "copyFailed": "Kopieren fehlgeschlagen. Markieren Sie den Befehl und kopieren Sie ihn manuell."
+      "copyFailed": "Kopieren fehlgeschlagen. Markieren Sie den Befehl und kopieren Sie ihn manuell.",
+      "addedWhenConnected": "Wird Ihrem Katalog hinzugefügt, sobald Sie {{provider}} verbinden.",
+      "connectInIntegrations": "In Integrationen verbinden"
     },
     "policyCoverage": {
       "appliesTo_one": "Gilt für {{count}} Gerät",

@@ -1836,7 +1836,6 @@
       "issueArgsUnsupportedForFileType": "Gli argomenti di installazione silenziosa non sono supportati per questo tipo di installer."
     },
     "builtinPackageDetail": {
-      "managedBuiltIn": "Integrato gestito",
       "website": "sito web",
       "checkingSetup": "Controllo configurazione…",
       "couldnTVerifySetupDeployWillConfirm": "Impossibile verificare la configurazione: la distribuzione confermerà sul server.",
@@ -2466,27 +2465,21 @@
     },
     "builtinPackagesPanel": {
       "title": "Pacchetti integrati",
-      "description": "Client di filtraggio DNS bloccati su una versione e verificati da Breeze. Aggiungine uno al catalogo, imposta la sua variabile per ogni organizzazione, quindi distribuiscilo come qualsiasi altro pacchetto.",
-      "colPackage": "Pacchetto",
-      "colPlatform": "Piattaforma",
-      "colPinnedVersion": "Versione bloccata",
-      "colRequiredVariables": "Variabili richieste",
-      "colUninstallCommand": "Comando di disinstallazione",
-      "colStatus": "Stato",
+      "description": "Pacchetti che Breeze mantiene per te. Aggiungine uno al catalogo o collega la sua integrazione, quindi distribuiscilo come qualsiasi altro pacchetto.",
       "addToCatalog": "Aggiungi al catalogo",
       "adding": "Aggiunta in corso…",
-      "inCatalog": "Nel catalogo",
       "archived": "Archiviato",
       "restoreToCatalog": "Ripristina",
       "addedToCatalog": "{{name}} aggiunto al catalogo",
       "couldNotAddToCatalog": "Impossibile aggiungere {{name}} al catalogo",
       "couldNotLoadBuiltinPackages": "Impossibile caricare i pacchetti integrati",
-      "loadingBuiltinPackages": "Caricamento dei pacchetti integrati…",
       "setVariablesPerOrganization": "Da impostare per organizzazione in Impostazioni → Variabili",
       "copyUninstallCommand": "Copia comando di disinstallazione",
       "uninstallCommandCopied": "Comando di disinstallazione copiato",
       "breezeDoesNotUninstall": "Breeze non disinstalla questi client. Esegui il comando sul dispositivo per rimuoverne uno.",
-      "copyFailed": "Copia non riuscita. Seleziona il comando e copialo manualmente."
+      "copyFailed": "Copia non riuscita. Seleziona il comando e copialo manualmente.",
+      "addedWhenConnected": "Viene aggiunto al catalogo quando colleghi {{provider}}.",
+      "connectInIntegrations": "Collega in Integrazioni"
     },
     "policyCoverage": {
       "appliesTo_one": "Si applica a {{count}} dispositivo",

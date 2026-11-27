@@ -6,7 +6,6 @@ describe('BuiltinPackageDetail website link', () => {
   it('separates the provider name from "website" with a space', () => {
     render(
       <BuiltinPackageDetail
-        name="SentinelOne Agent"
         provider="sentinelone"
         readiness={{ status: 'unknown', checks: [] }}
         onDeploy={vi.fn()}
