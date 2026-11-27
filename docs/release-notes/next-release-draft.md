@@ -112,6 +112,8 @@ Lab checks owed before the next tag:
 
 - **Re-importing a Pax8 product updates its catalog item instead of creating a second one** (#12689, for #12527). The import looks up the product's existing mapping first. Prices follow the SKU re-import rules (a price is added only for a currency that has none; existing prices are kept). The item's SKU is replaced only if it is still the old JSON-style value an earlier importer stored; a SKU edited by hand stays. If another item of the partner already holds the real SKU, the mapped item keeps its SKU and pricing still applies. Items already duplicated, or holding the old JSON-style SKU, are not corrected or merged by this change, and a mapped item that was archived is still updated.
 
+- **Approval cards no longer show a tool's raw action list as the impact line** (#12774). A `manage_tickets` card (edit or delete a comment, move to another organization, merge, a public reply, a resolve, a requester change) now says what approving does, including whether the requester is emailed. An approval-gated action with no summary of its own shows `Runs "<tool>: <action>". There is no plain-language summary of this action, so check its arguments before approving.` instead of the tool's catalog description, which for many tools is model-facing text. `approval_requests.risk_summary` stores the same line. Cards filed before the upgrade keep their stored text.
+
 ## Migrations
 
 - `2027-01-30-180000-security-integration-disconnect-nullable-credential.sql` (#12719): drops `NOT NULL` on `s1_integrations.api_token_encrypted` and `huntress_integrations.api_key_encrypted` so Disconnect can clear them. Schema only, writes no rows, idempotent.

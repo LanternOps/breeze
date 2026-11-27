@@ -1,5 +1,5 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasPatchInstallHeadline, hasTicketIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasPatchInstallHeadline, hasTicketIdStub, humanizeToolAction } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { argumentTicketId, resolveApprovalTicketNumber } from './approvalTicketNumber';
 import { resolveApprovalPatchNames } from './approvalPatchNames';
@@ -37,6 +37,7 @@ import { tickets } from '../../db/schema/portal';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
 import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
+import { TICKET_REQUESTER_FIELD_KEYS, TOOL_ACTION_INPUT_KEYS, resolveActionForTool } from '../aiToolActionKey';
 import {
   checkAgentGuardrails,
   checkGuardrails,
@@ -583,6 +584,61 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+/** What a builder needs that the call's arguments do not carry. */
+export interface ImpactSummaryContext {
+  /** The intent comes from an AI agent run, so its release executes as the agent principal. */
+  agentRun?: boolean;
+}
+
+type ImpactSummaryBuilder = (input: Record<string, unknown>, ctx: ImpactSummaryContext) => string | null;
+
+/** A field key safe to name in the impact line: caller input, so anything else is only counted. */
+const NAMEABLE_FIELD_KEY = /^[A-Za-z][A-Za-z0-9]{0,40}$/;
+
+/** `categoryId` → `category`, `ticketType` → `ticket type`. Display only. */
+function fieldWords(key: string): string {
+  return key.replace(/Id$/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
+function joinWords(words: string[]): string {
+  if (words.length <= 1) return words[0] ?? '';
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
+
+function describeFieldList(keys: string[]): string {
+  const named = keys.filter((k) => NAMEABLE_FIELD_KEY.test(k)).slice(0, 6).map(fieldWords);
+  const rest = keys.length - named.length;
+  return joinWords(rest > 0 ? [...named, `${rest} other field${rest === 1 ? '' : 's'}`] : named);
+}
+
+/**
+ * manage_tickets update_fields. A requester edit is what makes the call
+ * Tier 3 (isInputAwareTier3 reads the same TICKET_REQUESTER_FIELD_KEYS), so it
+ * leads the line; other fields are named after it.
+ */
+function describeTicketFieldUpdate(fieldsValue: unknown): string | null {
+  if (!fieldsValue || typeof fieldsValue !== 'object' || Array.isArray(fieldsValue)) return null;
+  const fields = fieldsValue as Record<string, unknown>;
+  const keys = Object.keys(fields);
+  const requesterKeys: readonly string[] = TICKET_REQUESTER_FIELD_KEYS;
+  const others = keys.filter((k) => !requesterKeys.includes(k));
+  if (!keys.some((k) => requesterKeys.includes(k))) {
+    return others.length > 0 ? `Updates the ticket's ${describeFieldList(others)}.` : null;
+  }
+  const parts: string[] = [];
+  if (Object.hasOwn(fields, 'submitterEmail')) {
+    const email = nonEmptyString(fields.submitterEmail);
+    parts.push(email ? `email ${truncate(email)}` : 'email');
+  }
+  if (Object.hasOwn(fields, 'submitterName')) {
+    const name = nonEmptyString(fields.submitterName);
+    parts.push(name ? `name "${truncate(name)}"` : 'name');
+  }
+  if (Object.hasOwn(fields, 'submittedBy')) parts.push('portal user');
+  const head = `Changes the ticket's requester (${parts.join(', ')}). Later public replies and the resolved email go to the updated requester.`;
+  return others.length > 0 ? `${head} Also updates the ticket's ${describeFieldList(others)}.` : head;
+}
+
 /**
  * #5106: the approval "High impact" box used to always show the tool's
  * catalog description ("List, start, stop, or restart system services on a
@@ -592,7 +648,7 @@ function nonEmptyString(value: unknown): string | null {
  * arguments don't give enough to say something specific) keeps the catalog
  * fallback below.
  */
-const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) => string | null> = {
+const IMPACT_SUMMARY_BUILDERS: Record<string, ImpactSummaryBuilder> = {
   // Topology M4 Task 4: the materialized proposal names its pinned origin,
   // context, family and expiry; nothing on the device changes.
   diagnose_connectivity: (input) => {
@@ -619,9 +675,14 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
   },
   run_script: (input) => {
     const deviceIds = Array.isArray(input.deviceIds) ? input.deviceIds : null;
-    if (!deviceIds || deviceIds.length === 0) return null;
-    const count = deviceIds.length;
-    return `Running a script on ${count} device${count === 1 ? '' : 's'}.`;
+    if (deviceIds && deviceIds.length > 0) {
+      const count = deviceIds.length;
+      return `Running a script on ${count} device${count === 1 ? '' : 's'}.`;
+    }
+    // #12774: the catalog text names scriptId/proposalId/propose_script, so a
+    // call without deviceIds says what it targets in words instead.
+    if (nonEmptyString(input.groupId)) return 'Running a script on the devices in one device group.';
+    return 'Running a script on the selected devices.';
   },
   manage_processes: (input) => {
     if (nonEmptyString(input.action) !== 'kill') return null;
@@ -680,6 +741,58 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
         return `Declines the patch ${input.allRings === true ? `${partnerWide} and in every update ring` : scope}. Nothing is installed or removed now.`;
       case 'defer':
         return `Defers the patch ${scope}. Nothing installs now.`;
+      default:
+        return null;
+    }
+  },
+  // #12774: the catalog fallback for this tool is its budget-compressed
+  // action list. Covers every action that can need approval: the static
+  // Tier-3 four (edit_comment, delete_comment, move_org, merge) and both arms
+  // of the input-aware three (comment, update_status, update_fields), so the
+  // line stays true whichever tier the call resolved to.
+  manage_tickets: (input, ctx) => {
+    switch (nonEmptyString(input.action)) {
+      // editTicketComment / deleteTicketComment emit no ticket event (a
+      // ticket.commented event would mail the requester) and audit the
+      // previous text. A deleted comment is soft-deleted and drops out of the
+      // staff and portal reads.
+      case 'edit_comment':
+        return 'Replaces the text of an existing comment on the ticket. If the comment is public, the requester sees the new text. No email is sent; the old text is kept in the audit log.';
+      case 'delete_comment':
+        return 'Deletes a comment from the ticket, so staff and, for a public comment, the requester no longer see it. No email is sent; its text is kept in the audit log.';
+      // moveTicketOrg: same partner only; re-stamps the ticket's child rows,
+      // clears device_id and requester_contact_id, deletes every ticket_links
+      // row touching it.
+      case 'move_org':
+        return 'Moves the ticket, with its time entries, parts and attachments, to another organization of the same partner. Its device and requester contact are cleared, and its links to other tickets are removed.';
+      // mergeTickets (#8972): no undo (D4); the source is closed as a
+      // tombstone; notifyRequester defaults to "the requesters differ" (D6).
+      case 'merge': {
+        const notify = input.notifyRequester === true
+          ? 'The requester of the merged ticket is emailed.'
+          : input.notifyRequester === false
+            ? 'No email is sent to its requester.'
+            : 'Its requester is emailed if the two tickets have different requesters.';
+        return `Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. ${notify}`;
+      }
+      // Same expression the handler writes (isPublic === true). An agent run's
+      // release goes through addAiTriageNote, which is always internal.
+      case 'comment':
+        return input.isPublic === true && !ctx.agentRun
+          ? 'Posts a public reply on the ticket. The requester can see it and is emailed a copy.'
+          : 'Adds an internal note to the ticket. The requester does not see it.';
+      // ticketNotifyWorker emails the requester on a change to resolved; a
+      // custom statusName maps to a core status only in the database.
+      case 'update_status': {
+        const status = nonEmptyString(input.status);
+        const statusName = nonEmptyString(input.statusName);
+        if (status === 'resolved') return 'Resolves the ticket and emails the requester, including the resolution note if one is given.';
+        if (statusName) return `Sets the ticket to the custom status "${truncate(statusName)}". If that status counts as resolved, the requester is emailed.`;
+        if (status && /^[a-z_]{1,32}$/.test(status)) return `Changes the ticket status to ${status.replace(/_/g, ' ')}.`;
+        return null;
+      }
+      case 'update_fields':
+        return describeTicketFieldUpdate(input.fields);
       default:
         return null;
     }
@@ -776,18 +889,63 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
   },
 };
 
+/** An action value safe to echo: caller input, so anything else is left out. */
+const ECHOABLE_ACTION = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * #12774: the line shown when no impact text exists for a call. Names the tool
+ * and action in words and says nothing it cannot know. Never a catalog
+ * description: those are model-facing and, under the description budget,
+ * can be a bare action list.
+ */
+export function genericImpactSummary(toolName: string, action: string | undefined): string {
+  const named = action !== undefined && ECHOABLE_ACTION.test(action) ? action : undefined;
+  return `Runs "${humanizeToolAction(toolName, named)}". There is no plain-language summary of this action, so check its arguments before approving.`;
+}
+
+const IDENTIFIER_TOKEN = /\b[a-z][a-z0-9]*_[a-z0-9_]+\b/;
+const SQUASHED_LIST = /[a-z],[a-z]/i;
+const SCHEMA_PUNCTUATION = /[{}<>]/;
+
+/**
+ * True when `text` reads as a sentence for a person: not an action list
+ * (`list,get,create`), not an identifier (`get_device_software`), not a
+ * schema fragment (`{deviceId, goal}`). Exported for the coverage contract.
+ */
+export function isProseImpactText(text: string): boolean {
+  const t = text.trim();
+  return /\s/.test(t) && !IDENTIFIER_TOKEN.test(t) && !SQUASHED_LIST.test(t) && !SCHEMA_PUNCTUATION.test(t);
+}
+
+/** The registry definition declares an enum for the tool's sub-operation key. */
+function hasActionEnum(toolName: string): boolean {
+  const schema = aiTools.get(toolName)?.definition.input_schema as { properties?: Record<string, { enum?: unknown }> } | undefined;
+  return Array.isArray(schema?.properties?.[TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action']?.enum);
+}
+
 /**
  * Impact = a call-specific sentence from the actual arguments when the
- * tool+action allow one (see IMPACT_SUMMARY_BUILDERS above), otherwise the
- * first sentence of the tool description (or the guardrail description) —
- * resolved decision.
+ * tool+action allow one (see IMPACT_SUMMARY_BUILDERS above). Otherwise a
+ * single-action tool shows the first sentence of its description (or the
+ * guardrail description) when that sentence is prose; a multi-action tool's
+ * description is about the tool, not this action, so it and everything else
+ * get genericImpactSummary (#12774).
  */
-export function buildImpactSummary(toolName: string, input: Record<string, unknown>, guardrail: GuardrailCheck): string {
-  const specific = IMPACT_SUMMARY_BUILDERS[toolName]?.(input);
+export function buildImpactSummary(
+  toolName: string,
+  input: Record<string, unknown>,
+  guardrail: GuardrailCheck,
+  ctx: ImpactSummaryContext = {},
+): string {
+  const specific = IMPACT_SUMMARY_BUILDERS[toolName]?.(input, ctx);
   if (specific) return specific;
-  const definitionDescription = aiTools.get(toolName)?.definition.description;
-  const description = definitionDescription || guardrail.description || `Execute ${toolName}`;
-  return firstSentence(description);
+  const action = resolveActionForTool(toolName, input);
+  if (action === undefined && !hasActionEnum(toolName)) {
+    const description = aiTools.get(toolName)?.definition.description || guardrail.description;
+    const sentence = description ? firstSentence(description) : '';
+    if (isProseImpactText(sentence)) return sentence;
+  }
+  return genericImpactSummary(toolName, action);
 }
 
 /**
@@ -2327,7 +2485,7 @@ export async function createActionIntent(
       }`
     : invokedFlow
     ? `Starts flow "${invokedFlow.flowName}" with inputs: ${flowInputKeys()}. Its own sensitive steps still wait for approval.`
-    : buildImpactSummary(input.toolName, input.input, guardrail);
+    : buildImpactSummary(input.toolName, input.input, guardrail, { agentRun: agentRun !== null });
   // Approver scope on a partner-wide intent. The summary is the risk line on every
   // approval surface, so it says who can approve whichever path filed this.
   let requirePartnerAxis = false;
