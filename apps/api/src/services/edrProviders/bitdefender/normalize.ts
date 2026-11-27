@@ -1,7 +1,8 @@
 import type { EdrDetectionStatus, EdrSeverity } from '@breeze/shared';
-import { bucketStatus, normalizeMacs, osPlatformFromName, parseVendorDate } from '../normalize';
+import { bucketStatus, normalizeMacs, osPlatformFromName } from '../normalize';
 import type { VendorEdrDetection, VendorEdrEndpoint, VendorEdrEndpointDetail } from '../types';
 import type { GzEndpointDetails, GzIncident, GzInventoryItem, GzQuarantineItem } from './client';
+import { parseGzDate } from './time';
 
 /**
  * Incident `status` codes. [U] The numeric set is unconfirmed against a licensed console; unknown
@@ -84,7 +85,11 @@ function onlineFromState(state: unknown): boolean | null {
   return null;
 }
 
-export function toEndpointDetail(id: string, d: GzEndpointDetails): VendorEdrEndpointDetail {
+/**
+ * `timeZone` is the API key owner's account timezone (`UTC` for a service key), or null when it
+ * could not be read: `lastSeen` has no offset, so it is then stored as null (#12821).
+ */
+export function toEndpointDetail(id: string, d: GzEndpointDetails, timeZone: string | null): VendorEdrEndpointDetail {
   const agent = d.agent ?? {};
   let health: VendorEdrEndpointDetail['health'] = 'healthy';
   if (d.malwareStatus?.infected) health = 'unhealthy';
@@ -93,7 +98,7 @@ export function toEndpointDetail(id: string, d: GzEndpointDetails): VendorEdrEnd
     vendorEndpointId: id,
     health,
     online: onlineFromState(d.state),
-    lastSeenAt: parseVendorDate(d.lastSeen),
+    lastSeenAt: parseGzDate(d.lastSeen, timeZone),
     agentVersion: agent.productVersion ?? null,
     osName: d.operatingSystem ?? undefined,
   };
@@ -101,9 +106,10 @@ export function toEndpointDetail(id: string, d: GzEndpointDetails): VendorEdrEnd
 
 const TERMINAL: readonly EdrDetectionStatus[] = ['resolved', 'false_positive', 'dismissed'];
 
-export function toIncidentDetection(item: GzIncident, vendorTenantId: string): VendorEdrDetection {
+/** Incident times carry an explicit offset (live 2026-11-27); `timeZone` only reads one that does not. */
+export function toIncidentDetection(item: GzIncident, vendorTenantId: string, timeZone: string | null): VendorEdrDetection {
   const status = bucketStatus(GZ_INCIDENT_STATUS, item.status as string | number | null | undefined);
-  const lastChange = parseVendorDate(item.lastIncidentChange);
+  const lastChange = parseGzDate(item.lastIncidentChange, timeZone);
   return {
     vendorDetectionId: String(item.incidentId),
     vendorKind: 'incident',
@@ -119,7 +125,7 @@ export function toIncidentDetection(item: GzIncident, vendorTenantId: string): V
     filePath: null,
     processName: null,
     mitreTechniques: [],
-    detectedAt: parseVendorDate(item.created),
+    detectedAt: parseGzDate(item.created, timeZone),
     resolvedAt: TERMINAL.includes(status) ? lastChange : null,
     lastVendorUpdateAt: lastChange,
     details: {
@@ -132,8 +138,9 @@ export function toIncidentDetection(item: GzIncident, vendorTenantId: string): V
   };
 }
 
-export function toQuarantineDetection(item: GzQuarantineItem, vendorTenantId: string): VendorEdrDetection {
-  const quarantinedOn = parseVendorDate(item.quarantinedOn);
+/** `quarantinedOn` has no offset: read in `timeZone`, null when the account timezone is unknown (#12821). */
+export function toQuarantineDetection(item: GzQuarantineItem, vendorTenantId: string, timeZone: string | null): VendorEdrDetection {
+  const quarantinedOn = parseGzDate(item.quarantinedOn, timeZone);
   const status = bucketStatus(
     GZ_QUARANTINE_STATUS,
     typeof item.actionStatus === 'string' ? item.actionStatus.toLowerCase() : item.actionStatus,

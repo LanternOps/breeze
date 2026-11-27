@@ -204,12 +204,12 @@ describe('testConnection', () => {
   }
 
   it('a key without the Packages API carries a note and still connects', async () => {
-    const result = await adapter.testConnection(connectionCtx(['network', 'companies', 'incidents', 'quarantine']));
+    const result = await adapter.testConnection(connectionCtx(['network', 'companies', 'incidents', 'quarantine', 'accounts']));
     expect(result).toMatchObject({ ok: true, capabilityNotes: ['packages: API not enabled on key'] });
   });
 
   it('a key with it carries no note', async () => {
-    const result = await adapter.testConnection(connectionCtx(['network', 'companies', 'incidents', 'quarantine', 'packages']));
+    const result = await adapter.testConnection(connectionCtx(['network', 'companies', 'incidents', 'quarantine', 'packages', 'accounts']));
     expect(result).toMatchObject({ ok: true, capabilityNotes: [] });
   });
 });

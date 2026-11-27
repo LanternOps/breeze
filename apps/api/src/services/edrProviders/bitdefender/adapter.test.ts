@@ -18,8 +18,12 @@ const NOW = new Date('2026-10-08T12:00:00.000Z');
 type Reply = { status?: number; body: string; headers?: Record<string, string> };
 type Route = Reply | Reply[] | ((params: any) => Reply);
 
-/** Routes by `service.method`; arrays are consumed in order (last one repeats). */
-function makeCtx(routes: Record<string, Route>, over: Partial<EdrAdapterContext> = {}) {
+/**
+ * Routes by `service.method`; arrays are consumed in order (last one repeats). The key owner's
+ * account (timezone America/New_York, #12821) answers unless a test routes it otherwise.
+ */
+function makeCtx(ownRoutes: Record<string, Route>, over: Partial<EdrAdapterContext> = {}) {
+  const routes: Record<string, Route> = { 'accounts.getAccountDetails': { body: fx('account-details.json') }, ...ownRoutes };
   const calls: Array<{ key: string; params: any }> = [];
   const counters: Record<string, number> = {};
   const fetch: GuardedFetch = vi.fn(async (url, init) => {
@@ -127,7 +131,7 @@ describe('testConnection', () => {
     const r = await adapter.testConnection(ctx);
     expect(r).toEqual({
       ok: true, rootId: P0, rootName: 'Example Partner', rootType: 'partner', tenantCount: 3,
-      capabilityNotes: ['quarantine: API not enabled on key', 'packages: API not enabled on key'],
+      capabilityNotes: ['quarantine: API not enabled on key', 'packages: API not enabled on key', 'accounts: API not enabled on key'],
     });
     expect(count('incidents.getIncidentsList')).toBe(0);
     expect(count('quarantine/computers.getQuarantineItemsList')).toBe(0);
@@ -421,6 +425,106 @@ describe('listDetections', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('vendor times in the key owner timezone (#12821)', () => {
+  const T1 = { vendorTenantId: C1, apiHost: null };
+  const quietWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  it('enrichment reads the key owner account timezone once per run and stores lastSeen in UTC', async () => {
+    const { ctx, calls, count } = makeCtx({ 'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json') });
+    const out = await adapter.enrichEndpoints!(ctx, T1, ['a', 'b']);
+    expect(out.map((d) => d.lastSeenAt?.toISOString())).toEqual(['2026-11-27T22:17:34.000Z', '2026-11-27T22:17:34.000Z']);
+    // No accountId: a personal key then reads the account that generated it.
+    expect(calls.find((c) => c.key === 'accounts.getAccountDetails')!.params).toEqual({});
+    await adapter.enrichEndpoints!(ctx, { vendorTenantId: C2, apiHost: null }, ['c']);
+    expect(count('accounts.getAccountDetails')).toBe(1);
+  });
+
+  it('no ids to enrich -> no account read', async () => {
+    const { ctx, count } = makeCtx({});
+    expect(await adapter.enrichEndpoints!(ctx, T1, [])).toEqual([]);
+    expect(count('accounts.getAccountDetails')).toBe(0);
+  });
+
+  it.each([
+    ['Accounts API not enabled on the key', { status: 403, body: fx('error-api-not-enabled-accounts-403.json') }, 'api_not_enabled'],
+    ['no timezone in the profile', rpc({ profile: { fullName: 'x' } }), 'timezone_missing'],
+    ['a timezone the runtime does not know', rpc({ profile: { timezone: 'Mars/Olympus_Mons' } }), 'timezone_invalid'],
+  ])('%s -> lastSeen stored as null (never read as UTC), other fields kept, one code-only warning per run', async (_l, reply, code) => {
+    const warn = quietWarn();
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': reply as Route,
+      'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+    });
+    const out = await adapter.enrichEndpoints!(ctx, T1, ['a', 'b']);
+    expect(out.map((d) => [d.lastSeenAt, d.agentVersion])).toEqual([[null, '8.26.11.679'], [null, '8.26.11.679']]);
+    const msgs = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('timezone'));
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toContain(code);
+    expect(msgs[0]).not.toContain('Mars');
+    warn.mockRestore();
+  });
+
+  it('a transient account read failure fails the run instead of storing a guessed time', async () => {
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': { status: 429, body: fx('error-429-nginx.html'), headers: { 'Retry-After': '600' } },
+      'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+    });
+    await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ code: 'rate_limited' });
+  });
+
+  it('quarantine times use the account timezone; incidents keep their own offset', async () => {
+    const q = JSON.parse(fx('live-quarantine-service-key.json'));
+    q.result.items[0].companyId = C1;
+    const inc = JSON.parse(fx('live-incidents-personal-key.json'));
+    inc.result.items[0].company.id = C1;
+    const { ctx } = makeCtx({
+      'incidents.getIncidentsList': { body: JSON.stringify(inc) },
+      'quarantine/computers.getQuarantineItemsList': { body: JSON.stringify(q) },
+    });
+    const page = await adapter.listDetections(ctx, T1, null, NOW);
+    const byKind = Object.fromEntries(page.detections.map((d) => [d.vendorKind, d.detectedAt?.toISOString()]));
+    // 22:01:10 New York wall time (EDT, -4) is 02:01:10Z the next day.
+    expect(byKind).toEqual({ incident: '2026-11-25T21:26:45.000Z', quarantine_item: '2026-10-12T02:01:10.000Z' });
+    expect(page.warnings).toEqual([]);
+  });
+
+  it('incidents alone need no account read (they carry an offset)', async () => {
+    const inc = JSON.parse(fx('live-incidents-personal-key.json'));
+    inc.result.items[0].company.id = C1;
+    const { ctx, count } = makeCtx({
+      'incidents.getIncidentsList': { body: JSON.stringify(inc) },
+      'quarantine/computers.getQuarantineItemsList': rpc({ total: 0, page: 1, perPage: 100, pagesCount: 0, items: [] }),
+    });
+    const page = await adapter.listDetections(ctx, T1, null, NOW);
+    expect(page.detections[0]!.detectedAt?.toISOString()).toBe('2026-11-25T21:26:45.000Z');
+    expect(count('accounts.getAccountDetails')).toBe(0);
+  });
+
+  it('quarantine with no readable timezone: detections kept with null times and a sync warning', async () => {
+    const warn = quietWarn();
+    const q = JSON.parse(fx('live-quarantine-service-key.json'));
+    q.result.items[0].companyId = C1;
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': { status: 403, body: fx('error-api-not-enabled-accounts-403.json') },
+      'incidents.getIncidentsList': rpc({ total: 0, page: 1, perPage: 1000, pagesCount: 0, items: [] }),
+      'quarantine/computers.getQuarantineItemsList': { body: JSON.stringify(q) },
+    });
+    const page = await adapter.listDetections(ctx, T1, null, NOW);
+    expect(page.detections.map((d) => [d.vendorKind, d.detectedAt, d.lastVendorUpdateAt])).toEqual([['quarantine_item', null, null]]);
+    expect(page.warnings).toEqual(['quarantine: times not stored (Accounts API not enabled on key)']);
+    warn.mockRestore();
+  });
+
+  it('testConnection notes a key without the Accounts API', async () => {
+    const { ctx } = makeCtx({
+      'general.getApiKeyDetails': ok('api-key-details.json'),
+      'companies.getCompanyDetails': ok('company-details-customer.json'),
+    });
+    const r = await adapter.testConnection(ctx);
+    expect((r as { capabilityNotes: string[] }).capabilityNotes).toContain('accounts: API not enabled on key');
   });
 });
 

@@ -536,6 +536,21 @@ describe('GravityZoneClient write calls', () => {
   });
 });
 
+describe('GravityZoneClient getAccountDetails (#12821)', () => {
+  it('reads the key owner account from accounts/v1.0 with no accountId', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('account-details.json') }]);
+    const r = await makeClient(impl).client.getAccountDetails();
+    expect(r.profile?.timezone).toBe('America/New_York');
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/accounts`);
+    expect(calls[0]!.body).toMatchObject({ method: 'getAccountDetails', params: {} });
+  });
+
+  it('a key without the Accounts API is api_not_enabled (operation scope), not a dead key', async () => {
+    const { impl } = makeFetch([{ status: 403, body: fx('error-api-not-enabled-accounts-403.json') }]);
+    expect(await rejection(makeClient(impl).client.getAccountDetails())).toMatchObject({ code: 'api_not_enabled', scope: 'operation', reauth: false });
+  });
+});
+
 describe('GravityZoneClient getScanTaskStatus', () => {
   it('reads network.getScanTasksList filtered by task id and maps the status code', async () => {
     const { impl, calls } = makeFetch([{ body: fx('action-scan-task-status.json') }]);

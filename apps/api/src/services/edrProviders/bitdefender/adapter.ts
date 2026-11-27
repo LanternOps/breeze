@@ -24,11 +24,13 @@ import {
   GravityZoneClient,
   GZ_HOST_ALLOWLIST,
   GZ_INSTALLER_HOST_ALLOWLIST,
+  type GzAccountDetails,
   type GzIncident,
   type GzQuarantineItem,
 } from './client';
 import { toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint } from './normalize';
 import { verifyGravityZoneWebhook } from './push';
+import { isKnownTimeZone, lacksOffset } from './time';
 
 const credentialsSchema = z.object({ apiKey: z.string().trim().min(16).max(512) }).strict();
 
@@ -86,6 +88,47 @@ function memo<T>(ctx: EdrAdapterContext, key: string, load: () => Promise<T>): P
     ctx.runCache.set(key, p);
   }
   return p;
+}
+
+// ---- account timezone (#12821) ----------------------------------------------
+
+type AccountTimeZone = { timeZone: string } | { timeZone: null; reason: string };
+
+/** Failures that say nothing about the timezone: the run fails and retries rather than storing a guess. */
+const TRANSIENT_CODES: ReadonlySet<string> = new Set(['rate_limited', 'upstream_error', 'malformed_response', 'outcome_unknown']);
+
+/**
+ * The API key owner's account timezone, read once per run. The Network and Quarantine APIs write
+ * offset-less times in it (see time.ts). When it cannot be read (the key lacks the Accounts API, or
+ * the profile has no usable zone) the answer is null and those times are stored as null, never read
+ * as UTC; that is logged once per run, code only. A connection-level or transient failure throws.
+ *
+ * A service API key (#12817) answers in UTC (verified live 2026-11-27) and must not read this:
+ * its getAccountDetails needs an accountId, and its own account is not the reference.
+ */
+function accountTimeZone(ctx: EdrAdapterContext): Promise<AccountTimeZone> {
+  return memo(ctx, 'gz:account-timezone', async (): Promise<AccountTimeZone> => {
+    const unavailable = (reason: string): AccountTimeZone => {
+      console.warn(`[edr:bitdefender] account timezone unavailable (${reason}); vendor times without an offset are stored as null`);
+      return { timeZone: null, reason };
+    };
+    let details: GzAccountDetails;
+    try {
+      details = await clientFor(ctx).getAccountDetails();
+    } catch (e) {
+      if (!isReq(e) || e.reauth || e.scope === 'connection' || TRANSIENT_CODES.has(e.code)) throw e;
+      return unavailable(e.code);
+    }
+    const tz = details.profile?.timezone;
+    if (typeof tz !== 'string' || tz.trim() === '') return unavailable('timezone_missing');
+    if (!isKnownTimeZone(tz.trim())) return unavailable('timezone_invalid');
+    return { timeZone: tz.trim() };
+  });
+}
+
+/** The sync warning for detections whose times could not be stored. */
+function timesNotStoredWarning(stream: 'incidents' | 'quarantine', reason: string): string {
+  return `${stream}: times not stored (${reason === 'api_not_enabled' ? 'Accounts API not enabled on key' : 'account timezone unavailable'})`;
 }
 
 // ---- installer --------------------------------------------------------------
@@ -186,6 +229,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         if (!enabled.has('incidents')) notes.push('incidents: API not enabled on key');
         if (!enabled.has('quarantine')) notes.push('quarantine: API not enabled on key');
         if (!enabled.has('packages')) notes.push('packages: API not enabled on key');
+        // Without it, offset-less vendor times (endpoint last seen, quarantine dates) are not stored (#12821).
+        if (!enabled.has('accounts')) notes.push('accounts: API not enabled on key');
       }
 
       let root: { id: string; name: string; type: number };
@@ -205,6 +250,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
           ['quarantine', () => client.call('quarantine/computers', '1.1', 'getQuarantineItemsList', {
             page: 1, perPage: 1, filters: { startDate: day.toISOString(), endDate: new Date().toISOString() },
           })],
+          ['accounts', () => client.getAccountDetails()],
         ];
         for (const [name, run] of probes) {
           try {
@@ -300,11 +346,14 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   },
 
   async enrichEndpoints(ctx, _tenant, ids): Promise<VendorEdrEndpointDetail[]> {
+    if (ids.length === 0) return [];
     const client = clientFor(ctx);
+    // `lastSeen` has no offset: it is in the key owner's timezone (#12821).
+    const { timeZone } = await accountTimeZone(ctx);
     const out: VendorEdrEndpointDetail[] = [];
     for (const id of ids) {
       try {
-        out.push(toEndpointDetail(id, await client.getEndpointDetails(id)));
+        out.push(toEndpointDetail(id, await client.getEndpointDetails(id), timeZone));
       } catch (e) {
         if (!isReq(e) || e.scope === 'connection') throw e;
         // A vanished endpoint: skip it, it stays stale and is retried.
@@ -442,7 +491,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const to = now;
     const toIso = to.toISOString();
     const warnings: string[] = [];
-    const detections: VendorEdrDetection[] = [];
+    const incidents: GzIncident[] = [];
+    const quarantine: GzQuarantineItem[] = [];
     // Cursor values are the run window END so every tenant in a run shares one memoized fetch.
     const next: GzCursor = { v: 1, incidentsChangedAfter: cursor.incidentsChangedAfter, quarantineAfter: cursor.quarantineAfter };
 
@@ -458,7 +508,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         },
       );
       for (const i of all) {
-        if (i.company?.id === tenant.vendorTenantId) detections.push(toIncidentDetection(i, tenant.vendorTenantId));
+        if (i.company?.id === tenant.vendorTenantId) incidents.push(i);
       }
       next.incidentsChangedAfter = toIso;
     } catch (e) {
@@ -472,13 +522,30 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, () => client.getQuarantineBetween(qFrom, to),
       );
       for (const q of all) {
-        if (q.companyId === tenant.vendorTenantId) detections.push(toQuarantineDetection(q, tenant.vendorTenantId));
+        if (q.companyId === tenant.vendorTenantId) quarantine.push(q);
       }
       next.quarantineAfter = toIso;
     } catch (e) {
       if (!isDegradation(e)) throw e;
       warnings.push(e.code === 'licence' ? 'quarantine: licence not available' : 'quarantine: API not enabled on key');
     }
+
+    // Incident times carry an explicit offset (live 2026-11-27); quarantine dates do not and are in
+    // the key owner's timezone (#12821). The account is read only when a value needs it. A failed
+    // read throws before anything is returned, so neither cursor advances on a guessed time.
+    const incidentOffsetless = incidents.some((i) => lacksOffset(i.created) || lacksOffset(i.lastIncidentChange));
+    const quarantineOffsetless = quarantine.some((q) => lacksOffset(q.quarantinedOn));
+    const tz: AccountTimeZone = incidentOffsetless || quarantineOffsetless
+      ? await accountTimeZone(ctx)
+      : { timeZone: null, reason: 'not_needed' };
+    if (tz.timeZone === null) {
+      if (incidentOffsetless) warnings.push(timesNotStoredWarning('incidents', tz.reason));
+      if (quarantineOffsetless) warnings.push(timesNotStoredWarning('quarantine', tz.reason));
+    }
+    const detections: VendorEdrDetection[] = [
+      ...incidents.map((i) => toIncidentDetection(i, tenant.vendorTenantId, tz.timeZone)),
+      ...quarantine.map((q) => toQuarantineDetection(q, tenant.vendorTenantId, tz.timeZone)),
+    ];
 
     return { detections, cursor: JSON.stringify(next), warnings };
   },

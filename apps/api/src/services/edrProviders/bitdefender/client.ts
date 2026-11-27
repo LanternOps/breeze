@@ -95,6 +95,8 @@ export type GzScanTaskStatus = 'pending' | 'in_progress' | 'finished' | 'failed'
 
 export interface GzApiKeyDetails { enabledApis?: string[]; createdAt?: string }
 
+export interface GzAccountDetails { profile?: { timezone?: unknown } | null }
+
 export interface GravityZoneClientOptions {
   accessUrl: string;
   creds: GravityZoneCredentials;
@@ -374,6 +376,17 @@ export class GravityZoneClient {
     return r ?? {};
   }
 
+  /**
+   * The account that generated a personal API key (`accountId` omitted: the vendor then reads
+   * the key's own account). Its `profile.timezone` is the zone the Network and Quarantine APIs
+   * write their offset-less times in (#12821). Needs the Accounts API on the key. A service key
+   * must pass an `accountId` and answers in UTC (both verified live 2026-11-27).
+   */
+  async getAccountDetails(): Promise<GzAccountDetails> {
+    const r = await this.call<GzAccountDetails | null>('accounts', '1.0', 'getAccountDetails', {});
+    return r ?? {};
+  }
+
   async getCompaniesList(parentId: string, companyType?: 0 | 1): Promise<Array<{ id: string; name: string }>> {
     const params: Record<string, unknown> = { parentId };
     if (companyType !== undefined) params.filters = { companyType };
@@ -554,6 +567,11 @@ export class GravityZoneClient {
    * Connection-wide (NO companyId filter): incidents are limited to 3 requests/60 s per key, so
    * the adapter fetches once per run and filters per tenant. Paginates by `pagesCount`
    * (this API has no `hasMoreRecords`). Any page failure throws.
+   *
+   * The window is sent as UTC with `Z`, and the vendor reads it as UTC whatever the key owner's
+   * timezone (#12821): live 2026-11-27, a one-minute window around an incident's UTC change time
+   * returned it with both a personal key (account in UTC-5) and a service key, and the same
+   * window shifted to the account's wall-clock time returned nothing.
    */
   async getIncidentsChangedBetween(from: Date, to: Date): Promise<GzIncident[]> {
     const out: GzIncident[] = [];

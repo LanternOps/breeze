@@ -30,6 +30,8 @@ const gz = vi.hoisted(() => ({
   endpointDetails: new Map<string, Record<string, unknown>>(),
   /** Runs once inside getInventoryAll: after the vendor read, before the sync writes. */
   inventoryHook: null as null | (() => Promise<void>),
+  /** The key owner's account (#12821): its timezone reads offset-less vendor times; an Error is thrown. */
+  account: { profile: { timezone: 'UTC' } } as Record<string, unknown> | Error,
 }));
 vi.mock('../../services/edrProviders/bitdefender/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/edrProviders/bitdefender/client')>();
@@ -58,6 +60,11 @@ vi.mock('../../services/edrProviders/bitdefender/client', async (importOriginal)
       return (gz.inventory.get(companyId) ?? []).length;
     }
     async getEndpointDetails(id: string) { this.note('getEndpointDetails'); return gz.endpointDetails.get(id) ?? {}; }
+    async getAccountDetails() {
+      this.note('getAccountDetails');
+      if (gz.account instanceof Error) throw gz.account;
+      return gz.account;
+    }
     async getIncidentsChangedBetween(from: Date, to: Date) {
       this.note('getIncidentsChangedBetween');
       gz.incidentWindows.push({ from, to });
@@ -333,6 +340,7 @@ function resetVendor() {
   gz.incidentWindows = [];
   gz.endpointDetails = new Map();
   gz.inventoryHook = null;
+  gz.account = { profile: { timezone: 'UTC' } };
 }
 
 /** partner + orgA(+site+device) + orgB(+site) + a real-credentialled GravityZone connection. */
@@ -433,6 +441,38 @@ describe('edr sync — real job functions against Postgres', () => {
       // the root partner company is itself a tenant (commit 2785805fae), unmapped here
       last_sync_tenants: 3, last_sync_unmapped_tenants: 2,
     });
+  });
+
+  runDb('#12821: an offset-less lastSeen is stored in UTC from the key owner timezone, and as null when that cannot be read', async () => {
+    const fx = await seedJob();
+    const co = `co-tz-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    const vep = `ep-tz-${sfx()}`;
+    gz.companies = [{ id: co, name: `Tz ${sfx()}` }];
+    gz.inventory.set(co, [gzEndpoint(vep, co, 'WS-TZ', 'ws-tz.corp.example')]);
+    // Live shape: a personal key owned by a New York account sends New York wall time, no offset.
+    gz.endpointDetails.set(vep, { state: 1, lastSeen: '2026-11-27T17:17:34', agent: { productVersion: '8.26.11.679' } });
+    gz.account = { profile: { timezone: 'America/New_York' } };
+
+    await syncEdrInventory(fx.connectionId);
+    const [row] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(new Date(row!.last_seen_at as string).toISOString()).toBe('2026-11-27T22:17:34.000Z');
+
+    // A key without the Accounts API: the time is not stored rather than stored five hours off.
+    gz.account = new EdrProviderRequestError('GravityZone accounts.getAccountDetails failed', {
+      code: 'api_not_enabled', reauth: false, scope: 'operation',
+    });
+    await withSystemDbAccessContext(() => db.update(edrEndpoints).set({ vendorDetailSyncedAt: null }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await syncEdrInventory(fx.connectionId);
+    } finally {
+      warn.mockRestore();
+    }
+    const [after] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(after!.last_seen_at).toBeNull();
+    expect(after!.agent_version).toBe('8.26.11.679');
+    expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
   });
 
   runDb('#12789: a sync that read the vendor BEFORE an isolate and wrote AFTER it does not confirm it; a live read after the request does', async () => {
