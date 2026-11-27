@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"io"
@@ -231,15 +232,18 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 		return UploadDigest{}, err
 	}
 	defer func() { _ = tree.Close() }()
+	// Every failure below names the object's key (bounded by the key-length
+	// limit in internal/backup/objectkey_length.go) besides the OS error, so
+	// the job's error log says which object could not be written and why.
 	destPath, err := p.objectRelative(tree, remotePath)
 	if err != nil {
-		return UploadDigest{}, err
+		return UploadDigest{}, fmt.Errorf("backup object %s: %w", remotePath, err)
 	}
 	if destPath == "." {
 		return UploadDigest{}, errors.New("backup object key is required")
 	}
 	if err := p.prepareObjectParents(tree, destPath); err != nil {
-		return UploadDigest{}, err
+		return UploadDigest{}, fmt.Errorf("backup object %s: %w", remotePath, err)
 	}
 
 	srcFile, err := os.Open(localPath)
@@ -252,10 +256,14 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 		return UploadDigest{}, fmt.Errorf("failed to stat source file: %w", err)
 	}
 
-	tmpPath := filepath.Join(filepath.Dir(destPath), "."+filepath.Base(destPath)+localUploadTempMarker+rand.Text())
+	tempName, err := newLocalUploadTempName()
+	if err != nil {
+		return UploadDigest{}, fmt.Errorf("failed to create destination file for %s: %w", remotePath, err)
+	}
+	tmpPath := filepath.Join(filepath.Dir(destPath), tempName)
 	tmp, err := tree.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return UploadDigest{}, fmt.Errorf("failed to create destination file: %w", err)
+		return UploadDigest{}, fmt.Errorf("failed to create destination file for %s: %w", remotePath, err)
 	}
 	committed := false
 	defer func() {
@@ -269,34 +277,34 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 	reader := io.TeeReader(&contextReader{ctx: ctx, reader: uploadProgressSource(ctx, srcFile)}, sum)
 	if strings.HasSuffix(remotePath, ".gz") {
 		gzipWriter := gzip.NewWriter(tmp)
-		gzipWriter.Name = filepath.Base(localPath)
+		gzipWriter.Name = gzipHeaderName(filepath.Base(localPath))
 		gzipWriter.ModTime = srcInfo.ModTime()
 		if _, err := io.Copy(gzipWriter, reader); err != nil {
-			return UploadDigest{}, fmt.Errorf("failed to compress file: %w", err)
+			return UploadDigest{}, fmt.Errorf("failed to compress file to %s: %w", remotePath, err)
 		}
 		if err := gzipWriter.Close(); err != nil {
-			return UploadDigest{}, fmt.Errorf("failed to compress file: %w", err)
+			return UploadDigest{}, fmt.Errorf("failed to compress file to %s: %w", remotePath, err)
 		}
 	} else if _, err := io.Copy(tmp, reader); err != nil {
-		return UploadDigest{}, fmt.Errorf("failed to copy file: %w", err)
+		return UploadDigest{}, fmt.Errorf("failed to copy file to %s: %w", remotePath, err)
 	}
 	// No explicit fsync: the rename keeps a failed upload
 	// from replacing an existing object, and a restore checks every byte
 	// against the recorded digest anyway.
 	if err := tmp.Close(); err != nil {
-		return UploadDigest{}, fmt.Errorf("failed to close destination file: %w", err)
+		return UploadDigest{}, fmt.Errorf("failed to close destination file for %s: %w", remotePath, err)
 	}
 
 	if !strings.HasSuffix(remotePath, ".gz") {
 		if err := tree.Chtimes(tmpPath, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
-			return UploadDigest{}, fmt.Errorf("failed to copy file: %w", err)
+			return UploadDigest{}, fmt.Errorf("failed to copy file to %s: %w", remotePath, err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return UploadDigest{}, err
 	}
 	if err := renameWithRetry(tree, tmpPath, destPath); err != nil {
-		return UploadDigest{}, fmt.Errorf("failed to store backup file: %w", err)
+		return UploadDigest{}, fmt.Errorf("failed to store backup file %s: %w", remotePath, err)
 	}
 	committed = true
 	return sum.digest(), nil
@@ -329,14 +337,111 @@ func renameWithRetry(tree *os.Root, from, to string) error {
 	return err
 }
 
-// localUploadTempMarker is part of the name of the temporary file
-// UploadWithDigest writes beside an object before renaming it into place.
-const localUploadTempMarker = ".upload-"
+// Temporary upload files.
+//
+// UploadWithDigest writes each object to a temporary file in the object's own
+// directory (so the rename into place stays on one volume and is atomic) and
+// renames it over the key once the copy completed. The temporary name is
+// localUploadTempPrefix plus 26 random base32 characters: a fixed 41 bytes,
+// whatever the key (#12799). It used to be "." + leaf + ".upload-" + random,
+// 35 bytes longer than the object's own name, so a key leaf of 221 to 255
+// bytes, which the store accepts (internal/backup/objectkey_length.go), could
+// not be written on a filesystem that limits a name to 255 bytes or 255
+// UTF-16 units.
+//
+// The random part keeps concurrent writers of different objects in one
+// directory apart (the file is also created O_EXCL). A natural object key
+// always ends in ".gz" and so never takes either temporary form.
+//
+// List and ObjectSizes report a temporary file like any other entry: a
+// prefix deleted by listing it (snapshot cleanup, vault retention) must
+// remove an upload's leftover too. Restore and verify read the keys a
+// manifest records, never a listing, so they cannot pick one up.
+const (
+	localUploadTempPrefix  = ".breeze-upload-"
+	localUploadTempRandLen = 26 // 16 random bytes, base32 without padding
+	localUploadTempNameLen = len(localUploadTempPrefix) + localUploadTempRandLen
+
+	// localUploadTempMarker separates the object's name from the random part
+	// in the temporary name agents before #12799 wrote.
+	localUploadTempMarker = ".upload-"
+	// legacyCreateTempMaxDigits bounds the decimal suffix of the temporary
+	// name the first agents wrote through os.CreateTemp (a uint32).
+	legacyCreateTempMaxDigits = 10
+)
+
+var localUploadTempEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// newLocalUploadTempName returns a fresh temporary upload file name.
+func newLocalUploadTempName() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate temporary name: %w", err)
+	}
+	return localUploadTempPrefix + localUploadTempEncoding.EncodeToString(b[:]), nil
+}
+
+// isLocalUploadTempName reports whether name is a temporary upload file
+// written by UploadWithDigest, in the current form or in either form earlier
+// agents wrote: "." + leaf + ".upload-" + a decimal suffix (os.CreateTemp)
+// or + 26 base32 characters (rand.Text). The match is exact so that a real
+// object whose name merely resembles one is never taken for a leftover.
+func isLocalUploadTempName(name string) bool {
+	if rest, ok := strings.CutPrefix(name, localUploadTempPrefix); ok && isBase32Text(rest, localUploadTempRandLen) {
+		return true
+	}
+	i := strings.LastIndex(name, localUploadTempMarker)
+	if !strings.HasPrefix(name, ".") || i < 2 {
+		return false
+	}
+	suffix := name[i+len(localUploadTempMarker):]
+	return isDecimal(suffix, legacyCreateTempMaxDigits) || isBase32Text(suffix, localUploadTempRandLen)
+}
+
+func isBase32Text(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		upper, digit := c >= 'A' && c <= 'Z', c >= '2' && c <= '7'
+		if !upper && !digit {
+			return false
+		}
+	}
+	return true
+}
+
+func isDecimal(s string, maxDigits int) bool {
+	if s == "" || len(s) > maxDigits {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// gzipHeaderName returns name for the gzip header's informational name
+// field, or "" when the header cannot carry it: RFC 1952 stores Latin-1, and
+// gzip.Writer refuses any other character, which failed the upload of every
+// file named in another script. Nothing reads the field back; restore takes a
+// file's name from the manifest.
+func gzipHeaderName(name string) string {
+	for _, r := range name {
+		if r == 0 || r > 0xff {
+			return ""
+		}
+	}
+	return name
+}
 
 // SweepStaleUploads implements StaleUploadSweeper: it removes temporary upload
-// files (".<name>.upload-*", written by UploadWithDigest) under prefix that
-// are older than olderThan — left behind when the helper stopped mid-upload.
-// Nothing else is touched.
+// files (isLocalUploadTempName, written by UploadWithDigest of this or an
+// earlier agent) under prefix that are older than olderThan — left behind
+// when the helper stopped mid-upload. Nothing else is touched.
 func (p *LocalProvider) SweepStaleUploads(prefix string, olderThan time.Duration) (int, error) {
 	tree, err := p.openStore(false)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -362,7 +467,7 @@ func (p *LocalProvider) SweepStaleUploads(prefix string, olderThan time.Duration
 			// Never act on an entry that is not a regular file.
 			return nil
 		}
-		if !strings.HasPrefix(entry.Name(), ".") || !strings.Contains(entry.Name(), localUploadTempMarker) {
+		if !isLocalUploadTempName(entry.Name()) {
 			return nil
 		}
 		info, err := entry.Info()
