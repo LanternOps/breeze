@@ -26,12 +26,15 @@ export function useDescribeFlowIssue(): (issue: FlowIssue) => { text: string; de
 
 /**
  * A step input that is missing or empty has no owner yet, so an ownership error on
- * the same pointer is noise (#12614). A `reference_not_owned` that stands alone, on
- * its own pointer or with none, is always kept.
+ * the same pointer is noise (#12614). That covers `reference_not_owned` and the
+ * notify-channel variant `notify_channel_not_owned`. An ownership issue that stands
+ * alone, on its own pointer or with none, is always kept.
  */
+const SHADOWABLE_OWNERSHIP_CODES = new Set<FlowIssue['code']>(['reference_not_owned', 'notify_channel_not_owned']);
+
 export function dropShadowedIssues(issues: FlowIssue[]): FlowIssue[] {
   const invalid = new Set(issues.filter((i) => i.code === 'input_invalid' && i.pointer).map((i) => i.pointer));
-  return issues.filter((i) => !(i.code === 'reference_not_owned' && i.pointer && invalid.has(i.pointer)));
+  return issues.filter((i) => !(SHADOWABLE_OWNERSHIP_CODES.has(i.code) && i.pointer && invalid.has(i.pointer)));
 }
 
 function friendly(t: TFunction, issue: FlowIssue): string {

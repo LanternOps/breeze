@@ -418,6 +418,17 @@ describe('MergeTicketDialog — resolved and closed targets (#12256)', () => {
     expect(screen.getByTestId('ticket-merge-option-tk-closed')).toHaveTextContent(/closed/i);
   });
 
+  it('the picker hint and empty state stop claiming only open tickets once the toggle is on', async () => {
+    mockApi({ list: [] });
+    renderDialog();
+    expect(await screen.findByText(/Only open tickets in this organization are listed/)).toBeInTheDocument();
+    expect(await screen.findByTestId('ticket-merge-picker-empty')).toHaveTextContent('No other open tickets in this organization.');
+    fireEvent.click(screen.getByTestId('ticket-merge-include-closed'));
+    expect(await screen.findByText('Open, resolved and closed tickets in this organization are listed, oldest first.')).toBeInTheDocument();
+    expect(screen.queryByText(/Only open tickets/)).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('ticket-merge-picker-empty')).toHaveTextContent('No other tickets in this organization.'));
+  });
+
   it('a resolved target is previewed and merges (the API accepts it)', async () => {
     mockApi({ list: [OLDER, RESOLVED] });
     renderDialog();
