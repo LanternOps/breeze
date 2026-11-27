@@ -434,6 +434,12 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       .select({ id: tickets.id }).from(tickets)
       .where(and(inArray(tickets.orgId, orgIds), ticketSearchCondition(term, orgIds))));
     expect(await search(customerNumber.toLowerCase(), [fx.orgA.id])).toEqual([{ id: imported.ticketId }]);
+    // The portal and acknowledgement show `#CODE`; a pasted term with the # and padding still finds it (#12775).
+    expect(await search(`#${customerNumber}`, [fx.orgA.id])).toEqual([{ id: imported.ticketId }]);
+    expect(await search(`  #${customerNumber}  `, [fx.orgA.id])).toEqual([{ id: imported.ticketId }]);
+    // A bare # or blank term is not a match-everything.
+    expect(await search('#', [fx.orgA.id])).toEqual([]);
+    expect(await search('   ', [fx.orgA.id])).toEqual([]);
     expect(await search(customerNumber.slice(2, -1).toUpperCase(), [fx.orgA.id])).toEqual([{ id: imported.ticketId }]);
     // Negative control: a term that is not a substring matches nothing.
     expect(await search(`${customerNumber}ZZ`, [fx.orgA.id])).toEqual([]);

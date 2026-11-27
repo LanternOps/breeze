@@ -95,7 +95,8 @@ export interface TicketDetail extends TicketSummary {
   // Stamped by the API on resolve/close, cleared on reopen. The detail endpoint
   // returns the full ticket row, so this is always present (unlike the list).
   resolvedAt: string | null;
-  // Legacy display number; the UI prefers internalNumber (see ticketDisplayNumber).
+  // Customer-facing number (portal / acknowledgement `#CODE`); also the legacy
+  // display fallback when internalNumber is absent (see ticketDisplayNumber).
   ticketNumber?: string | null;
   // #8972: who merged this tombstone (null once that user is deleted).
   mergedByUserId?: string | null;

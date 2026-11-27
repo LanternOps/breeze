@@ -112,6 +112,8 @@ Lab checks owed before the next tag:
 
 - **Re-importing a Pax8 product updates its catalog item instead of creating a second one** (#12689, for #12527). The import looks up the product's existing mapping first. Prices follow the SKU re-import rules (a price is added only for a currency that has none; existing prices are kept). The item's SKU is replaced only if it is still the old JSON-style value an earlier importer stored; a SKU edited by hand stays. If another item of the partner already holds the real SKU, the mapped item keeps its SKU and pricing still applies. Items already duplicated, or holding the old JSON-style SKU, are not corrected or merged by this change, and a mapped item that was archived is still updated.
 
+- **Ticket search finds the customer number as the customer sends it** (#12775, follow-up to #12681). A pasted `#CODE`, with or without surrounding spaces, now matches the customer-facing ticket number; surrounding spaces are ignored for every search field, and a term of only `#` or only spaces matches nothing. The staff ticket header now shows that number (`#CODE`) beside the Breeze number so a technician can read it back to the customer.
+
 ## Migrations
 
 - `2027-01-30-180000-security-integration-disconnect-nullable-credential.sql` (#12719): drops `NOT NULL` on `s1_integrations.api_token_encrypted` and `huntress_integrations.api_key_encrypted` so Disconnect can clear them. Schema only, writes no rows, idempotent.

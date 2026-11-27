@@ -153,6 +153,26 @@ describe('TicketWorkbench — organization record link', () => {
     expect(link).toHaveTextContent('Globex Inc');
   });
 
+  it('shows the customer-facing number as #CODE beside the Breeze number (#12775)', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ ticketNumber: 'PYNN5Y1GLB' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.getByTestId('ticket-workbench-number')).toHaveTextContent('T-2026-0001');
+    expect(screen.getByTestId('ticket-workbench-customer-number')).toHaveTextContent('#PYNN5Y1GLB');
+  });
+
+  it('omits the customer-number chip when there is none or it is the displayed number (#12775)', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ ticketNumber: null }) });
+    const { unmount } = render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-workbench-customer-number')).toBeNull();
+    unmount();
+    mockTicketApi({ 'tk-1': makeTicket({ internalNumber: null, ticketNumber: 'PYNN5Y1GLB' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-workbench-customer-number')).toBeNull();
+  });
+
   it('omits trailing whitespace from a ticket context with an empty subject', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ subject: '' }) });
     render(<TicketWorkbench ticketId="tk-1" />);

@@ -86,6 +86,10 @@ export default function TicketFocusHeader({
         <div className="min-w-0 flex-1 basis-80">
           <div className="flex min-w-0 items-start gap-2">
             <span className="shrink-0 pt-1 font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-number">{ticketDisplayNumber(ticket)}</span>
+            {ticket.ticketNumber && ticket.ticketNumber !== ticketDisplayNumber(ticket) && (
+              // The number the customer reads in the portal and the acknowledgement (#CODE), so a technician can confirm a match.
+              <span className="shrink-0 pt-1 font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-customer-number">#{ticket.ticketNumber}</span>
+            )}
             {editingSubject ? (
               <input
                 type="text"
