@@ -93,16 +93,17 @@ func TestOriginalsGuard_MemoryFollowsSelection(t *testing.T) {
 // runs often (GOGC 5), and a finalizer re-armed at every cycle reads the
 // heap that cycle left live.
 //
-// The figure is exact only when every collection stops the world
-// (stopTheWorldGODEBUG). A concurrent collection also counts as live
-// whatever is allocated while it marks, garbage included, so the peak over
-// the hundreds of cycles a 200k-original restore runs is set by whichever
-// cycle marked longest: with concurrent collection the 200k figure spread
-// from 0.5 MB to 2.9 MB over 200 runs of the same code (to 4.1 MB under
-// -race), with no trend across a run's cycles and nothing from the restore
-// in a heap profile taken at the peak. With every collection stopping the
-// world it spread from 24 KB to 201 KB over 450 runs (default, GOMAXPROCS=1
-// and -race).
+// Each cycle's figure is what was reachable at that instant only when every
+// collection stops the world (stopTheWorldGODEBUG). A concurrent collection
+// also counts as live whatever is allocated while it marks, garbage
+// included, so the peak over the hundreds of cycles a 200k-original restore
+// runs is set by whichever cycle marked longest. With concurrent collection
+// the 200k growth figure (not the 200k−10k difference) spread from 0.5 MB
+// to 2.9 MB over 200 runs of the same code (to 4.1 MB over 52 -race runs), with
+// no trend across a run's cycles and nothing from the restore in a heap
+// profile taken at the peak. With every collection stopping the world the
+// same figure spread from 24 KB to 201 KB over 450 runs (default,
+// GOMAXPROCS=1 and -race).
 func peakLiveHeapDuring(fn func()) (before, peak int64) {
 	sample := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
 	read := func() int64 {
@@ -169,13 +170,26 @@ func gcStopsTheWorld(godebug string) bool {
 // The child's GODEBUG stops the world whatever the parent's says, and the
 // child's check reads the setting the runtime applies (the last one).
 func TestStopTheWorldGODEBUG_OverridesParent(t *testing.T) {
-	for parent, want := range map[string]bool{"": false, "gcstoptheworld=1": true, "x=1,gcstoptheworld=2": true, "gcstoptheworld=1,gcstoptheworld=0": false, "gcstoptheworld=10": false} {
-		if got := gcStopsTheWorld(parent); got != want {
-			t.Errorf("gcStopsTheWorld(%q) = %v, want %v", parent, got, want)
+	cases := []struct {
+		parent    string
+		stops     bool   // gcStopsTheWorld(parent)
+		childWant string // stopTheWorldGODEBUG(parent)
+	}{
+		{"", false, "GODEBUG=gcstoptheworld=1"},
+		{"gcstoptheworld=1", true, "GODEBUG=gcstoptheworld=1,gcstoptheworld=1"},
+		{"x=1,gcstoptheworld=2", true, "GODEBUG=x=1,gcstoptheworld=2,gcstoptheworld=1"},
+		{"gcstoptheworld=1,gcstoptheworld=0", false, "GODEBUG=gcstoptheworld=1,gcstoptheworld=0,gcstoptheworld=1"},
+		{"gcstoptheworld=0", false, "GODEBUG=gcstoptheworld=0,gcstoptheworld=1"},
+		{"gcstoptheworld=10", false, "GODEBUG=gcstoptheworld=10,gcstoptheworld=1"},
+		{"gcstoptheworld=", false, "GODEBUG=gcstoptheworld=,gcstoptheworld=1"},
+	}
+	for _, c := range cases {
+		if got := gcStopsTheWorld(c.parent); got != c.stops {
+			t.Errorf("gcStopsTheWorld(%q) = %v, want %v", c.parent, got, c.stops)
 		}
-		child, ok := strings.CutPrefix(stopTheWorldGODEBUG(parent), "GODEBUG=")
-		if !ok || !gcStopsTheWorld(child) || !strings.HasPrefix(child, parent) {
-			t.Errorf("parent GODEBUG %q: child gets %q; want the parent's settings kept and every collection stopping the world", parent, child)
+		child := stopTheWorldGODEBUG(c.parent)
+		if child != c.childWant || !gcStopsTheWorld(strings.TrimPrefix(child, "GODEBUG=")) {
+			t.Errorf("parent GODEBUG %q: child gets %q, want %q (the parent's settings kept, every collection stopping the world)", c.parent, child, c.childWant)
 		}
 	}
 }
