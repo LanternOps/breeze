@@ -142,6 +142,11 @@ type crawlResult struct {
 type activeCrawl struct {
 	sourceID string
 	cancel   context.CancelFunc
+	// cancelled is set once the loop has cancelled this crawl. It still
+	// occupies the single crawl slot until its result arrives, but it will
+	// not finish its source, so a poll in the meantime must queue that
+	// source again instead of treating it as already being crawled.
+	cancelled bool
 }
 
 type watchRegistration struct {
@@ -242,6 +247,12 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 			}
 		}
 
+		cancelRunning := func() {
+			if running != nil {
+				running.cancel()
+				running.cancelled = true
+			}
+		}
 		stopWatches := func() {
 			for id, watcher := range watchers {
 				watcher.stop()
@@ -249,9 +260,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 			}
 		}
 		cancelActivity := func() {
-			if running != nil {
-				running.cancel()
-			}
+			cancelRunning()
 			stopWatches()
 			queue = queue[:0]
 			clear(queued)
@@ -303,7 +312,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 
 			if running != nil {
 				if _, exists := desired[running.sourceID]; !exists {
-					running.cancel()
+					cancelRunning()
 				}
 			}
 
@@ -339,7 +348,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 				if _, active := desired[src.ID]; !active || !isSourceDue(now, src) {
 					continue
 				}
-				if queued[src.ID] || (running != nil && running.sourceID == src.ID) {
+				if queued[src.ID] || (running != nil && running.sourceID == src.ID && !running.cancelled) {
 					continue
 				}
 				queue = append(queue, crawlRequest{src: src, limits: config.Limits})
