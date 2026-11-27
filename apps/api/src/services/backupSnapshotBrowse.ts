@@ -5,7 +5,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 import { backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { readableIndexCondition } from './backupRestoreIntegrity';
-import { snapshotIndexEntries, type SnapshotIndexEntries } from './backupSnapshotIndexEntries';
+import { disableJitForIndexReads, snapshotIndexEntries, type SnapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { createSelectionResolver, normalizeSnapshotPath, type SelectedSnapshotPathsResolution } from './backupSelectedPaths';
 import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
 
@@ -58,6 +58,10 @@ async function withStatementTimeout<T>(boundMs: number, query: (tx: Executor) =>
   try {
     return await db.transaction(async (tx) => {
       const priorMs = await tightenStatementTimeout(tx, boundMs);
+      // Every query run here reads the file index, so JIT goes off
+      // (disableJitForIndexReads). Unlike statement_timeout it is not put
+      // back: a released savepoint keeps it for the rest of the request.
+      await disableJitForIndexReads(tx);
       const result = await query(tx);
       if (lockTimeoutWasChanged(priorMs, boundMs)) {
         await tx.execute(sql`SELECT set_config('statement_timeout', ${`${priorMs}ms`}, true)`);
@@ -204,6 +208,37 @@ export type SelectionWalkOptions = {
 };
 
 /**
+ * Runs one selection page's statement (readableSourcePathPageQuery) in its own
+ * savepoint (withStatementTimeout: the page's timeout, JIT off) with sorts
+ * disabled, so its plan is the merge of the two ordered index ranges, and puts
+ * the request's enable_sort back after a page that succeeded. A page that
+ * fails rolls the savepoint back, and the setting with it: no restore runs in
+ * an aborted transaction, where it would hide the page's own error.
+ *
+ * Why (#12741): the read layer's checkpoint id is only known at run time, so
+ * the planner estimates a checkpoint's entries as the table's rows over its
+ * distinct checkpoints. Among many small checkpoints a large one looks tiny,
+ * and for keyset positions near its end the planner then read the rest of
+ * the checkpoint and top-N sorted it: measured with a 1,000,000-entry
+ * checkpoint among 3,000 of 20 entries on Postgres 16, 178,200 rows and 1.2
+ * to 1.9 s for such pages, and the walk passed its 30 s deadline. Every leg
+ * has an index in source_path order, so with sorts disabled the ordered path
+ * is always available (pinned by backupSnapshotIndexSkewedPlans.integration.test.ts).
+ * Exported so that test can EXPLAIN a page under exactly these settings.
+ */
+export async function withSelectionPagePlan<T>(boundMs: number, read: (tx: Executor) => Promise<T>): Promise<T> {
+  return withStatementTimeout(boundMs, async (tx) => {
+    const [setting] = (await tx.execute(sql`
+      SELECT current_setting('enable_sort') AS prior, set_config('enable_sort', 'off', true) AS applied
+    `)) as unknown as Array<{ prior: string }>;
+    if (!setting) throw new Error('withSelectionPagePlan: reading enable_sort returned no row');
+    const result = await read(tx);
+    await tx.execute(sql`SELECT set_config('enable_sort', ${setting.prior}, true)`);
+    return result;
+  });
+}
+
+/**
  * The readable rows in keyset pages. Each page is one statement under its own
  * timeout (never more than what is left of the walk's deadline); a page that
  * runs out of time, or a walk past its deadline, ends with
@@ -220,7 +255,7 @@ async function* readableSourcePaths(
     const remaining = endsAt - Date.now();
     if (remaining <= 0) throw new IndexQueryTimeoutError();
     const cursor = after;
-    const page: ReadableSourcePath[] = await withStatementTimeout(
+    const page: ReadableSourcePath[] = await withSelectionPagePlan(
       Math.max(1, Math.min(pageTimeoutMs, remaining)),
       (tx) => readableSourcePathPageQuery(snapshotDbId, cursor, tx),
     );

@@ -64,6 +64,8 @@ const froms = vi.hoisted(() => [] as unknown[]);
 
 vi.mock('../db', () => ({
   db: {
+    // disableJitForIndexReads before the membership read (#12741).
+    execute: vi.fn(async () => []),
     select: vi.fn(() => {
       const chain: Record<string, any> = {};
       chain.from = vi.fn((source: unknown) => {

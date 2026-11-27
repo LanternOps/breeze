@@ -4,6 +4,21 @@
  * can use them without opening a pool.
  */
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+
+const DESTINATION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+
+/**
+ * Where the API reads a local destination: <BACKUP_LOCAL_ROOT>/<org id>/<config id>/
+ * (services/apiLocalBackupStorage.ts). The destination's stored path is the
+ * agent's path on the device and the API never reads it, so a manifest written
+ * anywhere else fails hydration with "API local backup storage is unavailable".
+ */
+export function apiLocalDestinationDir(localRoot: string, orgId: string, configId: string): string {
+  if (!DESTINATION_ID.test(orgId)) throw new Error(`not a usable org id for a destination directory: ${orgId}`);
+  if (!DESTINATION_ID.test(configId)) throw new Error(`not a usable config id for a destination directory: ${configId}`);
+  return join(localRoot, orgId, configId);
+}
 
 export const LARGEST_FOLDER = 'C:\\Data\\Archive\\2026\\Exports\\largest';
 
@@ -144,15 +159,17 @@ export function hydrationRunBreaches(run: HydrationRunFigures, { heapLimited }: 
 export function acceptanceBreaches(figures: {
   defaultLimit: HydrationRunFigures;
   heapLimited: HydrationRunFigures;
-  /** The publish ANALYZEd backup_snapshot_files itself (#11209). */
+  /** The publish ANALYZEd the table it wrote itself (#11209). */
   statisticsRefreshed: boolean;
+  /** The table the publish wrote: backup_snapshot_files, or the checkpoint entries for a delta publish. */
+  analyzedTable?: 'backup_snapshot_files' | 'backup_tree_checkpoint_entries';
   browseRootMs: number;
   selectLargestFolderMs: number;
 }): string[] {
   return [
     ...hydrationRunBreaches(figures.defaultLimit, { heapLimited: false }).map((b) => `default heap limit: ${b}`),
     ...hydrationRunBreaches(figures.heapLimited, { heapLimited: true }).map((b) => `1 GB heap limit: ${b}`),
-    ...(figures.statisticsRefreshed ? [] : ['the publish did not ANALYZE backup_snapshot_files, so the readings ran on stale statistics']),
+    ...(figures.statisticsRefreshed ? [] : [`the publish did not ANALYZE ${figures.analyzedTable ?? 'backup_snapshot_files'}, so the readings ran on stale statistics`]),
     ...(figures.browseRootMs >= BROWSE_ROOT_BOUND_MS
       ? [`browse root right after the publish ${figures.browseRootMs} ms (bound < ${BROWSE_ROOT_BOUND_MS})`]
       : []),

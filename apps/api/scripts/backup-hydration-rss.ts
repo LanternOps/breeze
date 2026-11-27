@@ -16,6 +16,9 @@
  *
  * `run` resets the index and starts `measure` once per run. To prove the sampler
  * sees memory, `--ballast-mb 400` holds that many extra bytes during the window.
+ * BACKUP_INDEX_DELTA_PUBLISH in the caller's environment picks the format
+ * (`on`: the run publishes a first checkpoint, `off` or unset: rows); `run`
+ * checks that the snapshot was published in that format.
  *
  * Diagnostics, which change the figure they explain, so never quote them as the
  * measurement: `--gc-every-ms 5000` forces a GC on a timer and reports the live
@@ -45,7 +48,13 @@ import { parseArgs, promisify } from 'node:util';
 import { getHeapStatistics } from 'node:v8';
 import { Session } from 'node:inspector/promises';
 import postgres from 'postgres';
-import { HEAP_LIMIT_FLAG, hydrationManifestChunks, summarizeRuns, type HydrationRunFigures } from './backup-hydration-rss.lib';
+import {
+  apiLocalDestinationDir,
+  HEAP_LIMIT_FLAG,
+  hydrationManifestChunks,
+  summarizeRuns,
+  type HydrationRunFigures,
+} from './backup-hydration-rss.lib';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const API_ROOT = resolve(dirname(SCRIPT), '..');
@@ -66,6 +75,12 @@ export type HydrationRssState = {
   manifestSha256: string;
   provider: { type: 'local'; config: { path: string } };
   storageIdentity: string;
+  /**
+   * BACKUP_LOCAL_ROOT for the measured process. The API reads a local
+   * destination only below <BACKUP_LOCAL_ROOT>/<org id>/<config id>/, never
+   * from the destination's stored path (the agent's path on the device).
+   */
+  localRoot: string;
 };
 
 const toMb = (bytes: number) => Math.round(bytes / MB);
@@ -100,17 +115,23 @@ async function prepare(entries: number, dirArg: string): Promise<void> {
   const { normalizeStorageIdentity } = await import('../src/services/backupStorageIdentity');
   await autoMigrate();
 
-  const snapshotId = `snapshot-20261112T120000Z-${randomBytes(12).toString('hex')}`;
-  const manifestKey = `snapshots/${snapshotId}/manifest.json`;
-  const manifestPath = join(dir, 'storage', manifestKey);
-  const written = await writeManifest(manifestPath, snapshotId, entries);
-
-  const config = { path: join(dir, 'storage') };
-  const storageIdentity = normalizeStorageIdentity('local', config);
   const ids = {
     partner: randomUUID(), org: randomUUID(), site: randomUUID(), device: randomUUID(),
     config: randomUUID(), job: randomUUID(), snapshot: randomUUID(),
   };
+  const snapshotId = `snapshot-20261112T120000Z-${randomBytes(12).toString('hex')}`;
+  const manifestKey = `snapshots/${snapshotId}/manifest.json`;
+  // The API-side layout: the operator root, then one directory per org and
+  // storage configuration, both ids from the database rows seeded below.
+  const localRoot = join(dir, 'storage');
+  const destinationDir = apiLocalDestinationDir(localRoot, ids.org, ids.config);
+  const manifestPath = join(destinationDir, manifestKey);
+  const written = await writeManifest(manifestPath, snapshotId, entries);
+
+  // The stored path is the agent's, never read by the API; it only feeds the
+  // storage identity.
+  const config = { path: destinationDir };
+  const storageIdentity = normalizeStorageIdentity('local', config);
   const client = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
   try {
     const stamp = randomBytes(6).toString('hex');
@@ -146,6 +167,7 @@ async function prepare(entries: number, dirArg: string): Promise<void> {
     manifestSha256: written.sha256,
     provider: { type: 'local', config },
     storageIdentity,
+    localRoot,
   };
   writeFileSync(join(dir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
   console.log(JSON.stringify(state));
@@ -188,6 +210,8 @@ async function measure(state: HydrationRssState, opts: MeasureOptions): Promise<
   const { ballastMb, gcEveryMs, heapProfileAtMs } = opts;
   if (typeof (globalThis as { gc?: unknown }).gc !== 'function') throw new Error('run with node --expose-gc');
   process.env.PATCH_REPORT_STORAGE_PATH ||= join(state.dir, 'data', 'patch-reports');
+  if (!state.localRoot) throw new Error('state.json has no localRoot (written before the API-local layout); run prepare again');
+  process.env.BACKUP_LOCAL_ROOT = state.localRoot;
   await loadTestEnv();
   const { hydrateSnapshotFileIndex } = await import('../src/services/backupSnapshotFileIndex');
 
@@ -258,6 +282,13 @@ async function measure(state: HydrationRssState, opts: MeasureOptions): Promise<
     entries: state.entries,
     manifestMb: toMb(state.manifestBytes),
     outcome: outcome.status === 'complete' ? { status: outcome.status, entryCount: outcome.entryCount, manifestSha256: outcome.manifestSha256 } : outcome,
+    // What the publish wrote, apart from the outcome so the outcome compares
+    // equal in both formats: backup_snapshot_files rows (the tree in 'rows',
+    // adds plus tombstones in 'delta') and checkpoint entries.
+    written: outcome.status === 'complete'
+      ? { rowsWritten: outcome.rowsWritten, checkpointEntriesWritten: outcome.checkpointEntriesWritten }
+      : null,
+    deltaPublish: process.env.BACKUP_INDEX_DELTA_PUBLISH ?? 'off',
     wallMs,
     baselineRssMb: toMb(baseline.rss),
     baselineHeapUsedMb: toMb(baseline.heapUsed),
@@ -288,25 +319,57 @@ async function measure(state: HydrationRssState, opts: MeasureOptions): Promise<
   process.exit(0);
 }
 
-/** Puts the snapshot back to never-indexed, so every run does the whole job. */
+/**
+ * Puts the snapshot back to never-indexed, so every run does the whole job, in
+ * either format: its pointer is cleared before the checkpoints go (the pointer
+ * FK is ON DELETE RESTRICT). The entries are truncated, like the rows: a DELETE
+ * of a million entries would leave autovacuum working the table while the next
+ * run publishes, and the publish's statistics refresh (LOCK ... NOWAIT) would
+ * then report it busy and leave the readings on stale statistics. The headers
+ * are deleted, not truncated, so nothing cascades to backup_snapshots.
+ */
 async function resetIndex(state: HydrationRssState): Promise<void> {
   const client = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
   try {
+    // The truncates are whole-table: refuse unless every file-index row
+    // belongs to this run's snapshot and device.
+    const [others] = await client<[{ files: number; checkpoints: number }]>`
+      SELECT (SELECT count(*)::int FROM backup_snapshot_files WHERE snapshot_db_id <> ${state.snapshotDbId}) AS files,
+             (SELECT count(*)::int FROM backup_tree_checkpoints WHERE device_id <> ${state.deviceId}) AS checkpoints`;
+    if (others.files > 0 || others.checkpoints > 0) {
+      throw new Error(`refusing to reset: the test database holds other snapshots' file-index rows (${others.files}) or other devices' checkpoints (${others.checkpoints})`);
+    }
     await client`TRUNCATE backup_snapshot_files`;
     await client`UPDATE backup_snapshots
       SET file_index_status = 'none', file_index_manifest_sha256 = NULL, file_index_hydrated_at = NULL,
-          file_index_external_count = NULL, file_index_error = NULL
+          file_index_external_count = NULL, file_index_error = NULL,
+          file_index_format = 'rows', file_index_checkpoint_id = NULL
       WHERE id = ${state.snapshotDbId}`;
+    await client`TRUNCATE backup_tree_checkpoint_entries`;
+    await client`DELETE FROM backup_tree_checkpoints WHERE device_id = ${state.deviceId}`;
   } finally {
     await client.end();
   }
 }
 
-async function indexedRows(state: HydrationRssState): Promise<number> {
+/** The snapshot's indexed tree size in its published format, and how it is stored. */
+export type IndexedRows = { rows: number; format: string; snapshotRows: number; checkpointEntries: number };
+
+async function indexedRows(state: HydrationRssState): Promise<IndexedRows> {
   const client = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
   try {
-    const [row] = await client<[{ n: number }]>`SELECT count(*)::int AS n FROM backup_snapshot_files WHERE snapshot_db_id = ${state.snapshotDbId}`;
-    return row.n;
+    // The read layer's tree: a 'rows' snapshot's own rows; a 'delta' snapshot's
+    // checkpoint entries minus its tombstones plus its adds.
+    const [row] = await client<[{ format: string; snapshot_rows: number; adds: number; tombstones: number; checkpoint_entries: number }]>`
+      SELECT s.file_index_format AS format,
+             (SELECT count(*)::int FROM backup_snapshot_files f WHERE f.snapshot_db_id = s.id) AS snapshot_rows,
+             (SELECT count(*)::int FROM backup_snapshot_files f WHERE f.snapshot_db_id = s.id AND f.checkpoint_entry_no IS NULL) AS adds,
+             (SELECT count(*)::int FROM backup_snapshot_files f WHERE f.snapshot_db_id = s.id AND f.checkpoint_entry_no IS NOT NULL) AS tombstones,
+             (SELECT count(*)::int FROM backup_tree_checkpoint_entries e WHERE e.checkpoint_id = s.file_index_checkpoint_id) AS checkpoint_entries
+        FROM backup_snapshots s WHERE s.id = ${state.snapshotDbId}`;
+    if (!row) throw new Error(`snapshot ${state.snapshotDbId} is gone`);
+    const rows = row.format === 'delta' ? row.checkpoint_entries - row.tombstones + row.adds : row.snapshot_rows;
+    return { rows, format: row.format, snapshotRows: row.snapshot_rows, checkpointEntries: row.checkpoint_entries };
   } finally {
     await client.end();
   }
@@ -337,9 +400,14 @@ async function runMeasurements(statePath: string, runs: number, outPath: string 
   for (let i = 0; i < runs; i += 1) {
     await resetIndex(state);
     const result = (await measureInFreshProcess(statePath, opts, nodeFlags)) as Record<string, unknown> & HydrationRunFigures;
-    const rows = await indexedRows(state);
+    const indexed = await indexedRows(state);
+    const { rows } = indexed;
     if (rows !== state.entries) throw new Error(`run ${i + 1}: ${rows} rows, expected ${state.entries}: ${JSON.stringify(result.outcome)}`);
-    results.push({ ...result, rows });
+    const expectedFormat = (process.env.BACKUP_INDEX_DELTA_PUBLISH ?? 'off') === 'on' ? 'delta' : 'rows';
+    if (indexed.format !== expectedFormat) {
+      throw new Error(`run ${i + 1}: published as ${indexed.format}, expected ${expectedFormat} (BACKUP_INDEX_DELTA_PUBLISH=${process.env.BACKUP_INDEX_DELTA_PUBLISH ?? 'unset'})`);
+    }
+    results.push({ ...result, rows, indexed });
     const { series: _series, liveHeap: _liveHeap, heapProfile: _heapProfile, ...line } = result;
     console.log(`run ${i + 1}/${runs} ${JSON.stringify(line)}`);
   }

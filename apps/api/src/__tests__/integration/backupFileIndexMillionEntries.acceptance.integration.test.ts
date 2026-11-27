@@ -8,6 +8,16 @@
  *     --config vitest.integration.config.ts \
  *     src/__tests__/integration/backupFileIndexMillionEntries.acceptance.integration.test.ts
  *
+ * It runs once per index format (#11736 step 2): `rows` publishes with
+ * BACKUP_INDEX_DELTA_PUBLISH=off, `delta` with it `on`, where a first snapshot
+ * of its lineage writes a checkpoint and reads through it. Narrow it with
+ * BREEZE_BACKUP_ACCEPTANCE_FORMATS=rows (or delta); the output file then gets
+ * a `.rows.json` / `.delta.json` suffix per format.
+ *
+ * The manifest is written where the API reads a local destination:
+ * <BACKUP_LOCAL_ROOT>/<org id>/<config id>/ (apiLocalDestinationDir). The
+ * destination's stored path is the agent's and is never read by the API.
+ *
  * What is measured, and where. scripts/backup-hydration-rss.ts writes the manifest
  * to a file once, then each hydration runs in its own fresh Node process on the
  * production path, so these figures hold nothing of vitest's or of the fixture's:
@@ -55,11 +65,19 @@ import {
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { verifySnapshotAttestation, type AttestationVerifyDeps } from '../../services/backupAttestationVerify';
 import { listSnapshotDirectory, resolveSelectedSnapshotPathsInDb, searchSnapshotFiles } from '../../services/backupSnapshotBrowse';
+import { snapshotIndexEntries } from '../../services/backupSnapshotIndexEntries';
 import { orgContext } from './backupWriteFixtures';
 
 const run = it.runIf(!!process.env.DATABASE_URL && process.env.BREEZE_BACKUP_ACCEPTANCE === '1');
 
 const TOTAL_ENTRIES = 1_100_000;
+type IndexFormat = 'rows' | 'delta';
+const FORMATS: IndexFormat[] = (process.env.BREEZE_BACKUP_ACCEPTANCE_FORMATS ?? 'rows,delta')
+  .split(',')
+  .map((f) => f.trim())
+  .filter((f): f is IndexFormat => f === 'rows' || f === 'delta');
+/** The publish flag that makes a fresh lineage publish in `format`. */
+const FLAG_FOR: Record<IndexFormat, string> = { rows: 'off', delta: 'on' };
 const API_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const execFileAsync = promisify(execFile);
 
@@ -76,6 +94,7 @@ type RssToolState = {
   manifestSha256: string;
   provider: { type: string; config: Record<string, unknown> };
   storageIdentity: string;
+  localRoot: string;
 };
 
 type RssToolRun = HydrationRunFigures & {
@@ -84,22 +103,26 @@ type RssToolRun = HydrationRunFigures & {
   peakHeapUsedMb: number;
   eventLoopMaxMs: number;
   outcome: unknown;
+  written: { rowsWritten: number; checkpointEntriesWritten: number } | null;
 };
 
 /** A NODE_OPTIONS from the caller's shell would quietly move the default heap limit. */
-async function rssTool(args: string[]): Promise<void> {
+async function rssTool(args: string[], extraEnv: Record<string, string> = {}): Promise<void> {
   const { NODE_OPTIONS: _callersHeapLimit, ...env } = process.env;
   await execFileAsync(process.execPath, ['--import', 'tsx', 'scripts/backup-hydration-rss.ts', ...args], {
     cwd: API_ROOT,
-    env,
+    env: { ...env, ...extraEnv },
     maxBuffer: 64 * 1024 * 1024,
   });
 }
 
 /** One hydration in a fresh process. Resets the index first, so each does the whole job. */
-async function hydrateInOwnProcess(dir: string, name: string, nodeFlags: string | null): Promise<RssToolRun> {
+async function hydrateInOwnProcess(dir: string, name: string, nodeFlags: string | null, format: IndexFormat): Promise<RssToolRun> {
   const out = join(dir, `${name}.json`);
-  await rssTool(['run', '--state', join(dir, 'state.json'), '--runs', '1', '--out', out, ...(nodeFlags ? [`--node-flags=${nodeFlags}`] : [])]);
+  await rssTool(
+    ['run', '--state', join(dir, 'state.json'), '--runs', '1', '--out', out, ...(nodeFlags ? [`--node-flags=${nodeFlags}`] : [])],
+    { BACKUP_INDEX_DELTA_PUBLISH: FLAG_FOR[format] },
+  );
   const { results } = JSON.parse(readFileSync(out, 'utf8')) as { results: RssToolRun[] };
   return results[0]!;
 }
@@ -107,6 +130,7 @@ async function hydrateInOwnProcess(dir: string, name: string, nodeFlags: string 
 const hydrationFigures = (r: RssToolRun) => ({
   wallMs: r.wallMs,
   rows: r.rows,
+  written: r.written,
   peakRssDeltaMb: r.peakRssDeltaMb,
   peakHeapUsedMb: r.peakHeapUsedMb,
   postGcHeapDeltaMb: r.postGcHeapDeltaMb,
@@ -146,27 +170,29 @@ async function timed<T>(work: () => Promise<T>): Promise<{ result: T; ms: number
   return { result, ms: Math.round(performance.now() - started) };
 }
 
-describe('file index acceptance at 1.1M entries', () => {
+describe.each(FORMATS)('file index acceptance at 1.1M entries, %s format', (format) => {
   run('hydrates, verifies, browses, searches and selects within the plan\'s bounds', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'breeze-acceptance-'));
+    // The table this format's publish writes, and so ANALYZEs (#11209).
+    const publishedTable = format === 'delta' ? 'backup_tree_checkpoint_entries' as const : 'backup_snapshot_files' as const;
 
     try {
       await rssTool(['prepare', '--entries', String(TOTAL_ENTRIES), '--dir', dir]);
       const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as RssToolState;
       const { snapshotId, snapshotDbId } = state;
 
-      const atDefaultLimit = await hydrateInOwnProcess(dir, 'default-heap-limit', null);
+      const atDefaultLimit = await hydrateInOwnProcess(dir, 'default-heap-limit', null, format);
       const [heapLimitedStarted] = (await withSystemDbAccessContext(() =>
         db.execute(sql`SELECT now()::text AS at`),
       )) as unknown as Array<{ at: string }>;
       // Last, so the index the reads below see is the one this run published.
-      const heapLimited = await hydrateInOwnProcess(dir, 'heap-limited', HEAP_LIMIT_FLAG);
+      const heapLimited = await hydrateInOwnProcess(dir, 'heap-limited', HEAP_LIMIT_FLAG, format);
       // On this dedicated test database, a manual ANALYZE (last_analyze;
       // autovacuum sets last_autoanalyze) since that hydration began can only
       // be its own (#11209).
       const [stat] = (await withSystemDbAccessContext(() => db.execute(sql`
         SELECT last_analyze > ${heapLimitedStarted!.at}::timestamptz AS refreshed
-        FROM pg_stat_all_tables WHERE relname = 'backup_snapshot_files'
+        FROM pg_stat_all_tables WHERE relname = ${publishedTable}
       `))) as unknown as Array<{ refreshed: boolean | null }>;
       const statisticsRefreshed = stat?.refreshed === true;
 
@@ -193,15 +219,20 @@ describe('file index acceptance at 1.1M entries', () => {
         defer: async () => ({ attemptCount: 1, parked: false }),
       };
 
-      const [rowCount] = (await withSystemDbAccessContext(() =>
-        db.execute(sql`
-          SELECT count(*)::int AS n,
-                 count(*) FILTER (WHERE kind = 'dir')::int AS dirs,
-                 count(*) FILTER (WHERE kind = 'symlink')::int AS symlinks,
-                 count(*) FILTER (WHERE kind IS NULL AND backup_path <> '')::int AS files
-          FROM backup_snapshot_files WHERE snapshot_db_id = ${snapshotDbId}
-        `),
-      )) as unknown as Array<{ n: number; dirs: number; symlinks: number; files: number }>;
+      // The tree as every reader sees it, through the one read layer, in
+      // either format.
+      const entries = snapshotIndexEntries(snapshotDbId);
+      const [rowCount] = await withSystemDbAccessContext(() =>
+        db.select({
+          n: sql<number>`count(*)::int`,
+          dirs: sql<number>`count(*) FILTER (WHERE ${entries.kind} = 'dir')::int`,
+          symlinks: sql<number>`count(*) FILTER (WHERE ${entries.kind} = 'symlink')::int`,
+          files: sql<number>`count(*) FILTER (WHERE ${entries.kind} IS NULL AND ${entries.backupPath} <> '')::int`,
+        }).from(entries),
+      );
+      const [stored] = (await withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT file_index_format AS format FROM backup_snapshots WHERE id = ${snapshotDbId}`),
+      )) as unknown as Array<{ format: string }>;
 
       const read = <T,>(fn: () => Promise<T>) =>
         runOutsideDbContext(() => withDbAccessContext(orgContext(state.orgId), fn));
@@ -235,10 +266,13 @@ describe('file index acceptance at 1.1M entries', () => {
         defaultLimit: atDefaultLimit,
         heapLimited,
         statisticsRefreshed,
+        analyzedTable: publishedTable,
         browseRootMs: browseRoot.ms,
         selectLargestFolderMs: selection.wallMs,
       });
       const report = {
+        format,
+        storedFormat: stored!.format,
         entries: TOTAL_ENTRIES,
         manifestMb: Math.round(state.manifestBytes / (1024 * 1024)),
         rows: rowCount!.n,
@@ -255,8 +289,10 @@ describe('file index acceptance at 1.1M entries', () => {
       // are the point of a pass.
       process.stdout.write(`ACCEPTANCE ${JSON.stringify(report)}\n`);
       process.stdout.write(`ACCEPTANCE peak RSS delta at the default heap limit: ${atDefaultLimit.peakRssDeltaMb} MB (recorded, not asserted)\n`);
-      if (process.env.BREEZE_BACKUP_ACCEPTANCE_OUT) writeFileSync(process.env.BREEZE_BACKUP_ACCEPTANCE_OUT, `${JSON.stringify(report, null, 2)}\n`);
+      const outPath = process.env.BREEZE_BACKUP_ACCEPTANCE_OUT;
+      if (outPath) writeFileSync(outPath.replace(/(\.json)?$/, `.${format}.json`), `${JSON.stringify(report, null, 2)}\n`);
 
+      expect(stored!.format).toBe(format);
       expect(verification.result).toEqual({ outcome: 'verified' });
       expect(rowCount!.n).toBe(TOTAL_ENTRIES);
       const kinds = manifestEntryKindCounts(TOTAL_ENTRIES);

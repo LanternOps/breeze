@@ -12,7 +12,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, backupSnapshots } from '../db/schema/backup';
-import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
+import { disableJitForIndexReads, snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { INDEX_BINDABLE_ATTESTATION_STATUSES, indexFailedOnAttestation } from './backupRestoreIntegrity';
 
@@ -170,6 +170,7 @@ export async function readSnapshotIndexView(
   snapshotDbId: string,
   orgId: string,
 ): Promise<(SnapshotIndexViewOutcome & { id: string; fileCount: number | null }) | null> {
+  await disableJitForIndexReads(db);
   const [row] = await db
     .select({
       id: backupSnapshots.id,

@@ -241,3 +241,33 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
 }
 
 export type SnapshotIndexEntries = ReturnType<typeof snapshotIndexEntries>;
+
+/**
+ * Turns JIT off for the rest of the reader's transaction, before it runs a
+ * statement built on snapshotIndexEntries. Every reader calls it on the same
+ * executor it then reads with, and so does the delta publisher before its
+ * diff (#12741).
+ *
+ * Why: the planner prices these statements at about 470,000 to 510,000 once
+ * backup_tree_checkpoint_entries has statistics with rows (the checkpoint
+ * leg's id is only known at run time, so its rows get a generic estimate,
+ * times a per-row tombstone probe), while they run in a few milliseconds.
+ * Above jit_above_cost (100,000 by default) a server with JIT support
+ * compiles each one: a 5,000-row selection page measured 110 ms instead of
+ * 3.4 ms on Postgres 16, about 900 ms once past jit_optimize_above_cost, and
+ * a 1.1M-entry selection walk 28 s instead of 6 s. The statement does not
+ * depend on the format, so rows-format snapshots paid it too as soon as any
+ * checkpoint existed.
+ *
+ * Transaction-local (set_config(..., true)): it lasts until the reader's
+ * transaction ends or its savepoint rolls back, so later statements of the
+ * same request also run without JIT. A no-op where Postgres has no JIT.
+ *
+ * Precondition: `executor` is the transaction the read then runs in (the
+ * request's, a savepoint of it, or the hydrator's). On the bare pool, outside
+ * any DB context, the setting would apply to that one statement only; every
+ * caller runs inside withDbAccessContext or withSystemDbAccessContext.
+ */
+export async function disableJitForIndexReads(executor: { execute: (query: SQL) => Promise<unknown> }): Promise<void> {
+  await executor.execute(sql`SELECT set_config('jit', 'off', true)`);
+}

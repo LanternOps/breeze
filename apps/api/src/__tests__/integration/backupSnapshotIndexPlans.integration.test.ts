@@ -28,7 +28,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
-import { readableSourcePathPageQuery } from '../../services/backupSnapshotBrowse';
+import { readableSourcePathPageQuery, withSelectionPagePlan } from '../../services/backupSnapshotBrowse';
 import { indexedKeysQuery } from '../../services/backupStorageSessionStore';
 import { referenceMembershipQuery } from '../../services/recoveryDownloadService';
 import {
@@ -180,6 +180,23 @@ async function explain(orgId: string, statement: { getSQL(): SQL }): Promise<Fla
   }));
 }
 
+/**
+ * EXPLAIN of a selection page under the settings the selection walk runs it
+ * with (withSelectionPagePlan: its own savepoint, JIT and sorts off, #12741).
+ * Bare, the planner's choice for the page varied with the statistics: on one
+ * Postgres 16 run it read the checkpoint by its primary key and sorted.
+ */
+async function explainSelectionPage(orgId: string, snapshotDbId: string): Promise<FlatPlanNode[]> {
+  return runOutsideDbContext(() => withDbAccessContext(orgContext(orgId), () =>
+    withSelectionPagePlan(30_000, async (tx) => {
+      const rows = (await tx.execute(sql`EXPLAIN (FORMAT JSON) ${readableSourcePathPageQuery(snapshotDbId, null, tx).getSQL()}`)) as unknown as Array<{ 'QUERY PLAN': Array<{ Plan: PlanNode }> }>;
+      const plan = rows[0]!['QUERY PLAN'][0]!.Plan;
+      if (process.env.PLAN_DEBUG) process.stdout.write(`PLAN ${JSON.stringify(plan)}\n`);
+      return flattenPlan(plan);
+    }),
+  ));
+}
+
 const indexNames = (scans: FlatPlanNode[]) => [...new Set(scans.map((n) => n['Index Name'] ?? `${n['Node Type']} (no index)`))];
 
 function expectNoSequentialScanOfTheIndexTables(nodes: FlatPlanNode[]) {
@@ -192,7 +209,7 @@ const SEED_TIMEOUT_MS = 120_000;
 describe('the read layer\'s plans are index ranges in both formats (#11736 R7)', () => {
   runDb('the selection keyset page reads both legs as ordered index ranges', async () => {
     const fx = await seedDelta();
-    const nodes = await explain(fx.orgId, readableSourcePathPageQuery(fx.dbId, null));
+    const nodes = await explainSelectionPage(fx.orgId, fx.dbId);
     expectNoSequentialScanOfTheIndexTables(nodes);
     const entryScans = scansOf(nodes, 'sie_entry');
     expect(indexNames(entryScans)).toEqual(['backup_tree_checkpoint_entries_checkpoint_source_idx']);
@@ -222,7 +239,7 @@ describe('the read layer\'s plans are index ranges in both formats (#11736 R7)',
 
   runDb('the rows format plans are unchanged', async () => {
     const fx = await seedRows();
-    const page = await explain(fx.orgId, readableSourcePathPageQuery(fx.dbId, null));
+    const page = await explainSelectionPage(fx.orgId, fx.dbId);
     expectNoSequentialScanOfTheIndexTables(page);
     expect(scansOf(page, 'sie_file').map((n) => [n['Index Name'], n.underSort]))
       .toEqual([['backup_snapshot_files_snapshot_source_idx', false]]);

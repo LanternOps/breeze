@@ -23,7 +23,7 @@ import {
   snapshotPredatesDeviceIncarnationSql,
 } from './backupRestoreIntegrity';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
-import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
+import { disableJitForIndexReads, snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { loadOriginKeyRootRows, type KeyRootPair } from './backupOriginKeyRoots';
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
@@ -167,6 +167,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
     // Storage keys only: a content-less row (a directory or symlink entry,
     // backup_path '', #11235) authorizes no object, so it sizes no budget.
     const entries = snapshotIndexEntries(snapshotDbId);
+    await disableJitForIndexReads(db);
     const [row] = await db
       .select({ n: count() })
       .from(entries)
@@ -230,6 +231,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
 
   async filterIndexedKeys(snapshotDbId, keys, boundManifestSha256) {
     if (keys.length === 0) return new Set();
+    await disableJitForIndexReads(db);
     const rows = await indexedKeysQuery(snapshotDbId, keys, boundManifestSha256);
     return new Set(rows.map((r) => r.backupPath));
   },
