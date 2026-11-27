@@ -51,8 +51,9 @@ export const MAX_LOGGED_RESPONSE_BODY_LENGTH = 500;
 /**
  * How much of the body the normaliser is allowed to look at.
  *
- * `safeFetch` accepts a `maxBytes` ceiling but the senders do not pass one, so
- * a hostile destination can answer with a multi-megabyte body — and
+ * A body can still be large here: the webhook sender and delivery worker read
+ * only `RESPONSE_PREFIX_MAX_BYTES` of it, but that is 64 KiB, and the Pushover
+ * and PagerDuty senders read their vendor's reply whole. And
  * `SCRIPT_OR_STYLE_BLOCK` is a lazy scan with a backreference, which degrades
  * to O(opens × length) on a body full of unclosed `<script` tags. Measured: a
  * 1 MB body of 60k unclosed opens took 45 seconds unbounded, under 1 ms
