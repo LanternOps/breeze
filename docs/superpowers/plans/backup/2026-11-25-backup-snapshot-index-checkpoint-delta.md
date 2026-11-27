@@ -4,6 +4,7 @@ anchor_issue: 11736
 related: [11745, 11743, 11733, 11209, 11235, 6488, 6464]
 baseline_commit: 03c87b9794
 status: in-progress
+progress: "W2-W4 merged; W5 measurement done (see W5 measurement); enabling the flag, and W5 Tasks 1, 3 and 4, owed"
 tracking_issue: 12737
 ---
 
@@ -769,6 +770,50 @@ Command: `cd apps/api && npx vitest run --config vitest.integration.config.ts sr
 - To retire all deltas, set their `file_index_status` to `none` in system scope. Each one re-hydrates on its next use (`force`) as `rows`, and GC then collects the unreferenced checkpoints.
   - Run it batched, with a row-count `RAISE WARNING`.
   - It is a production write, so it needs its own owner approval.
+
+### W5 measurement (2026-11-27, #12741)
+
+The measurement half of W5 is done; enabling the flag is not. The flag is `off` everywhere and its code default is unchanged. Turning it on anywhere is the owner's decision; the steps, what to watch, the rollback and the criteria for `on` are in [the canary readiness doc](2026-11-27-backup-index-delta-canary-readiness.md).
+
+**How it was measured.** `apps/api/src/__tests__/integration/backupIndexDeltaPerf.acceptance.integration.test.ts` (opt-in, `BREEZE_BACKUP_DELTA_PERF=1`, header has the knobs) on local test stacks: Postgres 16.16 (the CI and shipped major), 17 and 18, the repo's test images (`pgvector/pgvector:pgNN`, JIT available and on), `work_mem` 4 MB, `shared_buffers` 160 MB, tmpfs data directory with `fsync` off. Publishes go through the real publisher in a hydrator-shaped transaction; readers are the production functions as `breeze_app` under RLS in the org's request context; GC is the production collector. One developer laptop (18 cores, Docker VM with 16 GB), shared with other workloads, so absolute times are noisy: read them as ratios. On tmpfs a read from outside shared_buffers is a memory copy, so delete and read times are lower bounds for block storage. The 1.1M-entry acceptance run (`backupFileIndexMillionEntries`) now runs too, in both formats. Raw figures are in the PR that added this section.
+
+**Defects the measurements found, fixed in the same PR (each with a red test first):**
+
+1. **JIT compiled every index read.** Once `backup_tree_checkpoint_entries` has statistics with rows, the planner prices every statement on `snapshotIndexEntries` at about 470,000 to 510,000 (a runtime checkpoint id, times a per-row tombstone probe) while it runs in milliseconds, so a server with JIT (the shipped compose image) compiled each one: a 5,000-row selection page 110 ms instead of 3.4 ms, about 1 s past `jit_optimize_above_cost`, a 100,000-entry selection walk at 2% drift 24 s instead of 0.3 s, and the 1.1M acceptance walk 28 s against 6 s for `rows`. The statement shape is format-independent, so `rows` snapshots paid it too as soon as any checkpoint existed: a one-org canary would have slowed every org on that database. Fix: `disableJitForIndexReads` in every reader's transaction and in the publisher. Advisor check (independent model, xhigh): agreed with the targeted fix over a connection- or role-wide `jit = off`; the global option is listed under owner decisions.
+2. **The publisher's content check (D9) could go quadratic.** With statistics taken while the tables were nearly empty (a new database, or the first checkpoints after the flag goes on: a publish under 100,000 rows refreshes nothing), its anti-join ran as a nested loop re-reading the snapshot's rows per checkpoint entry: 7.96M rows and 4 to 5 s at 20,000 entries, 2.6 to 6.5 s at 100,000, inside the publish transaction that holds the snapshot and lineage locks. Fix: three sums (all entries, minus the tombstoned ones found from the tombstones by primary key, plus the adds). After: 16 ms at 10,000 and about 1.4 s at 1,000,000.
+3. **A large checkpoint among many small ones was paged as read-all-then-sort** (the W3 review's question): with a 1,000,000-entry checkpoint among 3,000 of 20 entries, pages near the end of the keyset read the rest of the checkpoint (178,200 rows) and top-N sorted it, 1.2 to 1.9 s a page, and the selection walk passed its 30 s deadline (a selective restore failed). The uniform fleet never sorted. Fix: `withSelectionPagePlan` (selection pages run with `enable_sort` off, restored afterwards). After: the same walk took 11.7 s (no Sort, slowest page 89 ms) against 4.8 s on a uniform fleet. What remains on the skewed fleet is the tombstone check planned as one index probe per checkpoint row instead of one hash of the snapshot's tombstones (chosen on the small estimate): count 2.9 s against 0.2 s, browse root 4.8 s against 2.5 s, with a seeded 20% delta count 5.0 s. All inside their deadlines; not changed here (see owner decisions).
+4. **The acceptance harness** wrote the manifest outside the API-local layout (`<BACKUP_LOCAL_ROOT>/<org>/<config>`) and never set the root, so hydration failed before any read. Test code only; no product bug.
+
+**Results (Postgres 16, after the fixes unless marked):**
+
+| | rows | delta |
+|---|---|---|
+| Publish, 1M entries, 2% drift (database part) | 17.5 s, 1,000,000 rows | 13.9 s, 20,000 rows (adds + tombstones) |
+| Publish, 1M, 5% (at the rebase threshold) | 18.3 s, 1,000,000 rows | 14.0 s, 50,000 rows |
+| Publish, 1M, 20% (rebase) | 20.6 s | 19.3 s, a new 1,000,000-entry checkpoint |
+| Content check inside a 1M delta publish | — | about 1.4 s |
+| Selection walk, 1M, 0 / 2 / 5 / 20% | 2.8 / 2.8 / 3.4 / 3.8 s | 2.9 / 4.3 / 6.9 / 2.9 s |
+| Count, 500-key membership, one-key membership, 1M | 0.12–0.24 s, 11–15 ms, 2–8 ms | 0.13–0.29 s, 12–20 ms, 3–4 ms |
+| 1.1M acceptance hydration (whole hydrator, 1 GB heap) | 49 s | 39 s (first checkpoint) |
+
+- G4's guessed thresholds: every delta reading is within 1.5x of its `rows` twin except the selection walk at exactly 5% drift (1.9x to 2.8x across 16 to 18, 6.9 to 9.3 s, inside its 30 s deadline): that is the largest tombstone set the publisher ever leaves (2.5% of entries) before it rebases. Membership stays under 10 ms. Rows written per 2%-drift publish are 2% of the tree. **G4 is the owner's call** on the 5% walk.
+- Plans: the same shapes on 16, 17 and 18 (see the PR). No Sort over checkpoint entries in any measured page after fix 3; membership reads are index lookups on both legs. The 5%-drift selection walk against its rows twin: 2.1x (16), 1.9x (17), 2.8x (18).
+- Storage over a 30-snapshot lineage of 100,000 entries (60 daily backups, 30 retained, GC after each retention; live bytes from measured bytes per row: 584 B per `backup_snapshot_files` row, 556 B per checkpoint entry, indexes included): **hot 1% (the same files daily) 91 MB against 1,757 MB in `rows` (19x)**; **1% a day over different files 592 MB against 1,751 MB (3x)**, with a new checkpoint every third day (10 live checkpoints, each a full copy); **5% a day: 1,669 MB against 1,750 MB, no gain** (every backup rebuilds). On-disk sizes in this compressed-time run also carry dead space autovacuum had not reclaimed yet (bloat of the entries table is on the canary watch list).
+- The per-lineage bound of 3: **0 trips in 30 steady-state days for every churn model** (at most 1 unreferenced header before GC). It trips in bulk after a pointer reset (what an org merge or a device move followed by re-hydration leaves): 25 of 30 re-hydrations at 1% daily churn published `rows`, 29 of 30 at 5%. That is the bound working as designed (the snapshots are correct and readable as `rows`; GC then collected the 9 stale checkpoints in one run). Accepted and documented; see owner decisions.
+- GC (1M-entry checkpoints): one delete 0.27 s warm, 0.47 s after its pages left shared_buffers; three in one run 1.2 s; VACUUM of the entries table afterwards 1.4 s; per-header overhead about 2.6 ms (5,000 empty headers in 13 s); candidate selection over 50,000 headers about 0.2 s.
+- Locks (the issue's predictions, reproduced): a publish that writes a **new checkpoint** and a device org move deadlock in both orders (Postgres 16, 17 and 18), and Postgres aborts one side with `40P01`: the side whose single deadlock check (after `deadlock_timeout`, 1 s) first sees the cycle, so which one depends on timing (the move lost in 2 of 3 runs of one order, the publish in all runs of the other). A lost move fails and the publish commits; a lost publish is a retryable `provider_error`, and the move commits and resets the snapshot. A **delta-only** publish never deadlocks; the move waits about 70 ms for its commit. A move **behind a publisher queued on the lineage lock** waits as long as the publisher ahead holds it: 6.9 s behind a 5 s hold; behind a 125 s hold the queued publisher failed at 120.2 s (`55P03`) and the move waited 124.8 s, so the move's wait is bounded by the slowest publish ahead of it, not by the 120 s constant.
+
+**Constants, decided from the numbers: all kept.**
+
+- `CHECKPOINT_GC_MAX_HEADERS = 5,000`: creation per lineage is 0 (hot set), about 1 every 3 days (1% a day over different files) or 1 per backup (5% a day or more), so 10,000 lineages create at most about 10,000 headers a day against 20,000 a day for four runs; a run of 5,000 headers of 180,000 entries takes about 5 minutes of its 2-hour share.
+- `CHECKPOINT_GC_DELETE_TIMEOUT_MS = 60 s`: a 1M-entry delete takes under 0.5 s here; even a 20x slower cold read on block storage stays far inside it.
+- `LINEAGE_LOCK_TIMEOUT_MS = 120 s`: a 1M delta publish takes about 14 s and a rebase about 19 s, so 120 s never fails a waiter behind a normal publish; lowering it would not shorten a device move's wait (bounded by the publish ahead, above).
+- `CHECKPOINT_ORPHAN_TTL_MS = 7 days`: only the newest unreferenced header of a dead lineage waits on it; nothing measured argues for another value.
+- `CHECKPOINT_MAX_UNREFERENCED_PER_LINEAGE = 3`: never trips in daily use; after a merge or move, any bound below the lineage's checkpoint count would trip the same way.
+
+**Not verified:** production data sizes, drift and fleet shape (G2 stays open); block-storage cold reads; production Postgres settings (`work_mem`, `shared_buffers`, JIT availability); the app device-move route itself (the lock runs used its lock order on a raw connection); hydrations concurrent with real request load.
+
+**Owner decisions:** canary timing (G5, the canary doc); G4 on the 5%-drift selection walk; whether the deadlock that loses a device move (`40P01`, no retry on the move path) needs a retry before `on`; whether JIT should go off connection-wide for the API (not done: it changes every query, unmeasured); whether a lineage should diff against any of its checkpoints within 5% (would avoid the post-merge `rows` fallback; a D4 design change); whether the skewed-fleet per-row tombstone probe (count 2.9 s for a 1M-entry delta among thousands of small checkpoints) is worth a read-layer change before `on`.
 
 ---
 
