@@ -1,0 +1,140 @@
+name: Integration timings report
+
+# Weekly, report-only, read-only.
+#
+# `.github/ci-timings/integration.json` weights the 16 integration shards, and
+# the Lint job fails a PR once the file covers under 90% of the integration
+# test files (`shard-partition.test.mjs`). Nothing refreshes it automatically.
+#
+# This job does not fix that by itself, on purpose. A PR opened with a
+# workflow's own token never receives the required `CI Success` check, and a
+# direct push is rejected by the main-branch ruleset. So it only reports:
+#   * rebuilds the table from recent merge-queue runs into a scratch path
+#     (the working tree's committed file is never modified or pushed);
+#   * prints coverage of the committed file and of the refreshed one, plus the
+#     local commands a maintainer runs to apply it;
+#   * uploads the refreshed file as an artifact;
+#   * goes RED when the committed file covers less than WARN_BELOW (93%,
+#     `test-timings.mjs`) of the suite, or when the refresh itself fails, so a
+#     scheduled red run notifies before any PR trips the 90% check.
+#
+# A schedule cannot be exercised from a PR. After merge: `gh workflow run
+# integration-timings-report.yml`.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: integration-timings-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Report integration timing coverage
+    if: github.repository == 'LanternOps/breeze'
+    runs-on: ubuntu-latest
+    # 10 runs x 16 shard logs; the refresh reads each log through the API.
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Coverage of the committed table
+        run: node .github/scripts/test-timings.mjs coverage > "$RUNNER_TEMP/before.json"
+
+      - name: Refresh into a scratch path
+        id: refresh
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/refreshed"
+          node .github/scripts/test-timings.mjs refresh --out "$RUNNER_TEMP/refreshed/integration.json" 2>&1 | tee "$RUNNER_TEMP/refresh.log"
+
+      - name: Coverage of the refreshed table
+        if: steps.refresh.outcome == 'success'
+        run: node .github/scripts/test-timings.mjs coverage --file "$RUNNER_TEMP/refreshed/integration.json" > "$RUNNER_TEMP/after.json"
+
+      - name: Job summary
+        if: always()
+        env:
+          REFRESH_OUTCOME: ${{ steps.refresh.outcome }}
+        run: |
+          pct() { jq -r '(.ratio * 1000 | floor / 10 | tostring) + "%"' "$1"; }
+          {
+            echo '### Integration timing coverage'
+            echo
+            if [ -f "$RUNNER_TEMP/before.json" ] && jq -e . "$RUNNER_TEMP/before.json" > /dev/null 2>&1; then
+              before_line=$(jq -r '"\(.known)/\(.total) files, \((.ratio * 1000 | floor) / 10)%"' "$RUNNER_TEMP/before.json")
+              echo "- Committed table: **$before_line** (generated $(jq -r '.generated // "unknown"' "$RUNNER_TEMP/before.json"))"
+              echo "- Margin above the 90% lint check: $(jq -r '((.ratio - .staleBelow) * 1000 | floor) / 10' "$RUNNER_TEMP/before.json") points; warning line is $(jq -r '.warnBelow * 100' "$RUNNER_TEMP/before.json")%"
+              echo "- Files with no timing: $(jq -r '.missing | length' "$RUNNER_TEMP/before.json")"
+              echo "- Runs behind the committed table: $(jq -r '.runs | join(", ")' "$RUNNER_TEMP/before.json")"
+            else
+              echo '- Committed table: could not be measured'
+            fi
+            echo
+            if [ "$REFRESH_OUTCOME" = success ] && [ -f "$RUNNER_TEMP/after.json" ]; then
+              echo "- Refreshed table: **$(jq -r '"\(.known)/\(.total) files, \((.ratio * 1000 | floor) / 10)%"' "$RUNNER_TEMP/after.json")**, files with no timing: $(jq -r '.missing | length' "$RUNNER_TEMP/after.json")"
+              echo "- Runs used: $(jq -r '.runs | join(", ")' "$RUNNER_TEMP/after.json")"
+            else
+              echo '- Refresh: **failed** (see the log of the refresh step; usually fewer than 10 usable recent merge-queue runs, or logs that no longer parse)'
+              if [ -f "$RUNNER_TEMP/refresh.log" ]; then
+                echo
+                echo '````text'
+                tail -n 20 "$RUNNER_TEMP/refresh.log"
+                echo '````'
+              fi
+            fi
+            echo
+            echo 'To apply it, download the integration-timings artifact, or run locally on a fresh branch from main:'
+            echo
+            echo '```sh'
+            echo 'node .github/scripts/test-timings.mjs refresh'
+            echo 'git add .github/ci-timings/integration.json && git commit -m "chore(ci): refresh integration shard timings"'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload refreshed table
+        if: steps.refresh.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: integration-timings
+          path: ${{ runner.temp }}/refreshed/integration.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Fail when the committed table is close to the lint line
+        if: always()
+        env:
+          REFRESH_OUTCOME: ${{ steps.refresh.outcome }}
+        run: |
+          status=0
+          if [ "$REFRESH_OUTCOME" != success ]; then
+            echo "::error title=Timing refresh failed::The refresh could not rebuild the table (see the refresh step log)."
+            status=1
+          fi
+          if ! jq -e . "$RUNNER_TEMP/before.json" > /dev/null 2>&1; then
+            echo "::error title=Timing table unreadable::The committed table could not be measured."
+            exit 1
+          fi
+          if jq -e '.ratio < .warnBelow' "$RUNNER_TEMP/before.json" > /dev/null; then
+            echo "::error title=Integration timings are going stale::The committed table covers $(jq -r '"\(.known)/\(.total)"' "$RUNNER_TEMP/before.json") integration files, under the $(jq -r '.warnBelow * 100' "$RUNNER_TEMP/before.json")% warning line (the lint check fails at 90%). Refresh it: see the job summary."
+            status=1
+          fi
+          exit "$status"

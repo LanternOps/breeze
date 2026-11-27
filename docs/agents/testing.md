@@ -34,6 +34,9 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
   - **A flake** (passes on the whole-shard retry): note it.
   - **To reproduce locally:** `BREEZE_TEST_PG_IMAGE=pgvector/pgvector:pg18 pnpm test-stack up`, then run the suite as usual. `PGDATA` is pinned to the tmpfs, so 18's moved default data directory cannot escape it.
 
+### Integration shard timings (weekly report)
+`.github/ci-timings/integration.json` weights the 16 integration shards; the Lint job (`shard-partition.test.mjs`) fails a PR once it covers under 90% of the integration test files. Nothing refreshes it automatically (a bot PR never receives the required `CI Success` check, and direct pushes to `main` are rejected), so `.github/workflows/integration-timings-report.yml` runs weekly (Mondays) and only reports. It rebuilds the table into a scratch path, writes before/after coverage and the run ids to the job summary, and uploads the refreshed file as the `integration-timings` artifact (14 days). **Red means** either the committed table covers under 93% of the suite (early warning, three points above the 90% lint line) or the refresh could not find 10 usable merge-queue runs. Apply it on a fresh branch from `main`: `node .github/scripts/test-timings.mjs refresh`, then commit `.github/ci-timings/integration.json`. `node .github/scripts/test-timings.mjs coverage` prints the committed table's coverage as JSON.
+
 ## Running Tests Locally
 ```bash
 # All tests
