@@ -40,10 +40,14 @@ If Assist is installed but cannot run, prompts use the native fallback automatic
 | Remote-support consent | **Allow** / **Deny**; Deny is the default | **Allow** / **Deny**; Deny is the default | `zenity` **Allow** / **Deny**; Deny is the default (needs `zenity` and a display) |
 | Session indicator | Native pill at the top of the screen | None | None |
 | Elevation request | The first question is drawn by Breeze's system helper; the outcomes arrive as notifications | Not applicable (UAC capture is Windows-only) | Not applicable |
-| Notices | Windows notification, or a dialog when notifications are muted or the foreground app is full-screen | `osascript` dialog (`display notification` while the kind is not enabled) | `zenity` dialog (`notify-send` while the kind is not enabled) |
+| Notices | Windows notification; a dialog when notifications are muted (quiet hours, nobody present); held while the foreground app is full-screen or presenting | Notification (`display notification`), as when the kind is not enabled; the permission notice is a dialog, because it has **Open Settings** | Notification (`notify-send`), as when the kind is not enabled |
 | Notification list | None | None | None |
 
 Native dialogs are drawn with these exact rules: the safe button is the default, Esc and the close box choose it, and **a countdown that runs out is never treated as an answer**. The dialog simply closes and the agent applies the policy that governs that prompt.
+
+- **An answered dialog does not come back on its own.** After **Postpone**, the dialog closes and is not redrawn when the agent moves the restart; it appears again only at the next reminder for the new time, or as the closing notice. One click is one postponement.
+- **A notice is never a long-lived dialog.** When a notice has to be a dialog (the notification could not be shown, Windows quiet hours, or the permission notice), it closes by itself after at most 60 seconds, as the earlier notice dialog did. It never opens over a restart or consent dialog (a notice that arrives then is not shown), and a restart or consent dialog takes an open notice dialog down. Two notice dialogs are never on screen at once.
+- **When Assist goes away** (uninstalled, crashed or replaced), what it had on screen moves to the native fallback: a pending restart or consent question is shown again, but notices the person already saw are not shown again. They are not replayed as a burst of dialogs.
 
 Where an older Windows agent or an older Assist build cannot draw a newer prompt, the device keeps using the earlier dialog for it. Legacy restart and consent boxes on Windows are Yes/No message boxes (their buttons cannot be renamed, so the text explains them), and in both the safe answer is the default button.
 
@@ -57,7 +61,7 @@ Windows Focus Assist / Do Not Disturb, macOS Focus and GNOME's Do Not Disturb si
 
 This is DND-*resistant*, not DND-proof. Its limits:
 
-- **Without Assist there is no list**, and notices fall back to native dialogs, or to operating-system notifications where the notice kind is not enabled; Do Not Disturb can hide those notifications. Decisions (restart, consent) remain dialogs, not toasts.
+- **Without Assist there is no list**, and notices are operating-system notifications, as when the notice kind is not enabled; Do Not Disturb can hide those notifications. Decisions (restart, consent) remain dialogs, not toasts.
 - **A locked session** gets no new cards. They are shown when the person unlocks (the restart still happens on time). Remote-support consent is the exception: it is never held back, and the policy decides what an unseen prompt means (see [Remote Access](/features/remote-access/#session-consent--end-user-notification)).
 - **The Windows secure desktop** (where a default UAC prompt appears) hides everything Assist draws. This is why the first question of an elevation request is drawn by Breeze's system helper, not Assist; see [Elevation requests](#elevation-requests).
 - **A window can still be behind another window.** A card that is on screen proves the person *could* see it, not that they did.
@@ -80,7 +84,7 @@ When a restart is scheduled, one card follows the whole restart, rather than a n
 
 - **When Postpone is not available** (postponing is off, the budget is used, or the deadline leaves no room), the card shows **OK** as the default instead, next to **Restart now**. **OK** only acknowledges the card; the restart stays where it is. Restart now is never the only button and never the default.
 - **Doing nothing is "no decision".** The card stays in the notification list and keeps its **Restart now** and **Postpone** buttons while the restart is pending. Silence never postpones the restart and never speeds it up; the restart happens at the scheduled time whatever the card does.
-- **Reminders update the same card** at 60, 15 and 5 minutes before, instead of opening a new one. A warning the person already answered does not reopen.
+- **Reminders update the same card** at 60, 15 and 5 minutes before, instead of opening a new one. A warning the person already answered does not reopen, on the Assist card or on the native dialog.
 - **Several sessions stay in step.** On a computer with more than one signed-in session, every session shows the same card, and the first answer is applied to all of them.
 - **The closing card** appears at one minute, while the operating system's own countdown runs: "Restarting now", with a live countdown and **OK** only. Nothing can be postponed any more. On Windows the system also shows its own "You're about to be signed out" notice; that is Windows, not Breeze.
 - **If you cancel the restart**, the card closes and "Restart cancelled" ("*Northwind IT* cancelled the restart.") stays in the list. Cancelling when nothing is scheduled is reported as success, not as an error.

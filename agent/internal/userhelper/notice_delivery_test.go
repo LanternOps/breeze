@@ -311,13 +311,13 @@ func TestNativeNoticeStateAppliesOnlyToNotices(t *testing.T) {
 	}
 }
 
-func TestNativeNoticeWithoutANotificationStateDrawsTheDialog(t *testing.T) {
+func TestNativeNoticeWithoutANotificationStateFallsBackToTheDialog(t *testing.T) {
 	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
-	r, sink := newTestRenderer(t, fake)
-	r.noticeState = nil // macOS, Linux: no equivalent query (spec §3.2)
+	r, sink := newTestRenderer(t, fake) // its toast always fails
+	r.noticeState = nil                 // macOS, Linux: no equivalent query (spec §3.2)
 	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.notice.json")))
 	sink.waitFor(t, ipc.TypePromptPresented)
 	if fake.shown() != 1 {
-		t.Fatal("without a notification state the notice is the native dialog")
+		t.Fatal("a notice whose notification could not be shown is the native dialog")
 	}
 }

@@ -54,6 +54,15 @@ type KindSpec struct {
 	// withdraws the whole prompt, and calls Prompt.OnRendererLost; there is
 	// no disconnect grace, no fallback and no replay. Default: moved.
 	NeverReask bool
+	// Informational marks a kind that tells the person something and asks
+	// nothing of them (notice.info): its only answer is "OK". When its
+	// renderer changes (Assist removed, crashed or replaced), a prompt of
+	// this kind that was already on screen is not drawn again — its list
+	// entry stays — and on replay it never takes the one restored decision
+	// surface (#12794: a removed Assist re-presented every seen notice at
+	// once as a native dialog). A prompt that needs a decision still moves.
+	// Default: a decision.
+	Informational bool
 }
 
 // Owner is the session and user principal a prompt (and its list entry) is

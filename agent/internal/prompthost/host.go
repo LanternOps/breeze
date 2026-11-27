@@ -402,6 +402,16 @@ func (h *Host) choose(rec *record, pl *placement) Choice {
 // neverReask: the kind or this prompt is never moved to another renderer.
 func (r *record) neverReask() bool { return r.p.Kind.NeverReask || r.p.NeverReask }
 
+// informational: the prompt tells the person something and asks nothing
+// (KindSpec.Informational).
+func (r *record) informational() bool { return r.p.Kind.Informational }
+
+// needsDecision: a pending prompt waiting on the person's answer, other than
+// an informational one.
+func (r *record) needsDecision() bool {
+	return ipc.IsPromptDecision(r.show.State, r.show.Presentation) && !r.informational()
+}
+
 func (h *Host) modalBusy(rec *record, o Owner) bool {
 	for _, other := range h.prompts {
 		if other == rec || other.show.Presentation != ipc.PromptPresentationModal || !other.lingerUntil.IsZero() {
@@ -542,9 +552,23 @@ func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, w
 	if pl.renderer != "" {
 		pl.tried[pl.renderer] = true
 	}
+	if rec.informational() && pl.presented {
+		// The person already had it on screen: it is not drawn again by the
+		// next renderer (nor the legacy way). Its list entry stays, and a
+		// renderer that connects later gets it list-only (#12794).
+		h.log.Info("seen informational prompt not re-presented after its renderer changed",
+			"promptId", rec.show.PromptID, "owner", pl.owner.Key(), "from", pl.renderer, "reason", why)
+		h.fence(rec, pl, ob)
+		pl.graceUntil = time.Time{}
+		pl.presented = false
+		return
+	}
 	h.log.Info("prompt falling back", "promptId", rec.show.PromptID, "owner", pl.owner.Key(), "from", pl.renderer, "reason", why)
 	h.fence(rec, pl, ob)
 	pl.graceUntil = time.Time{}
+	// Not a new card: the limiter admitted it when it was first placed (a
+	// list-only placement stays list-only), so a move adds no window beyond
+	// what the card limit already allowed.
 	h.assign(rec, pl, h.choose(rec, pl), now, ob, true)
 }
 

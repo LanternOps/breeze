@@ -554,7 +554,18 @@ type nativeActive struct {
 	cancel context.CancelFunc
 	// indicator is set for a session pill (prompt_native_indicator.go).
 	indicator *nativeIndicatorState
+	// noticeDialog: an informational notice drawn as a dialog (guarded by
+	// mu). A decision takes it down; another notice never stacks on it.
+	noticeDialog bool
 }
+
+// nativeNoticeDialogLifetime caps how long an informational notice may stay
+// up as a dialog (#12794). A notice's deadline is its list lifetime (24 h for
+// a session-ended notice, made for Assist's notification list); the native
+// path has no list, so a dialog that lived that long would block the screen
+// for a day. 60 s is the legacy fallback dialog's lifetime
+// (noticeDialogTimeoutMs), so nothing is worse than with the kinds off.
+const nativeNoticeDialogLifetime = 60 * time.Second
 
 // maxEndedNativePrompts bounds the memory of dialogs that ended on screen.
 const maxEndedNativePrompts = 64
@@ -571,10 +582,11 @@ type nativePromptRenderer struct {
 	mu     sync.Mutex
 	active map[string]*nativeActive
 	// ended remembers prompts whose dialog ended on screen (answered,
-	// hidden, timed out), so a later update is applied (redraw while still
-	// open, ignore once terminal) instead of being refused as unknown — a
-	// refusal would make the agent reroute a prompt the user already
-	// answered.
+	// hidden, timed out, delivered as a notification), so a later update is
+	// recorded instead of being refused as unknown — a refusal would make the
+	// agent reroute a prompt the user already answered. An update never
+	// redraws an ended dialog: only a new prompt_show (the next rung) asks
+	// again (#12794).
 	ended      map[string]ipc.PromptShow
 	endedOrder []string
 
@@ -757,7 +769,23 @@ func (r *nativePromptRenderer) onUpdate(u ipc.PromptUpdate) {
 		r.mu.Unlock()
 		return
 	}
-	// A native dialog cannot change in place: redraw it.
+	if cur == nil {
+		// The dialog already ended on screen: the person answered it (a
+		// Postpone the agent just applied), hid it, or it gave up. An update
+		// is never a new decision point (the next rung re-shows the prompt
+		// with a full prompt_show), so nothing is redrawn, as an answered
+		// Assist card collapses instead of re-opening (spec §3.3, #4941).
+		// Redrawing here re-asked at once and let a second click spend the
+		// postponement budget (#12794). The new content is kept.
+		r.mu.Lock()
+		if r.active[u.PromptID] == nil {
+			r.rememberEndedLocked(merged)
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+	}
+	// A dialog still on screen cannot change in place: redraw it.
 	r.draw(merged)
 }
 
@@ -814,12 +842,23 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	act := &nativeActive{show: p, cancel: cancel}
+	notice := isNoticeShow(p)
 	r.mu.Lock()
 	prev := r.active[p.PromptID]
 	r.active[p.PromptID] = act
+	var covered []*nativeActive
+	if !notice {
+		// A question that needs an answer never opens over (or under) an
+		// informational dialog: the notice comes down. It stays in the
+		// agent's list, so nothing is reported for it.
+		covered = r.takeNoticeDialogsLocked(p.PromptID)
+	}
 	r.mu.Unlock()
 	if prev != nil {
 		prev.cancel() // one window per prompt: the redraw replaces it
+	}
+	for _, c := range covered {
+		c.cancel()
 	}
 	lease := func() ipc.PromptLease {
 		r.mu.Lock()
@@ -827,18 +866,24 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 		return act.show.Lease // a replay may have moved it
 	}
 	go func() {
-		if r.usesNotificationState(p) && r.deliverNotice(ctx, p, m, lease) {
-			// Toasted, or the hold ended (withdrawn, expired): no dialog,
-			// nothing more to report. The agent's list keeps the entry.
-			r.mu.Lock()
-			if r.active[p.PromptID] == act {
-				delete(r.active, p.PromptID)
-				if ctx.Err() == nil {
-					r.rememberEndedLocked(act.show)
-				}
+		if notice {
+			if r.deliverNotice(ctx, p, m, lease) {
+				// Toasted, or the hold ended (withdrawn, expired): no dialog,
+				// nothing more to report. The agent's list keeps the entry.
+				r.endWithoutDialog(ctx, p.PromptID, act)
+				return
 			}
-			r.mu.Unlock()
-			return
+			// It must be a dialog (the notification failed, or Windows quiet
+			// hours). Never over a question that needs an answer, never
+			// stacked on another notice, and short-lived.
+			if !r.claimNoticeDialog(p.PromptID, act) {
+				if r.endWithoutDialog(ctx, p.PromptID, act) {
+					log.Info("notice not drawn: another dialog is on screen; it stays in the agent's list", "promptId", p.PromptID)
+					r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: false})
+				}
+				return
+			}
+			m = shortLivedNotice(m, r.now())
 		}
 		var out nativeOutcome
 		func() {
@@ -878,4 +923,75 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 			log.Debug("native prompt dialog timed out", "promptId", p.PromptID)
 		}
 	}()
+}
+
+// isNoticeShow reports whether a prompt is an informational notice: it tells
+// the person something and asks nothing of them (#12794).
+func isNoticeShow(p ipc.PromptShow) bool { return p.Kind == noticeKind }
+
+// takeNoticeDialogsLocked removes every notice dialog except promptID's from
+// the active set, remembering each as ended so a later update for it is
+// recorded rather than refused, and returns them for the caller to cancel
+// outside mu. Caller holds mu.
+func (r *nativePromptRenderer) takeNoticeDialogsLocked(promptID string) []*nativeActive {
+	var out []*nativeActive
+	for id, a := range r.active {
+		if id == promptID || !a.noticeDialog {
+			continue
+		}
+		delete(r.active, id)
+		r.rememberEndedLocked(a.show)
+		out = append(out, a)
+	}
+	return out
+}
+
+// claimNoticeDialog lets a notice become a dialog only when no other dialog
+// is on screen: no question that needs an answer (any active prompt that is
+// neither a notice nor a session pill) and no other notice dialog. It
+// reports false when the notice must not be drawn, or was closed or
+// replaced meanwhile.
+func (r *nativePromptRenderer) claimNoticeDialog(promptID string, act *nativeActive) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active[promptID] != act {
+		return false
+	}
+	for id, a := range r.active {
+		if id == promptID || a.indicator != nil {
+			continue
+		}
+		if a.noticeDialog || !isNoticeShow(a.show) {
+			return false
+		}
+	}
+	act.noticeDialog = true
+	return true
+}
+
+// endWithoutDialog retires a notice that drew no dialog. It reports whether
+// the notice was still current (not closed or replaced by the agent).
+func (r *nativePromptRenderer) endWithoutDialog(ctx context.Context, promptID string, act *nativeActive) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active[promptID] != act {
+		return false
+	}
+	delete(r.active, promptID)
+	if ctx.Err() != nil {
+		return false
+	}
+	r.rememberEndedLocked(act.show)
+	return true
+}
+
+// shortLivedNotice caps a notice dialog's lifetime at
+// nativeNoticeDialogLifetime from now (a sooner deadline is kept).
+func shortLivedNotice(m nativePromptModel, now time.Time) nativePromptModel {
+	limit := now.Add(nativeNoticeDialogLifetime)
+	if m.Deadline.IsZero() || m.Deadline.After(limit) {
+		m.Deadline = limit
+	}
+	m.Response = 0
+	return m
 }

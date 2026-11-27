@@ -21,7 +21,9 @@ func rendererServes(r RendererSession, o Owner) bool {
 //     lease; a copy on another renderer (the native fallback) is fenced first;
 //   - nothing is activated: every replay is no_activate, and all but the
 //     oldest pending decision are replayed list-only, so at most one decision
-//     surface comes back. An indicator stays an indicator (it is a pill, not
+//     surface comes back. An informational prompt (a notice) is always
+//     replayed list-only and never takes that slot from a prompt that needs
+//     an answer (#12794). An indicator stays an indicator (it is a pill, not
 //     a card, and never a decision).
 //
 // Called with mu held; finished entries are replayed by
@@ -53,7 +55,7 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 		h.fence(m.rec, m.pl, ob)
 		switch {
 		case m.rec.show.Presentation == ipc.PromptPresentationIndicator:
-		case !restored && ipc.IsPromptDecision(m.rec.show.State, m.rec.show.Presentation) && !m.pl.listOnly:
+		case !restored && m.rec.needsDecision() && !m.pl.listOnly:
 			restored = true
 		default:
 			m.pl.listOnly = true

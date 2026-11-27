@@ -23,8 +23,18 @@ import (
 //     the notice is in the agent's list meanwhile.
 //
 // macOS and Linux have no equivalent query (spec §3.2): there the notice is
-// the native dialog, as every other prompt. Untagged so every CI run checks
-// it; the Windows file only makes the call.
+// the OS notification, as it is with the prompt kinds off (#12794; spec §3.2
+// "An OS toast is sent only by the native fallback"). Only when that
+// notification cannot be shown does it become a dialog — or when the notice
+// offers an action a notification cannot carry (the permission notice's
+// Open Settings), as the legacy first-run permission dialog did.
+//
+// A notice drawn as a dialog, on any OS, is short-lived
+// (nativeNoticeDialogLifetime), never opens over a question that needs an
+// answer and never stacks on another notice (prompt_native.go draw). The
+// notice's deadline is its list lifetime, made for Assist's list, and is
+// never a dialog's lifetime. Untagged so every CI run checks it; the Windows
+// file only makes the call.
 
 type noticeDelivery int
 
@@ -103,10 +113,26 @@ func (r *nativePromptRenderer) queryNoticeState() (uint32, error) {
 	return state, err
 }
 
-// usesNotificationState reports whether a prompt is delivered by the
-// notification state (a notice, on a platform that has the query).
-func (r *nativePromptRenderer) usesNotificationState(p ipc.PromptShow) bool {
-	return r.noticeState != nil && p.Kind == noticeKind
+// noticeHasActions reports whether a notice offers anything beyond its
+// acknowledgement (the safe OK), such as the permission notice's Open
+// Settings.
+func noticeHasActions(p ipc.PromptShow) bool {
+	for _, a := range p.Actions {
+		if a.Role != ipc.PromptRoleSafe {
+			return true
+		}
+	}
+	return false
+}
+
+// noticeDeliveryNow is how a notice is delivered right now: by the
+// notification state where the platform has the query (Windows), else as a
+// notification (macOS, Linux).
+func (r *nativePromptRenderer) noticeDeliveryNow() noticeDelivery {
+	if r.noticeState == nil {
+		return noticeToast
+	}
+	return noticeDeliveryFor(r.queryNoticeState())
 }
 
 // deliverNotice runs the toast / hold half of a notice's delivery. It
@@ -129,7 +155,13 @@ func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptSh
 	}
 	toldHeld := false
 	for {
-		d := noticeDeliveryFor(r.queryNoticeState())
+		d := r.noticeDeliveryNow()
+		if d == noticeToast && noticeHasActions(p) {
+			// A notification has no buttons, so an action beyond OK (macOS
+			// Open Settings) would be lost: draw the short-lived dialog, as
+			// the legacy first-run permission dialog did.
+			d = noticeDialog
+		}
 		switch d {
 		case noticeToast:
 			if r.toast(ipc.NotifyRequest{Title: m.Title, Body: m.Body}) {

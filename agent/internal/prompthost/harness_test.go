@@ -255,7 +255,7 @@ func noticePrompt(t *testing.T, id string, calls *promptCalls) Prompt {
 	show.PromptID = id
 	return Prompt{
 		ID: id,
-		Kind: KindSpec{Name: "notice.info", Version: 1, Transitions: map[ipc.PromptState]map[string]ipc.PromptState{
+		Kind: KindSpec{Name: "notice.info", Version: 1, Informational: true, Transitions: map[ipc.PromptState]map[string]ipc.PromptState{
 			ipc.PromptStatePending: {"ok": ipc.PromptStateApproved},
 		}},
 		Owners:   []Owner{testOwner},

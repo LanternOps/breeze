@@ -61,11 +61,22 @@ func TestNativeRendererUpdateAfterTheDialogEnded(t *testing.T) {
 	waitUntil(t, func() bool { return r.activeCount() == 0 }, "the dialog to end")
 
 	// The agent applied the postponement: still pending, new label. The
-	// question comes back; no render_failed (that would reroute an answered prompt).
+	// answered question does not come back (#12794) and the update is not
+	// refused (render_failed would reroute an answered prompt).
 	label := "Postpone until 15:00"
 	actions := []ipc.PromptAction{{ID: "postpone", Label: label, Role: ipc.PromptRoleSafe}, {ID: "restart_now", Label: "Restart now", Role: ipc.PromptRoleProceed}}
 	r.handle(envelopeFor(t, ipc.TypePromptUpdate, ipc.PromptUpdate{PromptID: show.PromptID, Rev: 2, Lease: show.Lease, Actions: &actions, DefaultActionID: "postpone"}))
-	waitUntil(t, func() bool { return fake.shown() == 2 }, "the redraw")
+	time.Sleep(30 * time.Millisecond)
+	if fake.shown() != 1 || sink.count(ipc.TypePromptClosed) != 0 {
+		t.Fatalf("dialogs %d, closed %d: an update for an answered dialog is kept, not drawn or refused", fake.shown(), sink.count(ipc.TypePromptClosed))
+	}
+
+	// The next rung re-shows it (rev 3): drawn, with the label the update set.
+	rung := show
+	rung.Rev = 3
+	rung.Actions = actions
+	r.handle(envelopeFor(t, ipc.TypePromptShow, rung))
+	waitUntil(t, func() bool { return fake.shown() == 2 }, "the next rung")
 
 	// A terminal update for an ended dialog is ignored silently.
 	fake.outcome <- nativeOutcome{ActionID: "restart_now"}
@@ -73,7 +84,7 @@ func TestNativeRendererUpdateAfterTheDialogEnded(t *testing.T) {
 	waitUntil(t, func() bool { return r.activeCount() == 0 }, "the redraw to end")
 	approved := ipc.PromptStateApproved
 	none := []ipc.PromptAction{}
-	r.handle(envelopeFor(t, ipc.TypePromptUpdate, ipc.PromptUpdate{PromptID: show.PromptID, Rev: 3, Lease: show.Lease, State: &approved, Actions: &none}))
+	r.handle(envelopeFor(t, ipc.TypePromptUpdate, ipc.PromptUpdate{PromptID: show.PromptID, Rev: 4, Lease: show.Lease, State: &approved, Actions: &none}))
 	time.Sleep(30 * time.Millisecond)
 	if n := sink.count(ipc.TypePromptClosed); n != 0 {
 		t.Fatalf("an update for an ended dialog was answered prompt_closed (%d)", n)
