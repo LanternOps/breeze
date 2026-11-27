@@ -54,7 +54,8 @@ const ALLOWLIST: Readonly<Record<string, string>> = {
     + 'It never serves a snapshot\'s tree to a caller.',
   // Checkpoint GC (services/backupTreeCheckpointGc.ts) is not listed: it
   // deletes headers and their entries go by ON DELETE CASCADE, so it names
-  // neither table. The "still needs its entry" check below keeps it that way.
+  // neither table. If it ever reads one, "no file outside the read layer
+  // reads either table" below reports it.
 };
 
 /**

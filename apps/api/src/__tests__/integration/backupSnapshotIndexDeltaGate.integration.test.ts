@@ -266,10 +266,11 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
       ['another config', { ...own, configId: otherConfig }],
       ['another storage identity', { ...own, storageIdentity: `${WRITE_IDENTITY}-other` }],
       ['another backup type', { ...own, backupType: 'system_image' }],
-      ['another key root', { ...own, keyLayout: 'prefixed_flat', keyPrefix: 'tenant-x' }],
+      ['another key layout', { ...own, keyLayout: 'prefixed_flat' }],
+      ['another key prefix', { ...own, keyPrefix: 'tenant-x' }],
       ['the snapshot\'s own lineage', own],
     ];
-    const read: Record<string, string[]> = {};
+    const read: Record<string, Awaited<ReturnType<typeof readAll>>> = {};
     for (const [name, lineage] of variants) {
       const checkpointId = await seedCheckpoint(lineage, l.checkpoint);
       const snapshotId = `snapshot-20261111T000007Z-${randomBytes(6).toString('hex')}`;
@@ -281,10 +282,22 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
         return readAll(l, dbId, digest);
       });
       if (name !== 'the snapshot\'s own lineage') expect(all, name).toEqual(EMPTY);
-      read[name] = all.srv;
+      read[name] = all;
     }
-    // The control: the same construction on the snapshot's own lineage reads the checkpoint's tree.
-    expect(read['the snapshot\'s own lineage']).toEqual(['a.txt 10', 'b.txt 11', 'gone.txt 12']);
+    // The control: the same construction on the snapshot's own lineage reads the checkpoint's tree in every reader.
+    expect(read['the snapshot\'s own lineage']).toEqual({
+      root: ['srv/ (3)'],
+      srv: ['a.txt 10', 'b.txt 11', 'gone.txt 12'],
+      search: ['/srv/a.txt 10', '/srv/b.txt 11', '/srv/gone.txt 12'],
+      selectable: ['/srv', '/srv/a.txt', '/srv/b.txt', '/srv/gone.txt'],
+      selectB: { ok: true, paths: ['/srv/b.txt'] },
+      count: 3,
+      keys: [key(l.fullId, 'a'), key(l.fullId, 'b'), key(l.fullId, 'gone')].sort(),
+      // Past the membership read: this snapshot has no origin records of its own.
+      authorizeAdd: NOT_MEMBER,
+      authorizeCheckpointEntry: 'no verified origin record for this snapshot reference',
+      authorizeReplaced: 'no verified origin record for this snapshot reference',
+    });
   });
 
   runDb('a rows snapshot ignores stray tombstone rows', async () => {

@@ -73,8 +73,9 @@ function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
  *     snapshots sharing the checkpoint do not apply.
  *
  * R3: a delta snapshot reads as its tree only when its checkpoint header is
- * visible to the caller and is of the snapshot's own lineage (org, device,
- * config, storage identity, backup type and key root). Otherwise
+ * visible to the caller and names the snapshot's own org and device, and
+ * here also the rest of its lineage (R5: config, storage identity, backup
+ * type and key root). Otherwise
  * both legs are empty: leg 1's format gate requires that header, and leg 2's
  * gate (that checkpoint resolves to a non-NULL id) fails. RLS on both
  * checkpoint tables runs in the caller's context, so a header the caller
@@ -129,14 +130,16 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   const col = (table: string, column: string) => sql`${sql.identifier(table)}.${sql.identifier(column)}`;
   // The header the snapshot points at, of the snapshot's own lineage (R5):
   // org and device, then config, storage identity, backup type and key root.
-  // Org and device stop a cross-tenant read. The rest is defence in depth: the
-  // publisher only points a snapshot at a checkpoint whose every lineage part
-  // equals the snapshot row's, read under its lock, and none of those parts
-  // changes on a snapshot or a header afterwards (a snapshot's storage
-  // identity is only ever filled in from NULL, and a snapshot with none never
-  // publishes a delta). So this holds for every pointer the publisher wrote;
-  // anything else (another config's or storage's checkpoint, whose object keys
-  // are not this snapshot's) reads as empty instead of as another tree.
+  // Org and device stop a cross-tenant read; an org merge restamps both, and
+  // the snapshot tenancy trigger clears the pointer in the same update. The
+  // rest is defence in depth: the publisher only points a snapshot at a
+  // checkpoint whose every lineage part equals the snapshot row's, read under
+  // its lock, and config, storage identity, backup type and key root never
+  // change on a snapshot or a header afterwards (a snapshot's storage identity
+  // is only ever filled in from NULL, and a snapshot with none never publishes
+  // a delta). So this holds for every pointer the publisher wrote; anything
+  // else (another config's or storage's checkpoint, whose object keys are not
+  // this snapshot's) reads as empty instead of as another tree.
   const checkpointMatchesSnapshot = sql`${col('sie_checkpoint', 'id')} = ${col('sie_snapshot', 'file_index_checkpoint_id')}
     AND ${col('sie_checkpoint', 'org_id')} = ${col('sie_snapshot', 'org_id')}
     AND ${col('sie_checkpoint', 'device_id')} = ${col('sie_snapshot', 'device_id')}

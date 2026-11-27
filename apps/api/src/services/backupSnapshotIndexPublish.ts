@@ -309,7 +309,9 @@ export async function publishDeltaIndex(
   // (snapshot_db_id, source_path) index), so a tombstone with another path
   // would hide nothing and the old entry would read as live. `misnamed`
   // re-reads each written tombstone's entry by its key and counts any whose
-  // path differs, or whose entry does not exist.
+  // path differs, or whose entry does not exist. With the SQL as written it
+  // is always 0; it is there so a later edit of the tombstone SELECT that
+  // took the path from anywhere else fails the publish instead of shipping.
   const written = (await tx.execute(sql`
     WITH ${numberedSides(checkpoint.id)},
     written AS (
@@ -339,7 +341,10 @@ export async function publishDeltaIndex(
 
   // D1: a tombstone the read layer would not match would leave its entry live.
   if (misnamed > 0) {
-    throw invariantFailure(`${misnamed} tombstone(s) do not carry the source path of the checkpoint entry they name`);
+    throw invariantFailure(
+      `${misnamed} tombstone(s) do not carry the source path of the checkpoint entry they name `
+      + `(snapshot ${snapshotDbId}, checkpoint ${checkpoint.id})`,
+    );
   }
 
   // D9: the effective tree has exactly the manifest's entry count.

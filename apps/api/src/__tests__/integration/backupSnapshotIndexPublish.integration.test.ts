@@ -229,7 +229,12 @@ const PAST_MEMBERSHIP = new Set([
 const ownerOf = (key: string) => key.split('/')[1]!;
 
 /** Every reader's answer for one snapshot, in the org's request context. */
-async function readersOf(t: WriteTenant, snapshotDbId: string, candidateKeys: string[], selectPaths: string[]) {
+async function readersOf(
+  t: WriteTenant,
+  snapshotDbId: string,
+  candidateKeys: string[],
+  paths: { own: string[]; gone: string[] },
+) {
   const [state] = (await getTestDb().execute(sql`
     SELECT file_index_manifest_sha256 AS digest FROM backup_snapshots WHERE id = ${snapshotDbId}::uuid
   `)) as unknown as Array<{ digest: string | null }>;
@@ -278,7 +283,9 @@ async function readersOf(t: WriteTenant, snapshotDbId: string, candidateKeys: st
       browse,
       search,
       sourcePaths: await readableSnapshotSourcePaths(snapshotDbId),
-      selection: await resolveSelectedSnapshotPathsInDb(snapshotDbId, selectPaths),
+      selection: await resolveSelectedSnapshotPathsInDb(snapshotDbId, paths.own),
+      // Each separately: one unknown path fails a whole selection.
+      selectionGone: await Promise.all(paths.gone.map((p) => resolveSelectedSnapshotPathsInDb(snapshotDbId, [p]))),
       count: await drizzleBrokeredReadStore.countIndexedFiles(snapshotDbId),
       keys: [...await drizzleBrokeredReadStore.filterIndexedKeys(snapshotDbId, candidateKeys, state?.digest ?? '')].sort(),
       membership,
@@ -305,12 +312,12 @@ async function expectReadersReturnManifest(
   snap: Snap,
   entries: Entry[],
   gone: { keys: string[]; paths: string[] } = { keys: [], paths: [] },
-): Promise<void> {
+): Promise<Awaited<ReturnType<typeof readersOf>>> {
   expect(await malformedTombstones(snap.dbId), 'malformed tombstones').toBe(0);
 
   const ownKeys = [...new Set(entries.map((e) => e.backupPath).filter(Boolean))].sort();
   const candidateKeys = [...new Set([...ownKeys, ...gone.keys, `snapshots/${snap.snapshotId}/files/never-indexed`])].sort();
-  const selectPaths = [...new Set([...entries.map((e) => e.sourcePath), ...gone.paths])];
+  const selectPaths = { own: [...new Set(entries.map((e) => e.sourcePath))], gone: gone.paths };
 
   const control = await snapshotOf(t);
   await seedRowsIndex(control.dbId, entries.map((e) => ({
@@ -327,7 +334,8 @@ async function expectReadersReturnManifest(
   const published = await readersOf(t, snap.dbId, candidateKeys, selectPaths);
   expect(published).toEqual(await readersOf(t, control.dbId, candidateKeys, selectPaths));
 
-  if ((await indexState(snap.dbId)).status !== 'complete') return;
+  // An index that is not complete (inline agent rows) authorizes nothing; the caller checks the rest.
+  if ((await indexState(snap.dbId)).status !== 'complete') return published;
   const ownKeySet = new Set(ownKeys);
   expect(published.count).toBe(entries.filter((e) => e.backupPath !== '').length);
   expect(published.keys).toEqual(ownKeys);
@@ -335,7 +343,9 @@ async function expectReadersReturnManifest(
     Object.fromEntries(candidateKeys.map((k) => [k, ownKeySet.has(k) ? 'member' : NOT_MEMBER])),
   );
   expect([...published.sourcePaths].sort()).toEqual(entries.map((e) => e.sourcePath).sort());
-  expect(published.selection.ok, 'every path resolves only when nothing gone was asked for').toBe(gone.paths.length === 0);
+  expect(published.selection).toMatchObject({ ok: true });
+  expect(published.selectionGone).toEqual(gone.paths.map((p) => ({ ok: false, invalidPath: p, reason: 'not_found' })));
+  return published;
 }
 
 describe('delta publish (#11736 step 2)', () => {
@@ -845,10 +855,33 @@ describe('round trip through the readers (#11736 step 2, plan Task 6)', () => {
     ];
     await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
     expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', checkpoint_id: h1!.id, adds: 5, tombstones: 5 });
-    await expectReadersReturnManifest(t, s1, tree1, {
+    const r1 = await expectReadersReturnManifest(t, s1, tree1, {
       keys: [keyOf(s0, 're-added'), keyOf(s0, 'modified'), keyOf(s0, 'file-to-dir'), keyOf(s0, 'deleted')],
       paths: [P.deleted],
     });
+    // The changed entries, literally. Browse lines without their time (browse
+    // returns it through raw SQL, which the test process's time zone shifts);
+    // search carries it.
+    expect(r1.browse.filter((line) => line.includes('/case/')).map((line) => line.replace(/ \S+Z$/, ''))).toEqual([
+      '/C:/case/ (4)',
+      '/C:/case/file-to-dir/ (1)',
+      'C:/case/file-to-dir/child.dat 9',
+      'C:/case/dir-to-file 10',
+      'C:/case/modified.dat 60',
+      'C:/case/re-added.dat 5',
+    ]);
+    const searchFor = (snap: Snap, query: string) => withDbAccessContext(orgContext(t.orgId), async () =>
+      (await searchSnapshotFiles({ snapshotDbId: snap.dbId, query, limit: 10, after: null }))
+        .entries.map((e) => `${e.path} ${e.type} ${e.modifiedAt ?? '-'}`));
+    const ms = (iso: string) => iso.replace('Z', '.000Z');
+    expect(await searchFor(s1, 'deleted.dat')).toEqual([]);
+    expect(await searchFor(s1, 're-added')).toEqual([`C:/case/re-added.dat file ${ms(at(1))}`]);
+    expect(await searchFor(s1, 'modified')).toEqual([`C:/case/modified.dat file ${ms(at(20))}`]);
+    expect(await searchFor(s1, 'file-to-dir')).toEqual([
+      '/C:/case/file-to-dir directory -',
+      `C:/case/file-to-dir/child.dat file ${ms(at(21))}`,
+    ]);
+    expect(await searchFor(s0, 'deleted.dat')).toEqual([`C:/case/deleted.dat file ${ms(at(4))}`]);
 
     // S2, an empty delta: the tree is the checkpoint's again, so the deleted file is back.
     await hydrate(s2.dbId, manifestOf(s2.snapshotId, base));
@@ -889,32 +922,47 @@ describe('round trip through the readers (#11736 step 2, plan Task 6)', () => {
 
   runDb('the readers follow a delta snapshot that inline agent rows reset to rows format', async () => {
     const t = await seedWriteTenant({ jobStatus: 'running' });
-    const s0 = await snapshotOf(t);
-    const base = filesOf(s0.snapshotId, 40);
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    // 100 entries: up to 5 differences stay a delta.
+    const base = filesOf(s0.snapshotId, 100);
     await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
-    expect(await indexState(s0.dbId)).toMatchObject({ format: 'delta' });
-    await expectReadersReturnManifest(t, s0, base);
+    // S1 is a delta with rows of its own: one file replaced (a tombstone and an add), one deleted.
+    const tree1: Entry[] = [{ ...base[0]!, backupPath: `snapshots/${s1.snapshotId}/files/r0`, size: 900 }, ...base.slice(2)];
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'delta', adds: 1, tombstones: 2 });
+    await expectReadersReturnManifest(t, s1, tree1, { keys: [base[0]!.backupPath], paths: [base[1]!.sourcePath] });
     // As a refused re-hydration leaves it.
-    await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_status = 'failed' WHERE id = ${s0.dbId}::uuid`);
+    await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_status = 'failed' WHERE id = ${s1.dbId}::uuid`);
 
     const agentFiles: Entry[] = [
-      { sourcePath: 'C:/agent/one', backupPath: `snapshots/${s0.snapshotId}/files/a0`, size: 1 },
-      { sourcePath: 'C:/agent/two', backupPath: `snapshots/${s0.snapshotId}/files/a1`, size: 2 },
+      { sourcePath: 'C:/agent/one', backupPath: `snapshots/${s1.snapshotId}/files/a0`, size: 1 },
+      { sourcePath: 'C:/agent/two', backupPath: `snapshots/${s1.snapshotId}/files/a1`, size: 2 },
     ];
     await withDbAccessContext(orgContext(t.orgId), () => applyBackupCommandResultToJob({
       jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
       result: {
-        snapshotId: s0.snapshotId, filesBackedUp: agentFiles.length, bytesBackedUp: 3,
-        snapshot: { id: s0.snapshotId, files: agentFiles },
+        snapshotId: s1.snapshotId, filesBackedUp: agentFiles.length, bytesBackedUp: 3,
+        snapshot: { id: s1.snapshotId, files: agentFiles },
       } as never,
       dispatchExpectationVerified: true,
     }));
-    expect(await indexState(s0.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, status: 'agent' });
+    // The delta's add and tombstones are gone with the pointer: only the agent rows are stored.
+    expect(await indexState(s1.dbId)).toMatchObject({ format: 'rows', checkpoint_id: null, status: 'agent', adds: 2, tombstones: 0 });
+    expect(await storedTree(s1.dbId)).toEqual(expectedTree(agentFiles));
 
-    // Agent rows read as exactly themselves, the checkpoint's entries nowhere, wherever an 'agent' index is served.
-    await expectReadersReturnManifest(t, s0, agentFiles, {
-      keys: base.slice(0, 3).map((e) => e.backupPath),
-      paths: base.slice(0, 3).map((e) => e.sourcePath),
+    const read = await expectReadersReturnManifest(t, s1, agentFiles, {
+      keys: [tree1[0]!.backupPath, ...base.slice(2, 4).map((e) => e.backupPath)],
+      paths: base.slice(2, 4).map((e) => e.sourcePath),
     });
+    // Exactly the agent rows wherever an 'agent' index is served, and none of the checkpoint's entries.
+    expect(read.browse).toEqual(['/C:/ (2)', '/C:/agent/ (2)', 'C:/agent/one 1 -', 'C:/agent/two 2 -']);
+    expect(read.search).toEqual(['C:/agent/one file 1 -', 'C:/agent/two file 2 -']);
+    expect(read.sourcePaths).toEqual(['C:/agent/one', 'C:/agent/two']);
+    expect(read.selection).toEqual({ ok: true, paths: ['C:/agent/one', 'C:/agent/two'] });
+    expect(read.selectionGone.map((r) => r.ok)).toEqual([false, false]);
+    expect(read.count).toBe(2);
+    // Agent rows are not server-verified: no grant, and no membership past the index-state gate.
+    expect(read.keys).toEqual([]);
+    expect(new Set(Object.values(read.membership))).toEqual(new Set(['file index not complete']));
   });
 });
