@@ -23,18 +23,18 @@ import (
 //     the notice is in the agent's list meanwhile.
 //
 // macOS and Linux have no equivalent query (spec §3.2): there the notice is
-// the OS notification, as it is with the prompt kinds off (#12794; spec §3.2
-// "An OS toast is sent only by the native fallback"). Only when that
-// notification cannot be shown does it become a dialog — or when the notice
+// the OS notification, as it is with the prompt kinds off (#12794; spec §2
+// "Native fallback matrix": display notification / notify-send). Only when
+// that notification cannot be shown does it become a dialog — or when the notice
 // offers an action a notification cannot carry (the permission notice's
 // Open Settings), as the legacy first-run permission dialog did.
 //
-// A notice drawn as a dialog, on any OS, is short-lived
-// (nativeNoticeDialogLifetime), never opens over a question that needs an
-// answer and never stacks on another notice (prompt_native.go draw). The
-// notice's deadline is its list lifetime, made for Assist's list, and is
-// never a dialog's lifetime. Untagged so every CI run checks it; the Windows
-// file only makes the call.
+// A notice drawn as a dialog, on any OS, lives at most
+// nativeNoticeDialogLifetime (or until its own deadline, if sooner), never
+// opens over a question that needs an answer and never stacks on another
+// notice (prompt_native.go draw). A notice's deadline is otherwise its list
+// lifetime, made for Assist's list (24 h), and never a dialog's. Untagged
+// so every CI run checks it; the Windows file only makes the call.
 
 type noticeDelivery int
 

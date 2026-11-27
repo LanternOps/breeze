@@ -563,8 +563,9 @@ type nativeActive struct {
 // up as a dialog (#12794). A notice's deadline is its list lifetime (24 h for
 // a session-ended notice, made for Assist's notification list); the native
 // path has no list, so a dialog that lived that long would block the screen
-// for a day. 60 s is the legacy fallback dialog's lifetime
-// (noticeDialogTimeoutMs), so nothing is worse than with the kinds off.
+// for a day. 60 s is the legacy notice fallback dialog's lifetime on Windows
+// and macOS (noticeDialogTimeoutMs); Linux had no legacy notice dialog, and
+// draws one here only when notify-send fails.
 const nativeNoticeDialogLifetime = 60 * time.Second
 
 // maxEndedNativePrompts bounds the memory of dialogs that ended on screen.
@@ -591,8 +592,10 @@ type nativePromptRenderer struct {
 	endedOrder []string
 
 	// Notice delivery (notice_delivery.go): the session's notification
-	// state (nil where the platform has no such query: the notice is the
-	// dialog), the toast, and the re-poll interval of a held notice.
+	// state (nil where the platform has no such query: the notice is a
+	// notification, and a dialog only if that fails or the notice has an
+	// action beyond OK), the toast, and the re-poll interval of a held
+	// notice.
 	noticeState  func() (uint32, error)
 	toast        func(ipc.NotifyRequest) bool
 	noticeRepoll time.Duration
@@ -858,6 +861,8 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 		prev.cancel() // one window per prompt: the redraw replaces it
 	}
 	for _, c := range covered {
+		log.Info("notice dialog taken down for a question that needs an answer; it stays in the agent's list",
+			"promptId", c.show.PromptID, "for", p.PromptID)
 		c.cancel()
 	}
 	lease := func() ipc.PromptLease {
@@ -920,13 +925,19 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 			r.reply(ipc.TypePromptClosed, ipc.PromptClosed{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, Reason: ipc.PromptClosedHidden})
 		case out.TimedOut:
 			// Report nothing: the agent's own timer decides expiry.
-			log.Debug("native prompt dialog timed out", "promptId", p.PromptID)
+			if notice {
+				// A notice dialog closes itself after at most
+				// nativeNoticeDialogLifetime, whether or not anyone saw it.
+				log.Info("native notice dialog closed by its own timeout", "promptId", p.PromptID)
+			} else {
+				log.Debug("native prompt dialog timed out", "promptId", p.PromptID)
+			}
 		}
 	}()
 }
 
 // isNoticeShow reports whether a prompt is an informational notice: it tells
-// the person something and asks nothing of them (#12794).
+// the person something and decides nothing (#12794).
 func isNoticeShow(p ipc.PromptShow) bool { return p.Kind == noticeKind }
 
 // takeNoticeDialogsLocked removes every notice dialog except promptID's from

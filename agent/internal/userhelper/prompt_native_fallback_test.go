@@ -39,6 +39,12 @@ func TestNativeAnsweredPromptIsNotRedrawnByAnUpdate(t *testing.T) {
 			actions := append([]ipc.PromptAction(nil), show.Actions...)
 			actions[0].Label = actions[0].Label + " (2)"
 			r.handle(envelopeFor(t, ipc.TypePromptUpdate, ipc.PromptUpdate{PromptID: show.PromptID, Rev: show.Rev + 1, Lease: show.Lease, Actions: &actions, DefaultActionID: show.DefaultActionID}))
+			// draw registers the window before handle returns: nothing may be
+			// active now (deterministic; the sleep below also gives a racing
+			// draw goroutine time to show itself).
+			if r.activeCount() != 0 {
+				t.Fatal("an update registered a new window for a dialog that already ended")
+			}
 			time.Sleep(40 * time.Millisecond)
 			if n := fake.shown(); n != 1 {
 				t.Fatalf("an update redrew a dialog that already ended: %d dialogs, want 1", n)
@@ -173,6 +179,9 @@ func TestNativeNoticeDialogNeverStacks(t *testing.T) {
 	waitUntil(t, func() bool { return fake.shown() == 2 }, "the notice dialog")
 	r.handle(envelopeFor(t, ipc.TypePromptShow, sessionEndedShow(t, "notice:session_ended:e")))
 	waitUntil(t, func() bool { return sink.count(ipc.TypePromptPresented) == 4 }, "the second notice's presented")
+	if vis := presentedVisibility(sink); vis[3] {
+		t.Fatal("the second notice was reported visible: notice dialogs stacked")
+	}
 	time.Sleep(20 * time.Millisecond)
 	if fake.shown() != 2 {
 		t.Fatalf("notice dialogs stacked: %d dialogs", fake.shown())
@@ -195,7 +204,14 @@ func TestNativeDecisionTakesANoticeDialogDown(t *testing.T) {
 	}
 	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.restart.json")))
 	waitUntil(t, func() bool { return fake.shown() == 2 }, "the restart question")
-	waitUntil(t, func() bool { return r.activeCount() == 1 }, "the notice dialog to come down")
+	waitUntil(t, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return len(fake.cancelled) == 1 && fake.cancelled[0] == notice.PromptID
+	}, "the notice dialog's window to be taken down")
+	if r.activeCount() != 1 {
+		t.Fatalf("active = %d, want only the restart question", r.activeCount())
+	}
 	if n := sink.count(ipc.TypePromptClosed) + sink.count(ipc.TypePromptAction); n != 0 {
 		t.Fatalf("taking the notice down reported %d messages; want none", n)
 	}
@@ -232,5 +248,53 @@ func TestNativeActionableNoticeIsAShortLivedDialog(t *testing.T) {
 	}
 	if got := nativeTimeout(m, nativeNow); got > nativeNoticeDialogLifetime {
 		t.Fatalf("actionable notice dialog stays up %s", got)
+	}
+}
+
+// Windows: a notice held while the user presents becomes, when the hold
+// ends in quiet hours, a dialog that is short-lived too.
+func TestNativeHeldNoticeThatBecomesADialogIsShortLived(t *testing.T) {
+	os := &fakeNoticeOS{state: qunsBusy, toastOK: true}
+	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
+	r, sink := newNoticeRenderer(t, os, fake)
+	r.handle(envelopeFor(t, ipc.TypePromptShow, sessionEndedShow(t, "notice:session_ended:held")))
+	sink.waitFor(t, ipc.TypePromptPresented) // visible:false, held
+	os.set(qunsQuietTime)
+	waitUntil(t, func() bool { return fake.shown() == 1 }, "the dialog after the hold")
+	fake.mu.Lock()
+	m := fake.models[0]
+	fake.mu.Unlock()
+	if got := nativeTimeout(m, nativeNow); got > nativeNoticeDialogLifetime {
+		t.Fatalf("a held notice became a dialog that stays up %s", got)
+	}
+}
+
+// A notice the agent withdrew while it was held leaves nothing behind: a
+// later notice may still be a dialog.
+func TestNativeWithdrawnHeldNoticeLeavesNoGhost(t *testing.T) {
+	os := &fakeNoticeOS{state: qunsBusy, toastOK: false}
+	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
+	r, sink := newNoticeRenderer(t, os, fake)
+	held := sessionEndedShow(t, "notice:session_ended:withdrawn")
+	r.handle(envelopeFor(t, ipc.TypePromptShow, held))
+	sink.waitFor(t, ipc.TypePromptPresented)
+	r.handle(envelopeFor(t, ipc.TypePromptClose, ipc.PromptClose{PromptID: held.PromptID, Rev: held.Rev, Lease: held.Lease, Reason: ipc.PromptCloseWithdrawn}))
+	waitUntil(t, func() bool { return r.activeCount() == 0 }, "the hold to end")
+	if n := sink.count(ipc.TypePromptPresented); n != 1 {
+		t.Fatalf("a withdrawn notice sent %d presented messages, want only the hold's", n)
+	}
+	os.set(qunsQuietTime)
+	r.handle(envelopeFor(t, ipc.TypePromptShow, sessionEndedShow(t, "notice:session_ended:next")))
+	waitUntil(t, func() bool { return fake.shown() == 1 }, "the next notice's dialog")
+}
+
+// The cap never lengthens a notice whose own deadline is sooner.
+func TestShortLivedNoticeKeepsASoonerDeadline(t *testing.T) {
+	soon := nativePromptModel{Deadline: nativeNow.Add(10 * time.Second), Response: time.Minute}
+	if got := shortLivedNotice(soon, nativeNow); !got.Deadline.Equal(soon.Deadline) || got.Response != 0 {
+		t.Fatalf("deadline %s response %s; want the sooner deadline kept and no response window", got.Deadline, got.Response)
+	}
+	if got := shortLivedNotice(nativePromptModel{}, nativeNow); !got.Deadline.Equal(nativeNow.Add(nativeNoticeDialogLifetime)) {
+		t.Fatalf("no deadline: got %s", got.Deadline)
 	}
 }
