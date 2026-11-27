@@ -4,13 +4,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"image"
+	"io"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/executor"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 // awsKeyInText is SanitizeOutput's AWS rule: unanchored and case-insensitive,
@@ -40,13 +48,150 @@ func noiseImageWithAWSShapedBase64(t *testing.T) (*image.RGBA, string) {
 	return nil, ""
 }
 
+// resultServer records the body of every command result the agent posts.
+type resultServer struct {
+	mu     sync.Mutex
+	bodies [][]byte
+}
+
+func newResultServer(t *testing.T) (*httptest.Server, *resultServer) {
+	t.Helper()
+	rs := &resultServer{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rs.mu.Lock()
+		rs.bodies = append(rs.bodies, body)
+		rs.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, rs
+}
+
+func (rs *resultServer) onlyBody(t *testing.T) []byte {
+	t.Helper()
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if len(rs.bodies) != 1 {
+		t.Fatalf("server received %d result bodies, want 1", len(rs.bodies))
+	}
+	return rs.bodies[0]
+}
+
+// newFakeToolHelper is a capture-capable user-helper session whose helper end
+// answers take_screenshot / computer_action the way the user helper's
+// executeToolCommand does: it runs the same tools capture function and
+// marshals the whole CommandResult into the IPC result.
+func newFakeToolHelper(t *testing.T, capFn tools.CaptureFunc) *sessionbroker.Session {
+	t.Helper()
+	serverConn, clientConn := createTestSocketPair(t)
+	client := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "quartz", "helper-screenshot", []string{"desktop"})
+	session.Capabilities = &ipc.Capabilities{CanCapture: true}
+	session.WinSessionID = "1"
+	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+	go func() {
+		for {
+			env, err := client.Recv()
+			if err != nil {
+				return
+			}
+			var cmd ipc.IPCCommand
+			if err := json.Unmarshal(env.Payload, &cmd); err != nil {
+				return
+			}
+			var payload map[string]any
+			_ = json.Unmarshal(cmd.Payload, &payload)
+			var res tools.CommandResult
+			switch cmd.Type {
+			case tools.CmdTakeScreenshot:
+				res = tools.TakeScreenshotWithCapture(payload, capFn)
+			case tools.CmdComputerAction:
+				res = tools.ComputerActionWithCapture(payload, capFn)
+			}
+			resultJSON, _ := json.Marshal(res)
+			_ = client.SendTyped(env.ID, ipc.TypeCommandResult, ipc.IPCCommandResult{
+				CommandID: cmd.CommandID, Status: res.Status, Result: resultJSON, Error: res.Error,
+			})
+		}
+	}()
+	t.Cleanup(func() {
+		_ = session.Close()
+		_ = client.Close()
+	})
+	return session
+}
+
+// sentImage is the image a result's stdout carries, as the server will read it.
+func sentImage(t *testing.T, cmdType, stdout string) string {
+	t.Helper()
+	if cmdType == tools.CmdTakeScreenshot {
+		var shot tools.ScreenshotResponse
+		if err := json.Unmarshal([]byte(stdout), &shot); err != nil {
+			t.Fatalf("unmarshal %s stdout: %v", cmdType, err)
+		}
+		return shot.ImageBase64
+	}
+	var action tools.ComputerActionResponse
+	if err := json.Unmarshal([]byte(stdout), &action); err != nil {
+		t.Fatalf("unmarshal %s stdout: %v", cmdType, err)
+	}
+	if action.Screenshot == nil {
+		t.Fatalf("%s result has no screenshot", cmdType)
+	}
+	return action.Screenshot.ImageBase64
+}
+
+// checkSentBytes asserts that both wire forms of a result carry the image
+// byte-identical: the REST body the server received, and the websocket form
+// the same result takes when REST is unavailable.
+func checkSentBytes(t *testing.T, cmdType, commandID, want string, restBody []byte) {
+	t.Helper()
+	var sent tools.CommandResult
+	if err := json.Unmarshal(restBody, &sent); err != nil {
+		t.Fatalf("unmarshal REST body: %v", err)
+	}
+	if sent.Status != "completed" {
+		t.Fatalf("status %q: %s", sent.Status, sent.Error)
+	}
+	if sentImage(t, cmdType, sent.Stdout) != want {
+		t.Fatal("REST body: image is not byte-identical to the encoder output")
+	}
+	wsBody, err := json.Marshal(toWSCommandResult(commandID, sent))
+	if err != nil {
+		t.Fatalf("marshal websocket result: %v", err)
+	}
+	var ws struct {
+		Stdout string `json:"stdout"`
+	}
+	if err := json.Unmarshal(wsBody, &ws); err != nil {
+		t.Fatalf("unmarshal websocket result: %v", err)
+	}
+	if sentImage(t, cmdType, ws.Stdout) != want {
+		t.Fatal("websocket result: image is not byte-identical to the encoder output")
+	}
+}
+
 // #12795: the agent never runs the text redaction patterns over a screenshot
-// result. take_screenshot and computer_action results go from the encoder to
-// the wire untouched (only script output passes through SanitizeOutput), so an
-// image whose base64 happens to match a secret pattern must come back
-// byte-identical. The fixture is checked to be one the text pass WOULD
-// corrupt, so this test fails if a redaction pass is ever added over the
-// whole result.
+// result (only script output passes through SanitizeOutput), so an image whose
+// base64 happens to match a secret pattern must reach the wire byte-identical.
+// The fixture is checked to be one the text pass WOULD corrupt.
+//
+// What each subtest pins, up to the bytes posted to the server and the
+// websocket form of the same result:
+//   - via_helper (the service-mode path): on Windows and macOS, the whole of
+//     processCommand: handler routing, executeToolViaHelper and its IPC
+//     decode, and submitCommandResult. On Linux the handler routes to the
+//     direct path (no helper there), so the test calls executeToolViaHelper
+//     and submitCommandResult itself. The helper end is a fake that does what
+//     the user helper's executeToolCommand does.
+//   - direct: the capture call the handler's direct branch makes, then the
+//     send path. The handler itself is not driven: its direct branch captures
+//     through the active desktop session (h.desktopCaptureFn), which a test
+//     cannot stand up. That branch is the single line
+//     `return tools.TakeScreenshotWithCapture(cmd.Payload, h.desktopCaptureFn())`
+//     (ComputerActionWithCapture for computer_action).
 func TestScreenshotResultsAreNotTextRedacted(t *testing.T) {
 	img, want := noiseImageWithAWSShapedBase64(t)
 	if executor.SanitizeOutput(want) == want {
@@ -55,32 +200,44 @@ func TestScreenshotResultsAreNotTextRedacted(t *testing.T) {
 	capFn := func(int) (*image.RGBA, int, int, error) {
 		return img, img.Bounds().Dx(), img.Bounds().Dy(), nil
 	}
+	direct := map[string]func(map[string]any, tools.CaptureFunc) tools.CommandResult{
+		tools.CmdTakeScreenshot: tools.TakeScreenshotWithCapture,
+		tools.CmdComputerAction: tools.ComputerActionWithCapture,
+	}
 
-	t.Run("take_screenshot", func(t *testing.T) {
-		res := tools.TakeScreenshotWithCapture(map[string]any{}, capFn)
-		if res.Status != "completed" {
-			t.Fatalf("status %q: %s", res.Status, res.Error)
+	for _, cmdType := range []string{tools.CmdTakeScreenshot, tools.CmdComputerAction} {
+		payload := func() map[string]any {
+			if cmdType == tools.CmdComputerAction {
+				return map[string]any{"action": "screenshot"}
+			}
+			return map[string]any{}
 		}
-		var shot tools.ScreenshotResponse
-		if err := json.Unmarshal([]byte(res.Stdout), &shot); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if shot.ImageBase64 != want {
-			t.Fatal("take_screenshot image is not byte-identical to the encoder output")
-		}
-	})
 
-	t.Run("computer_action", func(t *testing.T) {
-		res := tools.ComputerActionWithCapture(map[string]any{"action": "screenshot"}, capFn)
-		if res.Status != "completed" {
-			t.Fatalf("status %q: %s", res.Status, res.Error)
-		}
-		var action tools.ComputerActionResponse
-		if err := json.Unmarshal([]byte(res.Stdout), &action); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if action.Screenshot == nil || action.Screenshot.ImageBase64 != want {
-			t.Fatal("computer_action screenshot is not byte-identical to the encoder output")
-		}
-	})
+		t.Run(cmdType+"/via_helper", func(t *testing.T) {
+			srv, rs := newResultServer(t)
+			h := newResultSubmitHeartbeat(srv.URL)
+			h.isService = true
+			h.sessionBroker = newTestBrokerWithSessions(t, newFakeToolHelper(t, capFn))
+			cmd := Command{ID: "cmd-helper-" + cmdType, Type: cmdType, Payload: payload()}
+			if runtime.GOOS != "linux" {
+				h.processCommand(cmd)
+			} else {
+				res := h.executeToolViaHelper(cmdType, cmd.Payload, time.Now())
+				if err := h.submitCommandResult(cmd.ID, res); err != nil {
+					t.Fatalf("submitCommandResult: %v", err)
+				}
+			}
+			checkSentBytes(t, cmdType, cmd.ID, want, rs.onlyBody(t))
+		})
+
+		t.Run(cmdType+"/direct", func(t *testing.T) {
+			srv, rs := newResultServer(t)
+			h := newResultSubmitHeartbeat(srv.URL)
+			commandID := "cmd-direct-" + cmdType
+			if err := h.submitCommandResult(commandID, direct[cmdType](payload(), capFn)); err != nil {
+				t.Fatalf("submitCommandResult: %v", err)
+			}
+			checkSentBytes(t, cmdType, commandID, want, rs.onlyBody(t))
+		})
+	}
 }
