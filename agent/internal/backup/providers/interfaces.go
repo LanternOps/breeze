@@ -31,7 +31,9 @@ type SourceSkipper interface {
 
 // StaleUploadSweeper is optionally implemented by providers that write a
 // temporary file beside an object during an upload (the local provider), so
-// ones left by an interrupted helper can be removed later.
+// ones left by an interrupted helper can be removed later. The prefix must
+// name a tree in which every object's leaf ends in ".gz" (a snapshot's
+// files/ tree): elsewhere an object can carry a temporary file's name.
 type StaleUploadSweeper interface {
 	SweepStaleUploads(prefix string, olderThan time.Duration) (int, error)
 }

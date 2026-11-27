@@ -640,17 +640,6 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	}
 	if journal != nil {
 		resumedJournal = journal.resumed
-		if resumedJournal {
-			// Temporary upload files an interrupted attempt left under this
-			// snapshot's prefix (local destinations write one per upload).
-			if sw, ok := m.config.Provider.(providers.StaleUploadSweeper); ok {
-				if n, err := sw.SweepStaleUploads(path.Join(snapshotRootDir, journal.snapshotID), staleStagingAge); err != nil {
-					log.Warn("could not sweep stale temporary upload files", "snapshotId", journal.snapshotID, "error", err.Error())
-				} else if n > 0 {
-					log.Info("removed stale temporary upload files", "snapshotId", journal.snapshotID, "count", n)
-				}
-			}
-		}
 		if what := journal.DiscardedOtherRun(); what != "" {
 			appendWarning(job, warnJournalDiscardedOtherRun+": an interrupted run's checkpoint for a different "+what+" was discarded; this run started a new snapshot")
 		}
@@ -754,6 +743,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			job.CompletedAt = time.Now().UTC()
 			job.Error = fmt.Errorf("%w: %w", errWriterStillActive, err)
 			return job, job.Error
+		}
+	}
+	if journal != nil && resumedJournal {
+		// Temporary upload files an interrupted attempt left under this
+		// snapshot's files/ tree (local destinations write one per upload).
+		// Only here, after the checks above: a published snapshot is never
+		// swept, since nothing would upload a wrongly removed object again.
+		// And only files/: every object there ends in ".gz" and no temporary
+		// name does, while an object elsewhere can carry a temporary name
+		// (a system-state artifact keeps the name it was collected under).
+		// Leftovers outside files/ stay until the prefix is deleted.
+		if sw, ok := m.config.Provider.(providers.StaleUploadSweeper); ok {
+			if n, err := sw.SweepStaleUploads(path.Join(snapshotRootDir, journal.snapshotID, snapshotFilesDir), staleStagingAge); err != nil {
+				log.Warn("could not sweep stale temporary upload files", "snapshotId", journal.snapshotID, "error", err.Error())
+			} else if n > 0 {
+				log.Info("removed stale temporary upload files", "snapshotId", journal.snapshotID, "count", n)
+			}
 		}
 	}
 	if journal != nil {
