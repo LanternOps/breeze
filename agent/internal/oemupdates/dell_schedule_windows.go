@@ -10,6 +10,10 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// maxRegSZBytes bounds the read. ManualUpdates is 28 bytes with its NUL; a
+// longer value cannot be a mode name and is reported as a read error.
+const maxRegSZBytes = 512
+
 var errKeyNotOnReadList = errors.New("registry key is not on the vendor schedule read list")
 
 // readHKLMValue reads one value under HKLM. The key is opened in the 64-bit

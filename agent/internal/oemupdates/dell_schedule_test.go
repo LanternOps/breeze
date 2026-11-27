@@ -88,7 +88,7 @@ func manualDellRegistry() *fakeRegistry {
 	return newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, dellManualUpdates)
 }
 
-var errAccessDenied = errors.New("Access is denied.")
+var errAccessDenied = errors.New("access is denied")
 
 // Every state the lab saw, plus the ones it could not rule out. Only an exact
 // ManualUpdates in the settings key, with no policy saying otherwise, passes.

@@ -74,10 +74,6 @@ type regRead struct {
 	Value string
 }
 
-// maxRegSZBytes bounds the read. ManualUpdates is 28 bytes with its NUL; a
-// longer value cannot be a mode name and is reported as a read error.
-const maxRegSZBytes = 512
-
 // decodeRegSZ decodes a REG_SZ's raw bytes (UTF-16LE). Exactly one terminating
 // NUL is dropped; everything else is kept, embedded NULs included, so
 // "ManualUpdates\x00Auto" never compares equal to ManualUpdates (a string
@@ -250,7 +246,7 @@ func (l *dellLane) CheckToolConfig() (Outcome, error) {
 	if _, ok := l.toolPath(); !ok {
 		log.Warn("Dell Command | Update is not installed; the vendor update run is refused and Breeze does not install it, because a new install schedules its own updates",
 			"errorCode", codeToolNotInstalled)
-		return OutcomeToolUnavailable, runErr(codeToolNotInstalled, errors.New(`Dell Command | Update is not installed under either Program Files\Dell\CommandUpdate`))
+		return OutcomeToolUnavailable, runErr(codeToolNotInstalled, errors.New(`the Dell Command | Update tool is not installed under either Program Files\Dell\CommandUpdate`))
 	}
 	m := readDellScheduleMode(l.host.registry)
 	if m.Manual() {
