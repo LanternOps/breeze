@@ -62,6 +62,7 @@ export function createGuardedFetch(
       headers: init.headers,
       body: init.body,
       timeoutMs: init.timeoutMs ?? opts.timeoutMs ?? 30_000,
+      ...(init.deadlineMs !== undefined ? { deadlineMs: init.deadlineMs } : {}),
       maxBytes: opts.maxBytes ?? 20 * 1024 * 1024,
     });
     return { status: res.status, headers: res.headers, text: () => res.text() };

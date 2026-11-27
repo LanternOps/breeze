@@ -582,27 +582,6 @@ describe('Tier-2 intents from the ai_agent principal (P2-1)', () => {
     expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
     expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
   });
-
-  // #12774: an agent run's release writes every manage_tickets comment as an
-  // internal note (addAiTriageNote), whatever isPublic says, so the stored
-  // impact line must not tell the approver the requester is emailed.
-  it('stores the internal-note impact line for an agent-proposed public comment (#12774)', async () => {
-    // manage_tickets' registry base tier; isPublic: true escalates it to Tier 3.
-    aiToolsState.getToolTier.mockImplementation((toolName: string) => (toolName === 'manage_tickets' ? 1 : undefined));
-    queueAgentContext();
-    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
-    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-comment' }));
-    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
-
-    await createActionIntent(makeAgentAuth(), agentInput({
-      toolName: 'manage_tickets',
-      input: { action: 'comment', ticketId: ALERT_ID, content: 'Fixed', isPublic: true },
-      idempotencyKey: 'agent-comment-12774',
-    }));
-
-    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary)
-      .toBe('Adds an internal note to the ticket. The requester does not see it.');
-  });
 });
 
 // #10027 (Todd's ruling): over MCP with MCP_TIER3_INTENTS_ENABLED on, a call to

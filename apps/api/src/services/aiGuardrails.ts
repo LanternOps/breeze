@@ -21,7 +21,6 @@ export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiTo
 import { getRedis } from './redis';
 import { describePax8Action, describePax8Submit, humanizeToolAction, patchInstallHeadline } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
-import { TICKET_REQUESTER_FIELD_KEYS, TOOL_ACTION_INPUT_KEYS, resolveActionForTool } from './aiToolActionKey';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
 import type { AuthContext } from '../middleware/auth';
@@ -70,9 +69,17 @@ export const BLOCKED_TOOLS: ReadonlySet<string> = new Set<string>([
   // cross-org access is enforced by orgCondition in each handler
 ]);
 
-// TOOL_ACTION_INPUT_KEYS and resolveActionForTool live in the import-free
-// leaf ./aiToolActionKey (#12774) and are re-exported here unchanged.
-export { TOOL_ACTION_INPUT_KEYS, resolveActionForTool };
+// Sub-operation discriminator key per tool. Most action-multiplexed tools
+// carry their sub-operation in `action`; execute_command multiplexes on
+// `commandType` (#3088) — that string selects the agent-side command handler,
+// so it is a real dispatch discriminator, not a heuristic over command text.
+// The TIER1/2/3_ACTIONS tables are indexed by the value found under this key.
+// Exported for the tier-parity contract tests (aiGuardrailsTierParity.shared.ts).
+export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
+  execute_command: 'commandType',
+  // Wisp W07: launch_specialist is multiplexed on the specialist KIND.
+  launch_specialist: 'kind',
+};
 
 // Actions that are Tier 2 (auto-execute + audit):
 //   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
@@ -1340,6 +1347,9 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
  * stray featureType or inlineSettings argument would be escalated into an
  * approval that the MCP transport then denies outright.
  */
+/** `manage_tickets update_fields` keys that change who receives requester email (W02, #6756). */
+const TICKET_REQUESTER_FIELD_KEYS = ['submittedBy', 'submitterName', 'submitterEmail'] as const;
+
 export function isInputAwareTier3(
   toolName: string,
   action: string | undefined,
@@ -3331,6 +3341,26 @@ export type GuardrailDisposition = 'allow' | 'propose' | 'deny' | 'act';
  * fails CLOSED rather than executing a proposal.
  */
 export type AgentGuardrailCheck = GuardrailCheck & { disposition: GuardrailDisposition };
+
+/**
+ * The sub-operation discriminator for a tool call, resolved EXACTLY the way
+ * `checkGuardrails` and `checkAgentGuardrails` each used to do inline (two
+ * byte-identical copies, now one). `TOOL_ACTION_INPUT_KEYS` overrides the
+ * default `action` key for a multiplexer keyed on something else
+ * (`execute_command`'s `commandType`, #3088). A non-string value at that key
+ * resolves to `undefined`, not a coerced string — callers fall back to
+ * whatever "no action" means for them (checkGuardrails: the tool's base
+ * tier; checkAgentGuardrails: a hard deny on a multiplexed tool;
+ * policyDecide.ts: no `tool:action` key, so a bare-tool registry lookup).
+ *
+ * Exported so `policyDecide.ts`'s canonical-key derivation reuses this
+ * instead of a third inline copy (wave 5 Part B, #3827).
+ */
+export function resolveActionForTool(toolName: string, input: Record<string, unknown>): string | undefined {
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  return typeof actionValue === 'string' ? actionValue : undefined;
+}
 
 /**
  * The model-actionable `run_script { proposalId }` deny message (#7129). Three

@@ -89,7 +89,6 @@ import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
 import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
 import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
 import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
-import { manageTicketsFieldsSchema } from './aiToolSchemasTicketFields';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -893,7 +892,21 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     workType: z.string().optional(),
     // Interpreted in the ticket org's currency (spec §9); the entry snapshots that currency.
     hourlyRate: z.number().nonnegative().optional(),
-    fields: manageTicketsFieldsSchema.optional(),
+    fields: z.object({
+      subject: z.string().min(1).max(255).optional(),
+      description: z.string().max(50_000).optional(),
+      categoryId: uuid.nullable().optional(),
+      priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+      dueDate: z.string().datetime().nullable().optional(),
+      responseSlaMinutes: z.number().int().nonnegative().nullable().optional(),
+      resolutionSlaMinutes: z.number().int().nonnegative().nullable().optional(),
+      deviceId: uuid.nullable().optional(),
+      tags: z.array(z.string().min(1).max(100)).max(50).optional(),
+      submittedBy: uuid.nullable().optional(),
+      submitterName: z.string().max(255).nullable().optional(),
+      submitterEmail: z.string().email().max(255).nullable().optional(),
+      ticketType: ticketTypeSchema.optional(),
+    }).optional(),
     overrides: z.object({
       subject: z.string().min(1).max(255).optional(),
       description: z.string().max(50_000).optional(),

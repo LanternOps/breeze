@@ -10,6 +10,7 @@ vi.mock("./urlSafety", () => ({
 }));
 
 import {
+  fetchVerifiedGithubReleaseArtifact,
   verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
@@ -359,6 +360,32 @@ describe("releaseArtifactManifest", () => {
       2,
       signatureUrl,
       { maxBytes: 1024 * 1024 },
+    );
+  });
+
+  it("passes a 10 min overall deadline to the asset download (#12788)", async () => {
+    const asset = Buffer.from("trusted-github-msi");
+    const signed = makeSignedManifest({ assetName: "breeze-agent.msi", assetBuffer: asset });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    safeFetchFollowingRedirectsMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".ed25519")) return new Response(signed.signature);
+      if (url.endsWith("breeze-agent.msi")) return new Response(new Uint8Array(asset));
+      return new Response(signed.manifest);
+    });
+
+    await fetchVerifiedGithubReleaseArtifact({
+      assetName: "breeze-agent.msi",
+      assetUrl: "https://example.com/breeze-agent.msi",
+      manifestUrl: "https://example.com/release-artifact-manifest.json",
+      signatureUrl: "https://example.com/release-artifact-manifest.json.ed25519",
+      expectedRepository: "lanternops/breeze",
+      expectedRelease: "v1.2.3",
+      maxAssetBytes: 1024 * 1024,
+    });
+
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenCalledWith(
+      "https://example.com/breeze-agent.msi",
+      expect.objectContaining({ deadlineMs: 600_000 }),
     );
   });
 

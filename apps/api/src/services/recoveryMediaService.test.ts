@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // stack at module load; none of it is exercised by resolveBackupBinary.
 // `safeFetch` (now on the download path) calls `assertOutsideHeldDbContext`,
 // so the `../db` mock has to expose it or the import fails at call time.
+const redirectInits = vi.hoisted(() => [] as unknown[]);
 vi.mock('../db', () => ({ db: {}, assertOutsideHeldDbContext: vi.fn() }));
 vi.mock('./recoveryBootstrap', () => ({
   asRecord: (v: unknown) => (v && typeof v === 'object' ? v : {}),
@@ -24,7 +25,10 @@ vi.mock('./recoveryBootstrap', () => ({
 // `recoveryMediaService.redirect.test.ts` + `urlSafety.test.ts`.
 vi.mock('./urlSafety', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./urlSafety')>()),
-  safeFetchFollowingRedirects: (url: string) => globalThis.fetch(url),
+  safeFetchFollowingRedirects: (url: string, init?: unknown) => {
+    redirectInits.push(init);
+    return globalThis.fetch(url);
+  },
 }));
 vi.mock('./recoverySigning', () => ({
   getRecoverySigningKey: () => null,
@@ -107,6 +111,17 @@ describe('resolveBackupBinary (github mode, spec 3d)', () => {
       sha256: createHash('sha256').update(bytes).digest('hex'),
       manifestVersion: 'v1.2.3',
     });
+  });
+
+  it('bounds the binary download with a 10 min overall deadline (#12788)', async () => {
+    const bytes = Buffer.from('backup binary bytes');
+    const signed = makeSignedBackupManifest('breeze-backup-linux-amd64', bytes);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    stubFetch('breeze-backup-linux-amd64', bytes, signed);
+    redirectInits.length = 0;
+
+    await resolveBackupBinary('linux', 'amd64', workingDir);
+    expect(redirectInits).toContainEqual(expect.objectContaining({ deadlineMs: 600_000 }));
   });
 
   it('fails closed when the downloaded bytes do not match the manifest hash', async () => {

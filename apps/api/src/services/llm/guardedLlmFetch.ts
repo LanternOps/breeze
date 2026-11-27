@@ -97,6 +97,14 @@ export interface GuardedLlmFetchOptions {
 const MAX_RECORDED_HOST_LENGTH = 255;
 
 /**
+ * Overall bound on one LLM request (#12788). safeFetch buffers the whole
+ * completion, so a call lasts the full generation; the SDK's own timeout
+ * (10 minutes unless the caller sets a shorter one) governs, and this is only
+ * the backstop above it. Without it safeFetch's 30 s default would apply.
+ */
+const LLM_FETCH_DEADLINE_MS = 15 * 60_000;
+
+/**
  * Builds a `fetch` implementation suitable for the `@anthropic-ai/sdk`
  * `fetch` client option (and any other one-shot fetch-shaped client).
  */
@@ -160,6 +168,7 @@ export function buildGuardedLlmFetch(
         // After the spread, so a caller-supplied maxBytes cannot widen it.
         maxBytes,
         onConnect,
+        deadlineMs: LLM_FETCH_DEADLINE_MS,
       } as Parameters<typeof safeFetch>[1]);
       record({ host: parsed.hostname, resolvedIp, blocked: false });
       return response;

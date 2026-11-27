@@ -215,6 +215,13 @@ const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
  * from this value — an unexported copy there was a comment-enforced promise.
  */
 export const MAX_MANIFEST_BYTES = 1024 * 1024;
+
+/**
+ * Overall bound on downloading one release artifact (up to a few hundred MB),
+ * redirects included, when the caller's `signal` does not end it sooner.
+ * Without it safeFetch's 30 s default for ordinary API calls would apply (#12788).
+ */
+const RELEASE_ARTIFACT_DOWNLOAD_DEADLINE_MS = 10 * 60_000;
 const PUBLIC_KEY_ENV_NAMES = [
   "RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS",
   "BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS",
@@ -1069,6 +1076,7 @@ export async function fetchVerifiedGithubReleaseArtifact(args: {
 
   const response = await safeFetchFollowingRedirects(args.assetUrl, {
     maxBytes: selected.size,
+    deadlineMs: RELEASE_ARTIFACT_DOWNLOAD_DEADLINE_MS,
     ...(args.signal ? { signal: args.signal } : {}),
   });
   if (!response.ok) {

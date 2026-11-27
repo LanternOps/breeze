@@ -121,6 +121,16 @@ describe('createSourceClient', () => {
     expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it('passes its whole-exchange deadline to safeFetch, default 4x the timeout (#12788)', async () => {
+    const { c, calls } = client([json({ ok: true })]);
+    await c.json({ path: ['api'] });
+    expect(calls[0]!.init).toMatchObject({ deadlineMs: 4 * 1234 });
+
+    const custom = client([json({ ok: true })], { requestDeadlineMs: 50_000 });
+    await custom.c.json({ path: ['api'] });
+    expect(custom.calls[0]!.init).toMatchObject({ deadlineMs: 50_000 });
+  });
+
   it('does not follow a redirect: a 3xx is an answer, not a new URL', async () => {
     const { c, calls } = client([new Response(null, { status: 302, headers: { location: 'https://evil.example/' } })]);
     await expect(c.json({ path: ['api'] })).rejects.toMatchObject({ name: 'SourceHttpError', status: 302 });

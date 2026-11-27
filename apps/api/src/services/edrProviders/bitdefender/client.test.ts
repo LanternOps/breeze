@@ -441,6 +441,16 @@ describe('GravityZoneClient write calls', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('a write sets an explicit overall deadline equal to its timeout; a read leaves the default (#12788)', async () => {
+    const { impl } = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: '1', result: true }) }]);
+    const { client } = makeClient(impl);
+    await client.createIsolateEndpointTask('ep1', ACT);
+    expect(vi.mocked(impl).mock.calls[0]![1]).toMatchObject({ timeoutMs: 30_000, deadlineMs: 30_000 });
+    const read = makeFetch([{ body: fx('inventory-page2.json') }]);
+    await makeClient(read.impl).client.call('network', '1.1', 'getNetworkInventoryItems', { page: 1 });
+    expect(vi.mocked(read.impl).mock.calls[0]![1]).not.toHaveProperty('deadlineMs');
+  });
+
   it('never retries a write on a network error', async () => {
     const impl: GuardedFetch = vi.fn(async () => { throw new Error(`socket hang up ${API_KEY}`); });
     const { client, sleep } = makeClient(impl);

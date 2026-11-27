@@ -46,6 +46,14 @@ describe('webhook sender retry budget', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('passes the clamped webhook timeout as safeFetch overall deadline (#12788)', async () => {
+    safeFetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '' } as Response);
+    await sendWebhookNotification({ url: 'https://example.com/hook', timeout: 5_000 }, payload);
+    await sendWebhookNotification({ url: 'https://example.com/hook', timeout: 999_999 }, payload);
+    expect(safeFetchMock.mock.calls[0]![1]).toMatchObject({ deadlineMs: 5_000 });
+    expect(safeFetchMock.mock.calls[1]![1]).toMatchObject({ deadlineMs: 60_000 });
+  });
+
   it.each([
     [0, 1],
     [1, 2],

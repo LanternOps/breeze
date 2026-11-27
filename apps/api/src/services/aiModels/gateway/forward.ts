@@ -7,6 +7,7 @@ import {
   GATEWAY_ERROR_TEXT_MAX,
   GATEWAY_IDLE_TIMEOUT_MS,
   GATEWAY_MAX_RESPONSE_BYTES,
+  GATEWAY_TOTAL_TIMEOUT_MS,
   GATEWAY_UPSTREAM_ERROR_READ_BYTES,
 } from './limits';
 import { scrubSecrets } from './scrub';
@@ -223,6 +224,12 @@ export async function forwardUpstream(
       // also silent while headers are pending, so the limit is never shorter
       // than the headers deadline: it must not cut that wait short.
       timeoutMs: Math.max(GATEWAY_IDLE_TIMEOUT_MS, headersTimeoutMs),
+      // safeFetch bounds every call overall, by default to the longest of its
+      // timeouts (#12788), which would cut a live stream or a slow generation
+      // short. A generation may run as long as the server's total timer
+      // (`signal`), so the overall bound matches it; the timer, armed first,
+      // still fires first.
+      deadlineMs: GATEWAY_TOTAL_TIMEOUT_MS,
       allowPrivateNetwork: allow.allowPrivateNetwork,
       requirePrivateForCleartext: allow.requirePrivateForCleartext,
       maxBytes: req.maxBytes !== undefined && Number.isFinite(req.maxBytes) && req.maxBytes > 0

@@ -70,6 +70,16 @@ describe('createGuardedFetch', () => {
     expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ method: 'POST', maxBytes: 1234, timeoutMs: 30_000, body: '{}' });
   });
 
+  it('passes an overall deadlineMs through only when the caller sets one (#12788)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 200, headers: new Headers(), text: async () => '{}' });
+    const f = createGuardedFetch(GZ, { fetchImpl: fetchImpl as never });
+    const url = 'https://cloud.gravityzone.bitdefender.com/api/v1.0/jsonrpc/network';
+    await f(url, { method: 'POST', headers: {}, body: '{}', deadlineMs: 12_000 });
+    await f(url, { method: 'POST', headers: {}, body: '{}' });
+    expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ deadlineMs: 12_000 });
+    expect(fetchImpl.mock.calls[1]![1]).not.toHaveProperty('deadlineMs');
+  });
+
   it('defaults to safeFetch: one call with the allowed URL and a maxBytes cap', async () => {
     safeFetch.mockReset();
     safeFetch.mockResolvedValue({ status: 200, headers: new Headers(), text: async () => 'ok' });

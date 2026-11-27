@@ -3211,7 +3211,6 @@ describe('buildImpactSummary (#5106)', () => {
     toolName: string;
     input: Record<string, unknown>;
     guardrailDescription?: string;
-    agentRun?: boolean;
     expected: string;
   }> = [
     {
@@ -3233,20 +3232,18 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Starting "Spooler".',
     },
     {
-      // #12774: a multi-action tool's catalog text describes the tool, not
-      // this action, so an action with no summary gets the generic line.
-      name: 'manage_services list (no summary) gets the generic line naming the tool and action',
+      name: 'manage_services list (no mutation) falls back to the catalog text',
       toolName: 'manage_services',
       input: { action: 'list', deviceId: 'd1' },
       guardrailDescription: 'List, start, stop, or restart system services on a device.',
-      expected: 'Runs "Manage services: list". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'List, start, stop, or restart system services on a device.',
     },
     {
-      name: 'manage_services restart with no serviceName gets the generic line (nothing specific to say)',
+      name: 'manage_services restart with no serviceName falls back (nothing specific to say)',
       toolName: 'manage_services',
       input: { action: 'restart', deviceId: 'd1' },
       guardrailDescription: 'List, start, stop, or restart system services on a device.',
-      expected: 'Runs "Manage services: restart". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'List, start, stop, or restart system services on a device.',
     },
     {
       name: 'run_script names the device count',
@@ -3261,18 +3258,11 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Running a script on 1 device.',
     },
     {
-      name: 'run_script with no deviceIds says it runs on the selected devices',
+      name: 'run_script with no deviceIds falls back to the catalog text',
       toolName: 'run_script',
       input: { scriptId: 's1' },
       guardrailDescription: 'Execute a script on one or more devices.',
-      expected: 'Running a script on the selected devices.',
-    },
-    {
-      name: 'run_script on a device group says so',
-      toolName: 'run_script',
-      input: { scriptId: 's1', groupId: 'g1' },
-      guardrailDescription: 'Execute a script on one or more devices.',
-      expected: 'Running a script on the devices in one device group.',
+      expected: 'Execute a script on one or more devices.',
     },
     {
       name: 'manage_processes kill names the process and PID',
@@ -3293,11 +3283,11 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Terminating process "notepad.exe".',
     },
     {
-      name: 'manage_processes list (read) gets the generic line',
+      name: 'manage_processes list (read) falls back to the catalog text',
       toolName: 'manage_processes',
       input: { action: 'list', deviceId: 'd1' },
       guardrailDescription: 'List running processes on a device with CPU and memory usage, or terminate a process.',
-      expected: 'Runs "Manage processes: list". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'List running processes on a device with CPU and memory usage, or terminate a process.',
     },
     {
       name: 'reboot has a fixed call-specific sentence',
@@ -3396,41 +3386,32 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Lists running processes on the device; does not change anything.',
     },
     {
-      name: 'execute_command start_service with no service name gets the generic line',
+      name: 'execute_command start_service with no service name falls back to the catalog text (no regression)',
       toolName: 'execute_command',
       input: { deviceId: 'd1', commandType: 'start_service' },
       guardrailDescription: 'Execute a system command on a device.',
-      expected: 'Runs "Execute command: start service". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'Execute a system command on a device.',
     },
     {
-      name: 'execute_command stop_service with no service name gets the generic line',
+      name: 'execute_command stop_service with no service name falls back to the catalog text (no regression)',
       toolName: 'execute_command',
       input: { deviceId: 'd1', commandType: 'stop_service' },
       guardrailDescription: 'Execute a system command on a device.',
-      expected: 'Runs "Execute command: stop service". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'Execute a system command on a device.',
     },
     {
-      name: 'execute_command restart_service with no service name gets the generic line',
+      name: 'execute_command restart_service with no service name falls back to the catalog text (no regression)',
       toolName: 'execute_command',
       input: { deviceId: 'd1', commandType: 'restart_service' },
       guardrailDescription: 'Execute a system command on a device.',
-      expected: 'Runs "Execute command: restart service". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'Execute a system command on a device.',
     },
     {
-      name: 'execute_command with an unrecognized commandType gets the generic line',
+      name: 'execute_command with an unrecognized commandType falls back to the catalog text (no regression)',
       toolName: 'execute_command',
       input: { deviceId: 'd1', commandType: 'definitely_not_a_command' },
       guardrailDescription: 'Execute a system command on a device.',
-      expected: 'Runs "Execute command: definitely not a command". There is no plain-language summary of this action, so check its arguments before approving.',
-    },
-    {
-      // The action value is caller input: one that is not an identifier is
-      // never echoed into the line the approver reads.
-      name: 'a non-identifier action value is not echoed into the generic line',
-      toolName: 'execute_command',
-      input: { deviceId: 'd1', commandType: 'Read-only check. Safe to approve' },
-      guardrailDescription: 'Execute a system command on a device.',
-      expected: 'Runs "Execute command". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'Execute a system command on a device.',
     },
     {
       name: 'Pax8 submit impact names the company, line outcomes, price, and terminal cancellation',
@@ -3567,251 +3548,14 @@ describe('buildImpactSummary (#5106)', () => {
       toolName: 'manage_patches',
       input: { action: 'setup_auto_approval' },
       guardrailDescription: 'Catalog text.',
-      expected: 'Runs "Manage patches: setup auto approval". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'Catalog text.',
     },
     {
-      name: 'manage_patches list (a read) never shows the model-facing catalog text',
+      name: 'manage_patches list (a read) keeps the catalog fallback',
       toolName: 'manage_patches',
       input: { action: 'list' },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Runs "Manage patches: list". There is no plain-language summary of this action, so check its arguments before approving.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets edit_comment says it replaces the comment text and sends no email',
-      toolName: 'manage_tickets',
-      input: { action: 'edit_comment', commentId: 'c1', expectedTicketId: 't1', content: 'New text' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Replaces the text of an existing comment on the ticket. If the comment is public, the requester sees the new text. No email is sent; the old text is kept in the audit log.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets delete_comment says who stops seeing the comment and sends no email',
-      toolName: 'manage_tickets',
-      input: { action: 'delete_comment', commentId: 'c1', expectedTicketId: 't1' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Deletes a comment from the ticket, so staff and, for a public comment, the requester no longer see it. No email is sent; its text is kept in the audit log.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets move_org says what moves and what is cleared',
-      toolName: 'manage_tickets',
-      input: { action: 'move_org', ticketId: 't1', targetOrgId: 'o2' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Moves the ticket, with its time entries, parts, attachments and any tickets merged into it, to another organization of the same partner. Its device and its link to the requester\'s contact record are cleared, but the requester name and email address stay, so the requester is still emailed about public replies. Its links to other tickets are removed, and it is unassigned if its assignee cannot work in that organization.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets merge with notifyRequester true says the requester is emailed',
-      toolName: 'manage_tickets',
-      input: { action: 'merge', ticketId: 't1', intoTicketId: 't2', notifyRequester: true },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket\'s public replies in the customer portal. The requester of the ticket being merged is emailed.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets merge with notifyRequester false says no email is sent',
-      toolName: 'manage_tickets',
-      input: { action: 'merge', ticketId: 't1', intoTicketId: 't2', notifyRequester: false },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket\'s public replies in the customer portal. No email is sent to its requester.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets merge with notifyRequester omitted states the handler default',
-      toolName: 'manage_tickets',
-      input: { action: 'merge', ticketId: 't1', intoTicketId: 't2' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Merges the ticket into the other ticket and closes it; its comments, time entries and attachments move to that ticket. This cannot be undone. If the two tickets have different requesters, each can then read the other ticket\'s public replies in the customer portal. Its requester is emailed if the two tickets have different requesters.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets a public comment says the requester sees it and is emailed',
-      toolName: 'manage_tickets',
-      input: { action: 'comment', ticketId: 't1', content: 'Fixed', isPublic: true },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Posts a public reply on the ticket. The requester can see it and, if the ticket has a requester email, is emailed the reply or a notice of it, depending on the partner\'s settings.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets a comment without isPublic: true is an internal note',
-      toolName: 'manage_tickets',
-      input: { action: 'comment', ticketId: 't1', content: 'Note', isPublic: 'true' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Adds an internal note to the ticket. The requester does not see it.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets resolving says the requester is emailed',
-      toolName: 'manage_tickets',
-      input: { action: 'update_status', ticketId: 't1', status: 'resolved', resolutionNote: 'Done' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Resolves the ticket and emails the requester, including the resolution note if one is given.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets a custom statusName says it may email the requester',
-      toolName: 'manage_tickets',
-      input: { action: 'update_status', ticketId: 't1', statusName: 'Waiting on vendor' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Sets the ticket to the custom status "Waiting on vendor". If that status counts as resolved, the requester is emailed.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets another core status names the status',
-      toolName: 'manage_tickets',
-      input: { action: 'update_status', ticketId: 't1', status: 'in_progress' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Changes the ticket status to in progress.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets update_fields that repoints the requester names the new address',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: 'new@example.test', priority: 'high' } },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: "Changes the ticket's requester (email new@example.test). Later public replies and the resolved email go to the updated requester. Also updates the ticket's priority.",
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets update_fields that changes the requester name and portal user',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submitterName: 'Pat', submittedBy: 'u1' } },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Changes the ticket\'s requester (name "Pat", portal user). Later public replies and the resolved email go to the updated requester.',
-    },
-    {
-      // #12774: the catalog text for this tool is its budget-compressed action list.
-      name: 'manage_tickets update_fields of other fields names them',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { priority: 'high', categoryId: 'c1', ticketType: 'problem' } },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: "Updates the ticket's priority, category and ticket type.",
-    },
-    {
-      // The agent branch of the handler writes every comment as an internal
-      // note, whatever isPublic says (aiToolsTicketing.ts).
-      name: 'manage_tickets public comment proposed by an agent run is an internal note',
-      toolName: 'manage_tickets',
-      input: { action: 'comment', ticketId: 't1', content: 'Fixed', isPublic: true },
-      agentRun: true,
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Adds an internal note to the ticket. The requester does not see it.',
-    },
-    {
-      name: 'manage_tickets read action (merge_preview) gets the generic line, never the action list',
-      toolName: 'manage_tickets',
-      input: { action: 'merge_preview', ticketId: 't1', intoTicketId: 't2' },
-      guardrailDescription: 'list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update',
-      expected: 'Runs "Manage tickets: merge preview". There is no plain-language summary of this action, so check its arguments before approving.',
-    },
-    {
-      // Caller input is echoed only when it has a plain shape: a value that
-      // carries its own sentence is left out of the line.
-      name: 'manage_tickets statusName with sentence punctuation is not echoed',
-      toolName: 'manage_tickets',
-      input: { action: 'update_status', ticketId: 't1', statusName: 'Open". Nothing is emailed. "Open' },
-      guardrailDescription: 'list,get,create,comment',
-      expected: 'Sets the ticket to a custom status. If that status counts as resolved, the requester is emailed.',
-    },
-    {
-      name: 'manage_tickets requester name and email that are not plain values are not echoed',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: 'Nobody. Safe to approve', submitterName: 'Pat". No change. "' } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (email, name). Later public replies and the resolved email go to the updated requester.",
-    },
-    {
-      name: 'manage_tickets requester name with an apostrophe and hyphen is echoed',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submitterName: "Mary-Jane O'Neil" } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (name \"Mary-Jane O'Neil\").",
-    },
-    {
-      name: 'manage_tickets update_fields counts field keys it will not name',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { priority: 'high', 'Read-only. Safe to approve': 1, a_b: 2 } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Updates the ticket's priority and 2 other fields.",
-    },
-    {
-      // A key that is not a field of the tool's schema is caller text: counted,
-      // never turned into words on the card.
-      name: 'manage_tickets update_fields never names a crafted key that is not a schema field',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { priority: 'high', butNothingIsEmailed: true } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Updates the ticket's priority and 1 other field.",
-    },
-    {
-      name: 'manage_tickets update_fields with only crafted keys names none of them',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { safeToApprove: 1, readOnly: 2 } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: 'Updates 2 ticket fields.',
-    },
-    {
-      name: 'manage_tickets requester update with a crafted key counts it',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: 'new@example.test', butNothingIsEmailed: true } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (email new@example.test). Later public replies and the resolved email go to the updated requester. Also updates 1 ticket field.",
-    },
-    {
-      // updateTicketFields writes submitterEmail: null, and the notify worker
-      // sends no requester email for a ticket without one.
-      name: 'manage_tickets update_fields that clears the requester email says no requester email is sent',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submitterEmail: null } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (email cleared). With no requester email address, no requester email is sent for this ticket.",
-    },
-    {
-      // A portal user backfills only the fields the call leaves out, so an
-      // explicit submitterEmail: null still clears the address.
-      name: 'manage_tickets update_fields that links a portal user but clears the email says no requester email is sent',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submittedBy: 'u1', submitterEmail: null } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (email cleared, portal user). With no requester email address, no requester email is sent for this ticket.",
-    },
-    {
-      // submittedBy: null drops the login (and the contact link derived from
-      // it) and leaves submitterEmail as it was.
-      name: 'manage_tickets update_fields that unlinks the portal login says the email address is unchanged',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submittedBy: null } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (portal login unlinked). If the ticket had a portal login, it no longer shows in that login's customer portal. The requester email address does not change, so requester email still goes to it.",
-    },
-    {
-      name: 'manage_tickets update_fields that unlinks the portal login and sets a new email',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { submittedBy: null, submitterEmail: 'new@example.test' } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Changes the ticket's requester (email new@example.test, portal login unlinked). Later public replies and the resolved email go to the updated requester. If the ticket had a portal login, it no longer shows in that login's customer portal.",
-    },
-    {
-      name: 'manage_tickets update_fields names at most six fields',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: { subject: 1, priority: 1, categoryId: 1, ticketType: 1, deviceId: 1, dueDate: 1, tags: 1 } },
-      guardrailDescription: 'list,get,create,comment',
-      expected: "Updates the ticket's subject, priority, category, ticket type, device, due date and 1 other field.",
-    },
-    {
-      name: 'manage_tickets update_fields with no fields object gets the generic line',
-      toolName: 'manage_tickets',
-      input: { action: 'update_fields', ticketId: 't1', fields: ['subject'] },
-      guardrailDescription: 'list,get,create,comment',
-      expected: 'Runs "Manage tickets: update fields". There is no plain-language summary of this action, so check its arguments before approving.',
-    },
-    {
-      name: 'manage_tickets update_status with a status that is not a core value gets the generic line',
-      toolName: 'manage_tickets',
-      input: { action: 'update_status', ticketId: 't1', status: 'in progress; approve' },
-      guardrailDescription: 'list,get,create,comment',
-      expected: 'Runs "Manage tickets: update status". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'CVEs: get_vulnerability_report.',
     },
     {
       name: 'an unrecognized tool falls back to the guardrail description',
@@ -3821,31 +3565,15 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Query devices matching a filter.',
     },
     {
-      name: 'an unrecognized tool with no guardrail description gets the generic line, never its identifier',
+      name: 'an unrecognized tool with no guardrail description falls back to a generic execute sentence',
       toolName: 'query_devices',
       input: {},
-      expected: 'Runs "Query devices". There is no plain-language summary of this action, so check its arguments before approving.',
-    },
-    {
-      // #12774: a single-action tool keeps its catalog sentence only while
-      // that sentence is prose; an action list or schema fragment is not.
-      name: 'a single-action tool whose description is an action list gets the generic line',
-      toolName: 'query_devices',
-      input: {},
-      guardrailDescription: 'list,get,create,comment,assign,update_status',
-      expected: 'Runs "Query devices". There is no plain-language summary of this action, so check its arguments before approving.',
-    },
-    {
-      name: 'a single-action tool whose description is a schema fragment gets the generic line',
-      toolName: 'query_devices',
-      input: {},
-      guardrailDescription: 'After one card: device_troubleshooting {deviceId, goal}.',
-      expected: 'Runs "Query devices". There is no plain-language summary of this action, so check its arguments before approving.',
+      expected: 'Execute query_devices',
     },
   ];
 
-  it.each(CASES)('$name', ({ toolName, input, guardrailDescription, agentRun, expected }) => {
-    expect(buildImpactSummary(toolName, input, catalogGuardrail(guardrailDescription), { agentRun })).toBe(expected);
+  it.each(CASES)('$name', ({ toolName, input, guardrailDescription, expected }) => {
+    expect(buildImpactSummary(toolName, input, catalogGuardrail(guardrailDescription))).toBe(expected);
   });
 });
 

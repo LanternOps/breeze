@@ -213,6 +213,11 @@ export class GravityZoneClient {
           headers: { Authorization: this.authHeader, 'Content-Type': 'application/json' },
           body,
           timeoutMs: this.timeoutMs,
+          // A write is sent once and never retried (`retry: false`), so the
+          // whole exchange gets a hard bound of its own: a vendor that never
+          // answers ends as outcome_unknown at `timeoutMs`, whatever the
+          // transport's default, instead of holding the request (#12788).
+          ...(o.retry === false ? { deadlineMs: this.timeoutMs } : {}),
         });
         status = res.status;
         headers = res.headers;
