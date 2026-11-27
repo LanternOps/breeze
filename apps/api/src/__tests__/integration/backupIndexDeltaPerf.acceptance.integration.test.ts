@@ -43,7 +43,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-import { count, ne, sql } from 'drizzle-orm';
+import { count, ne, sql, type SQL } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db } from '../../db';
 import {
@@ -231,7 +231,7 @@ async function measureReaders(orgId: string, snapshotDbId: string, n: number, ev
       : null,
   };
   const plans: Record<string, { default: ReturnType<typeof planRow>; jitOff: ReturnType<typeof planRow>; selectionPage?: ReturnType<typeof planRow> }> = {};
-  const statements: Record<string, { getSQL(): ReturnType<typeof sql> }> = {
+  const statements: Record<string, { getSQL(): SQL }> = {
     selectionFirstPage: readableSourcePathPageQuery(snapshotDbId, null),
     selectionMidPage: readableSourcePathPageQuery(snapshotDbId, mid),
     filterIndexedKeys500: indexedKeysQuery(snapshotDbId, keys, digest),
@@ -394,7 +394,7 @@ describe('checkpoint plus delta measurements (#12741)', () => {
     expectCorrect(tombstoneHeavy);
   }, 4 * HOUR_MS);
 
-  const MODELS: Array<{ name: string; lastDay: (day: number) => ReturnType<typeof unchanged> }> = [
+  const MODELS: Array<{ name: string; lastDay: (day: number) => SQL }> = [
     // 1% of files rewritten each day, a different 1% each day: the drift from
     // the checkpoint grows until the 5% rule rebuilds it.
     { name: 'disjoint-1pct-daily', lastDay: (d) => disjointDailyChurn(10, d) },
