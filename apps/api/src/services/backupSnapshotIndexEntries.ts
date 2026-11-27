@@ -73,17 +73,14 @@ function snapshotIdOutput(snapshotDbId: string | AnyPgColumn | SQL): SQL {
  *     snapshots sharing the checkpoint do not apply.
  *
  * R3: a delta snapshot reads as its tree only when its checkpoint header is
- * visible to the caller and names the snapshot's own org and device, and
- * here also the rest of its lineage (R5: config, storage identity, backup
- * type and key root). Otherwise
+ * visible to the caller and names the snapshot's own org and device. Otherwise
  * both legs are empty: leg 1's format gate requires that header, and leg 2's
  * gate (that checkpoint resolves to a non-NULL id) fails. RLS on both
  * checkpoint tables runs in the caller's context, so a header the caller
  * cannot see counts as absent. The schema's composite pointer FK already
- * refuses a header of another org or device at rest; this check also covers
- * the deferred-constraint window of an org merge, and system scope, where RLS
- * hides nothing. The rest of the lineage has no FK: the publisher keeps it
- * (see checkpointMatchesSnapshot below). So the result is never only the adds.
+ * refuses a mismatched header at rest; this check covers the
+ * deferred-constraint window of an org merge, and system scope, where RLS
+ * hides nothing. So the result is never only the adds.
  *
  * The format is decided in SQL inside the reader's own statement, with the
  * reader's index-state gate, never by a separate pre-read.
@@ -128,28 +125,18 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   // column, qualified (see snapshotIdOutput).
   const id = snapshotIdOutput(snapshotDbId);
   const col = (table: string, column: string) => sql`${sql.identifier(table)}.${sql.identifier(column)}`;
-  // The header the snapshot points at, of the snapshot's own lineage (R5):
-  // org and device, then config, storage identity, backup type and key root.
-  // Org and device stop a cross-tenant read; an org merge restamps both, and
-  // the snapshot tenancy trigger clears the pointer in the same update. The
-  // rest is defence in depth: the publisher only points a snapshot at a
-  // checkpoint whose every lineage part equals the snapshot row's, read under
-  // its lock, and config, storage identity, backup type and key root never
-  // change on a snapshot or a header afterwards (a snapshot's storage identity
-  // is only ever filled in from NULL, and a snapshot with none never publishes
-  // a delta). So this holds for every pointer the publisher wrote; anything
-  // else (another config's or storage's checkpoint, whose object keys are not
-  // this snapshot's) reads as empty instead of as another tree.
+  // Org and device only, on purpose. They stop a cross-tenant read, and the
+  // pointer's composite FK and the tenancy-reset trigger cover any change to
+  // them. The rest of the lineage (config, storage identity, backup type, key
+  // root) is not compared: the publisher chose the checkpoint by it under the
+  // snapshot row lock, and later command results legitimately rewrite those
+  // snapshot columns (backupResultPersistence), so comparing them would turn a
+  // harmless rewrite into a complete snapshot that reads as empty.
   const checkpointMatchesSnapshot = sql`${col('sie_checkpoint', 'id')} = ${col('sie_snapshot', 'file_index_checkpoint_id')}
     AND ${col('sie_checkpoint', 'org_id')} = ${col('sie_snapshot', 'org_id')}
-    AND ${col('sie_checkpoint', 'device_id')} = ${col('sie_snapshot', 'device_id')}
-    AND ${col('sie_checkpoint', 'config_id')} = ${col('sie_snapshot', 'config_id')}
-    AND ${col('sie_checkpoint', 'storage_identity')} = ${col('sie_snapshot', 'storage_identity')}
-    AND ${col('sie_checkpoint', 'backup_type')} = ${col('sie_snapshot', 'backup_type')}
-    AND ${col('sie_checkpoint', 'key_layout')} = ${col('sie_snapshot', 'key_layout')}
-    AND ${col('sie_checkpoint', 'key_prefix')} IS NOT DISTINCT FROM ${col('sie_snapshot', 'key_prefix')}`;
+    AND ${col('sie_checkpoint', 'device_id')} = ${col('sie_snapshot', 'device_id')}`;
   // The checkpoint a delta snapshot reads: visible to the caller and of the
-  // snapshot's own lineage. NULL for a rows snapshot or an untrusted
+  // snapshot's own org and device. NULL for a rows snapshot or an untrusted
   // checkpoint (R3). Written with explicit identifiers, never Drizzle columns,
   // because it is also rendered inside a select list (see snapshotIdOutput).
   const deltaCheckpointId = () => sql`(

@@ -22,7 +22,7 @@
  */
 import './setup';
 
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import {
@@ -53,7 +53,6 @@ import {
   seedCheckpoint,
   seedDeltaIndex,
   seedRowsIndex,
-  type CheckpointLineage,
   type IndexEntry,
 } from './helpers/backupIndexFixtures';
 import { getTestDb } from './setup';
@@ -252,40 +251,24 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
     expect(result).toEqual(EMPTY);
   });
 
-  runDb('a delta snapshot whose checkpoint is of the same device but another lineage reads as empty', async () => {
+  runDb('a delta snapshot on a checkpoint of its own lineage reads the checkpoint\'s tree in every reader', async () => {
     const l = await seedLineage();
-    const otherConfig = randomUUID();
-    await getTestDb().execute(sql`
-      INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
-      SELECT ${otherConfig}::uuid, org_id, 'Second', type, provider, provider_config FROM backup_configs WHERE id = ${l.t.configId}
-    `);
-    const own = { orgId: l.t.orgId, deviceId: l.t.deviceId, configId: l.t.configId, storageIdentity: WRITE_IDENTITY };
-    // Each differs from the snapshot's own lineage (R5) in one part. Org and device match, so the
-    // composite pointer FK accepts each one at rest, and RLS shows it: only the read layer can refuse it.
-    const variants: Array<[string, CheckpointLineage]> = [
-      ['another config', { ...own, configId: otherConfig }],
-      ['another storage identity', { ...own, storageIdentity: `${WRITE_IDENTITY}-other` }],
-      ['another backup type', { ...own, backupType: 'system_image' }],
-      ['another key layout', { ...own, keyLayout: 'prefixed_flat' }],
-      ['another key prefix', { ...own, keyPrefix: 'tenant-x' }],
-      ['the snapshot\'s own lineage', own],
-    ];
-    const read: Record<string, Awaited<ReturnType<typeof readAll>>> = {};
-    for (const [name, lineage] of variants) {
-      const checkpointId = await seedCheckpoint(lineage, l.checkpoint);
-      const snapshotId = `snapshot-20261111T000007Z-${randomBytes(6).toString('hex')}`;
-      const dbId = await insertSnapshotRow(l.t, snapshotId);
-      const digest = sha(`manifest ${snapshotId}`);
-      await seedDeltaIndex(dbId, checkpointId, l.checkpoint, l.checkpoint, digest);
-      const all = await withDbAccessContext(orgContext(l.t.orgId), async () => {
-        expect(await headerVisible(checkpointId), name).toBe(1);
-        return readAll(l, dbId, digest);
-      });
-      if (name !== 'the snapshot\'s own lineage') expect(all, name).toEqual(EMPTY);
-      read[name] = all;
-    }
-    // The control: the same construction on the snapshot's own lineage reads the checkpoint's tree in every reader.
-    expect(read['the snapshot\'s own lineage']).toEqual({
+    // Only org and device are compared with the header (R3). Config, storage identity, backup type and key
+    // root are not: later command results rewrite those snapshot columns (see the publish integration
+    // test's lineage-rewrite case).
+    const checkpointId = await seedCheckpoint(
+      { orgId: l.t.orgId, deviceId: l.t.deviceId, configId: l.t.configId, storageIdentity: WRITE_IDENTITY },
+      l.checkpoint,
+    );
+    const snapshotId = `snapshot-20261111T000007Z-${randomBytes(6).toString('hex')}`;
+    const dbId = await insertSnapshotRow(l.t, snapshotId);
+    const digest = sha(`manifest ${snapshotId}`);
+    await seedDeltaIndex(dbId, checkpointId, l.checkpoint, l.checkpoint, digest);
+    const read = await withDbAccessContext(orgContext(l.t.orgId), async () => {
+      expect(await headerVisible(checkpointId)).toBe(1);
+      return readAll(l, dbId, digest);
+    });
+    expect(read).toEqual({
       root: ['srv/ (3)'],
       srv: ['a.txt 10', 'b.txt 11', 'gone.txt 12'],
       search: ['/srv/a.txt 10', '/srv/b.txt 11', '/srv/gone.txt 12'],

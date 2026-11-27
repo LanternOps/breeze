@@ -920,6 +920,59 @@ describe('round trip through the readers (#11736 step 2, plan Task 6)', () => {
     await expectReadersReturnManifest(t, s2, base);
   });
 
+  runDb('a complete delta snapshot still reads its manifest after a command result rewrites its lineage columns', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'running' });
+    const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+    const base = filesOf(s0.snapshotId, 100);
+    await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+    const tree1: Entry[] = [{ ...base[0]!, backupPath: `snapshots/${s1.snapshotId}/files/r0`, size: 900 }, ...base.slice(2)];
+    await hydrate(s1.dbId, manifestOf(s1.snapshotId, tree1));
+    const published = await indexState(s1.dbId);
+    expect(published).toMatchObject({ format: 'delta', status: 'complete', adds: 1, tombstones: 2 });
+    const gone = { keys: [base[0]!.backupPath], paths: [base[1]!.sourcePath] };
+    await expectReadersReturnManifest(t, s1, tree1, gone);
+
+    const lineageOf = async () => (await getTestDb().execute(sql`
+      SELECT config_id, storage_identity, backup_type::text AS backup_type FROM backup_snapshots WHERE id = ${s1.dbId}::uuid
+    `) as unknown as Array<{ config_id: string | null; storage_identity: string | null; backup_type: string | null }>)[0]!;
+    const revisit = async () => {
+      const outcome = await withDbAccessContext(orgContext(t.orgId), () => applyBackupCommandResultToJob({
+        jobId: t.jobId, orgId: t.orgId, deviceId: t.deviceId, resultStatus: 'completed',
+        // The agent's file list too: a complete index is authoritative, so it must not be replaced.
+        result: {
+          snapshotId: s1.snapshotId, filesBackedUp: 1, bytesBackedUp: 1,
+          snapshot: { id: s1.snapshotId, files: [{ sourcePath: 'C:/agent/one', backupPath: `snapshots/${s1.snapshotId}/files/a0`, size: 1 }] },
+        } as never,
+        dispatchExpectationVerified: true,
+      }));
+      expect(outcome).toMatchObject({ applied: true, snapshotDbId: s1.dbId });
+      await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'running' WHERE id = ${t.jobId}::uuid`);
+    };
+
+    // 1. A job with no storage identity: the existing row is found by job id, and the update writes
+    //    a NULL storage identity over the value the snapshot was published with.
+    await getTestDb().execute(sql`UPDATE backup_jobs SET storage_identity = NULL WHERE id = ${t.jobId}::uuid`);
+    await revisit();
+    expect(await lineageOf()).toMatchObject({ config_id: t.configId, storage_identity: null, backup_type: 'file' });
+    expect(await indexState(s1.dbId)).toEqual(published);
+    await expectReadersReturnManifest(t, s1, tree1, gone);
+
+    // 2. A revisit whose result carries no backup type takes it from the job (here a system image job),
+    //    and the job's config is written too.
+    const otherConfig = randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
+      SELECT ${otherConfig}::uuid, org_id, 'Second', type, provider, provider_config FROM backup_configs WHERE id = ${t.configId}::uuid
+    `);
+    await getTestDb().execute(sql`
+      UPDATE backup_jobs SET backup_mode = 'system_image', config_id = ${otherConfig}::uuid WHERE id = ${t.jobId}::uuid
+    `);
+    await revisit();
+    expect(await lineageOf()).toMatchObject({ config_id: otherConfig, storage_identity: null, backup_type: 'system_image' });
+    expect(await indexState(s1.dbId)).toEqual(published);
+    await expectReadersReturnManifest(t, s1, tree1, gone);
+  });
+
   runDb('the readers follow a delta snapshot that inline agent rows reset to rows format', async () => {
     const t = await seedWriteTenant({ jobStatus: 'running' });
     const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
