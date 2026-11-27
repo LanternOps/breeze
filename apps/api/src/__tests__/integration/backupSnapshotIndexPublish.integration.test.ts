@@ -514,6 +514,31 @@ describe('delta publish (#11736 step 2)', () => {
       await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000, now: pastTtl });
       expect(await checkpointExists(h!.id)).toBe(true);
     });
+
+    runDb('a header delete whose cascade passes its statement timeout is skipped, and the sweep goes on', async () => {
+      const t = await seedWriteTenant({ jobStatus: 'completed' });
+      const [s0, s1] = [await snapshotOf(t), await snapshotOf(t)];
+      const base = filesOf(s0.snapshotId, 40);
+      await hydrate(s0.dbId, manifestOf(s0.snapshotId, base));
+      await hydrate(s1.dbId, manifestOf(s1.snapshotId, [...base, ...filesOf(s1.snapshotId, 10, 400)])); // past 5%
+      const [blocked, next] = await checkpointsOfDevice(t.deviceId);
+      await getTestDb().execute(sql`DELETE FROM backup_snapshots WHERE id IN (${s0.dbId}::uuid, ${s1.dbId}::uuid)`);
+      const pastTtl = new Date(Date.now() + CHECKPOINT_ORPHAN_TTL_MS + 60_000);
+
+      // Another session holds the older header's entries, so its cascade waits until the timeout cancels it.
+      const result = await adminSql.begin(async (tx) => {
+        await tx`SELECT entry_no FROM backup_tree_checkpoint_entries WHERE checkpoint_id = ${blocked!.id} FOR UPDATE`;
+        return collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 60_000, now: pastTtl, deleteTimeoutMs: 500, maxHeaders: 10_000 });
+      });
+
+      expect(result.timedOut).toBeGreaterThanOrEqual(1);
+      expect(await checkpointExists(blocked!.id)).toBe(true);
+      // The newer header, after it in the same run, is collected (past the TTL, unreferenced).
+      expect(await checkpointExists(next!.id)).toBe(false);
+      // The next run deletes the one that timed out.
+      await collectUnreferencedCheckpoints({ deadlineMs: Date.now() + 30_000, now: pastTtl, maxHeaders: 10_000 });
+      expect(await checkpointExists(blocked!.id)).toBe(false);
+    });
   });
 
   runDb('a failed delta invariant leaves the previous rows, format and checkpoints', async () => {
