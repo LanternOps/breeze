@@ -125,33 +125,52 @@ function imageFieldHolder(root: unknown, path: readonly string[]): Record<string
  * original text other than what JSON.parse kept (e.g. an earlier duplicate
  * `imageBase64` key) can reach storage unredacted. If redaction breaks the
  * JSON (the connection-string rule runs to the next whitespace), the redacted
- * text is stored without the image: fail closed, never re-attach blindly.
+ * text is stored without the image: fail closed, never re-attach blindly. Any
+ * throw on the way (JSON.stringify refuses nesting that JSON.parse accepted)
+ * falls back to the plain text pass over the original stdout, so a hostile
+ * result can neither fail the ingest nor skip redaction.
  */
 function redactCommandStdout(commandType: string, stdout: string): string {
   const path = IMAGE_FIELD_PATH[commandType];
   if (!path) return redactSecretsFromOutput(stdout);
+  try {
+    const kept = redactKeepingImage(commandType, path, stdout);
+    if (kept !== null) return kept;
+  } catch {
+    console.warn(`[storedCommandResult] ${commandType} result could not be re-serialized (${stdout.length} chars); stored as redacted text`);
+  }
+  return redactSecretsFromOutput(stdout);
+}
 
+/** The redacted stdout with the image kept, or null when stdout is not a typed image result. */
+function redactKeepingImage(commandType: string, path: readonly string[], stdout: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    return redactSecretsFromOutput(stdout);
+    return null;
   }
   const imageKey = path[path.length - 1]!;
   const holder = imageFieldHolder(parsed, path);
   const image = holder && Object.hasOwn(holder, imageKey) ? holder[imageKey] : undefined;
-  if (typeof image !== 'string' || !isEncodedJpeg(image)) return redactSecretsFromOutput(stdout);
+  if (typeof image !== 'string' || !isEncodedJpeg(image)) return null;
 
   holder![imageKey] = '';
   const redacted = redactSecretsFromOutput(JSON.stringify(parsed));
+  // The drop paths log lengths only, never content: the text may hold what
+  // was just redacted out of it.
+  const dropImage = (why: string) => {
+    console.warn(`[storedCommandResult] ${commandType} screenshot dropped: ${why} (${image.length} image chars); stored as redacted text`);
+    return redacted;
+  };
   let reparsed: unknown;
   try {
     reparsed = JSON.parse(redacted);
   } catch {
-    return redacted;
+    return dropImage('redaction left the result unparseable');
   }
   const redactedHolder = imageFieldHolder(reparsed, path);
-  if (!redactedHolder || redactedHolder[imageKey] !== '') return redacted;
+  if (!redactedHolder || redactedHolder[imageKey] !== '') return dropImage('redaction changed the image field');
   redactedHolder[imageKey] = image;
   return JSON.stringify(reparsed);
 }

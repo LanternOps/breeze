@@ -1,7 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildStoredCommandResult } from './storedCommandResult';
+import { redactSecretsFromOutput } from './secretRedaction';
+
+// Passthrough spy: every test runs the real redactor; one test overrides a
+// single call to reach a fail-closed branch no real input is known to reach.
+vi.mock('./secretRedaction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./secretRedaction')>();
+  return { ...actual, redactSecretsFromOutput: vi.fn(actual.redactSecretsFromOutput) };
+});
 
 describe('buildStoredCommandResult', () => {
   it('persists the agent errorCode so executeCommand can hand it to the classifier (#4026)', () => {
@@ -140,7 +148,8 @@ describe('buildStoredCommandResult screenshot image payloads (#12795)', () => {
   });
 
   it('a non-string image field is redacted as text', () => {
-    expect(storedText('take_screenshot', JSON.stringify({ imageBase64: { nested: AWS_KEY } }))).not.toContain(AWS_KEY);
+    expect(storedText('take_screenshot', JSON.stringify({ imageBase64: { nested: AWS_KEY } })))
+      .toBe('{"imageBase64":{"nested":"[AWS_KEY_REDACTED]"}}');
   });
 
   it('a duplicate image key cannot carry text past the exemption', () => {
@@ -153,9 +162,35 @@ describe('buildStoredCommandResult screenshot image payloads (#12795)', () => {
 
   it('only the typed result of an image command type is exempt', () => {
     // Same JSON from a script, or the image at a path the type does not define.
-    expect(storedJson('script', screenshot()).imageBase64).not.toBe(IMAGE);
-    expect(storedJson('computer_action', screenshot()).imageBase64).not.toBe(IMAGE);
-    expect(storedJson('take_screenshot', { screenshot: screenshot() }).screenshot.imageBase64).not.toBe(IMAGE);
+    const redactedImage = '/9j/4AAQ[AWS_KEY_REDACTED]AAAA/9k=';
+    expect(storedJson('script', screenshot()).imageBase64).toBe(redactedImage);
+    expect(storedJson('computer_action', screenshot()).imageBase64).toBe(redactedImage);
+    expect(storedJson('take_screenshot', { screenshot: screenshot() }).screenshot.imageBase64).toBe(redactedImage);
+  });
+
+  it('nesting too deep to re-serialize falls back to the text pass instead of failing the ingest', () => {
+    // JSON.parse accepts nesting that JSON.stringify refuses (RangeError).
+    const depth = 200_000;
+    const stdout = `{"imageBase64":"${IMAGE}","capturedAt":"${AWS_KEY}","x":${'['.repeat(depth)}${']'.repeat(depth)}}`;
+    expect(() => JSON.stringify(JSON.parse(stdout))).toThrow(RangeError);
+    const stored = storedText('take_screenshot', stdout);
+    expect(stored).not.toContain(AWS_KEY);
+    expect(stored).toBe(redactSecretsFromOutput(stdout));
+  });
+
+  it('when redaction leaves valid JSON but changes the image field, the image is not re-attached', () => {
+    vi.mocked(redactSecretsFromOutput).mockImplementationOnce(() => '{"imageBase64":"[REDACTED]","width":4}');
+    const stored = storedText('take_screenshot', JSON.stringify(screenshot()));
+    expect(stored).toBe('{"imageBase64":"[REDACTED]","width":4}');
+  });
+
+  it('the exempt field paths match the agent result types', () => {
+    // A rename on either side would silently bring back the corruption (or
+    // move the exemption onto a field that no longer carries the image).
+    const types = readFileSync(join(__dirname, '../../../../agent/internal/remote/tools/types.go'), 'utf8');
+    const struct = (name: string) => types.match(new RegExp(`type ${name} struct \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+    expect(struct('ScreenshotResponse')).toMatch(/ImageBase64\s+string\s+`json:"imageBase64"`/);
+    expect(struct('ComputerActionResponse')).toMatch(/Screenshot\s+\*ScreenshotResponse\s+`json:"screenshot,omitempty"`/);
   });
 
   it.each([
@@ -168,6 +203,7 @@ describe('buildStoredCommandResult screenshot image payloads (#12795)', () => {
     const stored = storedText('take_screenshot', JSON.stringify(value));
     expect(() => JSON.parse(stored)).toThrow();
     expect(stored).not.toContain(secret);
+    expect(stored).not.toContain(IMAGE);
     expect(stored).not.toContain(AWS_KEY);
   });
 
