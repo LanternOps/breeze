@@ -36,11 +36,18 @@ export { cimdHostAllowed, isCimdClientId, parseCimdAllowedHosts };
 export const CIMD_FETCH_BUDGET = { perHostPerMinute: 10, globalPerMinute: 120, createsPerHour: 200 } as const;
 /**
  * Refetches for an already-admitted client (its cached document expired or was
- * evicted) draw on this separate, larger global budget, so a flood of new
- * client ids exhausting `globalPerMinute` cannot stop connected clients from
- * refreshing their tokens.
+ * evicted) draw on separate, larger budgets — both the global one and the
+ * per-host one — so a flood of new client ids exhausting `globalPerMinute` or a
+ * host's `perHostPerMinute` cannot stop connected clients from refreshing their
+ * tokens. New ids on a host cost nothing but an unauthenticated
+ * `GET /oauth/auth`, and an invalid document is fetched (and budgeted) twice
+ * per attempt, because oidc-provider re-resolves the client in its
+ * authorization error handler; with a shared per-host bucket of 10, five such
+ * requests a minute would exhaust it.
  */
 export const CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE = 1200;
+/** Per-host refetch budget for already-admitted clients; still bounds fetches to one host. */
+export const CIMD_KNOWN_CLIENT_REFETCH_PER_HOST_PER_MINUTE = 60;
 export const CIMD_FETCH_TIMEOUT_MS = 5000;
 export const CIMD_MAX_BYTES = 5 * 1024;
 export const CIMD_APPROVAL_TTL_MS = 30_000;
@@ -159,7 +166,9 @@ async function withinFetchBudget(host: string, knownClient: boolean): Promise<Bu
   const redis = getRedis();
   if (!redis) return { kind: 'no_redis' };
   try {
-    const perHost = await rateLimiter(redis, `oauth:cimd:fetch:host:${host}`, CIMD_FETCH_BUDGET.perHostPerMinute, 60);
+    const perHost = knownClient
+      ? await rateLimiter(redis, `oauth:cimd:fetch:known:host:${host}`, CIMD_KNOWN_CLIENT_REFETCH_PER_HOST_PER_MINUTE, 60)
+      : await rateLimiter(redis, `oauth:cimd:fetch:host:${host}`, CIMD_FETCH_BUDGET.perHostPerMinute, 60);
     if (!perHost.allowed) return { kind: 'exceeded' };
     const global = knownClient
       ? await rateLimiter(redis, 'oauth:cimd:fetch:known', CIMD_KNOWN_CLIENT_REFETCH_PER_MINUTE, 60)
