@@ -1,8 +1,16 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, act } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
+import { hydrateRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useHelpStore } from '@/stores/helpStore';
 import HelpPanel from './HelpPanel';
 import { i18n, loadLocale } from '@/lib/i18n';
+import { isDocsEmbeddableOrigin } from '@/lib/docsEmbed';
+
+vi.mock('@/lib/docsEmbed', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/docsEmbed')>()),
+  isDocsEmbeddableOrigin: vi.fn(() => true),
+}));
 
 // Mock the aiStore lazy import inside helpStore
 vi.mock('@/stores/aiStore', () => ({
@@ -133,5 +141,28 @@ describe('HelpPanel leaves the app header uncovered (#10107)', () => {
     const classes = classesOf('help-panel-backdrop');
     expect(classes).toEqual(expect.arrayContaining(['fixed', 'top-16', 'bottom-0', 'lg:hidden']));
     expect(classes).not.toContain('inset-0');
+  });
+});
+
+describe('HelpPanel hydration', () => {
+  it('hydrates cleanly on a non-embeddable origin, then shows the embed-blocked message', async () => {
+    vi.mocked(isDocsEmbeddableOrigin).mockReturnValue(true);
+    const serverHtml = renderToString(<HelpPanel />);
+    const container = document.createElement('div');
+    container.innerHTML = serverHtml;
+    document.body.appendChild(container);
+
+    vi.mocked(isDocsEmbeddableOrigin).mockReturnValue(false);
+    const onRecoverableError = vi.fn();
+    let root!: ReturnType<typeof hydrateRoot>;
+    await act(async () => {
+      root = hydrateRoot(container, <HelpPanel />, { onRecoverableError });
+    });
+
+    expect(onRecoverableError).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(i18n.t('longTail.help.HelpPanel.embedBlocked', { ns: 'common' }));
+    await act(async () => { root.unmount(); });
+    container.remove();
+    vi.mocked(isDocsEmbeddableOrigin).mockReturnValue(true);
   });
 });
