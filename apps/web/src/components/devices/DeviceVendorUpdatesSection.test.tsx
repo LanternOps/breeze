@@ -144,6 +144,39 @@ describe('DeviceVendorUpdatesSection', () => {
     expect(within(await section()).getByTestId('vendor-updates-outcome-help')).toHaveTextContent(help);
   });
 
+  // #12267: the agent refused because the vendor tool is not in manual-updates mode. The
+  // generic tool_unavailable copy would send the tech after a missing tool instead.
+  it.each([
+    ['vendor_schedule_not_manual', /not in manual-updates mode/i, /dcu-cli \/configure -scheduleManual/],
+    ['vendor_schedule_policy_not_manual', /set by policy/i, /policy/i],
+    ['vendor_schedule_unreadable', /schedule unreadable/i, /could not read/i],
+  ])('%s names the cause and the fix, on the last run and in history', async (code, label, help) => {
+    answer(
+      statusBody({
+        displayState: 'failing',
+        status: lastRun({ lastOutcome: 'tool_unavailable', lastErrorCode: code, rebootRequired: false, rebootPendingSince: null }),
+      }),
+      { runs: [run('run-1', { outcome: 'tool_unavailable', errorCode: code, items: [] })], total: 1 },
+    );
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    const lastRunBlock = within(root).getByTestId('vendor-updates-last-run');
+    expect(lastRunBlock).toHaveTextContent(label);
+    expect(lastRunBlock).not.toHaveTextContent(/Tool unavailable/);
+    const helpText = within(root).getByTestId('vendor-updates-outcome-help');
+    expect(helpText).toHaveTextContent(help);
+    expect(helpText).not.toHaveTextContent(/could not be fetched/);
+    expect(await within(root).findByTestId('vendor-updates-run-run-1')).toHaveTextContent(label);
+  });
+
+  it('another tool_unavailable code keeps the generic copy', async () => {
+    answer(statusBody({ displayState: 'failing', status: lastRun({ lastOutcome: 'tool_unavailable', lastErrorCode: 'tool_absent' }) }));
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    expect(within(root).getByTestId('vendor-updates-last-run')).toHaveTextContent(/Tool unavailable/);
+    expect(within(root).getByTestId('vendor-updates-outcome-help')).toHaveTextContent(/could not be fetched/);
+  });
+
   it('a clean outcome adds no help text', async () => {
     answer(statusBody({ displayState: 'not_managed', status: lastRun({ lastOutcome: 'success', rebootRequired: false, rebootPendingSince: null }) }));
     render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);

@@ -97,6 +97,32 @@ export const OEM_OUTCOMES = [
 export type OemOutcome = (typeof OEM_OUTCOMES)[number];
 
 /**
+ * `errorCode`s an agent reports, with outcome `tool_unavailable`, when the vendor tool is not
+ * configured the way the lane requires, so the agent neither installs nor starts it (#12267:
+ * Dell Command | Update must be in manual-updates mode, or two schedulers update firmware on one
+ * machine). Agent: dell_schedule.go.
+ *
+ * They ride on `errorCode` rather than a new outcome because the result's outcome enum and its
+ * object are strict: an older API would reject an unknown outcome or field from a newer agent,
+ * while `errorCode` is any identifier. An older agent never sends them.
+ *
+ * - `vendor_schedule_not_manual`: the tool's own schedule is not manual updates (absent, which is
+ *   the automatic default, `Auto`, `Daily`, `Weekly`, `Monthly`, or a value it cannot read as one).
+ * - `vendor_schedule_policy_not_manual`: a policy value for the tool sets something else.
+ * - `vendor_schedule_unreadable`: the registry could not be read.
+ */
+export const OEM_TOOL_CONFIG_ERROR_CODES = [
+  'vendor_schedule_not_manual',
+  'vendor_schedule_policy_not_manual',
+  'vendor_schedule_unreadable',
+] as const;
+export type OemToolConfigErrorCode = (typeof OEM_TOOL_CONFIG_ERROR_CODES)[number];
+
+export function isOemToolConfigErrorCode(code: string | null | undefined): code is OemToolConfigErrorCode {
+  return typeof code === 'string' && (OEM_TOOL_CONFIG_ERROR_CODES as readonly string[]).includes(code);
+}
+
+/**
  * Why the dispatch seam refused a run. Shared so the console's copy for each one is
  * checked against this list. All of them are 409s except `device_not_found` (404) and
  * `trust_denied` (403).

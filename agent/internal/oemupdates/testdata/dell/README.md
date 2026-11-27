@@ -37,3 +37,7 @@ No test reads them now. They are kept as the record of the export format, for th
 - an explicit `Auto` value (that is noted above but was not captured).
 
 The doc-derived `settings-export.xml` that the takeover fake used was removed with the takeover.
+
+### The manual-updates check (#12267)
+
+The check does not use these exports. A later lab capture found the mode in the registry. It is the REG_SZ value `ScheduleMode` under `HKLM\SOFTWARE\Dell\UpdateService\Clients\CommandUpdate\Preferences\Settings\Schedule`. All five enum names were captured there: `ManualUpdates`, `Auto`, `Daily`, `Weekly` and `Monthly`. The value is absent on a fresh install and after `-restoreDefaults`. `dell_schedule.go` reads that value and never calls `dcu-cli`. Its tests use a fake registry (`dell_schedule_test.go`), not a capture file.

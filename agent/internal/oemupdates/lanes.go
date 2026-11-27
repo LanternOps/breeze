@@ -71,6 +71,7 @@ func systemDellHost() dellHost {
 			return err == nil && info.Mode().IsRegular()
 		},
 		fileVersion: peFileVersion,
+		registry:    readHKLMValue,
 		dotnetDesktopVersions: func() []string {
 			base := os.Getenv("ProgramFiles")
 			if base == "" {

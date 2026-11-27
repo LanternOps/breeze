@@ -156,6 +156,12 @@ func (r *run) execute(ctx context.Context) RunResult {
 	if refusal, stop := r.recheck(ctx, deadline); stop {
 		return r.finish(refusal, tool, skips)
 	}
+	// Read again immediately before the tool starts: the tool step may have
+	// installed or replaced it, and an install can leave its default
+	// configuration (Dell: automatic updates, #12267).
+	if outcome, err := checkToolConfig(r.lane); outcome != "" {
+		return r.finish(refuse(r.req.Lane, outcome, codeOr(err, "tool_config_unchecked"), err), tool, skips)
+	}
 	// A section left by a previous process may belong to a flash that is
 	// still running; no vendor tool starts beside it.
 	if deps.Guard != nil {

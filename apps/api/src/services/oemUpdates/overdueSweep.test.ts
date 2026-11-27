@@ -606,6 +606,26 @@ describe('runOemOverdueSweep: run failing', () => {
     expect(raised()[0]!.context).toMatchObject({ lastOutcome });
   });
 
+  // #12267: the agent refused because the vendor tool is not in manual-updates mode. Running
+  // again changes nothing, so the alert names the cause and what to change.
+  it.each([
+    ['vendor_schedule_not_manual', 'did not start because the vendor tool\'s own update schedule is not set to manual updates'],
+    ['vendor_schedule_policy_not_manual', 'did not start because a policy sets the vendor tool\'s own update schedule to something other than manual updates'],
+    ['vendor_schedule_unreadable', 'did not start because the vendor tool\'s update schedule could not be read'],
+  ])('names the tool-config refusal %s in words', async (lastErrorCode, words) => {
+    h.failingRows = [failing({ lastOutcome: 'tool_unavailable', lastErrorCode })];
+    await runOemOverdueSweep(NOW);
+    expect(raised()[0]!.message).toContain(` ${words},`);
+    expect(raised()[0]!.message).not.toMatch(/[a-z]+_[a-z]+/);
+    expect(raised()[0]!.context).toMatchObject({ lastOutcome: 'tool_unavailable', lastErrorCode });
+  });
+
+  it('keeps the outcome words for any other tool_unavailable code', async () => {
+    h.failingRows = [failing({ lastOutcome: 'tool_unavailable', lastErrorCode: 'tool_absent' })];
+    await runOemOverdueSweep(NOW);
+    expect(raised()[0]!.message).toContain(' could not get its tool,');
+  });
+
   it.each([
     ['night 1 of 7, in its window', '2027-03-18T02:00:00.000Z'],
     ['night 1 of 7, between windows', '2027-03-18T12:00:00.000Z'],

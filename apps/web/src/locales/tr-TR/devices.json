@@ -5092,6 +5092,16 @@
       "retryLater": "Üreticinin aracı daha sonra yeniden denemeyi istedi. Breeze cihazda hiçbir şeyi değiştirmedi.",
       "interrupted": "Çalıştırma bitmeden durdu; genellikle cihaz yeniden başladığı veya ajan durduğu için. Üretici güncellemelerini yeniden çalıştırın."
     },
+    "toolConfigOutcome": {
+      "notManual": "Üretici aracı manuel güncelleme modunda değil",
+      "policyNotManual": "Araç zamanlaması ilkeyle belirlenmiş",
+      "unreadable": "Araç zamanlaması okunamıyor"
+    },
+    "toolConfigHelp": {
+      "notManual": "Breeze üreticinin aracını başlatmadı, çünkü aracın kendi güncelleme zamanlaması manuel güncellemelere ayarlı değil ve bir cihazda iki zamanlama birden ürün yazılımını güncellememelidir. Yeni bir Dell Command | Update kurulumu kendini otomatik olarak zamanlar. Cihazda dcu-cli /configure -scheduleManual komutunu yönetici olarak çalıştırın, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "policyNotManual": "Breeze üreticinin aracını başlatmadı, çünkü bir ilke aracın güncelleme zamanlamasını manuel güncellemeler dışında bir değere ayarlıyor. İlkeyi manuel güncellemelere çevirin, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "unreadable": "Breeze üretici aracının güncelleme zamanlamasını kayıt defterinden okuyamadı, bu yüzden aracı başlatmadı. Cihazdaki ajan günlüğünü kontrol edin, ardından üretici güncellemelerini yeniden çalıştırın."
+    },
     "categoriesHeading": "Bu cihazda neler çalıştırılabilir",
     "category": {
       "bios": "BIOS",

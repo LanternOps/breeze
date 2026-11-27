@@ -89,6 +89,8 @@ type dellHost struct {
 	exists                func(path string) bool
 	fileVersion           func(path string) (string, error)
 	dotnetDesktopVersions func() []string
+	// registry reads the tool's schedule mode (dell_schedule.go). Nil refuses.
+	registry regReader
 }
 
 type dellLane struct {

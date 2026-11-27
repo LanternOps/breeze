@@ -7,6 +7,7 @@ import {
   oemUpdateRunResultSchema,
   oemUpdateVerificationSchema,
 } from './oemUpdates';
+import { isOemToolConfigErrorCode, OEM_TOOL_CONFIG_ERROR_CODES } from '../utils/oemUpdates';
 
 const sample = JSON.parse(
   readFileSync(new URL('./__fixtures__/oemUpdateResult.sample.json', import.meta.url), 'utf8'),
@@ -102,6 +103,25 @@ describe('oemUpdateRunResultSchema', () => {
   });
   it('rejects a non-integer exit code', () => {
     expect(okResult({ ...sample, rawExitCode: 1.5 })).toBe(false);
+  });
+  // #12267: the manual-mode refusal is an errorCode on an existing outcome, so this
+  // schema (and an older API's copy of it) accepts it, and nothing new is required.
+  it('accepts every tool-config refusal on tool_unavailable, with no new field', () => {
+    expect(OEM_TOOL_CONFIG_ERROR_CODES.length).toBe(3);
+    for (const errorCode of OEM_TOOL_CONFIG_ERROR_CODES) {
+      const refused = {
+        ...sample, outcome: 'tool_unavailable', errorCode, rawExitCode: null,
+        rebootRequired: false, shutdownRequired: false, items: [], skippedCategories: [],
+      };
+      expect(okResult(refused)).toBe(true);
+      expect(Object.keys(refused).sort()).toEqual(Object.keys(sample).sort());
+    }
+  });
+  it('still accepts an older agent result that carries none of them', () => {
+    expect(okResult({ ...sample, outcome: 'tool_unavailable', errorCode: 'tool_absent' })).toBe(true);
+    expect(isOemToolConfigErrorCode('tool_absent')).toBe(false);
+    expect(isOemToolConfigErrorCode(null)).toBe(false);
+    expect(isOemToolConfigErrorCode('vendor_schedule_not_manual')).toBe(true);
   });
 });
 

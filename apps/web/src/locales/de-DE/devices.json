@@ -5092,6 +5092,16 @@
       "retryLater": "Das Tool des Herstellers hat darum gebeten, es später erneut zu versuchen. Breeze hat nichts auf dem Gerät geändert.",
       "interrupted": "Der Lauf wurde vor dem Abschluss gestoppt, meist weil das Gerät neu gestartet wurde oder der Agent angehalten wurde. Führen Sie die Herstellerupdates erneut aus."
     },
+    "toolConfigOutcome": {
+      "notManual": "Hersteller-Tool nicht im Modus für manuelle Updates",
+      "policyNotManual": "Zeitplan des Hersteller-Tools per Richtlinie festgelegt",
+      "unreadable": "Zeitplan des Hersteller-Tools nicht lesbar"
+    },
+    "toolConfigHelp": {
+      "notManual": "Breeze hat das Tool des Herstellers nicht gestartet, weil dessen eigener Update-Zeitplan nicht auf manuelle Updates eingestellt ist. Zwei Zeitpläne dürfen auf einem Gerät keine Firmware aktualisieren. Eine neue Installation von Dell Command | Update plant sich automatisch selbst ein. Führen Sie auf dem Gerät als Administrator dcu-cli /configure -scheduleManual aus und führen Sie die Herstellerupdates dann erneut aus.",
+      "policyNotManual": "Breeze hat das Tool des Herstellers nicht gestartet, weil eine Richtlinie dessen Update-Zeitplan auf etwas anderes als manuelle Updates festlegt. Stellen Sie die Richtlinie auf manuelle Updates um und führen Sie die Herstellerupdates dann erneut aus.",
+      "unreadable": "Breeze konnte den Update-Zeitplan des Hersteller-Tools nicht aus der Registrierung lesen und hat das Tool daher nicht gestartet. Prüfen Sie das Agent-Protokoll auf dem Gerät und führen Sie die Herstellerupdates dann erneut aus."
+    },
     "categoriesHeading": "Was auf diesem Gerät ausgeführt werden kann",
     "category": {
       "bios": "BIOS",

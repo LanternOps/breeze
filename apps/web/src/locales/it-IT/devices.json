@@ -5092,6 +5092,16 @@
       "retryLater": "Lo strumento del produttore ha chiesto di riprovare più tardi. Breeze non ha modificato nulla sul dispositivo.",
       "interrupted": "L'esecuzione si è fermata prima di terminare, di solito perché il dispositivo si è riavviato o l'agente si è fermato. Esegui di nuovo gli aggiornamenti del produttore."
     },
+    "toolConfigOutcome": {
+      "notManual": "Strumento del produttore non in modalità aggiornamenti manuali",
+      "policyNotManual": "Pianificazione dello strumento impostata da un criterio",
+      "unreadable": "Pianificazione dello strumento illeggibile"
+    },
+    "toolConfigHelp": {
+      "notManual": "Breeze non ha avviato lo strumento del produttore perché la sua pianificazione degli aggiornamenti non è impostata sugli aggiornamenti manuali, e due pianificazioni non devono aggiornare il firmware sullo stesso dispositivo. Una nuova installazione di Dell Command | Update si pianifica da sola in modo automatico. Sul dispositivo, esegui dcu-cli /configure -scheduleManual come amministratore, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "policyNotManual": "Breeze non ha avviato lo strumento del produttore perché un criterio imposta la sua pianificazione degli aggiornamenti su un valore diverso dagli aggiornamenti manuali. Imposta il criterio sugli aggiornamenti manuali, poi esegui di nuovo gli aggiornamenti del produttore.",
+      "unreadable": "Breeze non è riuscito a leggere dal registro la pianificazione degli aggiornamenti dello strumento del produttore, quindi non ha avviato lo strumento. Controlla il log dell’agente sul dispositivo, poi esegui di nuovo gli aggiornamenti del produttore."
+    },
     "categoriesHeading": "Cosa può essere eseguito su questo dispositivo",
     "category": {
       "bios": "BIOS",

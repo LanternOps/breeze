@@ -18,6 +18,7 @@ func testDellLane(t *testing.T, present map[string]string) *dellLane {
 		dotnetDesktopVersions: func() []string {
 			return nil
 		},
+		registry: manualDellRegistry().read,
 	})
 	return l
 }

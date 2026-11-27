@@ -46,6 +46,11 @@ func EnsureTool(ctx context.Context, lane Lane, spec *ToolSpec, deps Deps) (Tool
 			return ToolState{}, outcome, err
 		}
 	}
+	// Before anything is fetched, installed or replaced: a tool that must be
+	// configured a set way first is not put on a machine where it is not.
+	if outcome, err := checkToolConfig(lane); outcome != "" {
+		return ToolState{}, outcome, err
+	}
 	if free, ok := lane.(ToolFreeLane); ok {
 		state, outcome, err := free.Ready()
 		if err != nil && outcome == "" {
@@ -108,6 +113,20 @@ func EnsureTool(ctx context.Context, lane Lane, spec *ToolSpec, deps Deps) (Tool
 		return ToolState{}, OutcomeToolUnavailable, err
 	}
 	return installed, "", nil
+}
+
+// checkToolConfig asks a ToolConfigCheckedLane whether its tool may be used. An
+// empty outcome means it may, or the lane has no such check.
+func checkToolConfig(lane Lane) (Outcome, error) {
+	checked, ok := lane.(ToolConfigCheckedLane)
+	if !ok {
+		return "", nil
+	}
+	outcome, err := checked.CheckToolConfig()
+	if outcome == "" && err != nil {
+		outcome = OutcomeToolUnavailable // an error never reads as ready
+	}
+	return outcome, err
 }
 
 func installTool(ctx context.Context, lane Lane, spec *ToolSpec, eff VersionRange, deps Deps) (ToolState, error) {
