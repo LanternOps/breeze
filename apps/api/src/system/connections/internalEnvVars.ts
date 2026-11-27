@@ -116,6 +116,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS: 'timing knob',
   BACKUP_GC_MAX_DELETES_PER_RUN: 'worker throughput knob',
   BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: 'timing knob',
+  BACKUP_INDEX_DELTA_PUBLISH: 'snapshot file index format rollout switch: off (default) | canary | on',
+  BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS: 'comma-separated org UUIDs that publish the delta index format when BACKUP_INDEX_DELTA_PUBLISH=canary',
   BACKUP_LOCAL_ROOT: 'filesystem path (operator root for API-side local backup storage)',
   BACKUP_PUBLISH_MARGIN_MS: 'timing knob',
   BACKUP_RESTORE_PIN_LINGER_MS: 'timing knob',
