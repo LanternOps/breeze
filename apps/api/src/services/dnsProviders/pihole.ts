@@ -2,6 +2,13 @@ import type { DnsEvent, DnsProvider } from './index';
 import { requestJson } from './http';
 import { asArray, asNumber, asRecord, asString } from './helpers';
 
+/**
+ * Pi-hole v5 `getAllQueries` returns the whole 24 h query log in one reply (no
+ * paging), about 150 bytes a row. 128 MiB is roughly 850k queries in 24 h, past
+ * a busy network, while still bounding a hostile endpoint.
+ */
+export const PIHOLE_V5_MAX_RESPONSE_BYTES = 128 * 1024 * 1024;
+
 export interface PiHoleProviderConfig {
   apiEndpoint?: string;
 }
@@ -30,7 +37,8 @@ export class PiHoleProvider implements DnsProvider {
     url.searchParams.set('auth', this.apiKey);
     return requestJson<Record<string, unknown>>(url, {
       allowPrivateNetwork: this.allowPrivateNetwork,
-      allowCarrierNat: this.allowCarrierNat
+      allowCarrierNat: this.allowCarrierNat,
+      maxBytes: PIHOLE_V5_MAX_RESPONSE_BYTES
     });
   }
 

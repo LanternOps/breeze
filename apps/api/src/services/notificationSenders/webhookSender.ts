@@ -16,7 +16,12 @@ import {
 import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../ipRanges';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
-import { formatHttpFailure, formatHttpFailureDetail, readResponseTextPrefix } from '../httpFailureMessage';
+import {
+  formatHttpFailure,
+  formatHttpFailureDetail,
+  readResponseTextPrefix,
+  RESPONSE_PREFIX_MAX_BYTES
+} from '../httpFailureMessage';
 import { collectChannelSecretStrings } from '../notificationChannelSecrets';
 
 export function redactUrlForLogs(rawUrl: string): string {
@@ -76,16 +81,12 @@ export interface SendResult {
 export const MAX_WEBHOOK_RETRIES = 2;
 
 /**
- * The most of a receiver's reply the sender reads (#12788). The receiver is
- * tenant-chosen, so its reply is untrusted; past this the socket is dropped.
- *
- * The status code decides the result, and the body is used only for the
- * failure summary (`formatHttpFailure` reads at most 8,192 characters, which
- * is at most 24 KiB of UTF-8) and the log detail (500 characters). 64 KiB holds
- * that window at three bytes a character with room for secret masking, and it
- * is about one socket read, so a smaller cap would not read less.
+ * The most of a receiver's reply the sender reads (#12788): 64 KiB. The
+ * receiver is tenant-chosen, so its reply is untrusted; past this the socket
+ * is dropped. The status code decides the result, and the body is used only
+ * for the failure summary and log line. See `RESPONSE_PREFIX_MAX_BYTES`.
  */
-export const WEBHOOK_RESPONSE_BODY_MAX_BYTES = 64 * 1024;
+export const WEBHOOK_RESPONSE_BODY_MAX_BYTES = RESPONSE_PREFIX_MAX_BYTES;
 
 /** Clamp legacy JSON and convert configured retries to BullMQ total attempts. */
 export function webhookTotalAttempts(config: unknown): number {

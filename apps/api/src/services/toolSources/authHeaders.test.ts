@@ -66,6 +66,18 @@ describe('buildToolSourceAuthHeaders', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('caps the oauth2 token response size', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(tokenResponse('at-cap'));
+    await buildToolSourceAuthHeaders(
+      { authKind: 'oauth2_client_credentials', tokenUrl: 'https://id.example.com/token', clientId: 'a-unique-cap', clientSecret: 'b' },
+      URL_ON_ORIGIN, ORIGIN, { fetchImpl },
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://id.example.com/token',
+      expect.objectContaining({ maxBytes: 64 * 1024 }),
+    );
+  });
+
   it('never contacts the oauth2 token endpoint for an off-origin target in omit mode', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(tokenResponse('at-2'));
     const headers = await buildToolSourceAuthHeaders(

@@ -659,8 +659,15 @@ describe('safeFetch — the default bound on the body', () => {
     ['UniFi, 10 MiB chunked (84 s at 1 Mbit/s)', 15_000, 10 * 1024 * 1024, null, 220_000],
     ['GitHub release API JSON, 8 MiB (67 s at 1 Mbit/s)', 30_000, 8 * 1024 * 1024, null, 188_000],
     ['SSO / OIDC, 1 MiB (8 s at 1 Mbit/s)', 10_000, 1024 * 1024, null, 76_000],
-    ['Huntress / Pax8 page, 400 KB, no maxBytes', 20_000, undefined, 400_000, 66_104],
-    ['Huntress / Pax8 page, chunked, no maxBytes', 20_000, undefined, null, UNCAPPED_CEILING_MS],
+    ['Huntress page, 400 KB, no maxBytes', 20_000, undefined, 400_000, 66_104],
+    ['Huntress page, chunked, no maxBytes', 20_000, undefined, null, UNCAPPED_CEILING_MS],
+    // Callers that gained a reply cap: the cap, not the 10 min ceiling, now
+    // sizes a body of unknown length.
+    ['Pax8 page, 400 KB, 16 MiB cap', 20_000, 16 * 1024 * 1024, 400_000, 66_104],
+    ['Pax8, 16 MiB cap, chunked (134 s at 1 Mbit/s)', 20_000, 16 * 1024 * 1024, null, 316_000],
+    ['TD SYNNEX Digital Bridge, 16 MiB cap, chunked (134 s at 1 Mbit/s)', 15_000, 16 * 1024 * 1024, null, 316_000],
+    ['Log forwarding _bulk reply, 8 MiB cap, chunked (67 s at 1 Mbit/s)', 30_000, 8 * 1024 * 1024, null, 188_000],
+    ['OAuth client-credentials token, 64 KiB cap, no timeoutMs', undefined, 64 * 1024, null, 61_000],
     ['8 MiB declared, no maxBytes (67 s at 1 Mbit/s)', 20_000, undefined, 8 * 1024 * 1024, 188_000]
   ])('%s', async (_client, timeoutMs, maxBytes, length, expected) => {
     resolvesTo('8.8.8.8');

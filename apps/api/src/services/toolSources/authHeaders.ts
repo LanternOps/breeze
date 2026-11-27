@@ -18,6 +18,14 @@ import { safeFetch } from '../urlSafety';
 import type { SafeFetchInit } from '../urlSafety';
 import type { ToolSourceAuthConfig } from './secrets';
 
+/**
+ * Largest OAuth token response read. A token response is a small JSON object
+ * (`access_token`, `expires_in` and a few fields), a few KiB even for a JWT
+ * access token. The token URL is tenant-configured, so its reply is not
+ * trusted to be small.
+ */
+export const OAUTH_TOKEN_MAX_RESPONSE_BYTES = 64 * 1024;
+
 export type OriginMismatchBehaviour = 'throw' | 'omit';
 export type ToolSourceAuthErrorCode = 'origin_mismatch' | 'auth';
 
@@ -73,6 +81,7 @@ export async function getOAuth2ClientCredentialsToken(
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: body.toString(),
+      maxBytes: OAUTH_TOKEN_MAX_RESPONSE_BYTES,
     });
   } catch (err) {
     throw new ToolSourceAuthError(`oauth2 token request failed: ${err instanceof Error ? err.message : String(err)}`, 'auth');

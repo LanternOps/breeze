@@ -2,10 +2,19 @@ import { safeFetch } from '../urlSafety';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_RETRIES = 3;
+/**
+ * Default cap on a provider reply. The paged APIs return at most 1000 rows a
+ * page (Cloudflare `PAGE_LIMIT`, Umbrella activity, Pi-hole v6), about 1 MB.
+ * Several providers take a tenant-supplied endpoint, so the read is bounded
+ * rather than trusting the peer to stop.
+ */
+export const DNS_PROVIDER_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 interface RequestJsonInit extends RequestInit {
   timeoutMs?: number;
   maxRetries?: number;
+  /** Cap on the reply body; defaults to `DNS_PROVIDER_MAX_RESPONSE_BYTES`. */
+  maxBytes?: number;
   /**
    * Opt-in for on-prem appliance providers (Pi-hole / AdGuard Home on
    * self-hosted deployments). Allows RFC1918/ULA targets while still blocking
@@ -63,6 +72,7 @@ export async function requestJson<T>(
   const {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
+    maxBytes = DNS_PROVIDER_MAX_RESPONSE_BYTES,
     allowPrivateNetwork,
     allowCarrierNat,
     ...fetchInit
@@ -105,6 +115,7 @@ export async function requestJson<T>(
       const response = await safeFetch(String(input), {
         ...fetchInit,
         timeoutMs,
+        maxBytes,
         allowPrivateNetwork,
         allowCarrierNat,
         signal: controller.signal,

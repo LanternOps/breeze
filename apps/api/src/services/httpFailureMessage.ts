@@ -336,6 +336,17 @@ export function formatHttpFailureDetail(
 }
 
 /**
+ * How much of a reply to read when only its start is kept: 64 KiB (#12788).
+ *
+ * The summary reads at most `MAX_SUMMARY_INPUT_LENGTH` (8,192) characters plus
+ * the longest secret for masking, and the log detail 500. 8,192 characters are
+ * at most 24 KiB of UTF-8 (three bytes each), so 64 KiB holds the window with
+ * room for masking. It is also about one socket read, so a smaller cap would
+ * not read less.
+ */
+export const RESPONSE_PREFIX_MAX_BYTES = 64 * 1024;
+
+/**
  * Read at most `maxBytes` of a response body as UTF-8 text, then cancel the
  * rest. On a `safeFetch` response made with `streamResponse: true`, cancelling
  * destroys the request: the socket is dropped once the cap is reached, and

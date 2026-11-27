@@ -12,6 +12,13 @@ export const COVE_PAGE_SIZE = 1000;
  * slot forever.
  */
 export const COVE_MAX_PAGES = 200;
+/**
+ * Largest reply read from the vendor. The biggest one is a statistics page of
+ * `COVE_PAGE_SIZE` (1000) rows of `COVE_STATISTIC_COLUMNS` values, a few MB;
+ * 32 MiB is about ten times that. `base_url` is tenant-controlled, so the read
+ * is bounded rather than trusting the peer to stop.
+ */
+export const COVE_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_DELAY_MS = 200;
@@ -38,6 +45,7 @@ export type CoveFetchImpl = (
     body: string;
     signal: AbortSignal;
     timeoutMs: number;
+    maxBytes?: number;
   },
 ) => Promise<CoveFetchResponse>;
 
@@ -84,6 +92,7 @@ const defaultFetchImpl: CoveFetchImpl = (url, init) =>
     body: init.body,
     signal: init.signal,
     timeoutMs: init.timeoutMs,
+    maxBytes: init.maxBytes,
   });
 
 function unwrapResult(env: CoveRpcEnvelope): unknown {
@@ -310,8 +319,17 @@ export class CoveJsonRpcClient {
           body,
           signal: AbortSignal.timeout(this.timeoutMs),
           timeoutMs: this.timeoutMs,
+          maxBytes: COVE_MAX_RESPONSE_BYTES,
         });
       } catch (error) {
+        // A reply past the cap will be just as large on a retry: fail now.
+        if (error instanceof Error && error.name === 'ResponseTooLargeError') {
+          throw new ProviderRequestError(`Cove ${method} response was too large`, {
+            code: 'malformed_response',
+            reauth: false,
+            cause: error,
+          });
+        }
         lastTransportError = new ProviderRequestError(
           `Cove ${method} request failed: ${error instanceof Error ? error.message : String(error)}`,
           { code: 'network', reauth: false, cause: error },

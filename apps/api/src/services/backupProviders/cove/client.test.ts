@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  COVE_MAX_RESPONSE_BYTES,
   COVE_PAGE_SIZE,
   CoveJsonRpcClient,
   type CoveFetchImpl,
@@ -253,6 +254,25 @@ describe('CoveJsonRpcClient.call — transport failures', () => {
     const client = new CoveJsonRpcClient({ baseUrl: BASE_URL, fetchImpl, delayMs: 0 });
     await client.login(CREDS);
     await expect(client.call('EnumeratePartners', {})).rejects.toMatchObject({ code: 'malformed_response' });
+  });
+
+  it('bounds the reply it reads from the tenant-supplied base URL', async () => {
+    const { client, impl } = makeClient([loginSuccess]);
+    await client.login(CREDS);
+    expect(COVE_MAX_RESPONSE_BYTES).toBe(32 * 1024 * 1024);
+    expect(vi.mocked(impl).mock.calls[0]![1].maxBytes).toBe(32 * 1024 * 1024);
+  });
+
+  it('treats an oversize reply as malformed_response and does NOT retry it', async () => {
+    const tooLarge = new Error('response body exceeded maxBytes (33554432)');
+    tooLarge.name = 'ResponseTooLargeError';
+    const { client, calls } = makeClient([loginSuccess, tooLarge, tooLarge, tooLarge, tooLarge]);
+    await client.login(CREDS);
+    await expect(client.call('EnumeratePartners', {})).rejects.toMatchObject({
+      code: 'malformed_response',
+      reauth: false,
+    });
+    expect(calls).toHaveLength(2); // login + one attempt, no retries
   });
 
   it('passes an abort signal and the timeout to the fetch impl', async () => {

@@ -5,7 +5,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { eq } from 'drizzle-orm';
 import { decryptForColumn } from './secretCrypto';
 import { captureException } from './sentry';
-import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { safeFetch, SsrfBlockedError, ResponseTooLargeError } from './urlSafety';
 
 // The destination type and its pure resolver live in a dependency-free module
 // so settings code (effectiveSettings, the partner inheritance bindings) can ask
@@ -14,6 +14,15 @@ import {
   resolveForwardingDestination,
   type LogForwardingConfig,
 } from './logForwardingDestination';
+
+/**
+ * Largest `_bulk` reply read from a receiver. A reply carries one item per
+ * event, at most MAX_LOG_FORWARDING_EVENTS (500) per batch, each a few hundred
+ * bytes (about 1 KiB with an error reason), so ~0.5 MB at most; 8 MiB is 16x
+ * that. The receiver is tenant-configured, so its reply is not trusted to be
+ * small.
+ */
+export const LOG_FORWARDING_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 export {
   resolveForwardingDestination,
@@ -158,6 +167,7 @@ export async function bulkIndexToEndpoint(
       headers,
       body: buildBulkBody(indexName, events),
       timeoutMs: 30_000,
+      maxBytes: LOG_FORWARDING_MAX_RESPONSE_BYTES,
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
@@ -166,6 +176,12 @@ export async function bulkIndexToEndpoint(
       const message = `[logForwarding] Bulk target blocked by SSRF guard${orgSuffix}: ${err.message}`;
       console.error(message);
       captureException(err);
+      return { indexed: 0, errors: events.length };
+    }
+    if (err instanceof ResponseTooLargeError) {
+      // The receiver replies with far more than a _bulk ack ever holds — a
+      // durable misconfiguration, not transient. Retrying would resend the batch.
+      console.warn(`[logForwarding] Bulk reply exceeded ${LOG_FORWARDING_MAX_RESPONSE_BYTES} bytes${orgSuffix}; dropping batch`);
       return { indexed: 0, errors: events.length };
     }
     // Transport/TLS/timeout — transient, propagate so the worker retries.
