@@ -17,17 +17,23 @@ import { escapeLike } from '../utils/sql';
  * too); null for a system-scope caller, an empty list matches nothing.
  */
 export function ticketSearchCondition(search: string, visibleOrgIds: readonly string[] | null): SQL {
-  const term = `%${escapeLike(search)}%`;
+  // Pasted padding is never meant: trim once for every field. A blank term
+  // matches nothing (a bare `%%` would match every ticket).
   const whole = search.trim();
+  if (!whole) return sql`false`;
+  const term = `%${escapeLike(whole)}%`;
+  // The portal and the acknowledgement show the customer number as `#CODE`, so
+  // the number match ignores ONE leading `#` (and the space after it). Subject
+  // and Breeze number keep it: a subject may legitimately contain a `#`.
+  const customerCode = whole.replace(/^#/, '').trim();
+  const customerTerm = customerCode ? `%${escapeLike(customerCode)}%` : undefined;
   const refOrgs = visibleOrgIds === null
     ? undefined
     : visibleOrgIds.length > 0 ? inArray(ticketExternalRefs.orgId, [...visibleOrgIds]) : sql`false`;
-  const bySourceNumber = whole
-    ? sql`${tickets.id} IN (SELECT ${ticketExternalRefs.ticketId} FROM ${ticketExternalRefs} WHERE ${and(
-      refOrgs,
-      isNotNull(ticketExternalRefs.externalNumber),
-      sql`lower(${ticketExternalRefs.externalNumber}) = lower(${whole})`,
-    )})`
-    : undefined;
-  return or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term), ilike(tickets.ticketNumber, term), bySourceNumber)!;
+  const bySourceNumber = sql`${tickets.id} IN (SELECT ${ticketExternalRefs.ticketId} FROM ${ticketExternalRefs} WHERE ${and(
+    refOrgs,
+    isNotNull(ticketExternalRefs.externalNumber),
+    sql`lower(${ticketExternalRefs.externalNumber}) = lower(${whole})`,
+  )})`;
+  return or(ilike(tickets.subject, term), ilike(tickets.internalNumber, term), customerTerm ? ilike(tickets.ticketNumber, customerTerm) : undefined, bySourceNumber)!;
 }
