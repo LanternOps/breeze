@@ -20,7 +20,7 @@
 // CHECKPOINT_REBASE_RATIO of it (D4). Duplicate paths and identical entries
 // are paired by exact tuple and ordinal (D2), so the effective tree is the
 // manifest's multiset exactly.
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { db } from '../db';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { extractRowCount } from '../db/rowCount';
@@ -302,10 +302,11 @@ const entryText = (alias: string) => sql.raw(
 );
 
 /**
- * D9 by content: the tree the readers will rebuild for this snapshot, and the
- * manifest in the temp table, as a count and a sum of 64-bit row hashes each.
- * Equal digests mean equal multisets of (source_path, backup_path, size,
- * modified_at, kind), up to a hash collision; the sum keeps duplicates.
+ * D9 by content, the tree half: the tree the readers will rebuild for this
+ * snapshot, as a count (`n`) and a sum of 64-bit row hashes (`h`) over every
+ * indexed column. Equal digests mean equal multisets of (source_path,
+ * backup_path, size, modified_at, kind), up to a hash collision; the sum keeps
+ * duplicates.
  *
  * The tree is read from what was stored, the way snapshotIndexEntries reads it:
  * the checkpoint's entries minus those a stored tombstone names by entry_no
@@ -313,30 +314,68 @@ const entryText = (alias: string) => sql.raw(
  * that pairs entries wrongly (a column left out of SAME_ENTRY, say) shows up
  * here even though the two anti-joins still agree on the counts.
  *
- * Cost: one pass over the temp table and one over the checkpoint's entries
- * (its primary key range), with the snapshot's own rows hashed for the
- * anti-join. Sums, so no sort.
+ * Counted as three sums, all entries minus the tombstoned ones plus the adds,
+ * not as an anti-join, so its cost does not depend on the planner's estimates.
+ * As an anti-join, with statistics taken while the tables were nearly empty
+ * (a new database, or the first checkpoints after the flag is turned on: a
+ * publish under 100,000 rows refreshes nothing), the planner ran a nested loop
+ * that re-read every one of the snapshot's rows for each checkpoint entry: at
+ * 20,000 entries and 400 stored rows, 7.96M rows and 4–5 s, inside the publish
+ * transaction (#12741). Here the tombstoned entries are found from the
+ * tombstones: DISTINCT, because an entry is hidden once however many
+ * tombstones name it (as in the read layer's NOT EXISTS), then one primary-key
+ * lookup each, kept a per-row lookup by OFFSET 0 (a subquery with OFFSET is
+ * never flattened into a join the planner could reorder).
+ *
+ * Cost: one pass over the checkpoint's entries (its primary key range), one
+ * over the snapshot's own rows for the adds and one for the tombstones, and one
+ * index lookup per tombstone. Sums, so no sort.
+ *
+ * Exported, unexecuted, so a test can EXPLAIN this exact statement
+ * (backupSnapshotIndexPublishPlans.integration.test.ts).
+ */
+export function treeDigestQuery(snapshotDbId: string, checkpointId: string): SQL {
+  const digestOf = (alias: string) => sql`count(*) AS n, coalesce(sum(hashtextextended(${entryText(alias)}, 0)), 0) AS h`;
+  return sql`
+        SELECT entries.n - hidden.n + adds.n AS n, entries.h - hidden.h + adds.h AS h
+          FROM (
+            SELECT ${digestOf('e')}
+              FROM backup_tree_checkpoint_entries e
+             WHERE e.checkpoint_id = ${checkpointId}::uuid
+          ) entries,
+          (
+            SELECT ${digestOf('e')}
+              FROM (
+                SELECT DISTINCT t.checkpoint_entry_no, t.source_path
+                  FROM backup_snapshot_files t
+                 WHERE t.snapshot_db_id = ${snapshotDbId}::uuid AND t.checkpoint_entry_no IS NOT NULL
+              ) t
+              CROSS JOIN LATERAL (
+                SELECT x.source_path, x.backup_path, x.size, x.modified_at, x.kind
+                  FROM backup_tree_checkpoint_entries x
+                 WHERE x.checkpoint_id = ${checkpointId}::uuid
+                   AND x.entry_no = t.checkpoint_entry_no
+                   AND x.source_path = t.source_path
+                OFFSET 0
+              ) e
+          ) hidden,
+          (
+            SELECT ${digestOf('f')}
+              FROM backup_snapshot_files f
+             WHERE f.snapshot_db_id = ${snapshotDbId}::uuid AND f.checkpoint_entry_no IS NULL
+          ) adds`;
+}
+
+/**
+ * D9 by content: treeDigestQuery against the manifest in the temp table,
+ * digested the same way.
+ *
+ * Cost: treeDigestQuery's, plus one pass over the temp table.
  */
 async function treeAndManifestDigests(tx: Tx, snapshotDbId: string, checkpointId: string) {
   const rows = (await tx.execute(sql`
     SELECT tree.n::bigint AS tree_n, tree.h::text AS tree_h, manifest.n::bigint AS manifest_n, manifest.h::text AS manifest_h
-      FROM (
-        SELECT count(*) AS n, coalesce(sum(hashtextextended(${entryText('x')}, 0)), 0) AS h
-          FROM (
-            SELECT e.source_path, e.backup_path, e.size, e.modified_at, e.kind
-              FROM backup_tree_checkpoint_entries e
-             WHERE e.checkpoint_id = ${checkpointId}::uuid
-               AND NOT EXISTS (
-                 SELECT 1 FROM backup_snapshot_files t
-                  WHERE t.snapshot_db_id = ${snapshotDbId}::uuid
-                    AND t.checkpoint_entry_no = e.entry_no
-                    AND t.source_path = e.source_path
-               )
-            UNION ALL
-            SELECT f.source_path, f.backup_path, f.size, f.modified_at, f.kind
-              FROM backup_snapshot_files f
-             WHERE f.snapshot_db_id = ${snapshotDbId}::uuid AND f.checkpoint_entry_no IS NULL
-          ) x
+      FROM (${treeDigestQuery(snapshotDbId, checkpointId)}
       ) tree,
       (
         SELECT count(*) AS n, coalesce(sum(hashtextextended(${entryText('x')}, 0)), 0) AS h

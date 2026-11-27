@@ -238,10 +238,13 @@ describe('publishDeltaIndex', () => {
     expect(check).toBeGreaterThan(write);
     const text = statements[check]!;
     // The read layer's shape: entries a stored tombstone names by entry_no and path are hidden; stored adds are added.
-    expect(text).toMatch(/t\.checkpoint_entry_no = e\.entry_no\s+AND t\.source_path = e\.source_path/);
+    // Counted as all entries minus the tombstoned ones plus the adds (#12741).
+    expect(text).toMatch(/entries\.h - hidden\.h \+ adds\.h/);
+    expect(text).toMatch(/x\.entry_no = t\.checkpoint_entry_no\s+AND x\.source_path = t\.source_path/);
     expect(text).toMatch(/f\.checkpoint_entry_no IS NULL/);
-    // Every indexed column on both sides, and none of the diff's numbering.
-    expect(text.match(/ROW\(x\.source_path, x\.backup_path, x\.size, x\.modified_at, x\.kind\)::text/g)).toHaveLength(2);
+    // Every indexed column on every side (entries, tombstoned entries, adds, manifest), and none of the diff's numbering.
+    expect(text.match(/ROW\((\w)\.source_path, \1\.backup_path, \1\.size, \1\.modified_at, \1\.kind\)::text/g)).toHaveLength(4);
+    expect(text.match(/ROW\(x\.source_path, x\.backup_path, x\.size, x\.modified_at, x\.kind\)::text/g)).toHaveLength(1);
     expect(text).toMatch(/FROM snapshot_index_incoming x/);
     expect(text).not.toMatch(/\bord\b|row_number/);
   });
