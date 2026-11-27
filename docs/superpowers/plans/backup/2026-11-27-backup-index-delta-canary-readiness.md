@@ -8,7 +8,7 @@ status: measured; canary not started (owner decision)
 
 # Snapshot File Index Delta Format: Canary Readiness
 
-What the owner needs to turn `BACKUP_INDEX_DELTA_PUBLISH` on for one organization, watch it, roll it back and decide on `on`. The measurements behind it are in the plan's W5 section ("W5 measurement") and in the PR that added this file. Nothing here has been done in any hosted region.
+What the owner needs to turn `BACKUP_INDEX_DELTA_PUBLISH` on for one organization, watch it, roll it back and decide on `on`. The measurements behind it are in the plan's W5 section ("W5 measurement") and in PR #12815. Nothing here has been done in any hosted region.
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ BACKUP_INDEX_DELTA_PUBLISH=canary
 BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS=<the canary org's uuid>
 ```
 
-Set both on the api and the worker, then recreate both containers (the value is read on every call, but a container's environment changes only when it is recreated). Each process logs once if the value is not `off`, `canary` or `on` (`[backup-index] BACKUP_INDEX_DELTA_PUBLISH=… is not one of off, canary, on; treating it as off`) or if `canary` lists no valid org (`… lists no valid org; every org publishes rows`). Either line means the canary is not running.
+Set both on the api and the worker, then recreate both containers (the value is read on every call, but a container's environment changes only when it is recreated). Each process logs once if the value is not `off`, `canary` or `on` (`[backup-index] BACKUP_INDEX_DELTA_PUBLISH=… is not one of off, canary, on; treating it as off`) or if `canary` lists no valid org (`… lists no valid org; every org publishes rows`). Either line means the canary is not running. A third, `[backup-index] BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS entry "…" is not a UUID; ignoring it`, means that entry is not in the canary.
 
 Only new hydrations change format. Existing snapshots keep `rows` until they re-hydrate. A snapshot publishes `delta` only when its config id, storage identity and backup type are all known (R5); others stay `rows`.
 
@@ -87,7 +87,7 @@ SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, last_autoanalyze
 
 `n_dead_tup` on the entries table should fall back after each autovacuum. A steady climb means autovacuum is not keeping up with checkpoint GC (measured: VACUUM of the table after a 1M-entry delete took 1.4 s).
 
-**Readers:** browse, search and selective restore for the canary org's delta snapshots should answer at least as fast as for its rows snapshots (measured: equal or faster once the W5 fixes are in). A selection walk slower than its rows twin by more than 1.5x is a reason to stop.
+**Readers:** browse, search, count and key checks for the canary org's delta snapshots should answer within about 1.5x of its rows snapshots (measured after the W5 fixes: equal at low drift). A selective-restore walk of a delta snapshot near the rebase threshold is slower: about 1.5x at 2% drift and 1.9x to 2.8x at 5% (6.9 to 9.3 s for 1M entries, inside the 30 s deadline), and on a database with thousands of small checkpoints a 1M-entry walk took 11.5 to 16.4 s. Stop if a walk times out, or if a ratio is clearly worse than these (the threshold itself is gate G4).
 
 ## Rollback
 
