@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,8 +46,9 @@ func powershellExitCodeCases() []powershellExitCodeCase {
 		{name: "trap exits", script: "trap { exit 9 }\nWrite-Output 'out-trap'\nthrow 'boom'", want: 9},
 		// A negative code is reported as 1, as before #12798: the server
 		// reads a negative code without an error as an abnormal end, not the
-		// script's answer. -File gives the 8-bit status here.
-		{name: "exit -1", script: "Write-Output 'out-exit-neg1'\nexit -1", want: 1, file: new(255)},
+		// script's answer. -File gives the 8-bit status on POSIX and the
+		// DWORD as Go reads it on Windows.
+		{name: "exit -1", script: "Write-Output 'out-exit-neg1'\nexit -1", want: 1, file: new(negativeOneFromFile())},
 		// Without `exit`, -File reports 0 even when the last native command
 		// failed (about_pwsh: with normal termination the exit code is 0).
 		{name: "native fails last, no exit", script: native + "Write-Output 'out-native-last'\n& $native -NoProfile -Command 'exit 7'", want: 0},
@@ -130,6 +132,13 @@ func requirePwsh(t *testing.T) string {
 		t.Skip("pwsh not available")
 	}
 	return pwsh
+}
+
+func negativeOneFromFile() int {
+	if runtime.GOOS == "windows" {
+		return 4294967295
+	}
+	return 255
 }
 
 func runForExitCode(t *testing.T, name string, args ...string) (int, string) {
