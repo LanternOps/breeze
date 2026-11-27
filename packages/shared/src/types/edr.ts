@@ -37,6 +37,13 @@ export const EDR_ACTIONS = [
 ] as const;
 /** Actions aimed at an endpoint (W03). With EDR_DETECTION_ACTIONS this partitions EDR_ACTIONS. */
 export const EDR_ENDPOINT_ACTIONS = ['isolate', 'unisolate', 'scan', 'update_agent', 'kill_process'] as const;
+/**
+ * Endpoint actions whose effect is the endpoint's isolation state. A vendor that
+ * ACCEPTS one has not yet applied it (the endpoint may be offline), so the ledger
+ * row stays `submitted` until a live read of the endpoint, taken after the
+ * request, shows the requested state (#12789).
+ */
+export const EDR_STATE_CONFIRMED_ACTIONS = ['isolate', 'unisolate'] as const;
 /** Actions aimed at one detection / quarantine item (W03). */
 export const EDR_DETECTION_ACTIONS = [
   'rollback', 'resolve_detection', 'mark_false_positive', 'quarantine_restore', 'quarantine_delete',
@@ -69,6 +76,12 @@ export type EdrVendorKind = (typeof EDR_VENDOR_KINDS)[number];
 export type EdrActionKey = (typeof EDR_ACTIONS)[number];
 export type EdrEndpointActionKey = (typeof EDR_ENDPOINT_ACTIONS)[number];
 export type EdrDetectionActionKey = (typeof EDR_DETECTION_ACTIONS)[number];
+export type EdrStateConfirmedActionKey = (typeof EDR_STATE_CONFIRMED_ACTIONS)[number];
+
+/** True for an isolate / un-isolate, confirmed from the endpoint's live state (#12789). */
+export function isEdrStateConfirmedAction(action: string): action is EdrStateConfirmedActionKey {
+  return (EDR_STATE_CONFIRMED_ACTIONS as readonly string[]).includes(action);
+}
 
 /**
  * Whether one action can be taken on one endpoint right now, and why not
@@ -105,8 +118,24 @@ export interface EdrActionDto {
   endpointId: string | null;
   detectionId: string | null;
   breezeDeviceId: string | null;
+  /**
+   * Display name of the requester, resolved server-side under the caller's own
+   * RLS context: null when the user was deleted or is not visible to the caller.
+   */
+  requestedByName: string | null;
   error: string | null;
+  /**
+   * The vendor's own rejection text for a `vendor_rejected` row: plain text,
+   * credential-scrubbed and capped server-side. Vendor-supplied: render as text.
+   */
+  vendorReason: string | null;
   outcomeUnknown: boolean;
+  /**
+   * The vendor accepted an isolate / un-isolate but no inventory sync has
+   * confirmed the endpoint's isolation state yet. The device must not be shown
+   * as isolated (or released) while this is true.
+   */
+  awaitingConfirmation: boolean;
   requestedAt: string;
   submittedAt: string | null;
   completedAt: string | null;

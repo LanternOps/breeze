@@ -16,8 +16,12 @@ function ok(body: unknown) {
 const emptyCoverage = { summary: [], data: [], pagination: { limit: 50, offset: 0, total: 0 } };
 
 // Route by URL + method — never positional (effect-load vs click race).
-function routeFetch(map: { s1?: unknown; huntress?: unknown }) {
+function routeFetch(map: { s1?: unknown; huntress?: unknown; s1Active?: boolean | 'error' }) {
   fetchWithAuth.mockImplementation((url: string) => {
+    if (url.startsWith('/s1/device-status')) {
+      if (map.s1Active === 'error') return Promise.resolve({ ok: false, status: 500, json: async () => ({ error: 'boom' }) } as Response);
+      return Promise.resolve(ok({ data: { deviceId: 'dev-1', active: map.s1Active ?? false } }));
+    }
     if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(emptyCoverage));
     if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: map.s1 ?? [], pagination: { total: 0, limit: 50, offset: 0 } }));
     if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: map.huntress ?? [], total: 0, limit: 50, offset: 0 }));
@@ -49,10 +53,55 @@ describe('DeviceEdrPanel', () => {
   });
 });
 
+describe('DeviceEdrPanel legacy SentinelOne isolate buttons (#12789)', () => {
+  it('asks the API whether THIS device has an active SentinelOne integration', async () => {
+    routeFetch({ s1Active: true });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('edr-isolate-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('edr-unisolate-btn')).toBeInTheDocument();
+    expect(fetchWithAuth).toHaveBeenCalledWith('/s1/device-status?orgId=org-1&deviceId=dev-1');
+  });
+
+  it('a device covered only by another vendor shows no SentinelOne isolate buttons', async () => {
+    routeFetch({ s1Active: false });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/s1/device-status?orgId=org-1&deviceId=dev-1'));
+    expect(screen.queryByTestId('edr-isolate-btn')).toBeNull();
+    expect(screen.queryByTestId('edr-unisolate-btn')).toBeNull();
+  });
+
+  it('a failed status lookup fails closed (no buttons)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    routeFetch({ s1Active: 'error' });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/s1/device-status?orgId=org-1&deviceId=dev-1'));
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('edr-isolate-btn')).toBeNull();
+    err.mockRestore();
+  });
+
+  it('a failed status lookup says it could not check, instead of showing nothing', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    routeFetch({ s1Active: 'error' });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('edr-s1-status-unknown')).toHaveTextContent(/could not check/i);
+    err.mockRestore();
+  });
+
+  it('a successful lookup shows no "could not check" note', async () => {
+    routeFetch({ s1Active: false });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('edr-s1-status-unknown')).toBeNull();
+  });
+});
+
 describe('DeviceEdrPanel isolate', () => {
   it('confirms then POSTs /s1/isolate with the device id', async () => {
     let isolateBody: unknown;
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/s1/device-status')) return Promise.resolve(ok({ data: { deviceId: 'dev-1', active: true } }));
       if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(emptyCoverage));
       if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [], pagination: { total: 0, limit: 50, offset: 0 } }));
       if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
@@ -64,6 +113,10 @@ describe('DeviceEdrPanel isolate', () => {
     // confirm modal
     fireEvent.click(await screen.findByTestId('edr-isolate-confirm'));
     await waitFor(() => expect(isolateBody).toEqual({ orgId: 'org-1', deviceIds: ['dev-1'], isolate: true }));
+    // #12789: SentinelOne accepting the request is not the device being isolated.
+    const { showToast } = await import('../shared/Toast');
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Isolation requested' })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Device isolated' }));
   });
 });
 

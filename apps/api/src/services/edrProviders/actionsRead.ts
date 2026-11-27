@@ -1,7 +1,13 @@
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import type { EdrActionDto, EdrActionKey, EdrActionRequestedVia, EdrActionStatus } from '@breeze/shared';
+import {
+  isEdrStateConfirmedAction,
+  type EdrActionDto,
+  type EdrActionKey,
+  type EdrActionRequestedVia,
+  type EdrActionStatus,
+} from '@breeze/shared';
 import { db } from '../../db';
-import { edrActions } from '../../db/schema';
+import { edrActions, users } from '../../db/schema';
 import { edrOrgCondition, type EdrReadScope } from './read';
 import { isSiteRestricted } from './readScope';
 
@@ -10,7 +16,11 @@ import { isSiteRestricted } from './readScope';
  * axis; this adds the explicit org filter and the ACTION site rule, which is
  * stricter than the detection read rule: a site-restricted caller sees only
  * rows linked to a device in their sites (the same rule dispatch enforces).
- * `payload` (jsonb: free-text reason, vendor ids) is never projected.
+ * `payload` (jsonb: free-text reason, vendor ids) is never projected whole:
+ * only its `vendorReason` key (sanitised, capped vendor rejection text, #12789).
+ * The requester's name comes from a LEFT JOIN on `users` under the caller's
+ * own RLS context (dual-axis policy), so a requester the caller cannot see, or
+ * a deleted one, reads as null; never an id.
  */
 
 export const EDR_ACTIONS_MAX_LIMIT = 200;
@@ -38,7 +48,9 @@ const DTO_COLUMNS = {
   endpointId: edrActions.endpointId,
   detectionId: edrActions.detectionId,
   breezeDeviceId: edrActions.breezeDeviceId,
+  requestedByName: users.name,
   error: edrActions.error,
+  vendorReason: sql<string | null>`${edrActions.payload}->>'vendorReason'`,
   requestedAt: edrActions.requestedAt,
   submittedAt: edrActions.submittedAt,
   completedAt: edrActions.completedAt,
@@ -83,8 +95,11 @@ export function toEdrActionDto(r: Row): EdrActionDto {
     endpointId: (r.endpointId as string | null) ?? null,
     detectionId: (r.detectionId as string | null) ?? null,
     breezeDeviceId: (r.breezeDeviceId as string | null) ?? null,
+    requestedByName: (r.requestedByName as string | null) ?? null,
     error,
+    vendorReason: (r.vendorReason as string | null) ?? null,
     outcomeUnknown: status === 'queued' && error === 'dispatch_outcome_unknown',
+    awaitingConfirmation: status === 'submitted' && isEdrStateConfirmedAction(r.action as string),
     requestedAt: iso(r.requestedAt as Date | string) ?? '',
     submittedAt: iso(r.submittedAt as Date | string | null),
     completedAt: iso(r.completedAt as Date | string | null),
@@ -100,7 +115,7 @@ export async function listEdrActions(
   const limit = Math.min(Math.max(1, Math.floor(q.limit) || 1), EDR_ACTIONS_MAX_LIMIT);
   const offset = Math.max(0, Math.floor(q.offset) || 0);
   const [rows, countRows] = await Promise.all([
-    db.select(DTO_COLUMNS).from(edrActions).where(where)
+    db.select(DTO_COLUMNS).from(edrActions).leftJoin(users, eq(users.id, edrActions.requestedBy)).where(where)
       .orderBy(desc(edrActions.requestedAt), desc(edrActions.id)).limit(limit).offset(offset),
     db.select({ n: sql<number>`count(*)::int` }).from(edrActions).where(where),
   ]);

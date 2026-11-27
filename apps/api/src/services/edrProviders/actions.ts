@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   EDR_ENDPOINT_ACTIONS,
+  isEdrStateConfirmedAction,
   type EdrActionKey,
   type EdrActionRequestedVia,
   type EdrActionStatus,
@@ -99,6 +100,12 @@ export interface EdrActionOutcome {
   actionId: string;
   status: EdrActionStatus;
   outcomeUnknown: boolean;
+  /**
+   * The vendor accepted an isolate / un-isolate; the row stays `submitted`
+   * until a live read of the endpoint confirms its isolation state (#12789).
+   * Never report the device as isolated (or released) while this is true.
+   */
+  awaitingConfirmation: boolean;
   error: string | null;
   message: string | null;
   httpStatus: 200 | 202 | 422 | 429 | 502;
@@ -106,7 +113,7 @@ export interface EdrActionOutcome {
 }
 
 type ConnectionFacts = Pick<EdrConnectionRow, 'actionsEnabled' | 'isActive' | 'status' | 'capabilitiesSnapshot' | 'provider'>;
-type TenantFacts = Pick<EdrTenantRow, 'unsupportedActions' | 'unsupportedActionsAt'>;
+type TenantFacts = Pick<EdrTenantRow, 'unsupportedActions' | 'unsupportedActionsAt' | 'vendorMissingSince'>;
 type EndpointFacts = Pick<EdrEndpointRow, 'vendorEndpointId' | 'osPlatform' | 'isolationState' | 'online'>;
 
 /** Unexpired licence denials only. */
@@ -127,18 +134,29 @@ function targetFacts(endpoint: EndpointFacts | null, tenant: TenantFacts, connec
   };
 }
 
+export const EDR_TENANT_MISSING_REASON =
+  'The vendor no longer lists this company; actions are paused until a sync finds it again';
+
 /** Steps 4–5 for one action, with no I/O. `null` = allowed. */
 function gateReason(
   adapter: EdrProviderAdapter | null,
   facts: EdrActionTargetFacts,
   connection: ConnectionFacts,
+  tenant: TenantFacts,
   action: EdrActionKey,
-): { code: 'connection_unavailable' | 'connection_actions_disabled' | 'unsupported'; reason: string } | null {
+): { code: 'connection_unavailable' | 'connection_actions_disabled' | 'tenant_missing' | 'unsupported'; reason: string } | null {
   if (!connection.isActive || connection.status === 'reauth_required') {
     return { code: 'connection_unavailable', reason: 'The EDR connection is inactive or needs its credentials re-entered' };
   }
   if (!connection.actionsEnabled) {
     return { code: 'connection_actions_disabled', reason: 'Response actions are turned off for this EDR connection' };
+  }
+  // `vendor_missing_since` is the D13 tombstone: the tenant sync stopped finding
+  // this company in the vendor's list (deleted, or moved out of this key's
+  // reach). Nothing sent on its behalf can be trusted to land on the right
+  // company, so it is acted on only once a sync lists it again (#12789).
+  if (tenant.vendorMissingSince) {
+    return { code: 'tenant_missing', reason: EDR_TENANT_MISSING_REASON };
   }
   if (!adapter || !adapter.capabilities.actions.includes(action)
     || typeof adapter.performAction !== 'function' || typeof adapter.supportsAction !== 'function') {
@@ -156,15 +174,56 @@ function adapterOrNull(provider: string): EdrProviderAdapter | null {
   }
 }
 
+/** One `edr_actions` row of this endpoint that can still block a new request. */
+export interface EdrActionLedgerFact {
+  action: EdrActionKey;
+  status: EdrActionStatus;
+  error: string | null;
+  requestedAt: Date;
+}
+
+export const EDR_ACTION_IN_PROGRESS_REASON = 'This action is already in progress for this target';
+export const EDR_ACTION_OUTCOME_UNKNOWN_REASON =
+  'The outcome of the last request is not known yet; Breeze is checking whether it took effect';
+export const EDR_ACTION_AWAITING_CONFIRMATION_REASON =
+  'The vendor accepted the last request; waiting for the endpoint to confirm it';
+const RECENTLY_REQUESTED_MESSAGE = 'The same action was requested for this target less than a minute ago';
+
+/**
+ * Why the ledger alone would make dispatch refuse this action now (#12789):
+ * the same rules as `lockAndRecheckEdrActionTarget` (an open row means in
+ * progress; a success inside the cooldown means recently requested).
+ */
+export function ledgerBlockReason(
+  ledger: readonly EdrActionLedgerFact[],
+  action: EdrActionKey,
+  now: Date,
+): string | null {
+  const rows = ledger.filter((r) => r.action === action);
+  const open = rows.find((r) => r.status === 'queued' || r.status === 'submitted');
+  if (open) {
+    if (open.status === 'queued' && open.error === 'dispatch_outcome_unknown') return EDR_ACTION_OUTCOME_UNKNOWN_REASON;
+    if (open.status === 'submitted' && isEdrStateConfirmedAction(open.action)) return EDR_ACTION_AWAITING_CONFIRMATION_REASON;
+    return EDR_ACTION_IN_PROGRESS_REASON;
+  }
+  const cutoff = now.getTime() - EDR_ACTION_COOLDOWN_MS;
+  if (rows.some((r) => r.status === 'succeeded' && new Date(r.requestedAt).getTime() > cutoff)) {
+    return RECENTLY_REQUESTED_MESSAGE;
+  }
+  return null;
+}
+
 /**
  * What the UI / `GET /edr/endpoints` shows per action, from already-loaded
  * rows (no vendor call). The vendor stays authoritative at dispatch.
+ * `ledger` is this endpoint's open and just-settled `edr_actions` rows, so the
+ * list never offers what dispatch would refuse as in progress (#12789).
  */
 export function describeEndpointActions(
   endpoint: EndpointFacts & Pick<EdrEndpointRow, 'breezeDeviceId'>,
   tenant: TenantFacts,
   connection: ConnectionFacts,
-  o: { caller: EdrActionCaller; restriction?: EdrSiteRestriction; now?: Date },
+  o: { caller: EdrActionCaller; restriction?: EdrSiteRestriction; now?: Date; ledger?: readonly EdrActionLedgerFact[] },
 ): EdrEndpointActionAvailability[] {
   const now = o.now ?? new Date();
   const adapter = adapterOrNull(connection.provider);
@@ -178,8 +237,10 @@ export function describeEndpointActions(
     // list never offers what dispatch would refuse.
     if (!o.caller.canExecute) return { action, available: false, reason: EDR_ACTIONS_NO_PERMISSION_REASON };
     if (siteDenied) return { action, available: false, reason: 'This endpoint is not linked to a device in your sites' };
-    const gate = gateReason(adapter, facts, connection, action);
+    const gate = gateReason(adapter, facts, connection, tenant, action);
     if (gate) return { action, available: false, reason: gate.reason };
+    const busy = ledgerBlockReason(o.ledger ?? [], action, now);
+    if (busy) return { action, available: false, reason: busy };
     if (!o.caller.mfaSatisfied) return { action, available: false, reason: EDR_ACTIONS_MFA_REASON, mfaRequired: true };
     return { action, available: true, reason: null };
   });
@@ -255,8 +316,6 @@ async function loadConnectionAndTenant(t: ResolvedEdrActionTarget): Promise<{
   }, 'edrActions.loadConnection');
 }
 
-const RECENTLY_REQUESTED_MESSAGE = 'The same action was requested for this target less than a minute ago';
-
 function outcomeAudit(status: EdrActionStatus, outcomeUnknown: boolean): string {
   if (outcomeUnknown) return 'edr.action.outcome_unknown';
   return `edr.action.${status}`;
@@ -312,7 +371,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
   const facts = targetFacts(resolved.endpoint, tenant, connection, now);
 
   // 5. Capability — refusals write no row.
-  const gate = gateReason(adapter, facts, connection, action);
+  const gate = gateReason(adapter, facts, connection, tenant, action);
   if (gate) {
     throw new EdrActionError(gate.code, gate.code === 'unsupported' ? 422 : 409, gate.reason);
   }
@@ -354,7 +413,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
         { endpointId, detectionId: resolved.detection?.id ?? null }, action, new Date(),
       );
       if (recheck === 'in_progress') {
-        throw new EdrActionError('action_in_progress', 409, 'This action is already in progress for this target');
+        throw new EdrActionError('action_in_progress', 409, EDR_ACTION_IN_PROGRESS_REASON);
       }
       if (recheck === 'recently_requested') {
         throw new EdrActionError('action_recently_requested', 409, RECENTLY_REQUESTED_MESSAGE);
@@ -382,7 +441,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
   } catch (err) {
     const code = pgErrorCode(err);
     if (code === '23505') {
-      throw new EdrActionError('action_in_progress', 409, 'This action is already in progress for this target');
+      throw new EdrActionError('action_in_progress', 409, EDR_ACTION_IN_PROGRESS_REASON);
     }
     if (isPgForeignKeyViolationCode(code)) {
       // The composite FKs are the remap fence: tenant remapped / endpoint gone since step 2.
@@ -460,18 +519,35 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     }
   };
   if (result) {
-    const set = result.status === 'succeeded'
-      ? { status: 'succeeded' as const, submittedAt: writeAt, completedAt: writeAt, updatedAt: writeAt }
-      : { status: 'submitted' as const, vendorActionId: result.vendorActionId.slice(0, 255), submittedAt: writeAt, updatedAt: writeAt };
+    // #12789: the vendor ACCEPTING an isolate / un-isolate is not the endpoint
+    // being isolated (it may be offline). Whatever the adapter answered, the
+    // row stays `submitted` (in flight) until a live read of the endpoint confirms the
+    // isolation state (actionStatus.ts). Other actions settle here as before.
+    const awaitingConfirmation = isEdrStateConfirmedAction(action);
+    const vendorActionId = result.status === 'submitted' ? result.vendorActionId.slice(0, 255) : null;
+    const status: 'succeeded' | 'submitted' = result.status === 'succeeded' && !awaitingConfirmation ? 'succeeded' : 'submitted';
+    const set = status === 'succeeded'
+      ? { status, submittedAt: writeAt, completedAt: writeAt, updatedAt: writeAt }
+      : { status, ...(vendorActionId ? { vendorActionId } : {}), submittedAt: writeAt, updatedAt: writeAt };
     await guardedWrite(() => db.update(edrActions).set(set)
       .where(and(eq(edrActions.id, actionId), eq(edrActions.status, 'queued'))));
-    outcome = { actionId, status: result.status, outcomeUnknown: false, error: null, message: null, httpStatus: 200 };
+    outcome = { actionId, status, outcomeUnknown: false, awaitingConfirmation, error: null, message: null, httpStatus: 200 };
   } else {
     const c = classifyVendorActionError(thrown, secretsOf(creds));
     await guardedWrite(async () => {
       await db.update(edrActions)
         .set(c.rowStatus === 'failed'
-          ? { status: 'failed', error: c.code, completedAt: writeAt, updatedAt: writeAt }
+          ? {
+            status: 'failed',
+            error: c.code,
+            // The vendor's own words, sanitised and capped (never the request
+            // body or a credential), kept beside the dispatch payload (#12789).
+            ...(c.vendorReason
+              ? { payload: sql`coalesce(${edrActions.payload}, '{}'::jsonb) || jsonb_build_object('vendorReason', ${c.vendorReason}::text)` }
+              : {}),
+            completedAt: writeAt,
+            updatedAt: writeAt,
+          }
           : { error: c.code, updatedAt: writeAt })
         .where(and(eq(edrActions.id, actionId), eq(edrActions.status, 'queued')));
       if (c.recordTenantDenial) {
@@ -493,6 +569,7 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
       actionId,
       status: c.rowStatus,
       outcomeUnknown: c.rowStatus === 'queued',
+      awaitingConfirmation: false,
       error: c.code,
       message: c.message,
       httpStatus: c.http,
@@ -507,7 +584,14 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     action: outcomeAudit(outcome.status, outcome.outcomeUnknown),
     resourceType: 'edr_action',
     resourceId: actionId,
-    details: { ...auditDetails, status: outcome.status, error: outcome.error },
+    // Vendor text (`payload.vendorReason`) stays on the ledger row only: audit
+    // details are readable by AI tools, and vendor text never reaches the model.
+    details: {
+      ...auditDetails,
+      status: outcome.status,
+      error: outcome.error,
+      ...(outcome.awaitingConfirmation ? { awaitingConfirmation: true } : {}),
+    },
     result: outcome.outcomeUnknown ? 'dispatched' : outcome.status === 'failed' ? 'failure' : 'success',
     initiatedBy: actor.requestedVia === 'ai' ? 'ai' : 'manual',
   });

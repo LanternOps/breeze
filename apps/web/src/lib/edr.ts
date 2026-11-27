@@ -109,7 +109,24 @@ export async function fetchHuntressIncidents(
   return { rows: body.data as HuntressIncident[], total: Number(body?.total ?? body.data.length) };
 }
 
-export async function isolateDevice(orgId: string, deviceId: string, isolate: boolean): Promise<void> {
+/**
+ * Whether this device is covered by its org's ACTIVE SentinelOne integration
+ * (#12789). The legacy isolate buttons target SentinelOne only, so they render
+ * only when this is true; any error reads as false (fail closed).
+ */
+export async function fetchS1DeviceActive(orgId: string, deviceId: string): Promise<boolean> {
+  const res = await fetchWithAuth(`/s1/device-status?${toParams({ orgId, deviceId })}`);
+  throwIfNotOk(res);
+  const body = await res.json();
+  return body?.data?.active === true;
+}
+
+export async function isolateDevice(
+  orgId: string,
+  deviceId: string,
+  isolate: boolean,
+  messages?: { success: string; error: string },
+): Promise<void> {
   await runAction({
     request: () =>
       fetchWithAuth('/s1/isolate', {
@@ -117,8 +134,10 @@ export async function isolateDevice(orgId: string, deviceId: string, isolate: bo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orgId, deviceIds: [deviceId], isolate }),
       }),
-    errorFallback: isolate ? 'Failed to isolate device' : 'Failed to remove isolation',
-    successMessage: isolate ? 'Device isolated' : 'Isolation removed',
+    errorFallback: messages?.error ?? (isolate ? 'Failed to isolate device' : 'Failed to remove isolation'),
+    // SentinelOne accepting the request is not the device being isolated
+    // (it may be offline): say "requested", never "isolated" (#12789).
+    successMessage: messages?.success ?? (isolate ? 'Isolation requested' : 'Isolation removal requested'),
   });
 }
 

@@ -8,6 +8,7 @@ const h = vi.hoisted(() => {
     const c: Record<string, unknown> = {};
     c.from = () => c;
     c.where = () => c;
+    c.leftJoin = () => c;
     c.orderBy = () => c;
     c.limit = (n: number) => { rec.limit = n; return c; };
     c.offset = (n: number) => { rec.offset = n; return c; };
@@ -28,6 +29,7 @@ const h = vi.hoisted(() => {
   };
 });
 vi.mock('../../db', () => ({ db: h.db }));
+vi.mock('../../db/schema', async (orig) => ({ ...(await orig<Record<string, unknown>>()) }));
 
 import type { AuthContext } from '../../middleware/auth';
 import { EdrReadError, type EdrReadScope } from './read';
@@ -82,11 +84,36 @@ describe('edr action ledger read model', () => {
     expect(rowsCall.offset).toBe(5);
   });
 
+  it('#12789: projects the requester name and only the vendor reason out of payload', async () => {
+    await listEdrActions(scope(), { limit: 10, offset: 0 });
+    const keys = Object.keys(h.calls[0]!.projection!);
+    expect(keys).toEqual(expect.arrayContaining(['requestedByName', 'vendorReason']));
+    expect(keys).not.toContain('payload');
+  });
+
+  it('#12789: DTO carries requester name, vendor reason and awaitingConfirmation (isolate/unisolate submitted only)', () => {
+    const base = {
+      id: 'a', orgId: ORG, provider: 'bitdefender', action: 'isolate', requestedVia: 'ui', requestedBy: 'u',
+      aiSessionId: null, approvalId: null, endpointId: 'e', detectionId: null, breezeDeviceId: 'd',
+      requestedAt: new Date('2026-10-13T00:00:00Z'), submittedAt: null, completedAt: null,
+      requestedByName: 'Dana Tech', vendorReason: null,
+    };
+    expect(toEdrActionDto({ ...base, status: 'submitted', error: null })).toMatchObject({
+      requestedByName: 'Dana Tech', vendorReason: null, awaitingConfirmation: true,
+    });
+    expect(toEdrActionDto({ ...base, action: 'unisolate', status: 'submitted', error: null }).awaitingConfirmation).toBe(true);
+    expect(toEdrActionDto({ ...base, action: 'scan', status: 'submitted', error: null }).awaitingConfirmation).toBe(false);
+    expect(toEdrActionDto({ ...base, status: 'succeeded', error: null }).awaitingConfirmation).toBe(false);
+    expect(toEdrActionDto({ ...base, status: 'failed', error: 'vendor_rejected', vendorReason: 'Endpoint does not exist', requestedByName: null }))
+      .toMatchObject({ vendorReason: 'Endpoint does not exist', requestedByName: null });
+  });
+
   it('DTO: outcomeUnknown only for queued + dispatch_outcome_unknown; dates are ISO', async () => {
     const base = {
       id: 'a', orgId: ORG, provider: 'bitdefender', action: 'isolate', requestedVia: 'ui', requestedBy: 'u',
       aiSessionId: null, approvalId: null, endpointId: 'e', detectionId: null, breezeDeviceId: 'd',
       requestedAt: new Date('2026-10-13T00:00:00Z'), submittedAt: null, completedAt: null,
+      requestedByName: null, vendorReason: null,
     };
     expect(toEdrActionDto({ ...base, status: 'queued', error: 'dispatch_outcome_unknown' })).toMatchObject({
       outcomeUnknown: true, requestedAt: '2026-10-13T00:00:00.000Z',

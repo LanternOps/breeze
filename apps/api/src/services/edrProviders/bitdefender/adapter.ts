@@ -384,7 +384,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         : await client.createScanTask(id, traceId);
     // Only a scan has a pollable task (getScanTasksList). For isolate/restore any
     // accepted answer — boolean or task id ([U]) — means "the vendor took it";
-    // completion is observed via inventory isIsolated and reconcileAction.
+    // completion is observed by the reconciler through a live reconcileAction read (#12789).
     if (req.action !== 'scan' || r.kind === 'accepted') return { status: 'succeeded' };
     return { status: 'submitted', vendorActionId: r.taskId };
   },

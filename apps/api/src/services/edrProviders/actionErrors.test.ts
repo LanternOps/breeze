@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EdrProviderRequestError, type EdrErrorScope } from './types';
-import { classifyVendorActionError, EdrActionError, scrubVendorMessage } from './actionErrors';
+import { classifyVendorActionError, EDR_VENDOR_REASON_MAX, EdrActionError, scrubVendorMessage } from './actionErrors';
 
 const vendorErr = (code: string, o: { reauth?: boolean; scope?: EdrErrorScope; retryAfterMs?: number; message?: string } = {}) =>
   new EdrProviderRequestError(o.message ?? `vendor said ${code}`, {
@@ -88,6 +88,35 @@ describe('classifyVendorActionError — the W03 A5 mapping table', () => {
     expect(r.message).not.toContain('SECRETKEY123');
     expect(r.message.length).toBeLessThanOrEqual(500);
     expect(scrubVendorMessage('abc', ['ab'])).toBe('abc'); // < 4 chars is noise, not a secret
+  });
+
+  it('#12789: vendor text becomes plain text: markup, control and bidi characters removed, whitespace collapsed', () => {
+    const raw = 'Endpoint <b>not</b> found<script>alert(1)</script>\u0000\u202E\n\t  (id   42)';
+    expect(scrubVendorMessage(raw)).toBe('Endpoint not found alert(1) (id 42)');
+    expect(scrubVendorMessage('<<<>>>')).toBe('');
+  });
+
+  it('#12789 review: zero-width and invisible marks are removed, so hidden text cannot split or disguise a word', () => {
+    const raw = 'Iso​lated‌ by‍ ad﻿min؜ now⁠';
+    expect(scrubVendorMessage(raw)).toBe('Isolated by admin now');
+  });
+
+  it('#12789: the stored vendor reason is capped at EDR_VENDOR_REASON_MAX and never carries the key', () => {
+    const r = classifyVendorActionError(
+      vendorErr('not_found', { message: `GravityZone incidents.createIsolateEndpointTask failed: SECRETKEY123 ${'y'.repeat(900)}` }),
+      ['SECRETKEY123'],
+    );
+    expect(r.vendorReason).not.toBeNull();
+    expect(r.vendorReason!.length).toBeLessThanOrEqual(EDR_VENDOR_REASON_MAX);
+    expect(r.vendorReason).not.toContain('SECRETKEY123');
+    expect(r.vendorReason).toContain('createIsolateEndpointTask failed');
+  });
+
+  it('#12789: only a vendor rejection carries a vendor reason; Breeze-worded outcomes do not', () => {
+    expect(classifyVendorActionError(vendorErr('licence')).vendorReason).toBeNull();
+    expect(classifyVendorActionError(vendorErr('outcome_unknown')).vendorReason).toBeNull();
+    expect(classifyVendorActionError(new Error('socket')).vendorReason).toBeNull();
+    expect(classifyVendorActionError(vendorErr('invalid_params', { message: 'Invalid endpoint id' })).vendorReason).toBe('Invalid endpoint id');
   });
 });
 

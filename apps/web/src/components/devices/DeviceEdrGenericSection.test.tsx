@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { HttpError } from '@/lib/httpError';
 
 const fetchEdrEndpoints = vi.fn();
 const fetchEdrDetections = vi.fn();
 const fetchEdrActions = vi.fn().mockResolvedValue([]);
+const requestEdrEndpointAction = vi.fn();
 vi.mock('@/lib/edrProviders', () => ({
   fetchEdrEndpoints: (...a: unknown[]) => fetchEdrEndpoints(...a),
   fetchEdrDetections: (...a: unknown[]) => fetchEdrDetections(...a),
   fetchEdrActions: (...a: unknown[]) => fetchEdrActions(...a),
-  requestEdrEndpointAction: vi.fn(),
+  requestEdrEndpointAction: (...a: unknown[]) => requestEdrEndpointAction(...a),
   edrProviderLabel: (k: string) => (k === 'bitdefender' ? 'Bitdefender GravityZone' : null),
 }));
 
@@ -115,6 +116,22 @@ describe('DeviceEdrGenericSection', () => {
     await waitFor(() => expect(fetchEdrEndpoints).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 0));
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('#12789: after an action is requested the endpoint list is re-read, so the button reflects the in-flight row', async () => {
+    const reason = 'This action is already in progress for this target';
+    fetchEdrEndpoints
+      .mockResolvedValueOnce([endpoint('e1', { actions: [{ action: 'scan', available: true, reason: null }] })])
+      .mockResolvedValueOnce([endpoint('e1', { actions: [{ action: 'scan', available: false, reason }] })]);
+    fetchEdrDetections.mockResolvedValue(page([]));
+    requestEdrEndpointAction.mockResolvedValue({ data: [{ endpointId: 'e1', actionId: 'a1', status: 'queued' }] });
+    render(<DeviceEdrGenericSection deviceId="dev-1" orgId="org-1" />);
+    fireEvent.click(await screen.findByTestId('edr-action-scan'));
+    await waitFor(() => expect(fetchEdrEndpoints).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('edr-action-scan')).toBeDisabled());
+    expect(screen.getByTestId('edr-action-scan')).toHaveAttribute('title', reason);
+    // The card stays mounted while it refreshes (no loading flash).
+    expect(screen.getByTestId('device-edr-endpoint-e1')).toBeInTheDocument();
   });
 
   it('shows a non-alarming error line on a non-403 failure', async () => {

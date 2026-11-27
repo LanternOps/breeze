@@ -162,7 +162,9 @@ export type EdrActionRequest =
  * `succeeded` = the vendor accepted (and, for a synchronous call, applied) it;
  * `submitted` = the vendor queued a task to poll; `failed` = a TERMINAL vendor
  * verdict, only ever returned by `getActionStatus` (a refused `performAction`
- * throws `EdrProviderRequestError` instead).
+ * throws `EdrProviderRequestError` instead). For an isolate / un-isolate the
+ * ledger never takes `succeeded` from here: dispatch records it `submitted`
+ * and the reconciler confirms it from inventory `isolation_state` (#12789).
  */
 export type EdrActionResult =
   | { status: 'succeeded' }
@@ -257,7 +259,11 @@ export interface EdrProviderAdapter {
     tenant: VendorEdrTenantRef,
     vendorActionId: string,
   ): Promise<EdrActionResult | { status: 'submitted' }>;
-  /** W03. Crash/ambiguity reconciliation. Read-only vendor calls ONLY — never re-sends. */
+  /**
+   * W03. Crash/ambiguity reconciliation. Read-only vendor calls ONLY — never re-sends.
+   * Also the only confirmation of an accepted isolate / un-isolate (#12789): a
+   * live read taken after the request. Required for an adapter offering either.
+   */
   reconcileAction?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, req: EdrActionRequest): Promise<EdrReconcileVerdict>;
   /**
    * W03 PR-B. PURE secret check + hint extraction for an inbound vendor push.

@@ -6,6 +6,7 @@ import { friendlyFetchError } from "../../lib/utils";
 import {
   fetchS1Threats,
   fetchHuntressIncidents,
+  fetchS1DeviceActive,
   isolateDevice,
   runS1ThreatAction,
   type S1Threat,
@@ -66,6 +67,10 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
     null | "isolate" | "unisolate"
   >(null);
   const [isolating, setIsolating] = useState(false);
+  // The legacy isolate buttons call the SentinelOne routes: shown only for a
+  // device covered by an ACTIVE SentinelOne integration (#12789).
+  const [s1Active, setS1Active] = useState(false);
+  const [s1StatusUnknown, setS1StatusUnknown] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
 
@@ -109,7 +114,14 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   const doIsolate = async (isolate: boolean) => {
     setIsolating(true);
     try {
-      await isolateDevice(orgId, deviceId, isolate);
+      await isolateDevice(orgId, deviceId, isolate, {
+        success: isolate
+          ? t("deviceEdrPanel.isolationRequested")
+          : t("deviceEdrPanel.isolationRemovalRequested"),
+        error: isolate
+          ? t("deviceEdrPanel.failedToIsolateDevice")
+          : t("deviceEdrPanel.failedToRemoveIsolation"),
+      });
       await load();
     } catch (err) {
       handleActionError(
@@ -160,6 +172,27 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    setS1Active(false);
+    setS1StatusUnknown(false);
+    fetchS1DeviceActive(orgId, deviceId)
+      .then((active) => {
+        if (!cancelled) setS1Active(active);
+      })
+      .catch((err) => {
+        // Fail closed: no SentinelOne buttons when we cannot tell, but say so.
+        if (!cancelled) {
+          setS1Active(false);
+          setS1StatusUnknown(true);
+        }
+        console.error("[DeviceEdrPanel] SentinelOne device status failed:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, deviceId]);
+
+  useEffect(() => {
+    let cancelled = false;
     setCoverageRows([]);
     void loadCoverage(() => cancelled);
     return () => {
@@ -177,22 +210,34 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
         <h3 className="text-lg font-semibold">
           {t("deviceEdrPanel.endpointProtectionEdr")}
         </h3>
-        <button
-          type="button"
-          data-testid="edr-isolate-btn"
-          onClick={() => setConfirmAction("isolate")}
-          className="ml-auto inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
-        >
-          {t("deviceEdrPanel.isolateDevice")}{" "}
-        </button>
-        <button
-          type="button"
-          data-testid="edr-unisolate-btn"
-          onClick={() => setConfirmAction("unisolate")}
-          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
-        >
-          {t("deviceEdrPanel.removeIsolation")}{" "}
-        </button>
+        {s1Active && (
+          <>
+            <button
+              type="button"
+              data-testid="edr-isolate-btn"
+              onClick={() => setConfirmAction("isolate")}
+              className="ml-auto inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            >
+              {t("deviceEdrPanel.isolateDevice")}{" "}
+            </button>
+            <button
+              type="button"
+              data-testid="edr-unisolate-btn"
+              onClick={() => setConfirmAction("unisolate")}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            >
+              {t("deviceEdrPanel.removeIsolation")}{" "}
+            </button>
+          </>
+        )}
+        {s1StatusUnknown && (
+          <span
+            className="ml-auto text-xs text-muted-foreground"
+            data-testid="edr-s1-status-unknown"
+          >
+            {t("deviceEdrPanel.s1StatusUnknown")}
+          </span>
+        )}
       </div>
 
       {error && (
@@ -412,7 +457,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
 
       <DeviceEdrGenericSection deviceId={deviceId} orgId={orgId} timezone={timezone} />
 
-      {confirmAction !== null && (
+      {confirmAction !== null && s1Active && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
           role="dialog"

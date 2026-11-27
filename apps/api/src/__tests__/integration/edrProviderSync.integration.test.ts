@@ -26,6 +26,10 @@ const gz = vi.hoisted(() => ({
   /** vendor calls made while a DB access context was held (must stay empty). */
   heldCalls: [] as string[],
   incidentWindows: [] as Array<{ from: Date; to: Date }>,
+  /** getEndpointDetails answers, by vendor endpoint id (the reconciler's live read, #12789). */
+  endpointDetails: new Map<string, Record<string, unknown>>(),
+  /** Runs once inside getInventoryAll: after the vendor read, before the sync writes. */
+  inventoryHook: null as null | (() => Promise<void>),
 }));
 vi.mock('../../services/edrProviders/bitdefender/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/edrProviders/bitdefender/client')>();
@@ -45,13 +49,15 @@ vi.mock('../../services/edrProviders/bitdefender/client', async (importOriginal)
       this.note(`getInventoryAll:${companyId}`);
       const err = gz.inventoryError.get(companyId);
       if (err) throw err;
-      return gz.inventory.get(companyId) ?? [];
+      const items = gz.inventory.get(companyId) ?? [];
+      if (gz.inventoryHook) { const h = gz.inventoryHook; gz.inventoryHook = null; await h(); }
+      return items;
     }
     async getInventoryTotal(companyId: string) {
       this.note(`getInventoryTotal:${companyId}`);
       return (gz.inventory.get(companyId) ?? []).length;
     }
-    async getEndpointDetails() { this.note('getEndpointDetails'); return {}; }
+    async getEndpointDetails(id: string) { this.note('getEndpointDetails'); return gz.endpointDetails.get(id) ?? {}; }
     async getIncidentsChangedBetween(from: Date, to: Date) {
       this.note('getIncidentsChangedBetween');
       gz.incidentWindows.push({ from, to });
@@ -104,6 +110,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { devices, edrActions, edrConnections, edrDetections, edrEndpoints, edrTenants } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { __testOnly, syncEdrDetections, syncEdrInventory } from '../../jobs/edrProviderSync';
+import { pollEdrActionStatus } from '../../services/edrProviders/actionStatus';
 import { recordEdrHint } from '../../services/edrProviders/hints';
 import { encryptEdrSecret } from '../../services/edrProviders/credentials';
 import { matchEdrEndpoints } from '../../services/edrProviders/deviceMatching';
@@ -324,6 +331,8 @@ function resetVendor() {
   gz.calls = [];
   gz.heldCalls = [];
   gz.incidentWindows = [];
+  gz.endpointDetails = new Map();
+  gz.inventoryHook = null;
 }
 
 /** partner + orgA(+site+device) + orgB(+site) + a real-credentialled GravityZone connection. */
@@ -424,6 +433,50 @@ describe('edr sync — real job functions against Postgres', () => {
       // the root partner company is itself a tenant (commit 2785805fae), unmapped here
       last_sync_tenants: 3, last_sync_unmapped_tenants: 2,
     });
+  });
+
+  runDb('#12789: a sync that read the vendor BEFORE an isolate and wrote AFTER it does not confirm it; a live read after the request does', async () => {
+    const fx = await seedJob();
+    const co = `co-iso-${sfx()}`;
+    const tenantId = await fx.addTenant(co, fx.orgA.id);
+    const vep = `ep-iso-${sfx()}`;
+    const endpointId = await fx.addEndpoint(tenantId, fx.orgA.id, vep, 'WS-ISO');
+    gz.companies = [{ id: co, name: `Iso ${sfx()}` }];
+    // What the sync's vendor read sees: the endpoint isolated (state from before the request).
+    gz.inventory.set(co, [gzEndpoint(vep, co, 'WS-ISO', 'ws-iso.corp.example', { isIsolated: true })]);
+    let actionId = '';
+    // The isolate is requested and accepted AFTER that read, BEFORE the sync writes.
+    gz.inventoryHook = async () => {
+      const [row] = await withSystemDbAccessContext(() => db.insert(edrActions).values({
+        connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, endpointId,
+        provider: 'bitdefender', action: 'isolate', status: 'submitted', requestedVia: 'ui', requestedBy: fx.user.id,
+        submittedAt: new Date(), payload: { target: { kind: 'endpoint', vendorEndpointId: vep } },
+      } as typeof edrActions.$inferInsert).returning({ id: edrActions.id }));
+      actionId = row!.id;
+    };
+
+    await syncEdrInventory(fx.connectionId);
+
+    // Premise: the sync's write is stamped after the request and recorded the endpoint isolated.
+    const [action] = await adminRows<{ status: string; submitted_at: Date }>(sql`
+      SELECT status, submitted_at FROM edr_actions WHERE id = ${actionId}::uuid`);
+    const tenant = await tenantRow(fx.connectionId, co);
+    expect(new Date(tenant.last_inventory_sync_at as string).getTime()).toBeGreaterThan(new Date(action!.submitted_at).getTime());
+    const [endpoint] = await adminRows<{ isolation_state: string }>(sql`
+      SELECT isolation_state FROM edr_endpoints WHERE id = ${endpointId}::uuid`);
+    expect(endpoint!.isolation_state).toBe('isolated');
+
+    // The live read (after the request) does not show the endpoint isolated: not confirmed.
+    gz.endpointDetails.set(vep, { isIsolated: false });
+    expect(await pollEdrActionStatus(fx.connectionId, new Date())).toMatchObject({ checked: 1, settled: 0 });
+    expect((await adminRows<{ status: string }>(sql`SELECT status FROM edr_actions WHERE id = ${actionId}::uuid`))[0]!.status)
+      .toBe('submitted');
+
+    // A live read showing it isolated confirms it.
+    gz.endpointDetails.set(vep, { isIsolated: true });
+    expect(await pollEdrActionStatus(fx.connectionId, new Date())).toMatchObject({ checked: 1, settled: 1 });
+    expect((await adminRows<{ status: string }>(sql`SELECT status FROM edr_actions WHERE id = ${actionId}::uuid`))[0]!.status)
+      .toBe('succeeded');
   });
 
   runDb('a company whose fetch fails keeps its existing endpoints; the connection stays connected', async () => {

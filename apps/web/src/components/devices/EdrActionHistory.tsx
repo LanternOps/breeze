@@ -9,6 +9,22 @@ const LIMIT = 10;
 
 const isOpen = (r: EdrActionDto) => r.status === "queued" || r.status === "submitted";
 
+/** Ledger error codes with a translated failure reason; anything else reads as the generic one. */
+const FAILURE_REASONS: ReadonlySet<string> = new Set([
+  "vendor_rejected",
+  "licence",
+  "api_not_enabled",
+  "rate_limited",
+  "vendor_auth",
+  "audit_unavailable",
+  "outcome_unknown_reissue_manually",
+  "not_sent_or_rejected",
+  "detached_unsettled",
+  "vendor_status_timeout",
+  "vendor_task_failed",
+  "isolation_unconfirmed",
+]);
+
 type Props = { deviceId: string; /** Bump to refetch (e.g. after an action was requested). */ refreshKey?: number };
 
 export default function EdrActionHistory({ deviceId, refreshKey = 0 }: Props) {
@@ -62,7 +78,9 @@ export default function EdrActionHistory({ deviceId, refreshKey = 0 }: Props) {
             <span data-testid={`edr-action-status-${r.id}`} className="text-muted-foreground">
               {r.outcomeUnknown
                 ? t("deviceEdrGenericSection.history.checking")
-                : t(/* i18n-dynamic */ `deviceEdrGenericSection.history.status.${r.status}`)}
+                : r.awaitingConfirmation
+                  ? t("deviceEdrGenericSection.history.awaitingConfirmation")
+                  : t(/* i18n-dynamic */ `deviceEdrGenericSection.history.status.${r.status}`)}
             </span>
             {r.requestedVia === "ai" && (
               <span
@@ -72,10 +90,26 @@ export default function EdrActionHistory({ deviceId, refreshKey = 0 }: Props) {
                 {t("deviceEdrGenericSection.history.aiBadge")}
               </span>
             )}
-            <span className="text-muted-foreground" title={r.requestedBy ?? undefined}>
-              {r.requestedBy ? r.requestedBy.slice(0, 8) : "—"}
+            <span data-testid={`edr-action-requester-${r.id}`} className="text-muted-foreground">
+              {r.requestedByName ?? t("deviceEdrGenericSection.history.unknownRequester")}
             </span>
             <span className="ml-auto text-muted-foreground">{formatRelativeTime(r.requestedAt)}</span>
+            {r.status === "failed" && (
+              <p data-testid={`edr-action-failure-${r.id}`} className="basis-full text-muted-foreground">
+                {r.error && FAILURE_REASONS.has(r.error)
+                  ? t(/* i18n-dynamic */ `deviceEdrGenericSection.history.failure.${r.error}`)
+                  : t("deviceEdrGenericSection.history.failure.unknown")}
+                {r.vendorReason && (
+                  <>
+                    {": "}
+                    {/* Vendor-supplied text: rendered as text, never as markup. */}
+                    <span data-testid={`edr-action-vendor-reason-${r.id}`} className="break-words">
+                      {r.vendorReason}
+                    </span>
+                  </>
+                )}
+              </p>
+            )}
           </li>
         ))}
       </ul>

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { isEdrStateConfirmedAction } from '@breeze/shared';
 import { EDR_PROVIDER_KEYS, getEdrProvider, isEdrProviderKey, listEdrProviders } from './registry';
 import { EDR_INSTALLER_PROVIDER_KEYS, EDR_PROVIDER_LABELS } from './providerKeys';
 
@@ -20,6 +21,11 @@ describe('edr provider registry', () => {
       expect((a.installerHostAllowlist?.length ?? 0) > 0).toBe(a.capabilities.installer !== 'none');
       // A5: the re-read status model needs its read hook, and only that model has one.
       expect(typeof a.rereadDetectionStatus === 'function').toBe(a.capabilities.detectionStatusModel === 'reread_open_on_inventory');
+      // #12789: an accepted isolate / un-isolate is confirmed only by a live
+      // read of the endpoint (reconcileAction), never by stored inventory.
+      if (a.capabilities.actions.some((x) => isEdrStateConfirmedAction(x))) {
+        expect(typeof a.reconcileAction).toBe('function');
+      }
     }
   });
 

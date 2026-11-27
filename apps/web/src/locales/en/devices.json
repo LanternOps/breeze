@@ -1011,6 +1011,7 @@
     "endpointProtectionEdr": "Endpoint Protection (EDR)",
     "isolateDevice": "Isolate device",
     "removeIsolation": "Remove isolation",
+    "s1StatusUnknown": "Could not check SentinelOne isolation for this device",
     "sentineloneThreats": "SentinelOne Threats",
     "loading": "Loading…",
     "noSentineloneThreatsForThisDevice": "No SentinelOne threats for this device.",
@@ -1028,7 +1029,9 @@
     "cancel": "Cancel",
     "isolate": "Isolate",
     "managedSecurityAgents": "Managed security agents",
-    "since": "Since {{date}}"
+    "since": "Since {{date}}",
+    "isolationRequested": "Isolation requested",
+    "isolationRemovalRequested": "Isolation removal requested"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Loading effective configuration...",
@@ -4550,6 +4553,23 @@
         "submitted": "In progress",
         "succeeded": "Succeeded",
         "failed": "Failed"
+      },
+      "awaitingConfirmation": "Accepted, waiting for the device to confirm",
+      "unknownRequester": "Unknown user",
+      "failure": {
+        "vendor_rejected": "Rejected by the vendor",
+        "licence": "The company's vendor licence does not include this action",
+        "api_not_enabled": "The vendor API key lacks the API this action needs",
+        "rate_limited": "The vendor request limit was reached; nothing was sent",
+        "vendor_auth": "The vendor rejected the API key",
+        "audit_unavailable": "Not sent: the audit log was unavailable",
+        "outcome_unknown_reissue_manually": "The outcome was never confirmed; check the vendor console before trying again",
+        "not_sent_or_rejected": "The vendor shows it was not applied",
+        "detached_unsettled": "The company mapping changed before this finished",
+        "vendor_status_timeout": "The vendor task did not finish within 24 hours",
+        "vendor_task_failed": "The vendor reported that the task failed",
+        "isolation_unconfirmed": "Accepted, but the device did not confirm it within 24 hours. The vendor's task may still apply when the device reconnects; check the vendor console",
+        "unknown": "The action did not complete"
       }
     }
   },

@@ -143,6 +143,7 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/securityIntegrationDisconnect', () => ({
   // Default: every integration a listed row came from is still connected.
   activeIntegrationIds: vi.fn(async (_vendor: string, ids: string[]) => new Set(ids)),
+  activeIntegrationIdsOfReadableAgents: vi.fn(async () => ({ sentinelone: [] as string[] })),
   disconnectS1Integration: vi.fn(),
   findReconnectableS1Integration: vi.fn(async () => null),
   clearS1SiteRegistrationTokens: vi.fn(),
@@ -178,6 +179,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import {
   activeIntegrationIds,
+  activeIntegrationIdsOfReadableAgents,
   disconnectS1Integration,
   findReconnectableS1Integration,
   clearS1SiteRegistrationTokens,
@@ -1418,6 +1420,56 @@ describe('sentinel one routes', () => {
   });
 
   // ───────────────────── B4: /isolate ─────────────────────
+  describe('GET /device-status (#12789: legacy isolate buttons only for an active SentinelOne device)', () => {
+    const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
+    const activeIntegration = {
+      id: INTEGRATION_ID, orgId: ORG_ID, name: 'S1', lastSyncAt: null, lastSyncStatus: null, lastSyncError: null,
+    } as any;
+
+    it('an org with no active SentinelOne integration → active:false, no agent read', async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce(null);
+      const res = await app.request(`/s1/device-status?deviceId=${DEVICE_ID}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: { deviceId: DEVICE_ID, active: false } });
+      expect(activeIntegrationIdsOfReadableAgents).not.toHaveBeenCalled();
+    });
+
+    it("a device with an agent row of the org's active integration → active:true", async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce(activeIntegration);
+      vi.mocked(activeIntegrationIdsOfReadableAgents).mockResolvedValueOnce({ sentinelone: [INTEGRATION_ID] } as any);
+      const res = await app.request(`/s1/device-status?deviceId=${DEVICE_ID}`);
+      expect(await res.json()).toEqual({ data: { deviceId: DEVICE_ID, active: true } });
+      expect(getActiveS1IntegrationForOrg).toHaveBeenCalledWith(ORG_ID);
+      // The agent read is scoped to this org AND device, in the caller's context.
+      const where = vi.mocked(activeIntegrationIdsOfReadableAgents).mock.calls[0]![0] as Record<string, unknown>;
+      expect(Object.keys(where)).toEqual(['sentinelone']);
+      expect(collectSqlValues(where.sentinelone)).toEqual(expect.arrayContaining([ORG_ID, DEVICE_ID]));
+    });
+
+    it('a device covered only by another vendor (no S1 agent row) → active:false', async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce(activeIntegration);
+      vi.mocked(activeIntegrationIdsOfReadableAgents).mockResolvedValueOnce({ sentinelone: [] } as any);
+      const res = await app.request(`/s1/device-status?deviceId=${DEVICE_ID}`);
+      expect(await res.json()).toEqual({ data: { deviceId: DEVICE_ID, active: false } });
+    });
+
+    it("an agent row from a different active integration than the org's → active:false", async () => {
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce(activeIntegration);
+      vi.mocked(activeIntegrationIdsOfReadableAgents).mockResolvedValueOnce({ sentinelone: [INTEGRATION_ID_B] } as any);
+      const res = await app.request(`/s1/device-status?deviceId=${DEVICE_ID}`);
+      expect(await res.json()).toEqual({ data: { deviceId: DEVICE_ID, active: false } });
+    });
+
+    it('needs devices.read; another org is refused; a deviceId is required', async () => {
+      permissionGate.deny = true;
+      expect((await app.request(`/s1/device-status?deviceId=${DEVICE_ID}`)).status).toBe(403);
+      permissionGate.deny = false;
+      expect((await app.request(`/s1/device-status?deviceId=${DEVICE_ID}&orgId=${ORG_ID_B}`)).status).toBe(403);
+      expect((await app.request('/s1/device-status')).status).toBe(400);
+      expect(getActiveS1IntegrationForOrg).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /isolate', () => {
     it('rejects isolate action when MFA check fails', async () => {
       mfaGate.deny = true;

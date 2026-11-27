@@ -247,6 +247,20 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
           action: action as (typeof EDR_AI_ENDPOINT_ACTIONS)[number],
         });
         // Breeze-generated fields only; vendor text never reaches the model.
+        if (outcome.awaitingConfirmation) {
+          // #12789: the vendor accepted an isolate / release, but the endpoint has
+          // not confirmed it. Neither a success nor a failure, so no `success` key:
+          // a model reading `success: false` may tell a person it failed.
+          return JSON.stringify({
+            state: 'awaiting_confirmation',
+            accepted: true,
+            actionId: outcome.actionId,
+            status: outcome.status,
+            outcomeUnknown: false,
+            awaitingConfirmation: true,
+            note: 'The vendor accepted the request, but the endpoint has not confirmed it yet (it may be offline and apply it when it reconnects). Tell the person it was accepted and is waiting for the endpoint; do not report the device as isolated or released until Breeze confirms it. Do not retry.',
+          });
+        }
         return JSON.stringify({
           success: outcome.status !== 'failed' && !outcome.outcomeUnknown,
           actionId: outcome.actionId,

@@ -1011,6 +1011,7 @@
     "endpointProtectionEdr": "Uç Nokta Koruması (EDR)",
     "isolateDevice": "Cihazı izole edin",
     "removeIsolation": "İzolasyonu kaldır",
+    "s1StatusUnknown": "Bu cihaz için SentinelOne izolasyonu kontrol edilemedi",
     "sentineloneThreats": "SentinelOne Tehditleri",
     "loading": "Yükleniyor…",
     "noSentineloneThreatsForThisDevice": "Bu cihaz için SentinelOne tehdidi yok.",
@@ -1028,7 +1029,9 @@
     "cancel": "İptal",
     "isolate": "İzole",
     "managedSecurityAgents": "Yönetilen güvenlik aracıları",
-    "since": "{{date}} tarihinden beri"
+    "since": "{{date}} tarihinden beri",
+    "isolationRequested": "Yalıtım istendi",
+    "isolationRemovalRequested": "Yalıtımın kaldırılması istendi"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Etkili yapılandırma yükleniyor...",
@@ -4550,6 +4553,23 @@
         "submitted": "Devam ediyor",
         "succeeded": "Başarılı",
         "failed": "Başarısız"
+      },
+      "awaitingConfirmation": "Kabul edildi, cihazın onaylaması bekleniyor",
+      "unknownRequester": "Bilinmeyen kullanıcı",
+      "failure": {
+        "vendor_rejected": "Sağlayıcı tarafından reddedildi",
+        "licence": "Şirketin sağlayıcı lisansı bu eylemi kapsamıyor",
+        "api_not_enabled": "Sağlayıcı API anahtarında bu eylemin gerektirdiği API yok",
+        "rate_limited": "Sağlayıcının istek sınırına ulaşıldı; hiçbir şey gönderilmedi",
+        "vendor_auth": "Sağlayıcı API anahtarını reddetti",
+        "audit_unavailable": "Gönderilmedi: denetim günlüğü kullanılamıyordu",
+        "outcome_unknown_reissue_manually": "Sonuç hiç onaylanmadı; yeniden denemeden önce sağlayıcı konsolunu kontrol edin",
+        "not_sent_or_rejected": "Sağlayıcıya göre uygulanmadı",
+        "detached_unsettled": "Şirket eşlemesi bu işlem bitmeden değişti",
+        "vendor_status_timeout": "Sağlayıcı görevi 24 saat içinde tamamlanmadı",
+        "vendor_task_failed": "Sağlayıcı görevin başarısız olduğunu bildirdi",
+        "isolation_unconfirmed": "Kabul edildi, ancak cihaz 24 saat içinde onaylamadı. Cihaz yeniden bağlandığında sağlayıcının görevi yine de uygulanabilir; sağlayıcı konsolunu kontrol edin",
+        "unknown": "Eylem tamamlanmadı"
       }
     }
   },

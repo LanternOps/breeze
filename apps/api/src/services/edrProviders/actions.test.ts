@@ -223,7 +223,7 @@ describe('dispatchEdrAction — the single action door', () => {
   it('happy path: one row, audit, one vendor call outside any context, CAS outcome write', async () => {
     arrange();
     const out = await dispatchEdrAction(actor({ reason: 'contain' }), ISOLATE);
-    expect(out).toEqual({ actionId: 'act-1', status: 'succeeded', outcomeUnknown: false, error: null, message: null, httpStatus: 200 });
+    expect(out).toEqual({ actionId: 'act-1', status: 'submitted', outcomeUnknown: false, awaitingConfirmation: true, error: null, message: null, httpStatus: 200 });
     expect(h.performAction).toHaveBeenCalledTimes(1);
     expect(h.performAction.mock.calls[0]!.slice(1)).toEqual([
       { vendorTenantId: 'company-1', apiHost: null },
@@ -238,12 +238,13 @@ describe('dispatchEdrAction — the single action door', () => {
     });
     const order = h.state.log.filter((l) => l.startsWith('insert') || l.startsWith('update'));
     expect(order).toEqual(['insert:edr_actions:caller', 'update:edr_actions:system']);
-    expect(h.state.updates[0]!.set).toMatchObject({ status: 'succeeded' });
+    // #12789: an accepted isolate is not "done" until inventory confirms it.
+    expect(h.state.updates[0]!.set).toMatchObject({ status: 'submitted' });
     expect(JSON.stringify(h.state.updates[0]!.where)).toContain('"queued"'); // CAS on status
     expect(h.createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       action: 'edr.action.requested', actorType: 'user', actorId: USER, resourceId: 'act-1', orgId: ORG_A,
     }));
-    expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'edr.action.succeeded' }));
+    expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'edr.action.submitted' }));
   });
 
   it('called while a DB context is held → throws before any read or vendor call', async () => {
@@ -451,7 +452,7 @@ describe('dispatchEdrAction — the single action door', () => {
       return { status: 'succeeded' };
     });
     const out = await dispatchEdrAction(actor(), ISOLATE);
-    expect(out).toMatchObject({ actionId: 'act-1', status: 'succeeded', httpStatus: 200 });
+    expect(out).toMatchObject({ actionId: 'act-1', status: 'submitted', awaitingConfirmation: true, httpStatus: 200 });
     expect(h.performAction).toHaveBeenCalledTimes(1);
     expect(err).toHaveBeenCalledWith(expect.stringContaining('act-1'), expect.anything());
     err.mockRestore();
@@ -515,6 +516,75 @@ describe('dispatchEdrAction — the single action door', () => {
     expect(out.message).not.toContain('k'.repeat(20));
   });
 
+  it('#12789 item 2: a vendor rejection stores the sanitised vendor reason on the row and in the failed audit', async () => {
+    arrange();
+    h.performAction.mockRejectedValue(new EdrProviderRequestError(
+      `GravityZone incidents.createIsolateEndpointTask failed: Endpoint <b>does not exist</b> ${'k'.repeat(20)}`,
+      { code: 'not_found', reauth: false, scope: 'tenant' },
+    ));
+    const out = await dispatchEdrAction(actor(), ISOLATE);
+    expect(out).toMatchObject({ status: 'failed', error: 'vendor_rejected', httpStatus: 502 });
+    const rowWrite = h.state.updates.find((u) => u.table === 'edr_actions')!;
+    expect(rowWrite.set).toMatchObject({ status: 'failed', error: 'vendor_rejected' });
+    const stored = JSON.stringify(rowWrite.set.payload);
+    expect(stored).toContain('Endpoint does not exist');
+    expect(stored).not.toContain('<b>');
+    expect(stored).not.toContain('k'.repeat(20));
+    const audit = (h.createAuditLogAsync.mock.calls.at(-1) as unknown[])[0] as { action: string; details: Record<string, unknown> };
+    expect(audit.action).toBe('edr.action.failed');
+    // The reason is on the ledger row only: audit details are readable by AI tools.
+    expect(audit.details).not.toHaveProperty('vendorReason');
+    expect(JSON.stringify(audit.details)).not.toContain('does not exist');
+  });
+
+  it('#12789 item 2: a Breeze-worded failure (licence) stores no vendor reason', async () => {
+    arrange();
+    h.performAction.mockRejectedValue(new EdrProviderRequestError('no licence', { code: 'licence', reauth: false, scope: 'operation' }));
+    await dispatchEdrAction(actor(), ISOLATE);
+    expect(h.state.updates.find((u) => u.table === 'edr_actions')!.set).not.toHaveProperty('payload');
+    const audit = (h.createAuditLogAsync.mock.calls.at(-1) as unknown[])[0] as { details: Record<string, unknown> };
+    expect(audit.details.vendorReason).toBeUndefined();
+  });
+
+  it.each(['isolate', 'unisolate'] as const)(
+    '#12789 item 5: a vendor-accepted %s is recorded submitted (awaiting inventory confirmation), never succeeded',
+    async (action) => {
+      arrange({ resolved: resolvedEndpoint({ endpoint: { ...resolvedEndpoint().endpoint, isolationState: action === 'isolate' ? 'not_isolated' : 'isolated' } }) });
+      h.performAction.mockResolvedValue({ status: 'succeeded' });
+      const out = await dispatchEdrAction(actor(), { kind: 'endpoint', endpointId: 'ep-1', action });
+      expect(out).toMatchObject({ status: 'submitted', awaitingConfirmation: true, outcomeUnknown: false, httpStatus: 200 });
+      const set = h.state.updates.find((u) => u.table === 'edr_actions')!.set;
+      expect(set).toMatchObject({ status: 'submitted' });
+      expect(set).not.toHaveProperty('completedAt');
+      expect(set).not.toHaveProperty('vendorActionId');
+      expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'edr.action.submitted' }));
+    },
+  );
+
+  it('#12789 item 5: a vendor task id on an isolate is kept, and the row still awaits inventory confirmation', async () => {
+    arrange();
+    h.performAction.mockResolvedValue({ status: 'submitted', vendorActionId: 'task-7' });
+    const out = await dispatchEdrAction(actor(), ISOLATE);
+    expect(out).toMatchObject({ status: 'submitted', awaitingConfirmation: true });
+    expect(h.state.updates.find((u) => u.table === 'edr_actions')!.set).toMatchObject({ status: 'submitted', vendorActionId: 'task-7' });
+  });
+
+  it('#12789 item 5: a scan the vendor finished synchronously is still succeeded (nothing to confirm)', async () => {
+    arrange();
+    h.performAction.mockResolvedValue({ status: 'succeeded' });
+    const out = await dispatchEdrAction(actor(), { kind: 'endpoint', endpointId: 'ep-1', action: 'scan' });
+    expect(out).toMatchObject({ status: 'succeeded', awaitingConfirmation: false });
+  });
+
+  it('#12789 item 6: a tenant the vendor no longer lists → tenant_missing 409, no row, no vendor call', async () => {
+    arrange({ tenant: tenantRow({ vendorMissingSince: new Date('2026-11-01T00:00:00Z') }) });
+    const err = await refusal(dispatchEdrAction(actor(), ISOLATE));
+    expect(err).toMatchObject({ code: 'tenant_missing', httpStatus: 409 });
+    expect(err.message).toMatch(/no longer lists this company/);
+    expect(h.state.inserted).toHaveLength(0);
+    expect(h.performAction).not.toHaveBeenCalled();
+  });
+
   it('credential decrypt failure → connection_unavailable before any row', async () => {
     arrange();
     h.decryptEdrSecret.mockImplementation(() => { throw new Error('bad aad'); });
@@ -537,7 +607,7 @@ describe('dispatchEdrAction — the single action door', () => {
 
 describe('describeEndpointActions', () => {
   const endpoint = { vendorEndpointId: 'v', osPlatform: 'windows' as const, isolationState: 'not_isolated' as const, online: true, breezeDeviceId: 'dev-1' };
-  const tenant = { unsupportedActions: [] as never[], unsupportedActionsAt: null };
+  const tenant = { unsupportedActions: [] as never[], unsupportedActionsAt: null, vendorMissingSince: null as Date | null };
   const caller = { canExecute: true, mfaSatisfied: true };
 
   it('PR-B carry-forward: a caller without devices.execute sees EVERY action unavailable, with a stated reason', () => {
@@ -572,6 +642,48 @@ describe('describeEndpointActions', () => {
     expect(rows.find((r) => r.action === 'isolate')).toEqual({ action: 'isolate', available: true, reason: null });
     expect(rows.find((r) => r.action === 'update_agent')).toMatchObject({ available: false, reason: 'Not supported by Bitdefender GravityZone' });
     expect(h.db.select).not.toHaveBeenCalled();
+  });
+
+  it('#12789 item 6: a tenant the vendor no longer lists offers no action, with the reason', () => {
+    const rows = describeEndpointActions(endpoint, { ...tenant, vendorMissingSince: new Date('2026-11-01T00:00:00Z') }, connectionRow() as never, { caller });
+    for (const r of rows) expect(r).toMatchObject({ available: false, reason: expect.stringMatching(/no longer lists this company/) });
+  });
+
+  describe('#12789 item 4: in-flight and outcome-unknown ledger rows', () => {
+    const NOW = new Date('2026-11-27T12:00:00Z');
+    const at = (msAgo: number) => new Date(NOW.getTime() - msAgo);
+    const describeWith = (ledger: Parameters<typeof describeEndpointActions>[3]['ledger']) =>
+      describeEndpointActions(endpoint, tenant, connectionRow() as never, { caller, now: NOW, ledger });
+
+    it('an outcome-unknown isolate is not offered, with the reason; other actions are unaffected', () => {
+      const rows = describeWith([{ action: 'isolate', status: 'queued', error: 'dispatch_outcome_unknown', requestedAt: at(5 * 60_000) }]);
+      expect(rows.find((r) => r.action === 'isolate')).toMatchObject({ available: false, reason: expect.stringMatching(/outcome of the last request is not known yet/) });
+      expect(rows.find((r) => r.action === 'scan')).toMatchObject({ available: true });
+    });
+
+    it('a queued or submitted row is in progress; an isolate awaiting confirmation says so', () => {
+      expect(describeWith([{ action: 'scan', status: 'queued', error: null, requestedAt: at(1000) }])
+        .find((r) => r.action === 'scan')).toMatchObject({ available: false, reason: 'This action is already in progress for this target' });
+      expect(describeWith([{ action: 'isolate', status: 'submitted', error: null, requestedAt: at(10 * 60_000) }])
+        .find((r) => r.action === 'isolate')).toMatchObject({ available: false, reason: expect.stringMatching(/waiting for the endpoint to confirm/) });
+    });
+
+    it('a success inside the cooldown is not offered; an older one, or a failure, is', () => {
+      expect(describeWith([{ action: 'scan', status: 'succeeded', error: null, requestedAt: at(30_000) }])
+        .find((r) => r.action === 'scan')).toMatchObject({ available: false, reason: expect.stringMatching(/less than a minute ago/) });
+      expect(describeWith([{ action: 'scan', status: 'succeeded', error: null, requestedAt: at(5 * 60_000) }])
+        .find((r) => r.action === 'scan')).toMatchObject({ available: true });
+      expect(describeWith([{ action: 'isolate', status: 'failed', error: 'vendor_rejected', requestedAt: at(1000) }])
+        .find((r) => r.action === 'isolate')).toMatchObject({ available: true });
+    });
+
+    it('the permission reason still wins over an in-flight row', () => {
+      const rows = describeEndpointActions(endpoint, tenant, connectionRow() as never, {
+        caller: { canExecute: false, mfaSatisfied: true }, now: NOW,
+        ledger: [{ action: 'isolate', status: 'queued', error: null, requestedAt: at(1000) }],
+      });
+      expect(rows.find((r) => r.action === 'isolate')!.reason).toMatch(/Execute permission/);
+    });
   });
 
   it('kill switch, connection switch and site restriction each show a reason', () => {
