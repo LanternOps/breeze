@@ -40,6 +40,26 @@ type indexingServer struct {
 	firstEventStarted   chan struct{}
 	firstEventCancelled chan struct{}
 	once                [4]sync.Once
+
+	// Set by holdFirstCompletion: the first run-1 completion report blocks
+	// until releaseFirstCompletion, so a test can land a poll while a
+	// cancelled crawl is still draining.
+	firstCompletionStarted chan struct{}
+	firstCompletionHeld    chan struct{}
+	completionOnce         sync.Once
+	releaseOnce            sync.Once
+}
+
+// holdFirstCompletion must be called before the loop starts.
+func (s *indexingServer) holdFirstCompletion() {
+	s.firstCompletionStarted = make(chan struct{})
+	s.firstCompletionHeld = make(chan struct{})
+}
+
+func (s *indexingServer) releaseFirstCompletion() {
+	if s.firstCompletionHeld != nil {
+		s.releaseOnce.Do(func() { close(s.firstCompletionHeld) })
+	}
 }
 
 func newIndexingServer(t *testing.T) *indexingServer {
@@ -81,6 +101,12 @@ func (s *indexingServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.once[0].Do(func() { close(s.firstBatchStarted) })
 		<-r.Context().Done()
 		s.once[1].Do(func() { close(s.firstBatchCancelled) })
+	case r.Method == http.MethodPost && r.URL.Path == base+"/runs/run-1/complete":
+		if s.firstCompletionHeld != nil {
+			s.completionOnce.Do(func() { close(s.firstCompletionStarted) })
+			<-s.firstCompletionHeld
+		}
+		w.WriteHeader(http.StatusAccepted)
 	case r.Method == http.MethodPost && r.URL.Path == base+"/sources/source-a/events":
 		if s.eventPosts.Add(1) == 1 {
 			s.once[2].Do(func() { close(s.firstEventStarted) })
@@ -105,8 +131,13 @@ type indexingLoop struct {
 
 func startIndexingLoop(t *testing.T, log *slog.Logger) *indexingLoop {
 	t.Helper()
+	return startIndexingLoopWithServer(t, log, newIndexingServer(t))
+}
+
+func startIndexingLoopWithServer(t *testing.T, log *slog.Logger, server *indexingServer) *indexingLoop {
+	t.Helper()
 	l := &indexingLoop{
-		server:  newIndexingServer(t),
+		server:  server,
 		clock:   &clockedLoop{},
 		audit:   &recordingAuditLogger{},
 		profile: makeLoopTestProfile(t),
@@ -130,6 +161,8 @@ func startIndexingLoop(t *testing.T, log *slog.Logger) *indexingLoop {
 		WatchDebounce: time.Millisecond,
 	})
 	t.Cleanup(func() {
+		// A held completion report would keep shutdown waiting on the crawl.
+		l.server.releaseFirstCompletion()
 		cancel()
 		waitLoopSignal(t, done, "loop shutdown")
 	})
@@ -276,6 +309,32 @@ func TestStartLoopRestartsIndexingAfterSustainedUnavailable(t *testing.T) {
 
 	// Normal cadence: the server's 60 s poll interval (±10%), not a back-off.
 	l.fetchAt(t, recoveredAt+67*time.Second, 5)
+}
+
+// The stopped crawl is cancelled, but it still reports its failed run before it
+// returns. A recovery poll that lands in that window must still queue the
+// crawl, so it starts as soon as the old one has drained rather than one poll
+// interval later.
+func TestStartLoopRecoveryWhileTheStoppedCrawlDrainsRestartsIt(t *testing.T) {
+	server := newIndexingServer(t)
+	server.holdFirstCompletion()
+	l := startIndexingLoopWithServer(t, nil, server)
+
+	l.server.status.Store(http.StatusServiceUnavailable)
+	l.fetchAt(t, 2*time.Minute, 2)
+	stoppedAt := 2*time.Minute + unavailableBackoffMax + time.Second
+	l.fetchAt(t, stoppedAt, 3)
+	l.assertStopped(t, "after the second consecutive refused poll")
+	waitLoopSignal(t, server.firstCompletionStarted, "stopped crawl's completion report")
+
+	l.server.status.Store(http.StatusOK)
+	l.fetchAt(t, stoppedAt+unavailableBackoffMax+time.Second, 4)
+	// The re-activation audit is written inside the recovery poll's
+	// reconcile, which finishes before the loop can see the crawl's result.
+	waitLoopCondition(t, func() bool { return l.activationCount() == 2 }, "re-activation audit after recovery")
+
+	server.releaseFirstCompletion()
+	waitLoopCondition(t, func() bool { return l.server.runStarts.Load() == 2 }, "crawl restart once the stopped crawl drained")
 }
 
 // Recovery resets both what the loop remembers about the refusal (the status
