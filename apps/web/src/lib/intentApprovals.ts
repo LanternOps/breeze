@@ -439,14 +439,18 @@ export async function decideIntentApproval(
       throw new ActionError(message, 0);
     }
     if (firstAttempt.status === 403) {
-      const token = await firstAttempt
+      const { token, code } = await firstAttempt
         .clone()
         .json()
-        .then((data: unknown) =>
-          data && typeof data === 'object' ? (data as { error?: unknown }).error : undefined,
-        )
-        .catch(() => undefined);
-      if (token === 'step_up_required') {
+        .then((data: unknown) => {
+          const fields = data && typeof data === 'object' ? (data as { error?: unknown; code?: unknown }) : {};
+          return { token: fields.error, code: fields.code };
+        })
+        .catch(() => ({ token: undefined, code: undefined }));
+      // `MFA_REQUIRED`: a high/critical-tier intent approved below L3 from a
+      // session that has not passed MFA. The same ceremony clears it — an L3
+      // approver-device proof is exempt — so it takes the identical retry.
+      if (token === 'step_up_required' || code === 'MFA_REQUIRED') {
         // Enforcing partner authenticator policy (#5600), or a grant the
         // server refused — expired, out of scope, or minted by a since-revoked
         // device (#5601). Either way the step-up floor stands and the viewer

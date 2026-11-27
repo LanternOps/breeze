@@ -631,7 +631,7 @@ function slice(runId: string): Promise<void> {
 async function approveViaRoute(t: Tenant, approvalId: string): Promise<Response> {
   const token = await createAccessToken({
     sub: t.switcher.id, email: t.switcher.email, roleId: t.orgRoleId, orgId: t.orgId, partnerId: t.partnerId,
-    scope: 'organization', mfa: false, aep: 1, mep: 1, sid: randomUUID(),
+    scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   });
   const app = new Hono();
   app.route('/approvals', approvalRoutes);

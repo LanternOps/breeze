@@ -2447,13 +2447,16 @@ describe('Task 5: decide-handler bound to action_intents', () => {
       mockDecideWithIntent({ requestedByUserId: 'requester-1', riskTier });
       const { intentCasSet, tx } = mockIntentFanInTx();
       vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({ ...graceL1 });
-      vi.mocked(hasSatisfiedMfa).mockReturnValueOnce(false);
-
-      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
-      expect(intentCasSet).not.toHaveBeenCalled();
-      expect(tx.insert).not.toHaveBeenCalled();
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+      try {
+        const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
+        expect(intentCasSet).not.toHaveBeenCalled();
+        expect(tx.insert).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+      }
     });
 
     it('allows the same under-floor approve when the session passed MFA', async () => {
@@ -3148,12 +3151,15 @@ describe('Task 6: supervised intent plain-decide branch', () => {
   it('refuses a plain-click supervised high-tier approve from a session that has not passed MFA', async () => {
     mockDecideWithSupervisedIntent({ riskTier: 'high' });
     const { approvalCasSet } = mockSupervisedFanInTx();
-    vi.mocked(hasSatisfiedMfa).mockReturnValueOnce(false);
-
-    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
-    expect(approvalCasSet).not.toHaveBeenCalled();
+    vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+    try {
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
+      expect(approvalCasSet).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+    }
   });
 
   it('marks a plain-click supervised approve below the risk floor as a grace downgrade, recording the same L1/session_tap', async () => {

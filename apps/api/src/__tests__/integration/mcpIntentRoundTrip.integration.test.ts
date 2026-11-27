@@ -197,7 +197,7 @@ async function approverToken(f: Fixture): Promise<string> {
     orgId: f.orgId,
     partnerId: f.partnerId,
     scope: 'organization',
-    mfa: false,
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),

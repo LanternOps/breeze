@@ -220,7 +220,7 @@ async function accessTokenFor(s: Scenario): Promise<string> {
     orgId: s.orgId,
     partnerId: s.partnerId,
     scope: 'organization',
-    mfa: false,
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),

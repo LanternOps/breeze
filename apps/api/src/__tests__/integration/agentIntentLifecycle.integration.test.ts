@@ -261,7 +261,7 @@ async function accessTokenFor(
     orgId,
     partnerId,
     scope: 'organization',
-    mfa: false,
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),
