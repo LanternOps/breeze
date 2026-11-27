@@ -85,6 +85,7 @@ type SweepRow = OemDeviceFacts & DeviceTimezoneFields & {
   lastAttemptAt: Date | null;
   returnDeadlineAt: Date | null;
   lastCommandId: string | null;
+  lastErrorCode: string | null;
   /** The trigger of the run the status row is on: `scheduled` or `on_demand`. */
   lastTrigger: string | null;
 };
@@ -124,6 +125,7 @@ function loadRows(where: SQL | undefined, after: string | null): Promise<SweepRo
       rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
       returnDeadlineAt: deviceOemUpdateStatus.returnDeadlineAt,
       lastCommandId: deviceOemUpdateStatus.lastCommandId,
+      lastErrorCode: deviceOemUpdateStatus.lastErrorCode,
       lastTrigger: sql<string | null>`${deviceCommands.payload} ->> 'trigger'`,
     })
     .from(devices)
@@ -416,6 +418,7 @@ async function raiseRunFailing(context: SweepContext): Promise<number> {
       orgId: row.orgId,
       occurrenceKey: dedupeKey,
       lastOutcome: row.lastOutcome,
+      lastErrorCode: row.lastErrorCode,
       commandId: row.lastCommandId,
     }));
   });

@@ -17,11 +17,31 @@ Scope:
 - Servers, virtual machines and devices from a maker with no lane are not covered, and read **Not managed**. Quick Support devices are left out of the view.
 - There is no per-update approval. You choose categories per maker. For Surface, HP and Lenovo you can block individual update IDs by listing them in the policy.
 - Dell does not support blocking individual updates. Dell Command | Update offers another package for the same component when one is blocked, so a policy cannot list blocked IDs for Dell. To stop Dell updates, turn off the category or the maker. A policy saved with Dell blocked IDs before this rule sends no Dell runs (its devices read **Not managed**) until it is saved without them.
-- Breeze does not change a vendor tool's own update schedule or settings. If Dell Command | Update has its own automatic updates turned on, it can still install updates on its own schedule beside Breeze's runs. Set it to manual updates on devices Breeze manages. Breeze does not yet check this setting.
+- Breeze does not change a vendor tool's own update schedule or settings. For Dell, it checks the schedule instead (see [Dell Command | Update must be in manual-updates mode](#dell-command--update-must-be-in-manual-updates-mode)).
 
 <Aside type="caution">
 **Availability.** A maker's lane opens only after Breeze has validated that vendor's tool in a lab. Today every lane is closed, so real devices read **Not managed** or **Not supported**. This page describes how the feature behaves once lanes open.
 </Aside>
+
+### Dell Command | Update must be in manual-updates mode
+
+Dell Command | Update has its own update schedule. If that schedule is on, the tool installs BIOS, firmware and driver updates by itself beside Breeze's runs, and two schedules then update firmware on one machine. So before every Dell run, scheduled or **Run vendor updates**, the agent reads the tool's schedule mode from the registry. It runs the tool only when the mode is **manual updates**. It never changes the schedule, and it does not start the tool to read it.
+
+A new install of Dell Command | Update is **not** in manual-updates mode: with no schedule set, the tool updates automatically (every 3 days, per Dell's CLI help). Restoring the tool's defaults does the same.
+
+When the mode is anything other than manual updates, the agent does not start the tool, and it does not install or replace the tool either. The run reports **Tool unavailable** with one of these reasons. The device's vendor updates section names the reason and what to do, and the device reads **Failing**:
+
+| Reason (`errorCode`) | Shown as | What to do |
+|---|---|---|
+| `vendor_tool_not_installed` | Vendor tool not installed | Dell Command \| Update is not installed on the device. Breeze does not install it, because a new install schedules its own updates automatically. Install Dell Command \| Update, run `dcu-cli /configure -scheduleManual` as an administrator, then run vendor updates again. |
+| `vendor_schedule_not_manual` | Vendor tool not in manual-updates mode | On the device, run `dcu-cli /configure -scheduleManual` as an administrator (the CLI is in `C:\Program Files\Dell\CommandUpdate\`), then run vendor updates again. This covers no schedule set (the automatic default), automatic, daily, weekly and monthly. |
+| `vendor_schedule_policy_not_manual` | Vendor tool schedule set by policy | A Group Policy setting for Dell Command \| Update sets a schedule other than manual updates. Change the policy to manual updates, then run vendor updates again. |
+| `vendor_schedule_unreadable` | Vendor tool schedule unreadable | The agent could not read the schedule from the registry. Check the agent log on the device, then run vendor updates again. |
+| `vendor_schedule_policy_unknown` | Vendor tool managed by an unrecognised policy | A policy key for Dell Command \| Update exists, but the agent found no manual-updates schedule where it looks, so it cannot tell whether the tool schedules its own updates. Set the policy's update schedule to manual updates, or remove the policy, then run vendor updates again. Please report the policy's layout to Breeze so it can be supported. |
+
+A refused run uses one of the month's attempts like any other **Tool unavailable** run. If the last scheduled night passes this way, the `Vendor update: run failing` alert names the reason.
+
+Breeze reads Dell's Group Policy key too, but Dell does not document its layout, so the layout and how it ranks against the tool's own setting are unverified. The rule is: a policy schedule other than manual updates blocks the run; a policy key that is present with no manual-updates schedule where Breeze looks blocks it with `vendor_schedule_policy_unknown`; and a policy set to manual updates does not stand in for the tool's own setting, which must still read manual updates. This rule trades refusing some policy-managed devices for never running beside a second scheduler.
 
 ---
 

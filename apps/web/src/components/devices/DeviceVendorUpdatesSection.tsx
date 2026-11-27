@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Loader2, RefreshCw } from 'lucide-react';
-import { OEM_CATEGORIES, type OemCategory, type OemLane, type OemOutcome } from '@breeze/shared';
+import {
+  isOemToolConfigErrorCode,
+  OEM_CATEGORIES,
+  type OemCategory,
+  type OemLane,
+  type OemOutcome,
+  type OemToolConfigErrorCode,
+} from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import {
@@ -101,8 +108,51 @@ function outcomeLabel(outcome: OemOutcome, t: DevicesT): string {
   }
 }
 
+/**
+ * The agent refused because the vendor tool is not configured as the lane requires (#12267:
+ * not in manual-updates mode). It arrives as `tool_unavailable`, whose own copy would send the
+ * tech after a missing tool, so these codes get their own.
+ */
+function toolConfigLabel(code: OemToolConfigErrorCode, t: DevicesT): string {
+  switch (code) {
+    case 'vendor_schedule_not_manual':
+      return t('vendorUpdates.toolConfigOutcome.notManual');
+    case 'vendor_schedule_policy_not_manual':
+      return t('vendorUpdates.toolConfigOutcome.policyNotManual');
+    case 'vendor_schedule_unreadable':
+      return t('vendorUpdates.toolConfigOutcome.unreadable');
+    case 'vendor_schedule_policy_unknown':
+      return t('vendorUpdates.toolConfigOutcome.policyUnknown');
+    case 'vendor_tool_not_installed':
+      return t('vendorUpdates.toolConfigOutcome.toolNotInstalled');
+  }
+}
+
+function toolConfigHelp(code: OemToolConfigErrorCode, t: DevicesT): string {
+  switch (code) {
+    case 'vendor_schedule_not_manual':
+      return t('vendorUpdates.toolConfigHelp.notManual');
+    case 'vendor_schedule_policy_not_manual':
+      return t('vendorUpdates.toolConfigHelp.policyNotManual');
+    case 'vendor_schedule_unreadable':
+      return t('vendorUpdates.toolConfigHelp.unreadable');
+    case 'vendor_schedule_policy_unknown':
+      return t('vendorUpdates.toolConfigHelp.policyUnknown');
+    case 'vendor_tool_not_installed':
+      return t('vendorUpdates.toolConfigHelp.toolNotInstalled');
+  }
+}
+
+/** A run's outcome, named by its tool-config refusal when it has one. */
+function runOutcomeLabel(outcome: OemOutcome, errorCode: string | null, t: DevicesT): string {
+  return outcome === 'tool_unavailable' && isOemToolConfigErrorCode(errorCode)
+    ? toolConfigLabel(errorCode, t)
+    : outcomeLabel(outcome, t);
+}
+
 /** What to do next. Nothing for an outcome that needs nothing. */
-function outcomeHelp(outcome: OemOutcome, t: DevicesT): string | null {
+function outcomeHelp(outcome: OemOutcome, errorCode: string | null, t: DevicesT): string | null {
+  if (outcome === 'tool_unavailable' && isOemToolConfigErrorCode(errorCode)) return toolConfigHelp(errorCode, t);
   switch (outcome) {
     case 'partial':
       return t('vendorUpdates.outcomeHelp.partial');
@@ -202,7 +252,7 @@ function RunRow({ run, t }: { run: OemRunView; t: DevicesT }) {
     <li data-testid={`vendor-updates-run-${run.commandId}`} className="px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <span className="font-medium">
-          {run.outcome ? outcomeLabel(run.outcome, t) : t('vendorUpdates.history.noResult')}
+          {run.outcome ? runOutcomeLabel(run.outcome, run.errorCode, t) : t('vendorUpdates.history.noResult')}
         </span>
         <span className="text-xs text-muted-foreground">
           {formatDateTime(run.createdAt)} · {who}
@@ -348,7 +398,7 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
   if (!lane && !status) return null;
 
   const vendor = (lane ?? status?.lane) ? OEM_VENDOR_NAMES[(lane ?? status?.lane) as OemLane] : '';
-  const help = status?.lastOutcome ? outcomeHelp(status.lastOutcome, t) : null;
+  const help = status?.lastOutcome ? outcomeHelp(status.lastOutcome, status.lastErrorCode, t) : null;
   const pageEnd = Math.min(offset + runs.length, total);
 
   return (
@@ -381,7 +431,7 @@ export default function DeviceVendorUpdatesSection({ deviceId }: { deviceId: str
           <h4 className="text-sm font-semibold">{t('vendorUpdates.lastRunHeading')}</h4>
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
             <dt className="text-muted-foreground">{t('vendorUpdates.outcomeLabel')}</dt>
-            <dd>{status.lastOutcome ? outcomeLabel(status.lastOutcome, t) : t('vendorUpdates.noOutcomeYet')}</dd>
+            <dd>{status.lastOutcome ? runOutcomeLabel(status.lastOutcome, status.lastErrorCode, t) : t('vendorUpdates.noOutcomeYet')}</dd>
             {status.lastErrorCode && (
               <>
                 <dt className="text-muted-foreground">{t('vendorUpdates.errorCodeLabel')}</dt>

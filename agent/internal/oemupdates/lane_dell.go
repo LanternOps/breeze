@@ -20,7 +20,8 @@ import (
 // ProgramData, Program Files or Windows (exit 107, "reserved folder"), which is
 // where every agent-owned directory lives. So the lane writes nothing: it reads
 // the tool's stdout, bounded, as untrusted text. It never runs /configure, so
-// the tool's own schedule and settings are never read or changed (#12267).
+// the tool's own schedule and settings are never changed (#12267). The schedule
+// mode is only read, from the registry (dell_schedule.go).
 
 const dotnetDesktopRuntime = "dotnet_desktop_runtime"
 
@@ -89,6 +90,8 @@ type dellHost struct {
 	exists                func(path string) bool
 	fileVersion           func(path string) (string, error)
 	dotnetDesktopVersions func() []string
+	// registry reads the tool's schedule mode (dell_schedule.go). Nil refuses.
+	registry regReader
 }
 
 type dellLane struct {
@@ -117,25 +120,35 @@ func (l *dellLane) ToolVersion(path string) (string, error) { return l.host.file
 // -updateType, so even a driver-only run may write firmware.
 func (l *dellLane) FlashesOutsideFilter() bool { return true }
 
-// detect looks for dcu-cli.exe under both Program Files directories, 64-bit
-// first. An unreadable version is reported as "", which is never in range.
-func (l *dellLane) detect() ToolState {
+// toolPath finds dcu-cli.exe under both Program Files directories, 64-bit
+// first, by file stat alone: it never opens or starts the tool.
+func (l *dellLane) toolPath() (string, bool) {
 	for _, base := range l.host.programFiles() {
 		if base == "" {
 			continue
 		}
 		path := strings.TrimRight(base, `\`) + `\Dell\CommandUpdate\dcu-cli.exe`
-		if !l.host.exists(path) {
-			continue
+		if l.host.exists(path) {
+			return path, true
 		}
-		version, err := l.host.fileVersion(path)
-		if err != nil {
-			log.Debug("dcu-cli.exe version unreadable", "path", path, "error", err.Error())
-			version = ""
-		}
-		return ToolState{Present: true, Path: path, Version: version}
 	}
-	return ToolState{}
+	return "", false
+}
+
+// detect reports the tool found by toolPath with its PE version, read from the
+// file's version resource without running it. An unreadable version is
+// reported as "", which is never in range.
+func (l *dellLane) detect() ToolState {
+	path, ok := l.toolPath()
+	if !ok {
+		return ToolState{}
+	}
+	version, err := l.host.fileVersion(path)
+	if err != nil {
+		log.Debug("dcu-cli.exe version unreadable", "path", path, "error", err.Error())
+		version = ""
+	}
+	return ToolState{Present: true, Path: path, Version: version}
 }
 
 func (l *dellLane) Filter(cats []string, blocked []string) (FilterPlan, error) {

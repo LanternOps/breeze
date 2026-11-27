@@ -5092,6 +5092,20 @@
       "retryLater": "La herramienta del fabricante pidió intentarlo más tarde. Breeze no cambió nada en el dispositivo.",
       "interrupted": "La ejecución se detuvo antes de finalizar, normalmente porque el dispositivo se reinició o el agente se detuvo. Ejecute de nuevo las actualizaciones del fabricante."
     },
+    "toolConfigOutcome": {
+      "notManual": "Herramienta del fabricante sin modo de actualizaciones manuales",
+      "policyNotManual": "Programación de la herramienta definida por una directiva",
+      "unreadable": "Programación de la herramienta ilegible",
+      "policyUnknown": "Herramienta del fabricante administrada por una directiva no reconocida",
+      "toolNotInstalled": "Herramienta del fabricante no instalada"
+    },
+    "toolConfigHelp": {
+      "notManual": "Breeze no inició la herramienta del fabricante porque su propia programación de actualizaciones no está en actualizaciones manuales, y dos programaciones no deben actualizar el firmware en un mismo dispositivo. En el dispositivo, ejecute dcu-cli /configure -scheduleManual como administrador y luego ejecute de nuevo las actualizaciones del fabricante.",
+      "policyNotManual": "Breeze no inició la herramienta del fabricante porque una directiva define su programación de actualizaciones con un valor distinto de actualizaciones manuales. Cambie la directiva a actualizaciones manuales y luego ejecute de nuevo las actualizaciones del fabricante.",
+      "unreadable": "Breeze no pudo leer del registro la programación de actualizaciones de la herramienta del fabricante, así que no inició la herramienta. Revise el registro del agente en el dispositivo y luego ejecute de nuevo las actualizaciones del fabricante.",
+      "policyUnknown": "Breeze no inició la herramienta del fabricante porque una directiva administra Dell Command | Update de una forma que Breeze no puede interpretar, así que Breeze no puede saber si la herramienta programa sus propias actualizaciones. Cambie la programación de la directiva a actualizaciones manuales o elimine la directiva, y luego ejecute de nuevo las actualizaciones del fabricante. Informe también a Breeze la estructura de la directiva para que pueda admitirse.",
+      "toolNotInstalled": "Dell Command | Update no está instalado en este dispositivo. Breeze no lo instala, porque una instalación nueva programa sus propias actualizaciones de forma automática. Instale Dell Command | Update en el dispositivo, configúrelo en actualizaciones manuales ejecutando dcu-cli /configure -scheduleManual como administrador y luego ejecute de nuevo las actualizaciones del fabricante."
+    },
     "categoriesHeading": "Qué se puede ejecutar en este dispositivo",
     "category": {
       "bios": "BIOS",

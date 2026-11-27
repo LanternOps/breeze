@@ -10,7 +10,12 @@
  * Who raises the overdue rules, and when, is in `overdueSweep.ts`.
  */
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
-import { PATCH_ALERT_CATEGORY, type OemOutcome } from '@breeze/shared';
+import {
+  isOemToolConfigErrorCode,
+  PATCH_ALERT_CATEGORY,
+  type OemOutcome,
+  type OemToolConfigErrorCode,
+} from '@breeze/shared';
 import * as dbModule from '../../db';
 import { alertRules, alertTemplates, alerts, devices } from '../../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from '../alertService';
@@ -263,21 +268,41 @@ const RUN_FAILING_WORDS: Partial<Record<OemOutcome, string>> = {
   blocked_no_recovery_key: 'had no recovery key',
 };
 
+/**
+ * The agent's refusals for a vendor tool that is not configured as the lane requires (#12267),
+ * in the alert's words. They come with `tool_unavailable`, whose own words would send the tech
+ * after a missing tool.
+ */
+const TOOL_CONFIG_WORDS: Record<OemToolConfigErrorCode, string> = {
+  vendor_schedule_not_manual: 'did not start because the vendor tool\'s own update schedule is not set to manual updates',
+  vendor_schedule_policy_not_manual:
+    'did not start because a policy sets the vendor tool\'s own update schedule to something other than manual updates',
+  vendor_schedule_unreadable: 'did not start because the vendor tool\'s update schedule could not be read',
+  vendor_schedule_policy_unknown:
+    'did not start because a policy manages the vendor tool in a layout Breeze cannot interpret',
+  vendor_tool_not_installed: 'did not start because the vendor tool is not installed',
+};
+
 export function emitRunFailingAlert(input: {
   deviceId: string;
   orgId: string;
   occurrenceKey: string;
   lastOutcome: OemOutcome | null;
+  /** Absent or null from a caller that does not read it: the outcome's words stand. */
+  lastErrorCode?: string | null;
   commandId: string | null;
 }): Promise<string | null> {
   const { occurrenceKey, lastOutcome, commandId } = input;
-  const words = (lastOutcome && RUN_FAILING_WORDS[lastOutcome]) ?? 'failed';
+  const lastErrorCode = input.lastErrorCode ?? null;
+  const configCode = lastOutcome === 'tool_unavailable' && isOemToolConfigErrorCode(lastErrorCode) ? lastErrorCode : null;
+  const words = (configCode ? TOOL_CONFIG_WORDS[configCode] : null)
+    ?? (lastOutcome && RUN_FAILING_WORDS[lastOutcome]) ?? 'failed';
   return raiseDeviceAlert(RUN_FAILING_TEMPLATE, input, (label) => ({
     title: `${label} is still failing vendor updates`,
     message:
       `The last scheduled vendor update run on ${label} for the ${occurrenceKey} schedule ${words}, `
       + 'and that schedule has no nights left to retry. Check its run history, then use Run vendor updates to run it now.',
-    context: { occurrenceKey, dedupeKey: occurrenceKey, lastOutcome, commandId },
+    context: { occurrenceKey, dedupeKey: occurrenceKey, lastOutcome, ...(lastErrorCode ? { lastErrorCode } : {}), commandId },
   }));
 }
 

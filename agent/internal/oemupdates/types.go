@@ -714,6 +714,17 @@ type HardwareCheckedLane interface {
 	CheckHardware() (Outcome, error)
 }
 
+// ToolConfigCheckedLane is a lane whose vendor tool must be present and
+// configured a set way before Breeze installs, replaces or runs it (Dell:
+// installed already, and in manual-updates mode, #12267).
+// EnsureTool asks before it fetches or installs anything, and the runner asks
+// again before the flash guard and Apply, so an install or a change in between is
+// caught. It can only refuse. It must not spawn a process or write anything.
+type ToolConfigCheckedLane interface {
+	Lane
+	CheckToolConfig() (Outcome, error)
+}
+
 // Lane is one vendor's update path.
 type Lane interface {
 	ID() string

@@ -85,6 +85,7 @@ import { applyOemUpdateRelease, applyOemUpdateResult, applyOemUpdateVerification
 import { executeReboot, resolveRebootPlan } from '../patchRebootHandler';
 import { runAfterDbContextCommit } from '../../db';
 import { getLaneManifest } from './toolManifest';
+import { OEM_TOOL_CONFIG_ERROR_CODES } from '@breeze/shared';
 
 const COMMAND_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -238,6 +239,29 @@ describe('applyOemUpdateResult', () => {
         expect(state.updates[0]).not.toHaveProperty('firstCompletedAt');
       },
     );
+  });
+
+  // #12267: a newer agent refuses a vendor tool that is not in manual-updates mode with
+  // tool_unavailable and one of these codes. It is stored as sent, is not sticky, and leaves an
+  // owed reboot as it was, since no tool ran.
+  describe('tool-config refusals', () => {
+    it.each([...OEM_TOOL_CONFIG_ERROR_CODES])('stores %s on tool_unavailable', async (errorCode) => {
+      const since = new Date('2027-01-02T03:00:00.000Z');
+      state.status = statusRow({ rebootPendingSince: since });
+      await apply(goodResult({
+        outcome: 'tool_unavailable', errorCode, rawExitCode: null, items: [], rebootRequired: false,
+      }));
+      expect(state.updates[0]).toMatchObject({
+        lastOutcome: 'tool_unavailable',
+        lastErrorCode: errorCode,
+        applicability: 'applicable',
+        installedCount: 0,
+        failedCount: 0,
+      });
+      expect(state.updates[0]).not.toHaveProperty('rebootRequired');
+      expect(state.updates[0]).not.toHaveProperty('rebootPendingSince');
+      expect(state.updates[0]).not.toHaveProperty('lastSuccessAt');
+    });
   });
 
   describe('not_supported', () => {

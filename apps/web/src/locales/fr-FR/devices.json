@@ -5092,6 +5092,20 @@
       "retryLater": "L’outil du constructeur a demandé de réessayer plus tard. Breeze n’a rien modifié sur l’appareil.",
       "interrupted": "L’exécution s’est arrêtée avant la fin, généralement parce que l’appareil a redémarré ou que l’agent s’est arrêté. Exécutez de nouveau les mises à jour du constructeur."
     },
+    "toolConfigOutcome": {
+      "notManual": "Outil du constructeur hors du mode de mises à jour manuelles",
+      "policyNotManual": "Planification de l’outil imposée par une stratégie",
+      "unreadable": "Planification de l’outil illisible",
+      "policyUnknown": "Outil du constructeur géré par une stratégie non reconnue",
+      "toolNotInstalled": "Outil du constructeur non installé"
+    },
+    "toolConfigHelp": {
+      "notManual": "Breeze n’a pas lancé l’outil du constructeur, car sa propre planification des mises à jour n’est pas réglée sur les mises à jour manuelles, et deux planifications ne doivent pas mettre à jour le micrologiciel d’un même appareil. Sur l’appareil, exécutez dcu-cli /configure -scheduleManual en tant qu’administrateur, puis exécutez de nouveau les mises à jour du constructeur.",
+      "policyNotManual": "Breeze n’a pas lancé l’outil du constructeur, car une stratégie règle sa planification des mises à jour sur autre chose que les mises à jour manuelles. Réglez la stratégie sur les mises à jour manuelles, puis exécutez de nouveau les mises à jour du constructeur.",
+      "unreadable": "Breeze n’a pas pu lire dans le registre la planification des mises à jour de l’outil du constructeur, il n’a donc pas lancé l’outil. Vérifiez le journal de l’agent sur l’appareil, puis exécutez de nouveau les mises à jour du constructeur.",
+      "policyUnknown": "Breeze n’a pas lancé l’outil du constructeur, car une stratégie gère Dell Command | Update d’une manière que Breeze ne peut pas interpréter ; Breeze ne peut donc pas savoir si l’outil planifie ses propres mises à jour. Réglez la planification des mises à jour de la stratégie sur les mises à jour manuelles, ou supprimez la stratégie, puis exécutez de nouveau les mises à jour du constructeur. Veuillez aussi signaler à Breeze la structure de la stratégie afin qu’elle puisse être prise en charge.",
+      "toolNotInstalled": "Dell Command | Update n’est pas installé sur cet appareil. Breeze ne l’installe pas, car une nouvelle installation planifie automatiquement ses propres mises à jour. Installez Dell Command | Update sur l’appareil, réglez-le sur les mises à jour manuelles en exécutant dcu-cli /configure -scheduleManual en tant qu’administrateur, puis exécutez de nouveau les mises à jour du constructeur."
+    },
     "categoriesHeading": "Ce qui peut s’exécuter sur cet appareil",
     "category": {
       "bios": "BIOS",

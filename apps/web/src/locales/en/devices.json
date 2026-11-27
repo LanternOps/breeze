@@ -5092,6 +5092,20 @@
       "retryLater": "The vendor's tool asked to try again later. Breeze did not change anything on the device.",
       "interrupted": "The run stopped before it finished, usually because the device restarted or the agent stopped. Run vendor updates again."
     },
+    "toolConfigOutcome": {
+      "notManual": "Vendor tool not in manual-updates mode",
+      "policyNotManual": "Vendor tool schedule set by policy",
+      "unreadable": "Vendor tool schedule unreadable",
+      "policyUnknown": "Vendor tool managed by an unrecognised policy",
+      "toolNotInstalled": "Vendor tool not installed"
+    },
+    "toolConfigHelp": {
+      "notManual": "Breeze did not start the vendor's tool because the tool's own update schedule is not set to manual updates, and two schedules must not update firmware on one device. On the device, run dcu-cli /configure -scheduleManual as an administrator, then run vendor updates again.",
+      "policyNotManual": "Breeze did not start the vendor's tool because a policy sets the tool's update schedule to something other than manual updates. Change the policy to manual updates, then run vendor updates again.",
+      "unreadable": "Breeze could not read the vendor tool's update schedule from the registry, so it did not start the tool. Check the agent log on the device, then run vendor updates again.",
+      "policyUnknown": "Breeze did not start the vendor's tool because a policy manages Dell Command | Update in a way Breeze cannot interpret, so Breeze cannot tell whether the tool schedules its own updates. Set the policy's update schedule to manual updates, or remove the policy, then run vendor updates again. Please also report the policy's layout to Breeze so it can be supported.",
+      "toolNotInstalled": "Dell Command | Update is not installed on this device. Breeze does not install it, because a new install schedules its own updates automatically. Install Dell Command | Update on the device, set it to manual updates by running dcu-cli /configure -scheduleManual as an administrator, then run vendor updates again."
+    },
     "categoriesHeading": "What can run on this device",
     "category": {
       "bios": "BIOS",

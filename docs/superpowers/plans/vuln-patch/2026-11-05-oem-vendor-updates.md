@@ -702,6 +702,8 @@ Why a new mode: `computeRebootDeadline` will not pull a deadline in front of the
 ### W06 T3: Dell schedule takeover and restore
 
 > **Removed 2026-11-25 (#12267).** `takeover.go` and `LaneTakeover` are gone, and `Release` answers `nothing_to_restore` without running the tool. The precondition check (the tool must be in manual-updates mode) waits on a lab capture of a write-free way to read the schedule mode. See spec §4.2.
+>
+> **Amended 2026-11-26 (#12267).** The lab found that way (the `ScheduleMode` registry value), and the check is built: `dell_schedule.go` reads it read-only, `ToolConfigCheckedLane` is asked by `EnsureTool` before any install and by the runner again before `Apply`, and a missing or not-manual tool is refused with `tool_unavailable` plus a `vendor_tool_not_installed` or `vendor_schedule_*` errorCode (`OEM_TOOL_CONFIG_ERROR_CODES`). A policy key in a layout the agent does not recognise refuses too (`vendor_schedule_policy_unknown`). D5 is re-run on a lab unit before the Dell gates open.
 
 **Files:** Create `agent/internal/oemupdates/{takeover.go, takeover_test.go}`. Modify `lane_dell.go`, `runner.go`, tests. Add `Takeover(ctx, Exec, Store) (string, error)` and `Restore(ctx, Exec, Store) error` to an optional `LaneTakeover` interface.
 
