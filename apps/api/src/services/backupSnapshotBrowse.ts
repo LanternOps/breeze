@@ -206,6 +206,31 @@ export type SelectionWalkOptions = {
 };
 
 /**
+ * Runs one selection page's statement (readableSourcePathPageQuery) with sorts
+ * disabled, so its plan is the merge of the two ordered index ranges, then
+ * puts the caller's enable_sort back. Call it inside the page's own savepoint
+ * (withStatementTimeout): a page that fails rolls the setting back with it.
+ *
+ * Why (#12741): the read layer's checkpoint id is only known at run time, so
+ * the planner estimates a checkpoint's entries as the table's rows over its
+ * distinct checkpoints. Among many small checkpoints a large one looks tiny,
+ * and for keyset positions near its end the planner then read the rest of
+ * the checkpoint and top-N sorted it: measured with a 1,000,000-entry
+ * checkpoint among 3,000 of 20 entries on Postgres 16, 178,200 rows and 1.2
+ * to 1.9 s for such pages, and the walk passed its 30 s deadline. Every leg
+ * has an index in source_path order, so with sorts disabled the ordered path
+ * is always available (pinned by backupSnapshotIndexSkewedPlans.integration.test.ts).
+ */
+export async function withSelectionPagePlan<T>(executor: Executor, read: () => Promise<T>): Promise<T> {
+  const [prior] = (await executor.execute(sql`
+    SELECT current_setting('enable_sort') AS prior, set_config('enable_sort', 'off', true) AS applied
+  `)) as unknown as Array<{ prior: string }>;
+  const result = await read();
+  await executor.execute(sql`SELECT set_config('enable_sort', ${prior?.prior ?? 'on'}, true)`);
+  return result;
+}
+
+/**
  * The readable rows in keyset pages. Each page is one statement under its own
  * timeout (never more than what is left of the walk's deadline); a page that
  * runs out of time, or a walk past its deadline, ends with
@@ -224,7 +249,7 @@ async function* readableSourcePaths(
     const cursor = after;
     const page: ReadableSourcePath[] = await withStatementTimeout(
       Math.max(1, Math.min(pageTimeoutMs, remaining)),
-      (tx) => readableSourcePathPageQuery(snapshotDbId, cursor, tx),
+      (tx) => withSelectionPagePlan(tx, () => readableSourcePathPageQuery(snapshotDbId, cursor, tx)),
     );
     if (page.length > 0) yield page;
     if (page.length < SELECTION_PAGE_SIZE) return;
