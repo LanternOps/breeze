@@ -524,6 +524,7 @@
       "pickerLabel": "Chamado de destino",
       "searchPlaceholder": "Pesquisar por número ou assunto",
       "pickerHint": "Somente chamados abertos desta organização são listados, do mais antigo para o mais recente.",
+      "pickerHintAll": "Os tickets abertos, resolvidos e fechados desta organização são listados, do mais antigo para o mais recente.",
       "includeClosed": "Incluir tickets resolvidos e fechados",
       "reopenFirst": "{{number}} está fechado. Reabra-o antes de mesclar nele, para que as respostas continuem sendo associadas corretamente.",
       "reopen": "Reabrir {{number}}",
@@ -533,6 +534,7 @@
       "loading": "Carregando chamados…",
       "candidatesFailed": "Não foi possível carregar os chamados. Feche a caixa de diálogo e tente novamente.",
       "noCandidates": "Não há outros chamados abertos nesta organização.",
+      "noCandidatesAll": "Nenhum outro ticket nesta organização.",
       "previewLoading": "Verificando a mesclagem…",
       "previewFailed": "Não foi possível verificar esta mesclagem. Escolha o chamado novamente para tentar outra vez.",
       "side": {
