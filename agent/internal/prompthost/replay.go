@@ -21,8 +21,12 @@ func rendererServes(r RendererSession, o Owner) bool {
 //     lease; a copy on another renderer (the native fallback) is fenced first;
 //   - nothing is activated: every replay is no_activate, and all but the
 //     oldest pending decision are replayed list-only, so at most one decision
-//     surface comes back. An indicator stays an indicator (it is a pill, not
-//     a card, and never a decision).
+//     surface comes back. An informational prompt (a notice) never takes
+//     that slot from a prompt that needs an answer: one the person already
+//     saw is listed, and of those nobody has seen only the newest is
+//     restored, so a replay is never a burst of notices (#12794). An
+//     indicator stays an indicator (it is a pill, not a card, and never a
+//     decision).
 //
 // Called with mu held; finished entries are replayed by
 // replayFinishedEntries, which reads the inbox outside the lock.
@@ -48,12 +52,23 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 			moves = append(moves, move{rec, pl, c})
 		}
 	}
+	// The newest notice nobody has seen (moves are oldest first).
+	newestUnseen := -1
+	for i, m := range moves {
+		if m.rec.informational() && !m.pl.seen && !m.pl.listOnly {
+			newestUnseen = i
+		}
+	}
 	restored := false
-	for _, m := range moves {
+	for i, m := range moves {
 		h.fence(m.rec, m.pl, ob)
 		switch {
 		case m.rec.show.Presentation == ipc.PromptPresentationIndicator:
-		case !restored && ipc.IsPromptDecision(m.rec.show.State, m.rec.show.Presentation) && !m.pl.listOnly:
+		case m.rec.informational():
+			if i != newestUnseen {
+				m.pl.listOnly = true
+			}
+		case !restored && m.rec.needsDecision() && !m.pl.listOnly:
 			restored = true
 		default:
 			m.pl.listOnly = true

@@ -450,15 +450,15 @@ func TestTCCNoticeExpiresAndRemindsAgain(t *testing.T) {
 	raw, _ := json.Marshal(ipc.PromptPresented{PromptID: s.PromptID, Rev: s.Rev, Lease: s.Lease, Visible: true})
 	h.promptHost.HandleRendererMessage(probe.session, ipc.TypePromptPresented, raw)
 
-	clock.advance(23 * time.Hour)
+	clock.advance(3 * time.Hour) // inside the re-send interval (notices_tcc_resend_test.go)
 	h.promptHost.Tick()
 	h.handleTCCNotice(probe.session, missingFDAOnly)
 	time.Sleep(100 * time.Millisecond)
 	if promptShows(probe) != 1 {
-		t.Fatal("re-sent before its 24 h lifetime ended")
+		t.Fatal("re-sent before its re-send interval")
 	}
 
-	clock.advance(2 * time.Hour)
+	clock.advance(22 * time.Hour) // past the 24 h lifetime
 	h.promptHost.Tick()
 	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptClose)) == 1 }, "the expiry close")
 	var c ipc.PromptClose

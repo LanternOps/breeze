@@ -32,26 +32,76 @@ import (
 // host serialises decisions).
 const openSettingsTimeout = 15 * time.Second
 
+// permissionNoticeResendAfter is how long an unanswered permission notice
+// stays open on a renderer with no list (the native helper's dialog gives
+// up after 60 s, and a decision can take it down) before the next status
+// report shows it again (#12794 review). Without it the person has no Open
+// Settings and cannot grant Full Disk Access; the legacy helper reminded at
+// every hourly check, this is gentler.
+const permissionNoticeResendAfter = 4 * time.Hour
+
 // tccNoticeState remembers the permission notice open per macOS user, so a
-// change in the missing set replaces it and a grant withdraws it.
+// change in the missing set replaces it, a grant withdraws it, and an
+// unanswered one comes back.
 type tccNoticeState struct {
 	mu  sync.Mutex
-	ids map[string]string // owner key -> prompt id
+	ids map[string]tccNoticeEntry // owner key -> the open notice
 }
 
-func (s *tccNoticeState) swap(owner, id string) (prev string) {
+type tccNoticeEntry struct {
+	id      string
+	shownAt time.Time
+}
+
+func (s *tccNoticeState) swap(owner, id string, at time.Time) (prev string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ids == nil {
-		s.ids = map[string]string{}
+		s.ids = map[string]tccNoticeEntry{}
 	}
-	prev = s.ids[owner]
+	prev = s.ids[owner].id
 	if id == "" {
 		delete(s.ids, owner)
 	} else {
-		s.ids[owner] = id
+		s.ids[owner] = tccNoticeEntry{id: id, shownAt: at}
 	}
 	return prev
+}
+
+func (s *tccNoticeState) get(owner string) (tccNoticeEntry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.ids[owner]
+	return e, ok
+}
+
+// tccNoticeResendable: the notice's placement has no list for it to come
+// back from. Only Breeze Assist keeps it findable (its list, with Open
+// Settings); the native helper and the legacy reminder do not.
+func tccNoticeResendable(info prompthost.PlacementInfo) bool {
+	return info.Path != prompthost.PathPrompt || info.Role != ipc.HelperRoleAssist
+}
+
+// tccNoticeDue reports whether the open permission notice id for s's user
+// should be shown again: it has been open, unanswered, for
+// permissionNoticeResendAfter on a renderer with no list. A notice this
+// heartbeat did not show (the agent restarted) starts its interval now.
+func (h *Heartbeat) tccNoticeDue(s *sessionbroker.Session, id string) bool {
+	host := h.promptHost
+	if host == nil {
+		return false
+	}
+	owner := noticeOwner(s)
+	now := host.Now()
+	e, ok := h.tccNotices.get(owner.Key())
+	if !ok || e.id != id {
+		h.tccNotices.swap(owner.Key(), id, now)
+		return false
+	}
+	if info, placed := host.PlacementOf(id, owner); placed && !tccNoticeResendable(info) {
+		return false
+	}
+	return now.Sub(e.shownAt) >= permissionNoticeResendAfter
 }
 
 // notices builds notice.info prompts whose legacy calls go through this
@@ -244,8 +294,9 @@ func tccMissingPermissions(st ipc.TCCStatus) []string {
 // that it shows the notice (sessionbroker.AgentHandlesTCCNotice); every
 // other helper reminds by itself. Like the helper's own guidance it asks
 // only while Full Disk Access is missing (macOS prompts for the others).
-// An open notice is not re-sent; a new missing set replaces it; a grant
-// withdraws it.
+// An open notice is not re-sent at every report, except one left unanswered
+// for permissionNoticeResendAfter where it has no list to come back from;
+// a new missing set replaces it; a grant withdraws it.
 func (h *Heartbeat) handleTCCNotice(s *sessionbroker.Session, st ipc.TCCStatus) {
 	if s == nil || !s.AgentHandlesTCCNotice() {
 		return
@@ -253,7 +304,7 @@ func (h *Heartbeat) handleTCCNotice(s *sessionbroker.Session, st ipc.TCCStatus) 
 	owner := noticeOwner(s)
 	host := h.promptHost
 	if st.FullDiskAccess {
-		if prev := h.tccNotices.swap(owner.Key(), ""); prev != "" && host != nil {
+		if prev := h.tccNotices.swap(owner.Key(), "", time.Time{}); prev != "" && host != nil {
 			if err := host.Close(prev, ipc.PromptCloseWithdrawn); err != nil && !errors.Is(err, prompthost.ErrUnknownPrompt) {
 				log.Warn("permission notice not withdrawn", "promptId", prev, "error", err.Error())
 			}
@@ -262,10 +313,24 @@ func (h *Heartbeat) handleTCCNotice(s *sessionbroker.Session, st ipc.TCCStatus) 
 	}
 	missing := tccMissingPermissions(st)
 	p := h.notices().MacPermissionNotice(missing)
-	if host != nil && host.IsOpen(p.ID) {
-		return // still on screen or in the list: not re-sent every report
+	now := time.Now()
+	if host != nil {
+		now = host.Now()
+		if host.IsOpen(p.ID) {
+			if !h.tccNoticeDue(s, p.ID) {
+				return // on screen, in Assist's list, or recently shown: not re-sent every report
+			}
+			// Open but long unanswered with no list to come back from: show
+			// it again. Closed undecided it is not tombstoned (Reshowable),
+			// so the same id is shown at once with a fresh present budget.
+			log.Info("permission notice unanswered; showing it again", "promptId", p.ID, "owner", owner.Key())
+			if err := host.Close(p.ID, ipc.PromptCloseSuperseded); err != nil && !errors.Is(err, prompthost.ErrUnknownPrompt) {
+				log.Warn("permission notice not re-sent: closing the old copy failed", "promptId", p.ID, "error", err.Error())
+				return
+			}
+		}
 	}
-	if prev := h.tccNotices.swap(owner.Key(), p.ID); prev != "" && prev != p.ID && host != nil {
+	if prev := h.tccNotices.swap(owner.Key(), p.ID, now); prev != "" && prev != p.ID && host != nil {
 		if err := host.Close(prev, ipc.PromptCloseSuperseded); err != nil && !errors.Is(err, prompthost.ErrUnknownPrompt) {
 			log.Warn("superseded permission notice not closed", "promptId", prev, "error", err.Error())
 		}

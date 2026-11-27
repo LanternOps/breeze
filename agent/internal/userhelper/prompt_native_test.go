@@ -155,9 +155,10 @@ func TestNativeLinuxNeutralThirdActionDropped(t *testing.T) {
 
 // fakeNativeShow records dialogs and lets a test decide their outcome.
 type fakeNativeShow struct {
-	mu      sync.Mutex
-	models  []nativePromptModel
-	outcome chan nativeOutcome
+	mu        sync.Mutex
+	models    []nativePromptModel
+	outcome   chan nativeOutcome
+	cancelled []string // prompt ids whose dialog the renderer took down
 }
 
 func (f *fakeNativeShow) show(ctx context.Context, m nativePromptModel, presented func()) nativeOutcome {
@@ -169,6 +170,9 @@ func (f *fakeNativeShow) show(ctx context.Context, m nativePromptModel, presente
 	case o := <-f.outcome:
 		return o
 	case <-ctx.Done():
+		f.mu.Lock()
+		f.cancelled = append(f.cancelled, m.PromptID)
+		f.mu.Unlock()
 		return nativeOutcome{Hidden: true}
 	}
 }

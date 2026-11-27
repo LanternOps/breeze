@@ -16,8 +16,9 @@ import (
 // ok acknowledges it (terminal, so the list keeps the outcome); the macOS
 // permission notice adds open_settings, which leaves it pending.
 var NoticeInfo = prompthost.KindSpec{
-	Name:    "notice.info",
-	Version: 1,
+	Name:          "notice.info",
+	Version:       1,
+	Informational: true, // never re-presented after a renderer change (#12794)
 	Transitions: map[ipc.PromptState]map[string]ipc.PromptState{
 		ipc.PromptStatePending: {
 			actionOK:           ipc.PromptStateApproved,

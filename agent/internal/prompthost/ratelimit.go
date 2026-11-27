@@ -2,9 +2,10 @@ package prompthost
 
 import "time"
 
-// cardLimiter caps new cards per session: at most 10 in any 10 minutes.
-// Beyond that a new prompt goes to the list only (it is still delivered and
-// findable, it just does not draw another window).
+// cardLimiter caps new notice cards per session: at most 10 in any 10
+// minutes. Beyond that a new notice goes to the list only (it is still
+// delivered and findable, it just does not draw another window). A prompt
+// that needs a decision is never limited (Host.assign).
 type cardLimiter struct {
 	seen map[string][]time.Time
 }

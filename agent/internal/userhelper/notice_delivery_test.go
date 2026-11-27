@@ -278,8 +278,11 @@ func TestNativeNoticeQuietTimeDrawsTheDialog(t *testing.T) {
 	if fake.shown() != 1 {
 		t.Fatalf("quiet time must draw the dialog, drew %d", fake.shown())
 	}
-	if _, toasts := os.snapshot(); len(toasts) != 0 {
-		t.Fatal("quiet time suppresses toasts; none may be sent")
+	// Quiet time suppresses the toast's banner, so the dialog is what the
+	// person sees; the toast is raised as well so the notice is still in the
+	// notification centre once the dialog has closed (#12794 review).
+	if _, toasts := os.snapshot(); len(toasts) != 1 {
+		t.Fatalf("toasts = %d, want the notice in the notification centre as well", len(toasts))
 	}
 	fake.outcome <- nativeOutcome{ActionID: "ok"}
 	if a := sink.waitFor(t, ipc.TypePromptAction).(ipc.PromptActionRequest); a.ActionID != "ok" {
@@ -311,13 +314,13 @@ func TestNativeNoticeStateAppliesOnlyToNotices(t *testing.T) {
 	}
 }
 
-func TestNativeNoticeWithoutANotificationStateDrawsTheDialog(t *testing.T) {
+func TestNativeNoticeWithoutANotificationStateFallsBackToTheDialog(t *testing.T) {
 	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
-	r, sink := newTestRenderer(t, fake)
-	r.noticeState = nil // macOS, Linux: no equivalent query (spec §3.2)
+	r, sink := newTestRenderer(t, fake) // its toast always fails
+	r.noticeState = nil                 // macOS, Linux: no equivalent query (spec §3.2)
 	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.notice.json")))
 	sink.waitFor(t, ipc.TypePromptPresented)
 	if fake.shown() != 1 {
-		t.Fatal("without a notification state the notice is the native dialog")
+		t.Fatal("a notice whose notification could not be shown is the native dialog")
 	}
 }

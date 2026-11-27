@@ -112,13 +112,19 @@ type actionKey struct {
 
 // placement is one prompt as delivered to one owner's session.
 type placement struct {
-	owner       Owner
-	path        Path
-	renderer    string         // broker session id while on the prompt path
-	role        ipc.HelperRole // that renderer's helper role
-	version     int
-	epoch       uint32
-	presented   bool
+	owner     Owner
+	path      Path
+	renderer  string         // broker session id while on the prompt path
+	role      ipc.HelperRole // that renderer's helper role
+	version   int
+	epoch     uint32
+	presented bool
+	// seen: some renderer reported it on screen (visible), or held it in a
+	// notification list the person can open (Assist). Sticky for the
+	// placement's life: a seen informational prompt is never drawn again
+	// after its renderer changes, while one that was only held or kept off
+	// screen still is (#12794).
+	seen        bool
 	presentBy   time.Time
 	graceUntil  time.Time
 	deferred    deferReason
@@ -402,6 +408,16 @@ func (h *Host) choose(rec *record, pl *placement) Choice {
 // neverReask: the kind or this prompt is never moved to another renderer.
 func (r *record) neverReask() bool { return r.p.Kind.NeverReask || r.p.NeverReask }
 
+// informational: the prompt tells the person something and asks nothing
+// (KindSpec.Informational).
+func (r *record) informational() bool { return r.p.Kind.Informational }
+
+// needsDecision: a pending prompt waiting on the person's answer, other than
+// an informational one.
+func (r *record) needsDecision() bool {
+	return ipc.IsPromptDecision(r.show.State, r.show.Presentation) && !r.informational()
+}
+
 func (h *Host) modalBusy(rec *record, o Owner) bool {
 	for _, other := range h.prompts {
 		if other == rec || other.show.Presentation != ipc.PromptPresentationModal || !other.lingerUntil.IsZero() {
@@ -434,7 +450,12 @@ func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *o
 		rec.everPrompt = true
 		if !pl.rateChecked {
 			pl.rateChecked = true
-			if rec.show.Presentation == ipc.PromptPresentationCard && !h.limiter.allow(pl.owner.Key(), now) {
+			// The limiter limits notices. A prompt that needs the person's
+			// answer (a restart question or its closing card, a consent or
+			// elevation request) is never made list-only by it, and does not
+			// spend its budget: the native renderer has no list, so a list-only
+			// decision would never be asked there (#12794).
+			if rec.show.Presentation == ipc.PromptPresentationCard && !rec.needsDecision() && !h.limiter.allow(pl.owner.Key(), now) {
 				pl.listOnly = true
 			}
 		}
@@ -534,6 +555,8 @@ func (h *Host) fence(rec *record, pl *placement, ob *outbox) {
 
 // fallback moves a placement off a renderer that failed it (render_failed,
 // a missed present budget, a failed send, or a renderer gone past its grace).
+// A seen informational prompt is parked instead: fenced, with no renderer,
+// its list entry kept, until a renderer that connects later lists it.
 func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, why string) {
 	if rec.neverReask() {
 		h.lose(rec, pl, now, ob, why)
@@ -542,9 +565,23 @@ func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, w
 	if pl.renderer != "" {
 		pl.tried[pl.renderer] = true
 	}
+	if rec.informational() && pl.seen {
+		// The person already had it on screen (or in Assist's list): it is
+		// not drawn again by the next renderer, nor the legacy way. Its list
+		// entry stays, and a renderer that connects later lists it (#12794).
+		h.log.Info("seen informational prompt not re-presented after its renderer changed",
+			"promptId", rec.show.PromptID, "owner", pl.owner.Key(), "from", pl.renderer, "reason", why)
+		h.fence(rec, pl, ob)
+		pl.graceUntil = time.Time{}
+		pl.presented = false
+		return
+	}
 	h.log.Info("prompt falling back", "promptId", rec.show.PromptID, "owner", pl.owner.Key(), "from", pl.renderer, "reason", why)
 	h.fence(rec, pl, ob)
 	pl.graceUntil = time.Time{}
+	// Not a new card: the limiter admitted it when it was first placed (a
+	// list-only placement stays list-only), so a move adds no window beyond
+	// what the card limit already allowed.
 	h.assign(rec, pl, h.choose(rec, pl), now, ob, true)
 }
 
@@ -837,6 +874,9 @@ func (h *Host) onPresented(fromKey string, m ipc.PromptPresented) {
 	}
 	now := h.clock.Now()
 	pl.presented = true
+	if m.Visible || pl.role == ipc.HelperRoleAssist {
+		pl.seen = true
+	}
 	if rec.firstPresentedAt.IsZero() {
 		rec.firstPresentedAt = now
 	}
