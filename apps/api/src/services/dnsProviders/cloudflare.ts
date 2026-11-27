@@ -1,3 +1,4 @@
+import { logLine } from '../logLine';
 import { createHash } from 'node:crypto';
 import type { DnsEvent, DnsEventSlice, DnsProvider } from './index';
 import { requestJson } from './http';
@@ -241,7 +242,7 @@ export class CloudflareGatewayProvider implements DnsProvider {
       data = await this.graphql(DNS_SETTINGS_GQL, { accountTag });
     } catch (error) {
       if (!(error instanceof CloudflareGraphqlError)) throw error;
-      console.warn(`[CloudflareGatewayProvider] could not read dataset retention (${error.message}); assuming 24h retention.`);
+      console.warn(`[CloudflareGatewayProvider] could not read dataset retention (${logLine(error.message)}); assuming 24h retention.`);
       return FALLBACK_RETENTION_MS;
     }
     const account = asRecord(asArray(asRecord(asRecord(data)?.viewer)?.accounts)[0]);

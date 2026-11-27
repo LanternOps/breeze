@@ -5,6 +5,7 @@
  * Handles channel routing, escalation policies, and delivery tracking.
  */
 
+import { logLine } from './logLine';
 import { Queue, Worker, Job, UnrecoverableError } from 'bullmq';
 import * as dbModule from '../db';
 import {
@@ -926,7 +927,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       .returning()
   );
 
-  console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${error}`);
+  console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${logLine(error)}`);
 
   if (!failedRow) {
     // Zero rows: the CAS excludes only 'sent', so this can only mean another

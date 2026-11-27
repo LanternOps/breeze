@@ -1,3 +1,4 @@
+import { logError } from '../services/logLine';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
@@ -1113,7 +1114,7 @@ ssoRoutes.post(
       // 201 announced success for a provider that was dead on arrival, with the
       // reason available nowhere but the API logs. Refusing the write is both
       // honest and strictly safer: nothing is persisted, nothing to clean up.
-      console.warn('OIDC discovery failed or was rejected:', error);
+      console.warn('OIDC discovery failed or was rejected:', logError(error));
       captureException(error instanceof Error ? error : new Error(String(error)));
       return c.json({
         error: `OIDC discovery failed for issuer "${body.issuer}": ${discoveryErrorMessage(error)}`,
@@ -1328,7 +1329,7 @@ ssoRoutes.patch(
       rediscovered.userInfoUrl = discovery.userinfo_endpoint;
       rediscovered.jwksUrl = discovery.jwks_uri;
     } catch (error) {
-      console.warn(`[sso] re-discovery failed for provider ${providerId} after issuer change:`, error);
+      console.warn(`[sso] re-discovery failed for provider ${providerId} after issuer change:`, logError(error));
       captureException(error instanceof Error ? error : new Error(String(error)));
       writeRouteAudit(c, {
         orgId: existing.orgId,
@@ -4053,7 +4054,7 @@ ssoRoutes.get('/callback', async (c) => {
     // IdP exchange cannot replay it. The user simply re-initiates.
     // Sentry too (#2195): this catch wraps the account-takeover-critical
     // identity-linking path, so failures need more visibility than stderr.
-    console.error('SSO callback error:', error);
+    console.error('SSO callback error:', logError(error));
     captureException(error, c);
     clearStateCookie();
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(error.message || 'Authentication failed')}`);
