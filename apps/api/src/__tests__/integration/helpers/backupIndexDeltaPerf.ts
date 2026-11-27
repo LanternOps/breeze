@@ -52,15 +52,17 @@ export function changedEvery(every: number, day: number): SQL {
 }
 
 /**
- * Daily churn over different files each day: on each day 1…`day`, a
- * pseudo-random `perMille`/1000 of the entries is rewritten, a different
- * slice each day. The last day that touched an entry wins.
+ * Daily churn over different files each day: each entry has a pseudo-random
+ * slot in 0…999, and day d rewrites the entries whose slot lies in the d-th
+ * window of `perMille` slots, so consecutive days never share a file until
+ * the windows wrap (every 1000/perMille days: 100 at 1%, 20 at 5%). The last
+ * day that touched an entry wins.
  */
 export function disjointDailyChurn(perMille: number, day: number): SQL {
   if (day <= 0) return unchanged;
   return sql`coalesce((
     SELECT max(d) FROM generate_series(1, ${day}::int) d
-     WHERE ((i::bigint * 2654435761 + d::bigint * 40503) % 1000) < ${perMille}::int
+     WHERE (((i::bigint * 2654435761) % 1000) - ((d - 1)::bigint * ${perMille}::int) % 1000 + 1000) % 1000 < ${perMille}::int
   ), 0)`;
 }
 
@@ -376,7 +378,11 @@ export type PlanSettings = { jit?: 'default' | 'off'; sort?: 'default' | 'off' }
 
 export type Timed<T> = { firstMs: number; medianMs: number; runs: number; result: T | null; error: string | null };
 
-/** `runs` timings of `fn`: the first (coldest) and the median. An error is recorded, not thrown. */
+/**
+ * `runs` timings of `fn`: the first (coldest) and the median. An error is
+ * recorded, not thrown, so the report still carries every other figure; the
+ * caller asserts that no reading has one (measureReaders' `errors`).
+ */
 export async function timedRuns<T>(fn: () => Promise<T>, runs = 3): Promise<Timed<T>> {
   const times: number[] = [];
   let result: T | null = null;
@@ -385,7 +391,8 @@ export async function timedRuns<T>(fn: () => Promise<T>, runs = 3): Promise<Time
     try {
       result = await fn();
     } catch (err) {
-      return { firstMs: times[0] ?? ms(started), medianMs: NaN, runs: r + 1, result, error: err instanceof Error ? err.message.slice(0, 200) : String(err) };
+      // No result on an error, so an earlier run's answer cannot pass a correctness check.
+      return { firstMs: times[0] ?? ms(started), medianMs: NaN, runs: r + 1, result: null, error: err instanceof Error ? err.message.slice(0, 200) : String(err) };
     }
     times.push(ms(started));
   }

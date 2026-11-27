@@ -16,6 +16,9 @@
  *
  * `run` resets the index and starts `measure` once per run. To prove the sampler
  * sees memory, `--ballast-mb 400` holds that many extra bytes during the window.
+ * BACKUP_INDEX_DELTA_PUBLISH in the caller's environment picks the format
+ * (`on`: the run publishes a first checkpoint, `off` or unset: rows); `run`
+ * checks that the snapshot was published in that format.
  *
  * Diagnostics, which change the figure they explain, so never quote them as the
  * measurement: `--gc-every-ms 5000` forces a GC on a timer and reports the live
@@ -207,6 +210,7 @@ async function measure(state: HydrationRssState, opts: MeasureOptions): Promise<
   const { ballastMb, gcEveryMs, heapProfileAtMs } = opts;
   if (typeof (globalThis as { gc?: unknown }).gc !== 'function') throw new Error('run with node --expose-gc');
   process.env.PATCH_REPORT_STORAGE_PATH ||= join(state.dir, 'data', 'patch-reports');
+  if (!state.localRoot) throw new Error('state.json has no localRoot (written before the API-local layout); run prepare again');
   process.env.BACKUP_LOCAL_ROOT = state.localRoot;
   await loadTestEnv();
   const { hydrateSnapshotFileIndex } = await import('../src/services/backupSnapshotFileIndex');
@@ -327,6 +331,14 @@ async function measure(state: HydrationRssState, opts: MeasureOptions): Promise<
 async function resetIndex(state: HydrationRssState): Promise<void> {
   const client = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
   try {
+    // The truncates are whole-table: refuse unless every file-index row
+    // belongs to this run's snapshot and device.
+    const [others] = await client<[{ files: number; checkpoints: number }]>`
+      SELECT (SELECT count(*)::int FROM backup_snapshot_files WHERE snapshot_db_id <> ${state.snapshotDbId}) AS files,
+             (SELECT count(*)::int FROM backup_tree_checkpoints WHERE device_id <> ${state.deviceId}) AS checkpoints`;
+    if (others.files > 0 || others.checkpoints > 0) {
+      throw new Error(`refusing to reset: the test database holds other snapshots' file-index rows (${others.files}) or other devices' checkpoints (${others.checkpoints})`);
+    }
     await client`TRUNCATE backup_snapshot_files`;
     await client`UPDATE backup_snapshots
       SET file_index_status = 'none', file_index_manifest_sha256 = NULL, file_index_hydrated_at = NULL,
@@ -355,6 +367,7 @@ async function indexedRows(state: HydrationRssState): Promise<IndexedRows> {
              (SELECT count(*)::int FROM backup_snapshot_files f WHERE f.snapshot_db_id = s.id AND f.checkpoint_entry_no IS NOT NULL) AS tombstones,
              (SELECT count(*)::int FROM backup_tree_checkpoint_entries e WHERE e.checkpoint_id = s.file_index_checkpoint_id) AS checkpoint_entries
         FROM backup_snapshots s WHERE s.id = ${state.snapshotDbId}`;
+    if (!row) throw new Error(`snapshot ${state.snapshotDbId} is gone`);
     const rows = row.format === 'delta' ? row.checkpoint_entries - row.tombstones + row.adds : row.snapshot_rows;
     return { rows, format: row.format, snapshotRows: row.snapshot_rows, checkpointEntries: row.checkpoint_entries };
   } finally {
@@ -390,6 +403,10 @@ async function runMeasurements(statePath: string, runs: number, outPath: string 
     const indexed = await indexedRows(state);
     const { rows } = indexed;
     if (rows !== state.entries) throw new Error(`run ${i + 1}: ${rows} rows, expected ${state.entries}: ${JSON.stringify(result.outcome)}`);
+    const expectedFormat = (process.env.BACKUP_INDEX_DELTA_PUBLISH ?? 'off') === 'on' ? 'delta' : 'rows';
+    if (indexed.format !== expectedFormat) {
+      throw new Error(`run ${i + 1}: published as ${indexed.format}, expected ${expectedFormat} (BACKUP_INDEX_DELTA_PUBLISH=${process.env.BACKUP_INDEX_DELTA_PUBLISH ?? 'unset'})`);
+    }
     results.push({ ...result, rows, indexed });
     const { series: _series, liveHeap: _liveHeap, heapProfile: _heapProfile, ...line } = result;
     console.log(`run ${i + 1}/${runs} ${JSON.stringify(line)}`);

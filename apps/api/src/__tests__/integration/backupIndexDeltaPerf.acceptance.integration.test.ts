@@ -23,9 +23,10 @@
  * them). Readers are the production functions and statements, run as
  * breeze_app in the snapshot org's request context, so RLS is in every plan.
  * Garbage collection is the production collectUnreferencedCheckpoints. The
- * device move is a raw UPDATE devices after a device row lock, which is the
- * app move's lock order (moveDeviceOrgInTransaction locks the device FOR
- * UPDATE, then updates it) and fires the same triggers.
+ * device move is a raw UPDATE devices after a device row lock: the device and
+ * trigger part of the app move's lock order (moveDeviceOrgInTransaction also
+ * takes both organizations FOR SHARE first, then the device FOR UPDATE, then
+ * updates it), and it fires the same triggers.
  *
  * The figures depend on the machine and the server settings: each report
  * carries the settings it ran under. The test stack's Postgres runs on tmpfs
@@ -51,6 +52,7 @@ import {
   readableSourcePathPageQuery,
   resolveSelectedSnapshotPathsInDb,
   searchSnapshotFiles,
+  SELECTION_PAGE_SIZE,
   withSelectionPagePlan,
 } from '../../services/backupSnapshotBrowse';
 import { snapshotIndexEntries } from '../../services/backupSnapshotIndexEntries';
@@ -202,22 +204,28 @@ async function measureReaders(orgId: string, snapshotDbId: string, n: number, ev
   // where its time goes, and the plan of its slowest page (EXPLAINed bare).
   const pageTimes: number[] = [];
   const pageAfters: Array<string | null> = [];
+  let walkComplete = false;
   await asOrg(orgId, async () => {
     let after: string | null = null;
     const walkEnds = Date.now() + 120_000;
     while (Date.now() < walkEnds) {
       const started = performance.now();
       const cursor = after;
-      const page = (await db.transaction((tx) => withSelectionPagePlan(tx, () => readableSourcePathPageQuery(snapshotDbId, cursor, tx)))) as Array<{ sourcePath: string }>;
+      const page = (await withSelectionPagePlan(30_000, (tx) => readableSourcePathPageQuery(snapshotDbId, cursor, tx))) as Array<{ sourcePath: string }>;
       pageTimes.push(ms(started));
       pageAfters.push(after);
-      if (page.length < 5_000) break;
+      if (page.length < SELECTION_PAGE_SIZE) {
+        walkComplete = true;
+        break;
+      }
       after = page[page.length - 1]!.sourcePath;
     }
   }, { jit: 'off' });
   const sortedPages = [...pageTimes].sort((x, y) => x - y);
   const slowest = pageTimes.indexOf(sortedPages[sortedPages.length - 1] ?? 0);
   const pageWalk = {
+    // false: the 120 s budget ran out first, so the figures cover part of the walk.
+    complete: walkComplete,
     pages: pageTimes.length,
     totalMs: Math.round(pageTimes.reduce((x, y) => x + y, 0)),
     p50Ms: sortedPages[Math.floor(sortedPages.length / 2)] ?? null,
@@ -261,17 +269,24 @@ async function measureReaders(orgId: string, snapshotDbId: string, n: number, ev
     membershipReplaced: timings.membershipReplaced ? (timings.membershipReplaced.result as unknown[] | null)?.length ?? null : null,
     selectionOk: walk?.ok ?? null,
   };
+  // Every timed reading, and the page walk, must have finished without an error.
+  const errors = [
+    ...Object.entries(timings).filter(([, v]) => v?.error).map(([k, v]) => `${k}: ${v!.error}`),
+    ...(walkComplete ? [] : ['pageWalk: did not finish within 120 s']),
+  ];
   const strip = <T,>(t: { firstMs: number; medianMs: number; error: string | null } & T) => ({ firstMs: t.firstMs, medianMs: t.medianMs, error: t.error });
   return {
     timings: Object.fromEntries(Object.entries(timings).map(([k, v]) => [k, v ? strip(v) : null])),
     pageWalk,
     plans,
+    errors,
     correct,
     expected: { count: n, keysGranted: keys.length, membershipUnchanged: 1, membershipReplaced: replacedKey ? 0 : null, selectionOk: true },
   };
 }
 
 function expectCorrect(r: Awaited<ReturnType<typeof measureReaders>>) {
+  expect(r.errors).toEqual([]);
   expect(r.correct).toEqual(r.expected.membershipReplaced === null
     ? { ...r.expected, keysAsked: r.correct.keysAsked, membershipReplaced: null }
     : { ...r.expected, keysAsked: r.correct.keysAsked });
@@ -395,13 +410,15 @@ describe('checkpoint plus delta measurements (#12741)', () => {
   }, 4 * HOUR_MS);
 
   const MODELS: Array<{ name: string; lastDay: (day: number) => SQL }> = [
-    // 1% of files rewritten each day, a different 1% each day: the drift from
-    // the checkpoint grows until the 5% rule rebuilds it.
+    // 1% of files rewritten each day, a different 1% each day (the slices
+    // wrap after 100 days): the drift from the checkpoint grows until the 5%
+    // rule rebuilds it.
     { name: 'disjoint-1pct-daily', lastDay: (d) => disjointDailyChurn(10, d) },
     // The same 1% rewritten every day (mailboxes, databases, logs): the
     // drift stays at 2% and the checkpoint is never rebuilt.
     { name: 'hot-1pct-daily', lastDay: (d) => hotSetChurn(100, d) },
-    // 5% of files a day, different each day: every backup rebuilds.
+    // 5% of files a day, different each day (the slices wrap after 20 days):
+    // every backup rebuilds.
     { name: 'disjoint-5pct-daily', lastDay: (d) => disjointDailyChurn(50, d) },
   ];
 
