@@ -48,19 +48,23 @@ const ALLOWLIST: Readonly<Record<string, string>> = {
   'apps/api/src/db/schema/backup.ts': 'The table definition and its index names.',
   'apps/api/src/services/backupSnapshotFileIndexStatistics.ts':
     'Maintenance, not a read: it calls breeze_analyze_backup_snapshot_files() and names the table in log text.',
+  'apps/api/src/services/backupSnapshotIndexPublish.ts':
+    'The writer (#11736 step 2). It reads checkpoint entries only to diff a verified manifest against them, '
+    + 'inside the publish transaction under the lineage lock, and writes the delta or a new checkpoint. '
+    + 'It never serves a snapshot\'s tree to a caller.',
+  // Checkpoint GC (services/backupTreeCheckpointGc.ts) is not listed: it
+  // deletes headers and their entries go by ON DELETE CASCADE, so it names
+  // neither table. The "still needs its entry" check below keeps it that way.
 };
 
 /**
- * Writers exempted by path before their files exist: the checkpoint publisher
- * and GC (#11736 step 2). The existence check below covers only ALLOWLIST.
- * When one of these files is added, move its entry to ALLOWLIST.
+ * Files exempted by path before they exist, so a wave can pre-allow the
+ * writer the next wave adds without that wave editing this contract. Empty
+ * now: #11736 step 2's publisher has landed and is in ALLOWLIST. A check
+ * below fails once a pending file exists, so an entry cannot outlive its
+ * reason.
  */
-const PENDING_ALLOWLIST: Readonly<Record<string, string>> = {
-  'apps/api/src/services/backupSnapshotIndexPublish.ts':
-    'Writer: diffs a verified manifest against its checkpoint inside the publish transaction (#11736)',
-  'apps/api/src/services/backupTreeCheckpointGc.ts':
-    'Checkpoint GC: deletes unreferenced checkpoints (#11736)',
-};
+const PENDING_ALLOWLIST: Readonly<Record<string, string>> = {};
 
 function listSourceFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -279,6 +283,17 @@ describe('a snapshot\'s file index tables are read only through snapshotIndexEnt
     for (const rel of Object.keys(ALLOWLIST)) {
       expect(existsSync(join(REPO_ROOT, rel)), rel).toBe(true);
     }
+  });
+
+  it('every allowlisted file still needs its entry: without it, the scan would report the file', () => {
+    const unneeded = Object.keys(ALLOWLIST)
+      .filter((rel) => findDirectIndexReads(readFileSync(join(REPO_ROOT, rel), 'utf8')).length === 0);
+    expect(unneeded, 'Drop these entries: an exemption a file does not need would hide its next direct read.').toEqual([]);
+  });
+
+  it('a pending entry names a file that does not exist yet', () => {
+    const landed = Object.keys(PENDING_ALLOWLIST).filter((rel) => existsSync(join(REPO_ROOT, rel)));
+    expect(landed, 'Move these entries to ALLOWLIST, with the reason each file may name the tables.').toEqual([]);
   });
 
   it('no file outside the read layer reads either table', () => {
