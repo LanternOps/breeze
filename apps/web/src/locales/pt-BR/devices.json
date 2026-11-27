@@ -1011,6 +1011,7 @@
     "endpointProtectionEdr": "Proteção de endpoint (EDR)",
     "isolateDevice": "Isolar dispositivo",
     "removeIsolation": "Remover isolamento",
+    "s1StatusUnknown": "Não foi possível verificar o isolamento do SentinelOne para este dispositivo",
     "sentineloneThreats": "Ameaças do SentinelOne",
     "loading": "Carregando…",
     "noSentineloneThreatsForThisDevice": "Nenhuma ameaça do SentinelOne neste dispositivo.",
@@ -4567,7 +4568,7 @@
         "detached_unsettled": "O mapeamento da empresa mudou antes da conclusão",
         "vendor_status_timeout": "A tarefa do fornecedor não terminou em 24 horas",
         "vendor_task_failed": "O fornecedor informou que a tarefa falhou",
-        "isolation_unconfirmed": "Aceita, mas o dispositivo não confirmou em 24 horas; verifique o console do fornecedor",
+        "isolation_unconfirmed": "Aceita, mas o dispositivo não confirmou em 24 horas. A tarefa do fornecedor ainda pode ser aplicada quando o dispositivo se reconectar; verifique o console do fornecedor",
         "unknown": "A ação não foi concluída"
       }
     }

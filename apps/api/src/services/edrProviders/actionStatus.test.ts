@@ -53,7 +53,7 @@ vi.mock('drizzle-orm', () => ({
   asc: (c: unknown) => c,
 }));
 vi.mock('../../db/schema', () => ({
-  edrActions: { id: 'id', status: 'status', connectionId: 'connection_id', detachedAt: 'detached_at', requestedAt: 'requested_at' },
+  edrActions: { id: 'id', status: 'status', connectionId: 'connection_id', detachedAt: 'detached_at', requestedAt: 'requested_at', updatedAt: 'updated_at' },
   edrConnections: { id: 'id' },
   edrEndpoints: { id: 'id', isolationState: 'isolation_state', connectionId: 'connection_id' },
   edrTenants: { id: 'id' },
@@ -92,6 +92,9 @@ function arrange(rows: unknown[]) {
   h.state.selects = [[connection], rows, rows.length ? [tenant] : []];
 }
 
+/** Status writes only (a checked-but-unsettled row also gets an updated_at stamp). */
+const settles = () => h.state.updates.filter((u) => 'status' in u.set);
+
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(h.state, { held: null, selects: [], updates: [], casMiss: new Set() });
@@ -108,7 +111,7 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
     expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 0 });
     arrange([row({ ...detached, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000) })]);
     expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 1 });
-    expect(h.state.updates.at(-1)).toMatchObject({ set: { status: 'failed', error: 'detached_unsettled' } });
+    expect(settles().at(-1)).toMatchObject({ set: { status: 'failed', error: 'detached_unsettled' } });
     expect(h.reconcileAction).not.toHaveBeenCalled();
     expect(h.getActionStatus).not.toHaveBeenCalled();
   });
@@ -117,7 +120,7 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
     arrange([row({ requestedAt: ago(EDR_ACTION_UNKNOWN_GRACE_MS - 1000) })]);
     expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 0 });
     expect(h.reconcileAction).not.toHaveBeenCalled();
-    expect(h.state.updates).toHaveLength(0);
+    expect(settles()).toHaveLength(0);
   });
 
   it.each([
@@ -134,8 +137,8 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
       { vendorTenantId: 'company-1', apiHost: null },
       { action: 'isolate', target: { kind: 'endpoint', vendorEndpointId: 'ep-v' } },
     ]);
-    expect(h.state.updates[0]!.set).toMatchObject({ status, error });
-    expect(JSON.stringify(h.state.updates[0]!.where)).toContain('"queued"');
+    expect(settles()[0]!.set).toMatchObject({ status, error });
+    expect(JSON.stringify(settles()[0]!.where)).toContain('"queued"');
     expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: `edr.action.${status}`, details: expect.objectContaining({ reconciled: true }),
     }));
@@ -145,7 +148,7 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
     arrange([row({ requestedAt: ago(EDR_ACTION_UNKNOWN_GRACE_MS + 60_000) })]);
     h.reconcileAction.mockResolvedValue('not_applied');
     expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
-    expect(h.state.updates).toHaveLength(0);
+    expect(settles()).toHaveLength(0);
   });
 
   it('vendor read failures are logged with the action id (not silently treated as pending)', async () => {
@@ -164,7 +167,7 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
 
     arrange([row({ requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000) })]);
     expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
-    expect(h.state.updates[0]!.set).toMatchObject({ status: 'failed', error: 'outcome_unknown_reissue_manually' });
+    expect(settles()[0]!.set).toMatchObject({ status: 'failed', error: 'outcome_unknown_reissue_manually' });
   });
 
   it('queued + reconcile throws (transient) → treated as unknown: unchanged while young', async () => {
@@ -181,8 +184,8 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
     h.getActionStatus.mockResolvedValue(result);
     expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
     expect(h.getActionStatus.mock.calls[0]![2]).toBe('task-1');
-    expect(h.state.updates[0]!.set).toMatchObject({ status, error });
-    expect(JSON.stringify(h.state.updates[0]!.where)).toContain('"submitted"');
+    expect(settles()[0]!.set).toMatchObject({ status, error });
+    expect(JSON.stringify(settles()[0]!.where)).toContain('"submitted"');
   });
 
   it('submitted + still pending → unchanged; past the 24 h timeout → failed/vendor_status_timeout', async () => {
@@ -192,90 +195,141 @@ describe('pollEdrActionStatus — settle open actions, never re-send', () => {
 
     arrange([row({ action: 'scan', status: 'submitted', vendorActionId: 'task-1', submittedAt: ago(EDR_ACTION_SUBMITTED_TIMEOUT_MS + 1) })]);
     expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
-    expect(h.state.updates[0]!.set).toMatchObject({ status: 'failed', error: 'vendor_status_timeout' });
+    expect(settles()[0]!.set).toMatchObject({ status: 'failed', error: 'vendor_status_timeout' });
   });
 
   it('submitted + transient getActionStatus failure → unchanged', async () => {
     arrange([row({ action: 'scan', status: 'submitted', vendorActionId: 'task-1', submittedAt: ago(60_000) })]);
     h.getActionStatus.mockRejectedValue(new Error('502'));
     expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
-    expect(h.state.updates).toHaveLength(0);
+    expect(settles()).toHaveLength(0);
   });
 
-  describe('#12789 item 5: an accepted isolate / un-isolate is confirmed from the next inventory sync', () => {
+  describe('#12789 item 5: an accepted isolate / un-isolate is confirmed only by a live vendor read', () => {
     const submitted = (action: 'isolate' | 'unisolate', over: Record<string, unknown> = {}) =>
       row({ action, status: 'submitted', vendorActionId: null, submittedAt: ago(10 * 60_000), ...over });
-    const arrangeConfirm = (r: unknown, o: { syncedAgo: number | null; isolationState: string | null }) => {
+    // Inventory facts the reconciler must NOT use: a sync that "finished" after the
+    // submission and shows the target state (its vendor read may predate the request).
+    const arrangeWithInventory = (r: unknown, isolationState = 'isolated') => {
       h.state.selects = [
         [connection],
         [r],
-        [{ ...tenant, lastInventorySyncAt: o.syncedAgo === null ? null : ago(o.syncedAgo) }],
-        o.isolationState === null ? [] : [{ id: 'ep-1', isolationState: o.isolationState }],
+        [{ ...tenant, lastInventorySyncAt: ago(60_000) }],
+        [{ id: 'ep-1', isolationState }],
       ];
     };
 
     it.each([
-      ['isolate', 'isolated'],
-      ['unisolate', 'not_isolated'],
-    ] as const)('%s + an inventory sync after submission shows %s → succeeded (CAS on submitted), audited as confirmed', async (action, state) => {
-      arrangeConfirm(submitted(action), { syncedAgo: 60_000, isolationState: state });
+      ['isolate'],
+      ['unisolate'],
+    ] as const)('%s + the live vendor read says applied → succeeded (CAS on submitted), audited as confirmed by the vendor read', async (action) => {
+      arrange([submitted(action)]);
+      h.reconcileAction.mockResolvedValue('applied');
       expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 1, settled: 1 });
-      expect(h.state.updates[0]!.set).toMatchObject({ status: 'succeeded', error: null });
-      expect(JSON.stringify(h.state.updates[0]!.where)).toContain('"submitted"');
+      expect(h.reconcileAction.mock.calls[0]!.slice(1)).toEqual([
+        { vendorTenantId: 'company-1', apiHost: null },
+        { action, target: { kind: 'endpoint', vendorEndpointId: 'ep-v' } },
+      ]);
+      expect(settles()[0]!.set).toMatchObject({ status: 'succeeded', error: null });
+      expect(JSON.stringify(settles()[0]!.where)).toContain('"submitted"');
       expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
-        action: 'edr.action.succeeded', details: expect.objectContaining({ reconciled: true, confirmedBy: 'inventory' }),
+        action: 'edr.action.succeeded', details: expect.objectContaining({ reconciled: true, confirmedBy: 'vendor_read' }),
       }));
-      expect(h.getActionStatus).not.toHaveBeenCalled();
     });
 
-    it('the target state seen only by a sync that ran BEFORE the submission does not confirm', async () => {
-      arrangeConfirm(submitted('isolate'), { syncedAgo: 20 * 60_000, isolationState: 'isolated' });
+    it('a sync that finished after the request and shows the endpoint isolated does NOT confirm it: its vendor read may predate the request', async () => {
+      arrangeWithInventory(submitted('isolate'));
+      h.reconcileAction.mockResolvedValue('unknown');
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
-      expect(h.state.updates).toHaveLength(0);
+      expect(settles()).toHaveLength(0);
+      // The live read is the evidence, not the stored inventory.
+      expect(h.reconcileAction).toHaveBeenCalledTimes(1);
     });
 
-    it.each(['not_isolated', 'pending', 'unknown'])('isolate + a fresh sync still showing %s → left awaiting confirmation', async (state) => {
-      arrangeConfirm(submitted('isolate'), { syncedAgo: 60_000, isolationState: state });
+    it.each(['not_applied', 'unknown'] as const)('the live read says %s → left awaiting confirmation', async (verdict) => {
+      arrange([submitted('isolate')]);
+      h.reconcileAction.mockResolvedValue(verdict);
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
-      expect(h.state.updates).toHaveLength(0);
+      expect(settles()).toHaveLength(0);
+    });
+
+    it('a failed live read is logged and leaves the row waiting (never treated as confirmation)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      arrange([submitted('isolate')]);
+      h.reconcileAction.mockRejectedValue(new Error('502'));
+      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('act-1'), expect.anything());
+      warn.mockRestore();
     });
 
     it('never confirmed within 24 h → failed/isolation_unconfirmed (not vendor_status_timeout)', async () => {
-      arrangeConfirm(submitted('isolate', { submittedAt: ago(EDR_ACTION_SUBMITTED_TIMEOUT_MS + 1) }), { syncedAgo: 60_000, isolationState: 'not_isolated' });
+      arrange([submitted('isolate', { submittedAt: ago(EDR_ACTION_SUBMITTED_TIMEOUT_MS + 1) })]);
+      h.reconcileAction.mockResolvedValue('not_applied');
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
-      expect(h.state.updates[0]!.set).toMatchObject({ status: 'failed', error: 'isolation_unconfirmed' });
+      expect(settles()[0]!.set).toMatchObject({ status: 'failed', error: 'isolation_unconfirmed' });
     });
 
-    it('a vendor task that reports success still waits for inventory; a failed task fails the row', async () => {
-      arrangeConfirm(submitted('isolate', { vendorActionId: 'task-1' }), { syncedAgo: 60_000, isolationState: 'not_isolated' });
+    it('a vendor task that reports success still waits for the endpoint state; a failed task fails the row', async () => {
+      arrange([submitted('isolate', { vendorActionId: 'task-1' })]);
+      h.reconcileAction.mockResolvedValue('not_applied');
       h.getActionStatus.mockResolvedValue({ status: 'succeeded' });
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
 
-      arrangeConfirm(submitted('isolate', { vendorActionId: 'task-1' }), { syncedAgo: 60_000, isolationState: 'not_isolated' });
+      arrange([submitted('isolate', { vendorActionId: 'task-1' })]);
       h.getActionStatus.mockResolvedValue({ status: 'failed', code: 'x', message: 'y' });
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
-      expect(h.state.updates.at(-1)!.set).toMatchObject({ status: 'failed', error: 'vendor_task_failed' });
+      expect(settles().at(-1)!.set).toMatchObject({ status: 'failed', error: 'vendor_task_failed' });
     });
 
-    it('a sync that finished at exactly the submission instant does not confirm (strictly after)', async () => {
-      const at = ago(10 * 60_000);
-      arrangeConfirm(submitted('isolate', { submittedAt: at }), { syncedAgo: 10 * 60_000, isolationState: 'isolated' });
+    it('a detached submitted isolate is never read from the vendor; it only gets the give-up', async () => {
+      arrange([submitted('isolate', { detachedAt: ago(60_000), tenantId: null, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS - 1000) })]);
+      h.reconcileAction.mockResolvedValue('applied');
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
-    });
-
-    it('a detached submitted isolate never confirms from inventory; it only gets the give-up', async () => {
-      arrangeConfirm(submitted('isolate', { detachedAt: ago(60_000), tenantId: null, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS - 1000) }),
-        { syncedAgo: 60_000, isolationState: 'isolated' });
-      expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
-      arrangeConfirm(submitted('isolate', { detachedAt: ago(60_000), tenantId: null, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000) }),
-        { syncedAgo: 60_000, isolationState: 'isolated' });
+      arrange([submitted('isolate', { detachedAt: ago(60_000), tenantId: null, requestedAt: ago(EDR_ACTION_UNKNOWN_GIVEUP_MS + 1000) })]);
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(1);
-      expect(h.state.updates.at(-1)!.set).toMatchObject({ status: 'failed', error: 'detached_unsettled' });
+      expect(settles().at(-1)!.set).toMatchObject({ status: 'failed', error: 'detached_unsettled' });
+      expect(h.reconcileAction).not.toHaveBeenCalled();
     });
 
-    it('an endpoint the inventory pruned (no row) cannot confirm; it only times out', async () => {
-      arrangeConfirm(submitted('isolate', { endpointId: null }), { syncedAgo: 60_000, isolationState: null });
+    it('a row without a stored target cannot be read back → waits, then times out', async () => {
+      arrange([submitted('isolate', { payload: {} })]);
       expect((await pollEdrActionStatus('c1', NOW)).settled).toBe(0);
+      expect(h.reconcileAction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#12789 review: every open row is checked, not only the oldest page', () => {
+    const many = (n: number, from = 0) => Array.from({ length: n }, (_, i) => row({
+      id: `act-${from + i}`, action: 'isolate', status: 'submitted', vendorActionId: null, submittedAt: ago(10 * 60_000),
+      requestedAt: ago(10 * 60_000), endpointId: `ep-${from + i}`,
+    }));
+
+    it('more open rows than one page: every page is read and every row gets a live read in one run', async () => {
+      h.state.selects = [[connection], many(50, 0), [tenant], many(50, 50), [tenant], many(20, 100), [tenant]];
+      h.reconcileAction.mockResolvedValue('unknown');
+      expect(await pollEdrActionStatus('c1', NOW)).toEqual({ checked: 120, settled: 0 });
+      expect(h.reconcileAction).toHaveBeenCalledTimes(120);
+    });
+
+    it('rows are taken least recently checked first, and a checked row is stamped so the next page and run move past it', async () => {
+      h.state.selects = [[connection], many(3), [tenant]];
+      h.reconcileAction.mockResolvedValue('unknown');
+      await pollEdrActionStatus('c1', NOW);
+      const rowsQuery = h.db.select.mock.results[1]!.value as { orderBy: ReturnType<typeof vi.fn>; where: ReturnType<typeof vi.fn> };
+      expect(rowsQuery.orderBy.mock.calls[0]![0]).toBe('updated_at');
+      // Only rows not yet checked in this run are read.
+      expect(JSON.stringify(rowsQuery.where.mock.calls[0]![0])).toContain('"lt":["updated_at"');
+      const stamp = h.state.updates.find((u) => !('status' in u.set))!;
+      expect(stamp.set).toEqual({ updatedAt: expect.any(Date) });
+      expect(JSON.stringify(stamp.where)).toContain('"act-0"');
+      expect(JSON.stringify(stamp.where)).toContain('"act-2"');
+    });
+
+    it('stops at the run budget; the rows it did not reach are the least recently checked next run', async () => {
+      h.state.selects = [[connection], many(50, 0), [tenant], many(50, 50), [tenant]];
+      h.reconcileAction.mockResolvedValue('unknown');
+      expect((await pollEdrActionStatus('c1', NOW, { budgetMs: 0 })).checked).toBe(50);
+      expect(h.reconcileAction).toHaveBeenCalledTimes(50);
     });
   });
 

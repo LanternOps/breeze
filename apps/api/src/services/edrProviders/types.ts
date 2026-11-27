@@ -259,7 +259,11 @@ export interface EdrProviderAdapter {
     tenant: VendorEdrTenantRef,
     vendorActionId: string,
   ): Promise<EdrActionResult | { status: 'submitted' }>;
-  /** W03. Crash/ambiguity reconciliation. Read-only vendor calls ONLY — never re-sends. */
+  /**
+   * W03. Crash/ambiguity reconciliation. Read-only vendor calls ONLY — never re-sends.
+   * Also the only confirmation of an accepted isolate / un-isolate (#12789): a
+   * live read taken after the request. Required for an adapter offering either.
+   */
   reconcileAction?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, req: EdrActionRequest): Promise<EdrReconcileVerdict>;
   /**
    * W03 PR-B. PURE secret check + hint extraction for an inbound vendor push.

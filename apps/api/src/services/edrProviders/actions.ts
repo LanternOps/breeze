@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   EDR_ENDPOINT_ACTIONS,
-  isEdrInventoryConfirmedAction,
+  isEdrStateConfirmedAction,
   type EdrActionKey,
   type EdrActionRequestedVia,
   type EdrActionStatus,
@@ -102,7 +102,7 @@ export interface EdrActionOutcome {
   outcomeUnknown: boolean;
   /**
    * The vendor accepted an isolate / un-isolate; the row stays `submitted`
-   * until an inventory sync confirms the endpoint's isolation state (#12789).
+   * until a live read of the endpoint confirms its isolation state (#12789).
    * Never report the device as isolated (or released) while this is true.
    */
   awaitingConfirmation: boolean;
@@ -203,7 +203,7 @@ export function ledgerBlockReason(
   const open = rows.find((r) => r.status === 'queued' || r.status === 'submitted');
   if (open) {
     if (open.status === 'queued' && open.error === 'dispatch_outcome_unknown') return EDR_ACTION_OUTCOME_UNKNOWN_REASON;
-    if (open.status === 'submitted' && isEdrInventoryConfirmedAction(open.action)) return EDR_ACTION_AWAITING_CONFIRMATION_REASON;
+    if (open.status === 'submitted' && isEdrStateConfirmedAction(open.action)) return EDR_ACTION_AWAITING_CONFIRMATION_REASON;
     return EDR_ACTION_IN_PROGRESS_REASON;
   }
   const cutoff = now.getTime() - EDR_ACTION_COOLDOWN_MS;
@@ -510,7 +510,6 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
   // action id and might re-issue): log it and return what the vendor said. The
   // row stays `queued` and the reconciler settles it from vendor state.
   let outcome: EdrActionOutcome;
-  let vendorReason: string | null = null;
   const writeAt = new Date();
   const guardedWrite = async (fn: () => Promise<unknown>): Promise<void> => {
     try {
@@ -522,9 +521,9 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
   if (result) {
     // #12789: the vendor ACCEPTING an isolate / un-isolate is not the endpoint
     // being isolated (it may be offline). Whatever the adapter answered, the
-    // row stays `submitted` (in flight) until an inventory sync confirms the
+    // row stays `submitted` (in flight) until a live read of the endpoint confirms the
     // isolation state (actionStatus.ts). Other actions settle here as before.
-    const awaitingConfirmation = isEdrInventoryConfirmedAction(action);
+    const awaitingConfirmation = isEdrStateConfirmedAction(action);
     const vendorActionId = result.status === 'submitted' ? result.vendorActionId.slice(0, 255) : null;
     const status: 'succeeded' | 'submitted' = result.status === 'succeeded' && !awaitingConfirmation ? 'succeeded' : 'submitted';
     const set = status === 'succeeded'
@@ -535,7 +534,6 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     outcome = { actionId, status, outcomeUnknown: false, awaitingConfirmation, error: null, message: null, httpStatus: 200 };
   } else {
     const c = classifyVendorActionError(thrown, secretsOf(creds));
-    vendorReason = c.vendorReason;
     await guardedWrite(async () => {
       await db.update(edrActions)
         .set(c.rowStatus === 'failed'
@@ -586,12 +584,13 @@ export async function dispatchEdrAction(actor: EdrActionActor, input: EdrActionT
     action: outcomeAudit(outcome.status, outcome.outcomeUnknown),
     resourceType: 'edr_action',
     resourceId: actionId,
+    // Vendor text (`payload.vendorReason`) stays on the ledger row only: audit
+    // details are readable by AI tools, and vendor text never reaches the model.
     details: {
       ...auditDetails,
       status: outcome.status,
       error: outcome.error,
       ...(outcome.awaitingConfirmation ? { awaitingConfirmation: true } : {}),
-      ...(vendorReason ? { vendorReason } : {}),
     },
     result: outcome.outcomeUnknown ? 'dispatched' : outcome.status === 'failed' ? 'failure' : 'success',
     initiatedBy: actor.requestedVia === 'ai' ? 'ai' : 'manual',

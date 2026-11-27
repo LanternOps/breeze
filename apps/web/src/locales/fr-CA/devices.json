@@ -1011,6 +1011,7 @@
     "endpointProtectionEdr": "Protection des terminaux (EDR)",
     "isolateDevice": "Dispositif d’isolement",
     "removeIsolation": "Lever l’isolement",
+    "s1StatusUnknown": "Impossible de vérifier l’isolement SentinelOne pour cet appareil",
     "sentineloneThreats": "SentinelOne Menaces",
     "loading": "Chargement...",
     "noSentineloneThreatsForThisDevice": "Aucune menace SentinelOne pour cet appareil.",
@@ -4567,7 +4568,7 @@
         "detached_unsettled": "L'association de l'entreprise a changé avant la fin",
         "vendor_status_timeout": "La tâche du fournisseur ne s'est pas terminée en 24 heures",
         "vendor_task_failed": "Le fournisseur a signalé que la tâche a échoué",
-        "isolation_unconfirmed": "Acceptée, mais l'appareil ne l'a jamais confirmée en 24 heures; vérifiez la console du fournisseur",
+        "isolation_unconfirmed": "Acceptée, mais l'appareil ne l'a pas confirmée en 24 heures. La tâche du fournisseur peut encore s'appliquer quand l'appareil se reconnectera; vérifiez la console du fournisseur",
         "unknown": "L'action ne s'est pas terminée"
       }
     }

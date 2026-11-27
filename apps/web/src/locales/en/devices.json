@@ -1011,6 +1011,7 @@
     "endpointProtectionEdr": "Endpoint Protection (EDR)",
     "isolateDevice": "Isolate device",
     "removeIsolation": "Remove isolation",
+    "s1StatusUnknown": "Could not check SentinelOne isolation for this device",
     "sentineloneThreats": "SentinelOne Threats",
     "loading": "Loading…",
     "noSentineloneThreatsForThisDevice": "No SentinelOne threats for this device.",
@@ -4567,7 +4568,7 @@
         "detached_unsettled": "The company mapping changed before this finished",
         "vendor_status_timeout": "The vendor task did not finish within 24 hours",
         "vendor_task_failed": "The vendor reported that the task failed",
-        "isolation_unconfirmed": "Accepted, but the device never confirmed it within 24 hours; check the vendor console",
+        "isolation_unconfirmed": "Accepted, but the device did not confirm it within 24 hours. The vendor's task may still apply when the device reconnects; check the vendor console",
         "unknown": "The action did not complete"
       }
     }

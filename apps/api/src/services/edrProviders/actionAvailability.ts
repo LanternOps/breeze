@@ -7,6 +7,7 @@ import { hasPermission, PERMISSIONS, type UserPermissions } from '../permissions
 import { describeEndpointActions, type EdrActionLedgerFact } from './actions';
 import { EDR_ACTION_COOLDOWN_MS } from './actionTargets';
 import { resolveEdrReadScope } from './read';
+import { chunkRows } from '../../utils/chunkRows';
 
 /**
  * W03 (#8167): `actions` availability for `GET /edr/endpoints` rows — no
@@ -89,6 +90,13 @@ export async function describeEndpointActionsForRows(
 }
 
 /**
+ * Endpoint ids per ledger query. `GET /edr/endpoints` has no row limit, and one
+ * bind parameter per id would break the whole list past the 65,534-parameter
+ * statement limit for a very large partner (#12789 review).
+ */
+export const EDR_LEDGER_ID_CHUNK = 1000;
+
+/**
  * The rows `lockAndRecheckEdrActionTarget` would count: open (queued /
  * submitted) per (endpoint, action), and successes inside the cooldown.
  * Endpoint ids come from rows the caller already read; RLS fences this read.
@@ -98,24 +106,28 @@ export async function describeEndpointActionsForRows(
  */
 async function loadLedger(endpointIds: string[], now: Date): Promise<Map<string, EdrActionLedgerFact[]>> {
   const out = new Map<string, EdrActionLedgerFact[]>();
-  const rows = await db.select({
-    endpointId: edrActions.endpointId,
-    action: edrActions.action,
-    status: edrActions.status,
-    error: edrActions.error,
-    requestedAt: edrActions.requestedAt,
-  }).from(edrActions).where(and(
-    inArray(edrActions.endpointId, endpointIds),
-    or(
-      inArray(edrActions.status, ['queued', 'submitted']),
-      and(eq(edrActions.status, 'succeeded'), gt(edrActions.requestedAt, new Date(now.getTime() - EDR_ACTION_COOLDOWN_MS))),
-    ),
-  ));
-  for (const r of rows) {
-    if (!r.endpointId) continue;
-    const list = out.get(r.endpointId) ?? [];
-    list.push({ action: r.action, status: r.status, error: r.error ?? null, requestedAt: r.requestedAt });
-    out.set(r.endpointId, list);
+  const cooldownStart = new Date(now.getTime() - EDR_ACTION_COOLDOWN_MS);
+  // Sequential: these run in the caller's request transaction.
+  for (const ids of chunkRows(endpointIds, EDR_LEDGER_ID_CHUNK)) {
+    const rows = await db.select({
+      endpointId: edrActions.endpointId,
+      action: edrActions.action,
+      status: edrActions.status,
+      error: edrActions.error,
+      requestedAt: edrActions.requestedAt,
+    }).from(edrActions).where(and(
+      inArray(edrActions.endpointId, ids),
+      or(
+        inArray(edrActions.status, ['queued', 'submitted']),
+        and(eq(edrActions.status, 'succeeded'), gt(edrActions.requestedAt, cooldownStart)),
+      ),
+    ));
+    for (const r of rows) {
+      if (!r.endpointId) continue;
+      const list = out.get(r.endpointId) ?? [];
+      list.push({ action: r.action, status: r.status, error: r.error ?? null, requestedAt: r.requestedAt });
+      out.set(r.endpointId, list);
+    }
   }
   return out;
 }

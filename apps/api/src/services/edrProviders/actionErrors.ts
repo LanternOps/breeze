@@ -58,7 +58,7 @@ export interface VendorActionErrorClass {
   /**
    * The vendor's own rejection text (`vendor_rejected` only), sanitised by
    * `scrubVendorMessage` and capped at `EDR_VENDOR_REASON_MAX`. Stored on the
-   * ledger row (`payload.vendorReason`) and in the outcome audit (#12789). Null
+   * ledger row (`payload.vendorReason`) only, never in audit details (#12789). Null
    * for every Breeze-worded outcome.
    */
   vendorReason: string | null;
@@ -78,6 +78,9 @@ export const EDR_VENDOR_REASON_MAX = 300;
 // eslint-disable-next-line no-control-regex
 const CONTROL_OR_BIDI = /[\u0000-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 const MARKUP_TAG = /<[^<>]*>/g;
+// Zero-width and invisible marks (ZWSP, ZWNJ, ZWJ, word joiner, BOM, Arabic
+// letter mark) are removed outright, not spaced: they can split a word or hide text.
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF\u061C]/g;
 
 /**
  * Vendor-supplied text → plain text that is safe to store, show a technician
@@ -88,6 +91,7 @@ export function scrubVendorMessage(text: string, secrets: readonly string[] = []
   let out = text;
   for (const s of secrets) if (s.length >= 4) out = out.split(s).join('[redacted]');
   out = out
+    .replace(INVISIBLE, '')
     .replace(CONTROL_OR_BIDI, ' ')
     .replace(MARKUP_TAG, ' ')
     // Stray angle brackets left by malformed markup carry no meaning in plain text.

@@ -96,6 +96,11 @@ describe('classifyVendorActionError — the W03 A5 mapping table', () => {
     expect(scrubVendorMessage('<<<>>>')).toBe('');
   });
 
+  it('#12789 review: zero-width and invisible marks are removed, so hidden text cannot split or disguise a word', () => {
+    const raw = 'Iso​lated‌ by‍ ad﻿min؜ now⁠';
+    expect(scrubVendorMessage(raw)).toBe('Isolated by admin now');
+  });
+
   it('#12789: the stored vendor reason is capped at EDR_VENDOR_REASON_MAX and never carries the key', () => {
     const r = classifyVendorActionError(
       vendorErr('not_found', { message: `GravityZone incidents.createIsolateEndpointTask failed: SECRETKEY123 ${'y'.repeat(900)}` }),

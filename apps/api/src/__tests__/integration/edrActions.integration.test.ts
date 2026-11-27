@@ -24,6 +24,10 @@ const fake = vi.hoisted(() => ({
   reads: 0,
   /** Runs after the caller-context target read, before the insert (cooldown-race seam). */
   afterResolve: null as null | (() => Promise<void>),
+  /** The live endpoint read's verdict (#12789: the only confirmation of an accepted isolate). */
+  reconcile: 'unknown' as 'applied' | 'not_applied' | 'unknown',
+  /** Vendor endpoint ids the reconciler read, in order. */
+  readTargets: [] as string[],
 }));
 vi.mock('../../services/edrProviders/credentials', async () => {
   const actual = await vi.importActual<typeof import('../../services/edrProviders/credentials')>('../../services/edrProviders/credentials');
@@ -46,7 +50,11 @@ vi.mock('../../services/edrProviders/registry', async () => {
     supportsAction: (facts: never, action: never) =>
       (fake.extraActions as string[]).includes(action) ? { ok: true } : real.supportsAction!(facts, action),
     performAction: (...a: unknown[]) => { fake.calls += 1; return fake.performAction(...a); },
-    reconcileAction: async () => { fake.reads += 1; return 'unknown'; },
+    reconcileAction: async (_ctx: unknown, _tenant: unknown, req: { target: { vendorEndpointId?: string } }) => {
+      fake.reads += 1;
+      fake.readTargets.push(req.target.vendorEndpointId ?? '');
+      return fake.reconcile;
+    },
     getActionStatus: async () => { fake.reads += 1; return { status: 'pending' }; },
   };
   return { ...actual, getEdrProvider: () => adapter };
@@ -284,6 +292,8 @@ describe('edr actions — tenancy and dispatch (real PostgreSQL)', () => {
     fake.reads = 0;
     fake.afterResolve = null;
     fake.extraActions = [];
+    fake.reconcile = 'unknown';
+    fake.readTargets = [];
     fake.performAction.mockReset();
     fake.performAction.mockResolvedValue({ status: 'succeeded' });
   });
@@ -400,6 +410,8 @@ describe('edr actions — target resolution, cooldown and site rule (real Postgr
     fake.reads = 0;
     fake.afterResolve = null;
     fake.extraActions = [];
+    fake.reconcile = 'unknown';
+    fake.readTargets = [];
     fake.performAction.mockReset();
     fake.performAction.mockResolvedValue({ status: 'succeeded' });
   });
@@ -566,6 +578,8 @@ describe('edr actions — rows detached by a remap settle (real PostgreSQL)', ()
     fake.reads = 0;
     fake.afterResolve = null;
     fake.extraActions = [];
+    fake.reconcile = 'unknown';
+    fake.readTargets = [];
   });
 
   runDb('a remap detaches open rows: no sweep job inside the give-up window; after it the reconciler fails them detached_unsettled with no vendor call', async () => {
@@ -622,6 +636,8 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     fake.reads = 0;
     fake.afterResolve = null;
     fake.extraActions = [];
+    fake.reconcile = 'unknown';
+    fake.readTargets = [];
     fake.performAction.mockReset();
     fake.performAction.mockResolvedValue({ status: 'succeeded' });
   });
@@ -642,7 +658,7 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     return out.get(t.endpoint.id)!;
   };
 
-  runDb('item 5: an accepted un-isolate is confirmed only by a later sync showing not_isolated', async () => {
+  runDb('item 5: an accepted un-isolate is confirmed only by a live read showing it released', async () => {
     const a = await seedEdrTenant('accept-release');
     await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'isolated' WHERE id = ${a.endpoint.id}`);
     const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'unisolate' });
@@ -650,15 +666,19 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     // The list says it is awaiting confirmation, and dispatch refuses a second release.
     expect((await listActionsFor(a, partnerAuth(a))).find((x) => x.action === 'unisolate'))
       .toMatchObject({ available: false, reason: expect.stringMatching(/waiting for the endpoint to confirm/) });
-    // A fresh sync still showing the endpoint isolated does not confirm a release.
+    // The live read still shows it isolated: not confirmed.
+    fake.reconcile = 'not_applied';
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
+    // Stored inventory is not evidence, even from a sync stamped after the request.
+    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'not_isolated' WHERE id = ${a.endpoint.id}`);
     await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = now() + interval '1 second' WHERE id = ${a.tenant.id}`);
     expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
-    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'not_isolated' WHERE id = ${a.endpoint.id}`);
+    fake.reconcile = 'applied';
     expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 1 });
     expect((await rowOf(out.actionId)).status).toBe('succeeded');
   });
 
-  runDb('item 5: an accepted isolate stays submitted until an inventory sync AFTER it shows the endpoint isolated', async () => {
+  runDb('item 5: an accepted isolate stays submitted until a live read AFTER it shows the endpoint isolated', async () => {
     const a = await seedEdrTenant('accept');
     const out = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'isolate' });
     expect(out).toMatchObject({ status: 'submitted', awaitingConfirmation: true, httpStatus: 200 });
@@ -667,20 +687,18 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
     expect((await listAs(partnerAuth(a))).rows.find((r) => r.id === out.actionId))
       .toMatchObject({ status: 'submitted', awaitingConfirmation: true });
 
-    // A sync that finished BEFORE the vendor accepted it cannot confirm it.
-    const before = new Date(Date.now() - 60 * 60_000);
+    // Inventory showing it isolated, from a sync stamped after the request, does not confirm it.
     await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'isolated' WHERE id = ${a.endpoint.id}`);
-    await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = ${before.toISOString()}::timestamptz WHERE id = ${a.tenant.id}`);
+    await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = now() + interval '1 second' WHERE id = ${a.tenant.id}`);
     expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
     expect((await rowOf(out.actionId)).status).toBe('submitted');
 
-    // A fresh sync still showing not_isolated (endpoint offline) leaves it waiting.
-    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'not_isolated' WHERE id = ${a.endpoint.id}`);
-    await admin().execute(sql`UPDATE edr_tenants SET last_inventory_sync_at = now() + interval '1 second' WHERE id = ${a.tenant.id}`);
+    // The live read shows it not isolated yet (endpoint offline): still waiting.
+    fake.reconcile = 'not_applied';
     expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 0 });
 
-    // The next sync shows it isolated: confirmed, audited by the system actor.
-    await admin().execute(sql`UPDATE edr_endpoints SET isolation_state = 'isolated' WHERE id = ${a.endpoint.id}`);
+    // The live read shows it isolated: confirmed, audited by the system actor.
+    fake.reconcile = 'applied';
     expect(await pollEdrActionStatus(a.connection.id, new Date())).toMatchObject({ settled: 1 });
     const settled = await rowOf(out.actionId);
     expect(settled).toMatchObject({ status: 'succeeded', error: null });
@@ -692,9 +710,50 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
       expect(r.map((x) => x.action)).toEqual(expect.arrayContaining(['edr.action.requested', 'edr.action.submitted', 'edr.action.succeeded']));
       return r;
     }, { timeout: 5_000, interval: 50 });
-    expect(audits.find((r) => r.action === 'edr.action.succeeded')!.details).toMatchObject({ reconciled: true, confirmedBy: 'inventory' });
-    // Settling read no vendor API: inventory is the evidence.
-    expect(fake.reads).toBe(0);
+    expect(audits.find((r) => r.action === 'edr.action.succeeded')!.details).toMatchObject({ reconciled: true, confirmedBy: 'vendor_read' });
+    expect(fake.reads).toBe(3);
+  });
+
+  runDb('review: more open rows than one page are all checked, least recently checked first across runs', async () => {
+    const a = await seedEdrTenant('many');
+    const N = 65;
+    // One open isolate per endpoint (the in-flight index allows one per endpoint + action).
+    await withSystemDbAccessContext(() => db.execute(sql`
+      WITH eps AS (
+        INSERT INTO edr_endpoints (connection_id, partner_id, org_id, tenant_id, provider, vendor_endpoint_id, hostname)
+        SELECT ${a.connection.id}::uuid, ${a.partner.id}::uuid, ${a.org.id}::uuid, ${a.tenant.id}::uuid, 'bitdefender',
+               'many-' || lpad(g::text, 3, '0'), 'WS-' || g
+          FROM generate_series(1, ${N}) g
+        RETURNING id, vendor_endpoint_id
+      )
+      INSERT INTO edr_actions (connection_id, partner_id, org_id, tenant_id, endpoint_id, provider, action, status,
+                               requested_via, requested_by, requested_at, submitted_at, updated_at, payload)
+      SELECT ${a.connection.id}::uuid, ${a.partner.id}::uuid, ${a.org.id}::uuid, ${a.tenant.id}::uuid, eps.id, 'bitdefender',
+             'isolate', 'submitted', 'ui', ${a.user.id}::uuid,
+             now() - interval '10 minutes', now() - interval '10 minutes',
+             -- the newest rows were opened last: by request time alone they sit behind the oldest page
+             now() - interval '10 minutes' + (substr(eps.vendor_endpoint_id, 6)::int * interval '1 second'),
+             jsonb_build_object('target', jsonb_build_object('kind', 'endpoint', 'vendorEndpointId', eps.vendor_endpoint_id))
+        FROM eps`));
+
+    // One run reaches every open row, not only the oldest 50.
+    expect(await pollEdrActionStatus(a.connection.id, new Date())).toEqual({ checked: N, settled: 0 });
+    expect(new Set(fake.readTargets).size).toBe(N);
+
+    // A run cut short by its budget leaves the rows it did not reach first in line next time.
+    fake.readTargets = [];
+    await pollEdrActionStatus(a.connection.id, new Date(), { budgetMs: 0 });
+    const firstRun = new Set(fake.readTargets);
+    expect(firstRun.size).toBe(50);
+    fake.readTargets = [];
+    await pollEdrActionStatus(a.connection.id, new Date(), { budgetMs: 0 });
+    const notReached = Array.from({ length: N }, (_, i) => `many-${String(i + 1).padStart(3, '0')}`).filter((id) => !firstRun.has(id));
+    expect(notReached).toHaveLength(N - 50);
+    expect(fake.readTargets.slice(0, notReached.length).sort()).toEqual(notReached.sort());
+
+    // A newly confirmed row settles on its first check.
+    fake.reconcile = 'applied';
+    expect((await pollEdrActionStatus(a.connection.id, new Date())).settled).toBe(N);
   });
 
   runDb('item 2/3: the vendor reason is stored sanitised and read back with the requester name, under the caller\'s RLS', async () => {
@@ -717,7 +776,10 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
       if (!r) throw new Error('outcome audit not written yet');
       return r;
     }, { timeout: 5_000, interval: 50 });
-    expect(failedAudit.details).toMatchObject({ vendorReason: reason, error: 'vendor_rejected' });
+    // Vendor text stays out of the audit trail, which AI tools can read (#12789 review).
+    expect(failedAudit.details).toMatchObject({ error: 'vendor_rejected' });
+    expect(failedAudit.details).not.toHaveProperty('vendorReason');
+    expect(JSON.stringify(failedAudit.details)).not.toContain('does not exist');
     expect(JSON.stringify(failedAudit.details)).not.toContain('k'.repeat(24));
 
     // A row whose requester the caller cannot see (another partner's user) reads with no name.
@@ -772,6 +834,47 @@ describe('edr actions — #12789 action states and reasons (real PostgreSQL)', (
       expect(x).toMatchObject({ available: false, reason: expect.stringMatching(/no longer lists this company/) });
     }
   });
+
+  runDb('review: list and dispatch agree on "recently requested" (a success inside the cooldown), and both allow it after', async () => {
+    const a = await seedEdrTenant('recent');
+    const recent = await insertActionAsSystem(a, { action: 'scan', status: 'succeeded', requestedAt: new Date(Date.now() - 20_000) });
+    const listed = (await listActionsFor(a, partnerAuth(a))).find((x) => x.action === 'scan')!;
+    expect(listed.available).toBe(false);
+    const err = await dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'scan' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EdrActionError);
+    expect((err as EdrActionError).code).toBe('action_recently_requested');
+    // The same words, so the list never says something dispatch does not.
+    expect(listed.reason).toBe((err as EdrActionError).message);
+    expect(fake.calls).toBe(0);
+
+    // Outside the cooldown the list offers it and dispatch sends it.
+    await admin().execute(sql`UPDATE edr_actions SET requested_at = now() - interval '2 minutes' WHERE id = ${recent.id}`);
+    expect((await listActionsFor(a, partnerAuth(a))).find((x) => x.action === 'scan')).toMatchObject({ available: true });
+    await expect(dispatchEdrAction(uiActor(partnerAuth(a)), { kind: 'endpoint', endpointId: a.endpoint.id, action: 'scan' }))
+      .resolves.toMatchObject({ status: 'succeeded' });
+    expect(fake.calls).toBe(1);
+  });
+
+  runDb('review: availability for more endpoints than one statement can bind (65,535 parameters) still loads', async () => {
+    const a = await seedEdrTenant('big');
+    await insertActionAsSystem(a, { action: 'isolate', status: 'queued', error: 'dispatch_outcome_unknown' });
+    const auth = { ...partnerAuth(a), token: { mfa: true }, mfa: true } as unknown as AuthContext;
+    const perms = { permissions: [{ resource: 'devices', action: 'read' }, { resource: 'devices', action: 'execute' }], allowedSiteIds: null } as never;
+    const [endpointRow] = Array.from(await admin().execute(sql`
+      SELECT id, org_id AS "orgId", connection_id AS "connectionId", tenant_id AS "tenantId", vendor_endpoint_id AS "vendorEndpointId",
+             os_platform AS "osPlatform", isolation_state AS "isolationState", online, breeze_device_id AS "breezeDeviceId"
+        FROM edr_endpoints WHERE id = ${a.endpoint.id}`)) as Array<Record<string, unknown>>;
+    // The real endpoint last, behind 70,000 others of the same tenant.
+    const rows = [
+      ...Array.from({ length: 70_000 }, () => ({ ...endpointRow!, id: randomUUID(), vendorEndpointId: `v-${randomUUID()}` })),
+      endpointRow!,
+    ] as never[];
+    const out = await withDbAccessContext(dbAccessContextFromAuth(auth), () => describeEndpointActionsForRows(auth, perms, rows));
+    expect(out.size).toBe(70_001);
+    // The ledger row on the real endpoint is still seen.
+    expect(out.get(a.endpoint.id)!.find((x) => x.action === 'isolate')).toMatchObject({ available: false, reason: expect.stringMatching(/not known yet/) });
+  }, 120_000);
 
   runDb('item 4: availability reflects in-flight and outcome-unknown rows read under the caller\'s RLS', async () => {
     const a = await seedEdrTenant('avail');

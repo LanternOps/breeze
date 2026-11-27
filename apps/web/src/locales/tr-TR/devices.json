@@ -1011,6 +1011,7 @@
     "endpointProtectionEdr": "Uç Nokta Koruması (EDR)",
     "isolateDevice": "Cihazı izole edin",
     "removeIsolation": "İzolasyonu kaldır",
+    "s1StatusUnknown": "Bu cihaz için SentinelOne izolasyonu kontrol edilemedi",
     "sentineloneThreats": "SentinelOne Tehditleri",
     "loading": "Yükleniyor…",
     "noSentineloneThreatsForThisDevice": "Bu cihaz için SentinelOne tehdidi yok.",
@@ -4567,7 +4568,7 @@
         "detached_unsettled": "Şirket eşlemesi bu işlem bitmeden değişti",
         "vendor_status_timeout": "Sağlayıcı görevi 24 saat içinde tamamlanmadı",
         "vendor_task_failed": "Sağlayıcı görevin başarısız olduğunu bildirdi",
-        "isolation_unconfirmed": "Kabul edildi, ancak cihaz 24 saat içinde onaylamadı; sağlayıcı konsolunu kontrol edin",
+        "isolation_unconfirmed": "Kabul edildi, ancak cihaz 24 saat içinde onaylamadı. Cihaz yeniden bağlandığında sağlayıcının görevi yine de uygulanabilir; sağlayıcı konsolunu kontrol edin",
         "unknown": "Eylem tamamlanmadı"
       }
     }

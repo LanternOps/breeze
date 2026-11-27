@@ -532,9 +532,9 @@ describe('dispatchEdrAction — the single action door', () => {
     expect(stored).not.toContain('k'.repeat(20));
     const audit = (h.createAuditLogAsync.mock.calls.at(-1) as unknown[])[0] as { action: string; details: Record<string, unknown> };
     expect(audit.action).toBe('edr.action.failed');
-    expect(audit.details.vendorReason).toBe(
-      'GravityZone incidents.createIsolateEndpointTask failed: Endpoint does not exist [redacted]',
-    );
+    // The reason is on the ledger row only: audit details are readable by AI tools.
+    expect(audit.details).not.toHaveProperty('vendorReason');
+    expect(JSON.stringify(audit.details)).not.toContain('does not exist');
   });
 
   it('#12789 item 2: a Breeze-worded failure (licence) stores no vendor reason', async () => {

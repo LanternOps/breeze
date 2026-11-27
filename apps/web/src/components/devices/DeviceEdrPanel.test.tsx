@@ -80,6 +80,21 @@ describe('DeviceEdrPanel legacy SentinelOne isolate buttons (#12789)', () => {
     expect(screen.queryByTestId('edr-isolate-btn')).toBeNull();
     err.mockRestore();
   });
+
+  it('a failed status lookup says it could not check, instead of showing nothing', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    routeFetch({ s1Active: 'error' });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('edr-s1-status-unknown')).toHaveTextContent(/could not check/i);
+    err.mockRestore();
+  });
+
+  it('a successful lookup shows no "could not check" note', async () => {
+    routeFetch({ s1Active: false });
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('edr-s1-status-unknown')).toBeNull();
+  });
 });
 
 describe('DeviceEdrPanel isolate', () => {

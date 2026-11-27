@@ -70,6 +70,7 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   // The legacy isolate buttons call the SentinelOne routes: shown only for a
   // device covered by an ACTIVE SentinelOne integration (#12789).
   const [s1Active, setS1Active] = useState(false);
+  const [s1StatusUnknown, setS1StatusUnknown] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
 
@@ -172,13 +173,17 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   useEffect(() => {
     let cancelled = false;
     setS1Active(false);
+    setS1StatusUnknown(false);
     fetchS1DeviceActive(orgId, deviceId)
       .then((active) => {
         if (!cancelled) setS1Active(active);
       })
       .catch((err) => {
-        // Fail closed: no SentinelOne buttons when we cannot tell.
-        if (!cancelled) setS1Active(false);
+        // Fail closed: no SentinelOne buttons when we cannot tell, but say so.
+        if (!cancelled) {
+          setS1Active(false);
+          setS1StatusUnknown(true);
+        }
         console.error("[DeviceEdrPanel] SentinelOne device status failed:", err);
       });
     return () => {
@@ -224,6 +229,14 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
               {t("deviceEdrPanel.removeIsolation")}{" "}
             </button>
           </>
+        )}
+        {s1StatusUnknown && (
+          <span
+            className="ml-auto text-xs text-muted-foreground"
+            data-testid="edr-s1-status-unknown"
+          >
+            {t("deviceEdrPanel.s1StatusUnknown")}
+          </span>
         )}
       </div>
 

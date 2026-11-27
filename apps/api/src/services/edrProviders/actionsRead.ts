@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
-  isEdrInventoryConfirmedAction,
+  isEdrStateConfirmedAction,
   type EdrActionDto,
   type EdrActionKey,
   type EdrActionRequestedVia,
@@ -99,7 +99,7 @@ export function toEdrActionDto(r: Row): EdrActionDto {
     error,
     vendorReason: (r.vendorReason as string | null) ?? null,
     outcomeUnknown: status === 'queued' && error === 'dispatch_outcome_unknown',
-    awaitingConfirmation: status === 'submitted' && isEdrInventoryConfirmedAction(r.action as string),
+    awaitingConfirmation: status === 'submitted' && isEdrStateConfirmedAction(r.action as string),
     requestedAt: iso(r.requestedAt as Date | string) ?? '',
     submittedAt: iso(r.submittedAt as Date | string | null),
     completedAt: iso(r.completedAt as Date | string | null),
