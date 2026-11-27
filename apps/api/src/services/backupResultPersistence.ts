@@ -1847,7 +1847,24 @@ async function applyBackupCommandResult(params: {
       // Rows just came from the AGENT-reported index, not server hydration —
       // mark that explicitly rather than leaving 'none' (which would read as
       // "never assessed" even though rows now exist).
-      await db.update(backupSnapshots).set({ fileIndexStatus: 'agent' }).where(eq(backupSnapshots.id, snapshot.id));
+      //
+      // #11736 step 2: these rows are the whole tree, so a 'delta' snapshot
+      // (one that is not 'complete', e.g. 'failed' after a refused
+      // re-hydration) drops its checkpoint pointer in the same update. Left
+      // as 'delta', the agent rows would read as additions to the checkpoint.
+      // Agent rows never become a checkpoint (D7).
+      await db
+        .update(backupSnapshots)
+        .set({ fileIndexStatus: 'agent', fileIndexFormat: 'rows', fileIndexCheckpointId: null })
+        .where(eq(backupSnapshots.id, snapshot.id));
+    } else {
+      // An empty agent index: the delete above removed a 'delta' snapshot's
+      // differences, which would leave it reading as the bare checkpoint.
+      // Scoped to 'delta' rows, so a 'rows' snapshot is not rewritten.
+      await db
+        .update(backupSnapshots)
+        .set({ fileIndexFormat: 'rows', fileIndexCheckpointId: null })
+        .where(and(eq(backupSnapshots.id, snapshot.id), eq(backupSnapshots.fileIndexFormat, 'delta')));
     }
   }
 

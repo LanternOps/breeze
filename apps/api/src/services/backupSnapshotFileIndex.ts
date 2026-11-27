@@ -28,9 +28,17 @@ import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestati
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
 import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 import { recordSnapshotFileIndex } from './backupMetrics';
-import { refreshSnapshotFileIndexStatistics } from './backupSnapshotFileIndexStatistics';
+import { refreshCheckpointEntriesStatistics, refreshSnapshotFileIndexStatistics } from './backupSnapshotFileIndexStatistics';
+import { resolveDeltaPublishMode } from './backupIndexDeltaFlag';
+import {
+  createIncomingIndexTable,
+  lineageKeyOf,
+  loadIncomingBatch,
+  publishDeltaIndex,
+  type IndexRowJson,
+} from './backupSnapshotIndexPublish';
 import { captureException } from './sentry';
-import { contentlessEntryKind, type SnapshotEntryKind } from './backupSnapshotEntryKind';
+import { contentlessEntryKind } from './backupSnapshotEntryKind';
 import {
   HYDRATING_STALE_MS,
   hydrationFailureFromError,
@@ -48,7 +56,18 @@ export {
 } from './backupSnapshotIndexView';
 
 export type HydrationOutcome =
-  | { status: 'complete'; manifestSha256: string; entryCount: number; externalCount: number; originSnapshotIds: string[] }
+  | {
+      status: 'complete';
+      manifestSha256: string;
+      /** Entries in the snapshot's tree: the manifest's eligible entries, whatever the format. */
+      entryCount: number;
+      /** Rows written to backup_snapshot_files: the tree for 'rows', the adds and tombstones for 'delta' (#11736). */
+      rowsWritten: number;
+      /** Entries written to a new checkpoint by this publish; 0 when none was written. */
+      checkpointEntriesWritten: number;
+      externalCount: number;
+      originSnapshotIds: string[];
+    }
   | { status: 'failed'; failure: HydrationFailure; reason: string; retryable: boolean }
   | { status: 'skipped'; reason: 'not_referenced' | 'already_complete' | 'in_progress' | 'superseded' };
 
@@ -489,13 +508,7 @@ async function claimSnapshotForHydration(
   );
 }
 
-type FileRowJson = {
-  source_path: string;
-  backup_path: string;
-  size: number | null;
-  modified_at: string | null;
-  kind: SnapshotEntryKind | null;
-};
+type FileRowJson = IndexRowJson;
 
 /** What pass 1 learned about a spooled manifest. The rows stay on disk until pass 2. */
 type ParsedManifest = {
@@ -691,6 +704,13 @@ async function verifyOriginsAndWrite(
           deviceId: backupSnapshots.deviceId,
           metadata: backupSnapshots.metadata,
           integrityStatus: backupSnapshots.integrityStatus,
+          // The lineage a delta publish shares a checkpoint within (#11736 R5),
+          // read under the lock it is published under.
+          configId: backupSnapshots.configId,
+          storageIdentity: backupSnapshots.storageIdentity,
+          backupType: backupSnapshots.backupType,
+          keyLayout: backupSnapshots.keyLayout,
+          keyPrefix: backupSnapshots.keyPrefix,
         })
         .from(backupSnapshots)
         .where(eq(backupSnapshots.id, snapshotDbId))
@@ -796,13 +816,35 @@ async function verifyOriginsAndWrite(
         return { status: 'failed', failure: refusal.failure, reason: refusal.reason, retryable: false };
       }
 
+      // #11736 step 2: which format this publish writes. A delta needs every
+      // lineage part (R5); the storage identity must still be the one this run
+      // verified, or the snapshot keeps the full 'rows' format. With the flag
+      // off (the default) this is always 'rows'.
+      const lineage = lineageKeyOf({
+        orgId: current.orgId,
+        deviceId: current.deviceId,
+        configId: current.configId,
+        storageIdentity: current.storageIdentity === snapshot.storageIdentity ? current.storageIdentity : null,
+        backupType: current.backupType,
+        keyLayout: current.keyLayout,
+        keyPrefix: current.keyPrefix,
+      });
+      const format = lineage ? resolveDeltaPublishMode(current.orgId) : 'rows';
+
       // Pass 2. Batched only to bound each statement's size and what is held
-      // in memory: all of them commit together with the publish below.
+      // in memory: all of them commit together with the publish below. A
+      // 'delta' publish streams into a temp table the publisher diffs in SQL.
       await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
+      if (format === 'delta') await createIncomingIndexTable(tx);
       let inserted = 0;
       let batch: FileRowJson[] = [];
       const writeBatch = async () => {
         if (batch.length === 0) return;
+        if (format === 'delta') {
+          inserted += await loadIncomingBatch(tx, batch);
+          batch = [];
+          return;
+        }
         // One JSON parameter, not the query builder's multi-row VALUES: its
         // objects for 5,000 values a statement were two thirds of everything
         // that outlived a minor GC at 1.1M entries, and what grew the heap.
@@ -840,6 +882,15 @@ async function verifyOriginsAndWrite(
         throw new Error(`snapshot ${snapshot.snapshotId}: expected to write ${eligibleEntries} file rows but wrote ${inserted}`);
       }
 
+      // The publisher throws when its result would not reproduce the
+      // manifest (D9), which rolls back the whole publish: the previous rows
+      // and format stay. It publishes 'rows' instead of a delta when the
+      // lineage is at its bound of unreferenced checkpoints.
+      const publishedIndex = format === 'delta'
+        ? await publishDeltaIndex(tx, { snapshotDbId, lineage: lineage!, manifestSha256, eligibleEntries })
+        : null;
+      const published = publishedIndex?.format === 'delta' ? publishedIndex : null;
+
       const externalCount = [...originCounts.values()].reduce((a, b) => a + b, 0);
       await tx.delete(backupSnapshotOrigins).where(eq(backupSnapshotOrigins.snapshotDbId, snapshotDbId));
       if (originRows.length > 0) {
@@ -853,6 +904,12 @@ async function verifyOriginsAndWrite(
           fileIndexHydratedAt: new Date(),
           fileIndexExternalCount: externalCount,
           fileIndexError: null,
+          // In the publishing update, so the rows above are never read under
+          // another format: a re-hydrated delta snapshot becomes 'rows' here,
+          // and the pointer is set exactly when the format is 'delta'
+          // (backup_snapshots_file_index_checkpoint_chk).
+          fileIndexFormat: published ? 'delta' : 'rows',
+          fileIndexCheckpointId: published ? published.checkpointId : null,
           // 3: content-less entries are rows (#11235). An index of version 2
           // is still correct for every file; it only omits those entries.
           metadata: { ...asRecord(current.metadata), hasIndexedFiles: true, fileIndexVersion: 3 },
@@ -863,6 +920,8 @@ async function verifyOriginsAndWrite(
         status: 'complete',
         manifestSha256,
         entryCount: inserted,
+        rowsWritten: published ? published.adds + published.tombstones : inserted,
+        checkpointEntriesWritten: published?.checkpointWritten ? published.checkpointEntries : 0,
         externalCount,
         originSnapshotIds: [...originCounts.keys()],
       };
@@ -952,7 +1011,10 @@ async function runHydration(
   // (it never throws). It is here, not left to autovacuum, because the person
   // who waited for this index reads it straight away (#11209).
   if (outcome.status === 'complete') {
-    await refreshSnapshotFileIndexStatistics(outcome.entryCount, { minRows: deps.statisticsRefreshMinRows });
+    await refreshSnapshotFileIndexStatistics(outcome.rowsWritten, { minRows: deps.statisticsRefreshMinRows });
+    if (outcome.checkpointEntriesWritten > 0) {
+      await refreshCheckpointEntriesStatistics(outcome.checkpointEntriesWritten, { minRows: deps.statisticsRefreshMinRows });
+    }
   }
   return outcome;
 }

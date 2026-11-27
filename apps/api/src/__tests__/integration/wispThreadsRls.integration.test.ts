@@ -626,6 +626,16 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
     });
   }
 
+  /** llm_egress_events_surface_chk as the database defines it now. */
+  async function egressSurfaceCheck(): Promise<string> {
+    const rows = (await getTestDb().execute(sql`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conname = 'llm_egress_events_surface_chk' AND conrelid = 'public.llm_egress_events'::regclass
+    `)) as unknown as Array<{ def: string }>;
+    expect(rows).toHaveLength(1);
+    return rows[0]!.def;
+  }
+
   it('#10390 migration: a stored picture moves to its column, a stored last paragraph is cleared, a claimed summary stays; replay is a no-op', async () => {
     const f = await seed();
     const pictureThread = await insertThread(f.grantA.grantId, f.partnerA);
@@ -643,7 +653,17 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
         .where(eq(wispThreads.id, claimedThread.id));
     });
     const migrationSql = readFileSync(new URL('../../../migrations/2027-01-22-190100-wisp-threads-picture.sql', import.meta.url), 'utf8');
-    const replay = () => getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(migrationSql)); });
+    // The file also re-issues llm_egress_events_surface_chk with the surfaces of its day, and later
+    // migrations widened it. Each replay puts the current definition back in the same transaction,
+    // so a later test file in this database never sees the older list.
+    const egressSurfacesBefore = await egressSurfaceCheck();
+    const replay = () => getTestDb().transaction(async (tx) => {
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql.raw(
+        'ALTER TABLE public.llm_egress_events DROP CONSTRAINT llm_egress_events_surface_chk;'
+        + ` ALTER TABLE public.llm_egress_events ADD CONSTRAINT llm_egress_events_surface_chk ${egressSurfacesBefore}`,
+      ));
+    });
     const rows = async () => asSystem(() => db
       .select({
         id: wispThreads.id, summary: wispThreads.summary, summaryUpdatedAt: wispThreads.summaryUpdatedAt,
@@ -663,6 +683,9 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
 
     await replay();
     expect(new Map((await rows()).map((r) => [r.id, r]))).toEqual(after);
+
+    // The schema later test files in this database see is the one the migrations leave.
+    expect(await egressSurfaceCheck()).toBe(egressSurfacesBefore);
   });
 
   it('#10390: the picture and the session summary never overwrite each other, whichever writes last', async () => {

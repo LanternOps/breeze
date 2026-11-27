@@ -4,6 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // A REAL agent manifest shape (KIT lab, PR #6491): content-less dir/symlink
 // entries with backupPath "", systemd unit names with a literal backslash,
@@ -108,11 +110,20 @@ vi.mock('../db', () => {
     withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
   };
 });
-const { refreshStatisticsMock } = vi.hoisted(() => ({
+const { refreshStatisticsMock, refreshCheckpointStatisticsMock, publishDeltaIndexMock } = vi.hoisted(() => ({
   refreshStatisticsMock: vi.fn<(rows: number, opts?: { minRows?: number }) => Promise<string>>(),
+  refreshCheckpointStatisticsMock: vi.fn<(rows: number, opts?: { minRows?: number }) => Promise<string>>(),
+  publishDeltaIndexMock: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
 }));
 vi.mock('./backupSnapshotFileIndexStatistics', () => ({
   refreshSnapshotFileIndexStatistics: (...args: [number, { minRows?: number }?]) => refreshStatisticsMock(...args),
+  refreshCheckpointEntriesStatistics: (...args: [number, { minRows?: number }?]) => refreshCheckpointStatisticsMock(...args),
+}));
+// The delta diff is SQL; its integration tests drive it against Postgres.
+// Here only its result is stubbed, so the hydrator's wiring around it shows.
+vi.mock('./backupSnapshotIndexPublish', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./backupSnapshotIndexPublish')>()),
+  publishDeltaIndex: (...args: unknown[]) => publishDeltaIndexMock(...args),
 }));
 vi.mock('./recoveryBootstrap', () => ({
   resolveSnapshotProviderConfig: (...args: unknown[]) => resolveSnapshotProviderConfigMock(...args),
@@ -172,6 +183,7 @@ beforeEach(() => {
   fence.override = {};
   fence.reads = [];
   refreshStatisticsMock.mockResolvedValue('below_threshold');
+  refreshCheckpointStatisticsMock.mockResolvedValue('below_threshold');
   resolveSnapshotProviderConfigMock.mockResolvedValue({
     snapshot: snapshotRow(),
     config: null,
@@ -1056,5 +1068,159 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
       where: ReturnType<typeof vi.fn>;
     };
     expect(sqlText(publish.where.mock.calls[0]?.[0])).toContain('file_index_hydrated_at');
+  });
+});
+
+describe('publish format (#11736 step 2)', () => {
+  const prevFlag = process.env.BACKUP_INDEX_DELTA_PUBLISH;
+  afterEach(() => {
+    if (prevFlag === undefined) delete process.env.BACKUP_INDEX_DELTA_PUBLISH;
+    else process.env.BACKUP_INDEX_DELTA_PUBLISH = prevFlag;
+  });
+
+  const CONFIG_ID = '99999999-9999-4999-8999-999999999999';
+  // Every lineage part (R5), as the publish fence reads them under the row lock.
+  const lineageRow = { configId: CONFIG_ID, storageIdentity: STORAGE_IDENTITY, backupType: 'file', keyLayout: 'legacy_flat', keyPrefix: null };
+  const entries = Array.from({ length: 300 }, (_, i) => ({
+    sourcePath: `/f${i}`, backupPath: `snapshots/snap-current/files/f${i}.gz`, size: 1,
+  }));
+  const arrange = () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+  };
+  const publishSet = () =>
+    updateMock.mock.results.map((r) => r.value.set.mock.calls[0]?.[0]).find((v) => v?.fileIndexStatus === 'complete');
+
+  it('flag off publishes rows exactly as before', async () => {
+    delete process.env.BACKUP_INDEX_DELTA_PUBLISH;
+    arrange();
+    fence.override = lineageRow;
+
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } });
+
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 300, rowsWritten: 300 });
+    // The same statements as before: two row batches into backup_snapshot_files, nothing else.
+    expect(executeMock.mock.calls.map((c) => batchRows(c[0]).length)).toEqual([250, 50]);
+    for (const [statement] of executeMock.mock.calls) {
+      expect(new PgDialect().sqlToQuery(statement as SQL).sql).toMatch(/^\s*INSERT INTO "backup_snapshot_files"/);
+    }
+    expect(publishDeltaIndexMock).not.toHaveBeenCalled();
+    // A re-hydrated delta snapshot becomes a rows snapshot in the publishing update.
+    expect(publishSet()).toMatchObject({ fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+    expect(refreshStatisticsMock).toHaveBeenCalledWith(300, { minRows: undefined });
+    expect(refreshCheckpointStatisticsMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['configId', { configId: null }],
+    ['storageIdentity', { storageIdentity: null }],
+    ['backupType', { backupType: null }],
+  ])('a snapshot with no %s publishes rows with the flag on', async (_part, missing) => {
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on';
+    arrange();
+    fence.override = { ...lineageRow, ...missing };
+
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } });
+
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 300, rowsWritten: 300 });
+    expect(publishDeltaIndexMock).not.toHaveBeenCalled();
+    expect(executeMock.mock.calls.some(([q]) => /TEMP TABLE/.test(sqlText(q)))).toBe(false);
+    expect(publishSet()).toMatchObject({ fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+  });
+
+  it('a storage identity that changed since the claim publishes rows', async () => {
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on';
+    arrange();
+    fence.override = { ...lineageRow, storageIdentity: 's3::another-bucket' };
+
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } });
+
+    expect(publishDeltaIndexMock).not.toHaveBeenCalled();
+    expect(publishSet()).toMatchObject({ fileIndexFormat: 'rows', fileIndexCheckpointId: null });
+  });
+
+  it('the delta path sets format and pointer in the publishing update', async () => {
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on';
+    arrange();
+    fence.override = lineageRow;
+    publishDeltaIndexMock.mockResolvedValueOnce({
+      format: 'delta', checkpointId: 'checkpoint-1', checkpointWritten: false, adds: 4, tombstones: 3, checkpointEntries: 299,
+    });
+
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } });
+
+    // entryCount stays the tree's size; rowsWritten is what the table received.
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 300, rowsWritten: 7 });
+    const texts = executeMock.mock.calls.map(([q]) => sqlText(q));
+    expect(texts[0]).toMatch(/CREATE TEMP TABLE snapshot_index_incoming/);
+    // Pass 2 streams into the temp table, never straight into backup_snapshot_files.
+    expect(texts.slice(1).every((t) => /INSERT INTO snapshot_index_incoming/.test(t))).toBe(true);
+    expect(executeMock.mock.calls.slice(1).map((c) => batchRows(c[0]).length)).toEqual([250, 50]);
+    expect(publishDeltaIndexMock).toHaveBeenCalledTimes(1);
+    expect(publishDeltaIndexMock.mock.calls[0]![1]).toMatchObject({
+      snapshotDbId: SNAPSHOT_DB_ID,
+      eligibleEntries: 300,
+      lineage: { orgId: ORG_ID, deviceId: DEVICE_ID, configId: CONFIG_ID, storageIdentity: STORAGE_IDENTITY, backupType: 'file', keyLayout: 'legacy_flat', keyPrefix: null },
+    });
+    // The previous rows are deleted before the publisher runs (its precondition).
+    expect(deleteMock.mock.invocationCallOrder[0]!).toBeLessThan(publishDeltaIndexMock.mock.invocationCallOrder[0]!);
+    expect(publishSet()).toMatchObject({ fileIndexFormat: 'delta', fileIndexCheckpointId: 'checkpoint-1' });
+    expect((publishSet() as { metadata: Record<string, unknown> }).metadata).toMatchObject({ fileIndexVersion: 3 });
+    expect(refreshStatisticsMock).toHaveBeenCalledWith(7, { minRows: undefined });
+    expect(refreshCheckpointStatisticsMock).not.toHaveBeenCalled();
+  });
+
+  it('a new checkpoint refreshes the entries table\'s statistics with the entries it wrote', async () => {
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on';
+    arrange();
+    fence.override = lineageRow;
+    publishDeltaIndexMock.mockResolvedValueOnce({
+      format: 'delta', checkpointId: 'checkpoint-2', checkpointWritten: true, adds: 0, tombstones: 0, checkpointEntries: 300,
+    });
+
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, {
+      deps: { openManifest: openOf(manifestBytes(entries)), statisticsRefreshMinRows: 50 },
+    });
+
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 300, rowsWritten: 0 });
+    expect(refreshStatisticsMock).toHaveBeenCalledWith(0, { minRows: 50 });
+    expect(refreshCheckpointStatisticsMock).toHaveBeenCalledWith(300, { minRows: 50 });
+  });
+
+  it('canary publishes a delta only for a listed org', async () => {
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'canary';
+    process.env.BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS = ORG_ID;
+    try {
+      arrange();
+      fence.override = lineageRow;
+      publishDeltaIndexMock.mockResolvedValueOnce({
+        format: 'delta', checkpointId: 'checkpoint-3', checkpointWritten: true, adds: 0, tombstones: 0, checkpointEntries: 300,
+      });
+      await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } });
+      expect(publishDeltaIndexMock).toHaveBeenCalledTimes(1);
+
+      process.env.BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      arrange();
+      await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } });
+      expect(publishDeltaIndexMock).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS;
+    }
+  });
+
+  it('a loaded count that is not the manifest\'s fails the publish before the publisher runs', async () => {
+    process.env.BACKUP_INDEX_DELTA_PUBLISH = 'on';
+    arrange();
+    fence.override = lineageRow;
+    // The database reports one row fewer for the last batch.
+    executeMock.mockImplementation(async (statement: unknown) => {
+      const n = batchRows(statement).length;
+      return Object.assign([], { count: n === 50 ? 49 : n });
+    });
+
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(manifestBytes(entries)) } }))
+      .rejects.toThrow(/expected to write 300 file rows but wrote 299/);
+    expect(publishDeltaIndexMock).not.toHaveBeenCalled();
+    expect(publishSet()).toBeUndefined();
   });
 });

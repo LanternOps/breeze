@@ -32,6 +32,7 @@ vi.mock('./backupMetrics', () => ({ recordSnapshotFileIndex: recordMock }));
 vi.mock('./sentry', () => ({ captureException: captureMock }));
 
 import {
+  refreshCheckpointEntriesStatistics,
   refreshSnapshotFileIndexStatistics,
   STATISTICS_REFRESH_ATTEMPTS,
   STATISTICS_REFRESH_MIN_ROWS,
@@ -155,5 +156,53 @@ describe('refreshSnapshotFileIndexStatistics (#11209)', () => {
     expect(await refreshSnapshotFileIndexStatistics(STATISTICS_REFRESH_MIN_ROWS)).toBe('error');
     expect(helperCalls()).toBe(1);
     expect(String(warn.mock.calls[0]![1])).toContain('not a boolean');
+  });
+});
+
+describe('refreshCheckpointEntriesStatistics (#11736 step 2)', () => {
+  /** As helperAnswers, for the checkpoint entries helper. */
+  function entriesHelperAnswers(...answers: unknown[]) {
+    let call = 0;
+    executeMock.mockImplementation(async (query) => {
+      const { sql: text } = dialect.sqlToQuery(query);
+      if (text.includes('statement_timeout')) return [{ prior_ms: 0, applied: `${STATISTICS_REFRESH_TIMEOUT_MS}ms` }];
+      if (text.includes('breeze_analyze_backup_tree_checkpoint_entries')) {
+        const answer = answers[Math.min(call, answers.length - 1)];
+        call += 1;
+        if (answer instanceof Error) throw answer;
+        return [{ analyzed: answer }];
+      }
+      throw new Error(`unexpected statement: ${text}`);
+    });
+  }
+  const entriesHelperCalls = () =>
+    statementsRun().filter((q) => q.sql.includes('breeze_analyze_backup_tree_checkpoint_entries')).length;
+
+  it('does not touch the database below the threshold', async () => {
+    expect(await refreshCheckpointEntriesStatistics(STATISTICS_REFRESH_MIN_ROWS - 1)).toBe('below_threshold');
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('analyzes the entries table through its own helper, never the snapshot files one', async () => {
+    entriesHelperAnswers(true);
+    expect(await refreshCheckpointEntriesStatistics(10, { minRows: 5 })).toBe('analyzed');
+    expect(entriesHelperCalls()).toBe(1);
+    expect(helperCalls()).toBe(0);
+    expect(contexts.outside).toBe(1);
+    expect(contexts.system).toBe(1);
+    expect(recordMock).toHaveBeenCalledWith('statistics', 'checkpoint_entries_analyzed');
+  });
+
+  it('tries again while the table is busy', async () => {
+    entriesHelperAnswers(false, true);
+    expect(await refreshCheckpointEntriesStatistics(10, { minRows: 5, retryDelayMs: 0 })).toBe('analyzed');
+    expect(entriesHelperCalls()).toBe(2);
+  });
+
+  it('never throws, and reports a missing helper to error tracking', async () => {
+    entriesHelperAnswers(pgError('42883'));
+    expect(await refreshCheckpointEntriesStatistics(10, { minRows: 5 })).toBe('error');
+    expect(captureMock).toHaveBeenCalledTimes(1);
+    expect(recordMock).toHaveBeenCalledWith('statistics', 'checkpoint_entries_error');
   });
 });

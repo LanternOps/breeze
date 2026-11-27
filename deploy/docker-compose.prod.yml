@@ -163,6 +163,9 @@ x-api-env: &api-env
   BACKUP_GC_MAX_DELETES_PER_RUN: ${BACKUP_GC_MAX_DELETES_PER_RUN:-}
   BACKUP_SNAPSHOT_CLEANUP_CRON: ${BACKUP_SNAPSHOT_CLEANUP_CRON:-}
   BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS: ${BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS:-}
+  # Snapshot file index format for new hydrations: off (default) | canary | on (api + worker).
+  BACKUP_INDEX_DELTA_PUBLISH: ${BACKUP_INDEX_DELTA_PUBLISH:-off}
+  BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS: ${BACKUP_INDEX_DELTA_PUBLISH_ORG_IDS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
   # Agent diagnostic log retention (worker role; all optional, see .env.example).

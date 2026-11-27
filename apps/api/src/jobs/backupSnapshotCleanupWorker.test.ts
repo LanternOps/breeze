@@ -53,6 +53,8 @@ vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock })
 
 const processCleanupMock = vi.hoisted(() => vi.fn());
 vi.mock('./backupSnapshotCleanup', () => ({ processCleanupExpiredSnapshots: processCleanupMock }));
+const checkpointGcMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/backupTreeCheckpointGc', () => ({ collectUnreferencedCheckpoints: checkpointGcMock }));
 
 import {
   BACKUP_SNAPSHOT_CLEANUP_QUEUE,
@@ -77,6 +79,7 @@ describe('backupSnapshotCleanupWorker (#12061)', () => {
     legacyBackupQueue.removeRepeatableByKey.mockReset();
     redisStore.clear();
     processCleanupMock.mockReset().mockResolvedValue({ deleted: 0 });
+    checkpointGcMock.mockReset().mockResolvedValue({ deleted: 0, refused: 0 });
     redisFake.eval.mockClear();
     captureExceptionMock.mockReset();
     delete process.env.BACKUP_SNAPSHOT_CLEANUP_CRON;
@@ -188,7 +191,7 @@ describe('backupSnapshotCleanupWorker (#12061)', () => {
       finishFirst();
 
       expect(second).toEqual({ skipped: 'already-running' });
-      await expect(first).resolves.toEqual({ deleted: 1 });
+      await expect(first).resolves.toEqual({ deleted: 1, checkpointGc: { deleted: 0, refused: 0 } });
       expect(processCleanupMock).toHaveBeenCalledTimes(1);
       // The first run released its lease, so the next scheduled run proceeds.
       expect(redisStore.has(BACKUP_SNAPSHOT_CLEANUP_LEASE_KEY)).toBe(false);
@@ -238,6 +241,43 @@ describe('backupSnapshotCleanupWorker (#12061)', () => {
 
       await expect(__testOnly.processCleanupJob(cleanupJob)).rejects.toThrow('row delete failed');
       expect(redisStore.has(BACKUP_SNAPSHOT_CLEANUP_LEASE_KEY)).toBe(false);
+    });
+  });
+
+  describe('checkpoint GC (#11736 step 2)', () => {
+    it('runs after retention, until the end of the time budget, and reports its counts', async () => {
+      process.env.BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS = '600000';
+      checkpointGcMock.mockResolvedValueOnce({ deleted: 3, refused: 1 });
+      const before = Date.now();
+
+      const result = await __testOnly.processCleanupJob(cleanupJob);
+
+      expect(result).toEqual({ deleted: 0, checkpointGc: { deleted: 3, refused: 1 } });
+      expect(checkpointGcMock).toHaveBeenCalledTimes(1);
+      expect(checkpointGcMock.mock.invocationCallOrder[0]!).toBeGreaterThan(processCleanupMock.mock.invocationCallOrder[0]!);
+      const { deadlineMs } = checkpointGcMock.mock.calls[0]![0] as { deadlineMs: number };
+      expect(deadlineMs).toBeGreaterThanOrEqual(before + 600_000);
+      expect(deadlineMs).toBeLessThanOrEqual(Date.now() + 600_000);
+    });
+
+    it('a GC failure is reported and does not fail the run retention already did', async () => {
+      checkpointGcMock.mockRejectedValueOnce(new Error('statement timeout'));
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await __testOnly.processCleanupJob(cleanupJob);
+
+        expect(result).toEqual({ deleted: 0, checkpointGc: 'error' });
+        expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+        expect(redisStore.has(BACKUP_SNAPSHOT_CLEANUP_LEASE_KEY)).toBe(false);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('does not run when retention failed', async () => {
+      processCleanupMock.mockRejectedValueOnce(new Error('row delete failed'));
+      await expect(__testOnly.processCleanupJob(cleanupJob)).rejects.toThrow('row delete failed');
+      expect(checkpointGcMock).not.toHaveBeenCalled();
     });
   });
 

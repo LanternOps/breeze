@@ -251,6 +251,38 @@ describe('the read layer resolves a delta snapshot (#11736 step 2)', () => {
     expect(result).toEqual(EMPTY);
   });
 
+  runDb('a delta snapshot on a checkpoint of its own lineage reads the checkpoint\'s tree in every reader', async () => {
+    const l = await seedLineage();
+    // Only org and device are compared with the header (R3). Config, storage identity, backup type and key
+    // root are not: later command results rewrite those snapshot columns (see the publish integration
+    // test's lineage-rewrite case).
+    const checkpointId = await seedCheckpoint(
+      { orgId: l.t.orgId, deviceId: l.t.deviceId, configId: l.t.configId, storageIdentity: WRITE_IDENTITY },
+      l.checkpoint,
+    );
+    const snapshotId = `snapshot-20261111T000007Z-${randomBytes(6).toString('hex')}`;
+    const dbId = await insertSnapshotRow(l.t, snapshotId);
+    const digest = sha(`manifest ${snapshotId}`);
+    await seedDeltaIndex(dbId, checkpointId, l.checkpoint, l.checkpoint, digest);
+    const read = await withDbAccessContext(orgContext(l.t.orgId), async () => {
+      expect(await headerVisible(checkpointId)).toBe(1);
+      return readAll(l, dbId, digest);
+    });
+    expect(read).toEqual({
+      root: ['srv/ (3)'],
+      srv: ['a.txt 10', 'b.txt 11', 'gone.txt 12'],
+      search: ['/srv/a.txt 10', '/srv/b.txt 11', '/srv/gone.txt 12'],
+      selectable: ['/srv', '/srv/a.txt', '/srv/b.txt', '/srv/gone.txt'],
+      selectB: { ok: true, paths: ['/srv/b.txt'] },
+      count: 3,
+      keys: [key(l.fullId, 'a'), key(l.fullId, 'b'), key(l.fullId, 'gone')].sort(),
+      // Past the membership read: this snapshot has no origin records of its own.
+      authorizeAdd: NOT_MEMBER,
+      authorizeCheckpointEntry: 'no verified origin record for this snapshot reference',
+      authorizeReplaced: 'no verified origin record for this snapshot reference',
+    });
+  });
+
   runDb('a rows snapshot ignores stray tombstone rows', async () => {
     const t = await seedWriteTenant({ jobStatus: 'completed' });
     const run = randomBytes(6).toString('hex');

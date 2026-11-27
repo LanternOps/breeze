@@ -125,6 +125,13 @@ export function snapshotIndexEntries(snapshotDbId: string | AnyPgColumn | SQL) {
   // column, qualified (see snapshotIdOutput).
   const id = snapshotIdOutput(snapshotDbId);
   const col = (table: string, column: string) => sql`${sql.identifier(table)}.${sql.identifier(column)}`;
+  // Org and device only, on purpose. They stop a cross-tenant read, and the
+  // pointer's composite FK and the tenancy-reset trigger cover any change to
+  // them. The rest of the lineage (config, storage identity, backup type, key
+  // root) is not compared: the publisher chose the checkpoint by it under the
+  // snapshot row lock, and later command results legitimately rewrite those
+  // snapshot columns (backupResultPersistence), so comparing them would turn a
+  // harmless rewrite into a complete snapshot that reads as empty.
   const checkpointMatchesSnapshot = sql`${col('sie_checkpoint', 'id')} = ${col('sie_snapshot', 'file_index_checkpoint_id')}
     AND ${col('sie_checkpoint', 'org_id')} = ${col('sie_snapshot', 'org_id')}
     AND ${col('sie_checkpoint', 'device_id')} = ${col('sie_snapshot', 'device_id')}`;
