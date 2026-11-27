@@ -8,10 +8,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
-// PowerShell is started with -Command so the UTF-8 bootstrap runs first.
-// Under -Command the process exit code is only 0 or 1 ($? of the last
-// statement), so the line ends by passing on the code the script gave to
-// `exit` (#12798). The whole line is pinned, quoting included.
+// The whole PowerShell line is pinned, quoting and exit-code suffix included.
 func TestWindowsScriptCommandPowerShellQuotesPath(t *testing.T) {
 	path := "C:\\Users\\Se\u00e1n O\u2019Brien\\AppData\\Local\\Temp\\breeze-scripts-1\\breeze_2.ps1"
 	for _, shell := range []string{"powershell.exe", "PWSH.EXE"} {
@@ -20,7 +17,7 @@ func TestWindowsScriptCommandPowerShellQuotesPath(t *testing.T) {
 			"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
 			"[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
 				"& " + psscript.Quote(path) + "; " +
-				"if (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }",
+				"if (-not $?) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -gt 0) { exit $LASTEXITCODE }; exit 1 }",
 		}}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s:\ngot  %#v\nwant %#v", shell, got, want)

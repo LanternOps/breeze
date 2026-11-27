@@ -10,22 +10,21 @@ import (
 const powershellUTF8Bootstrap = "[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
 
 // powershellExitCodeSuffix follows the call to the script on the -Command
-// line. Under -Command the process exit code is only 0 or 1: it is $? of the
-// last statement, so `exit 3010` in the script reached the agent as 1
-// (#12798). After `& 'script'`, $? is false when the script ran `exit` with a
-// non-zero code, and $LASTEXITCODE then holds that code, so it is passed on.
-// The result matches powershell -File for the same script:
+// line. Under -Command the process exit code is only 0 or 1 ($? of the last
+// statement), so `exit 3010` in the script reached the agent as 1 (#12798).
+// After `& 'script'`, $? is false when the script ran `exit` with a non-zero
+// code, and $LASTEXITCODE then holds that code as an int, so it is passed on.
+// The codes match powershell -File for the same script: `exit N` is N, a
+// thrown error never reaches the suffix and the host reports 1, and a script
+// that ends without `exit` is 0 even when its last native command failed ($?
+// is true then, and a stale $LASTEXITCODE is not reported).
 //
-//   - `exit N` reports N.
-//   - A script that ends without `exit` reports 0, even when its last native
-//     command failed. $? is true then, and a stale $LASTEXITCODE from a
-//     native command is not reported.
-//   - A thrown or other terminating error never reaches this suffix; the host
-//     reports 1 for it.
-//
-// When $? is false and $LASTEXITCODE is 0 or not set, the run still reports
-// 1, so no outcome that was a failure before this suffix becomes a success.
-const powershellExitCodeSuffix = "; if (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }"
+// When $? is false and $LASTEXITCODE is not a positive int, the run reports
+// 1, as it did before this suffix: a run that failed before does not become
+// a success, and a negative code (which Windows would hand Go as a DWORD
+// above the server's 32-bit column, and which the server reads as an
+// abnormal end rather than the script's answer) stays 1.
+const powershellExitCodeSuffix = "; if (-not $?) { if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -gt 0) { exit $LASTEXITCODE }; exit 1 }"
 
 // ScriptPathEnv is the environment variable a cmd.exe command line reads the
 // script path from.
@@ -45,7 +44,7 @@ type ScriptCommand struct {
 
 // windowsScriptCommand adjusts how a script is started on Windows so its
 // output is UTF-8 before it is captured. PowerShell is started with -Command
-// rather than -File so the bootstrap can run first; powershellExitCodeSuffix
+// because -File cannot run the bootstrap before the script; powershellExitCodeSuffix
 // keeps the script's own exit code.
 func windowsScriptCommand(shellCmd string, shellArgs []string, scriptPath string) ScriptCommand {
 	switch strings.ToLower(filepath.Base(shellCmd)) {

@@ -23,10 +23,11 @@ const windowsPowerShellTimeout = 120
 
 // TestExecuteWindowsPowerShellReportsScriptExitCode runs real scripts
 // through Execute under Windows PowerShell and checks the exit code the
-// agent reports is the one the script gave (#12798): `exit N` is N, 3010 and
-// 1641 included; a thrown error is 1; a script that ends without `exit` is 0,
-// as with powershell -File, even when its last native command failed. Each
-// expected code is also checked against powershell -File on the same host.
+// agent reports is the one the script gave (#12798): `exit N` is N for N > 0,
+// 3010 and 1641 included; a negative code and a thrown error are 1; a script that ends
+// without `exit` is 0, as with powershell -File, even when its last native
+// command failed. Each expected code is also checked against powershell
+// -File on the same host.
 //
 // TMP points at a directory whose name has a space and a single quote, so
 // the staged script path the command line quotes has both.
@@ -64,6 +65,17 @@ func TestExecuteWindowsPowerShellReportsScriptExitCode(t *testing.T) {
 		{"native fails last, no exit", native + "Write-Output 'out-native-last'\n& $native -NoProfile -Command 'exit 7'", 0},
 		{"native fails, script goes on", native + "& $native -NoProfile -Command 'exit 7'\nWrite-Output 'out-native-mid'", 0},
 		{"non-terminating cmdlet error last", "Write-Output 'out-cmdlet-last'\nGet-Item -LiteralPath 'breeze-12798-no-such-path'", 0},
+		{"native fails, then exit 0", native + "Write-Output 'out-stale-exit0'\n& $native -NoProfile -Command 'exit 7'\nexit 0", 0},
+		{"exit inside a function", "function Stop-Run { exit 5 }\nWrite-Output 'out-func'\nStop-Run\nWrite-Output 'not reached'", 5},
+		{"trap exits", "trap { exit 9 }\nWrite-Output 'out-trap'\nthrow 'boom'", 9},
+		// A negative code is reported as 1, as before #12798 (see
+		// powershellExitCodeSuffix); -File hands Go the DWORD instead.
+		{"exit -1", "Write-Output 'out-exit-neg1'\nexit -1", 1},
+		{"exit with an NTSTATUS code", "Write-Output 'out-exit-ntstatus'\nexit -1073741819", 1},
+	}
+	fileGives := map[string]int{
+		"exit -1":                    4294967295,
+		"exit with an NTSTATUS code": 3221225477,
 	}
 
 	e := newTestExecutor()
@@ -92,18 +104,26 @@ func TestExecuteWindowsPowerShellReportsScriptExitCode(t *testing.T) {
 			if err := os.WriteFile(path, []byte(psscript.WithBOM(tc.script+"\n")), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if oracle := windowsExitCode(t, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path); oracle != tc.want {
-				t.Errorf("powershell -File gives %d on this host, want %d", oracle, tc.want)
+			fileWant, ok := fileGives[tc.name]
+			if !ok {
+				fileWant = tc.want
+			}
+			if oracle := windowsExitCode(t, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path); oracle != fileWant {
+				t.Errorf("powershell -File gives %d on this host, want %d", oracle, fileWant)
 			}
 		})
 	}
 }
 
 // TestWindowsScriptCommandPwshReportsScriptExitCode runs the pwsh.exe form
-// of the command line, which PowerShell 7 hosts get, when pwsh is installed.
+// of the command line. GitHub-hosted Windows runners ship PowerShell 7, so a
+// missing pwsh.exe fails there instead of skipping.
 func TestWindowsScriptCommandPwshReportsScriptExitCode(t *testing.T) {
 	pwsh, err := exec.LookPath("pwsh.exe")
 	if err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("pwsh.exe not found on a GitHub Actions runner: %v", err)
+		}
 		t.Skip("pwsh.exe not installed")
 	}
 	dir := filepath.Join(t.TempDir(), "it's a dir")
