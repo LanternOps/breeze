@@ -110,9 +110,10 @@ export type OemOutcome = (typeof OEM_OUTCOMES)[number];
  *   the automatic default, `Auto`, `Daily`, `Weekly`, `Monthly`, or a value it cannot read as one).
  * - `vendor_schedule_policy_not_manual`: a policy value for the tool sets something else.
  * - `vendor_schedule_unreadable`: the registry could not be read.
- * - `vendor_schedule_policy_unknown`: the tool's policy key exists, but no `ScheduleMode` of exactly
- *   `ManualUpdates` was found where the agent looks. The policy layout is undocumented, so the agent
- *   refuses rather than risk running beside a second scheduler.
+ * - `vendor_schedule_policy_unknown`: one of the tool's policy roots (the default one, or the Dell
+ *   Client Device Manager one) exists, but no `ScheduleMode` of exactly `ManualUpdates` was found
+ *   where the agent looks under it. The policy layout is undocumented, so the agent refuses rather
+ *   than risk running beside a second scheduler.
  * - `vendor_tool_not_installed`: the tool is not installed. The agent does not install it, because a
  *   fresh install schedules its own updates.
  *

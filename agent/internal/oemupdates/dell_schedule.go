@@ -19,20 +19,30 @@ import (
 // to it, even /version, wakes the vendor service, which rewrites its scheduler
 // file.
 //
-// The policy key is named by the tool's settings assembly as supporting
-// ScheduleMode, but it did not exist on the lab unit. Its layout and its
-// precedence over the settings key are NOT verified. The reading below fails
-// closed:
-//   - a policy ScheduleMode that is anything but ManualUpdates refuses
-//     (vendor_schedule_policy_not_manual);
-//   - a policy key that exists, with no ScheduleMode of exactly ManualUpdates
-//     at a path this knows, refuses (vendor_schedule_policy_unknown): the real
-//     layout may hold a schedule this does not read, such as one that forces
-//     automatic updates;
+// The tool's policy has two roots. Its settings assembly uses the Dell Client
+// Device Manager root when that product's policy is configured, and the
+// default root otherwise; the policy settings live under <root>\Preferences\Settings,
+// so ScheduleMode is taken to be under <root>\Preferences\Settings\Schedule,
+// mirroring the settings key (that sub-path is inferred, not read from the
+// assembly). The assembly also names the bare Client Device Manager key as a
+// root location; what it holds is not known. Neither root's precedence over
+// the settings key was seen to take effect on the lab unit, so the reading
+// below does not copy the tool's choice of root: it reads both on every run,
+// holds each to the same rule, and fails closed:
+//   - a policy ScheduleMode that is anything but ManualUpdates, under either
+//     root, refuses (vendor_schedule_policy_not_manual);
+//   - a policy root that exists, with no ScheduleMode of exactly ManualUpdates
+//     at a path this knows under that root, refuses
+//     (vendor_schedule_policy_unknown): the real layout may hold a schedule
+//     this does not read, such as one that forces automatic updates. For the
+//     Client Device Manager root, the bare parent key counts as the root
+//     existing, but a ManualUpdates value on it is not a path this knows;
 //   - a policy ManualUpdates never stands in for the settings value; both must
 //     read manual.
 // This trades refusing some policy-managed devices for never running beside a
-// second scheduler. A policy key that does not exist changes nothing.
+// second scheduler. A policy root that does not exist changes nothing, and
+// SOFTWARE\Policies\Dell itself is never read: a clean install has an empty
+// Policies\Dell\Telemetry key beneath it.
 //
 // The value is compared as stored: only the single terminating NUL of a
 // REG_SZ is dropped, so "ManualUpdates\x00Auto" or "ManualUpdates " is not
@@ -40,15 +50,41 @@ import (
 
 // Registry keys, all under HKLM in the 64-bit view.
 const (
-	dellScheduleKey       = `SOFTWARE\Dell\UpdateService\Clients\CommandUpdate\Preferences\Settings\Schedule`
+	dellScheduleKey = `SOFTWARE\Dell\UpdateService\Clients\CommandUpdate\Preferences\Settings\Schedule`
+	// The default policy root.
 	dellPolicyKey         = `SOFTWARE\Policies\Dell\UpdateService\Clients\CommandUpdate`
 	dellPolicyScheduleKey = dellPolicyKey + `\Preferences\Settings\Schedule`
-	dellScheduleModeValue = "ScheduleMode"
-	dellManualUpdates     = "ManualUpdates"
+	// The Dell Client Device Manager policy root, and the key it sits under.
+	dellCDMParentKey         = `SOFTWARE\Policies\Dell\ClientDeviceManager`
+	dellCDMPolicyKey         = dellCDMParentKey + `\UpdateModule\UpdateService\Clients\CommandUpdate`
+	dellCDMPolicyScheduleKey = dellCDMPolicyKey + `\Preferences\Settings\Schedule`
+	dellScheduleModeValue    = "ScheduleMode"
+	dellManualUpdates        = "ManualUpdates"
 )
 
 // dellRegistryKeys are the only keys the reader opens.
-var dellRegistryKeys = []string{dellScheduleKey, dellPolicyKey, dellPolicyScheduleKey}
+var dellRegistryKeys = []string{dellScheduleKey, dellPolicyKey, dellPolicyScheduleKey,
+	dellCDMParentKey, dellCDMPolicyKey, dellCDMPolicyScheduleKey}
+
+// policyPath is one key under a policy root where ScheduleMode is read.
+type policyPath struct {
+	key string
+	// manual: a ManualUpdates here satisfies the root. False for a key read
+	// only to learn whether the root exists, or to refuse a non-manual value.
+	manual bool
+}
+
+// dellPolicyRoot is one of the tool's policy roots: the keys read under it,
+// outermost first, so the first key also tells whether the root exists at all
+// (a subkey cannot exist without its parents).
+type dellPolicyRoot struct {
+	paths []policyPath
+}
+
+var dellPolicyRoots = []dellPolicyRoot{
+	{paths: []policyPath{{dellPolicyKey, true}, {dellPolicyScheduleKey, true}}},
+	{paths: []policyPath{{dellCDMParentKey, false}, {dellCDMPolicyKey, true}, {dellCDMPolicyScheduleKey, true}}},
+}
 
 // Refusal codes. They travel as the result's errorCode with outcome
 // tool_unavailable, because the outcome is a closed enum an older API would
@@ -135,10 +171,14 @@ const (
 
 // dellScheduleMode is what the registry says about the tool's schedule mode.
 type dellScheduleMode struct {
-	// Source is the key that decided: the settings key, or the policy key when
-	// it set something other than ManualUpdates or could not be read.
+	// Source is what decided: the settings key, or a policy key when it set
+	// something other than ManualUpdates, could not be read, or exists in a
+	// layout this does not recognise.
 	Source string
-	State  scheduleValueState
+	// Key is the registry key that decided, under HKLM. For an unrecognised
+	// policy it is the outermost key of that policy root.
+	Key   string
+	State scheduleValueState
 	// Mode is the REG_SZ text as read, untrusted; "" when absent or another type.
 	Mode string
 	// Note is a detail for the log, such as a policy key in a layout this does
@@ -184,44 +224,51 @@ func stateOf(r regRead) scheduleValueState {
 	return scheduleValueWrongType
 }
 
-// readDellScheduleMode reads the policy key, then the settings key. It never
+// readDellScheduleMode reads both policy roots, then the settings key. It never
 // guesses: an error is an error, an absent value is absent, and only a REG_SZ
 // reading exactly ManualUpdates in the settings key counts as manual.
 func readDellScheduleMode(read regReader) dellScheduleMode {
 	if read == nil {
-		return dellScheduleMode{Source: scheduleSourceSettings, Err: errNoRegistryReader}
+		return dellScheduleMode{Source: scheduleSourceSettings, Key: dellScheduleKey, Err: errNoRegistryReader}
 	}
-	// Policy first. ScheduleMode is looked for directly under the policy key
-	// and under the settings-shaped path beneath it; neither layout is
-	// verified. Opening the policy key tells whether any policy is present: a
-	// subkey cannot exist without it.
-	policyKeyExists, policyManual := false, false
-	for _, key := range []string{dellPolicyKey, dellPolicyScheduleKey} {
-		r, err := read(key, dellScheduleModeValue)
-		if err != nil {
-			return dellScheduleMode{Source: scheduleSourcePolicy, Err: fmt.Errorf(`read HKLM\%s: %w`, key, err)}
-		}
-		policyKeyExists = policyKeyExists || r.KeyExists
-		switch st := stateOf(r); {
-		case st == scheduleValueAbsent:
-			continue
-		case st == scheduleValueString && r.Value == dellManualUpdates:
-			policyManual = true
-		default:
-			mode := ""
-			if st == scheduleValueString {
-				mode = r.Value
+	// Policy first, every root, whichever the tool itself would pick. Within a
+	// root, ScheduleMode is looked for at each known path; none of them is
+	// verified. A value that is not ManualUpdates refuses at once.
+	anyPolicyManual := false
+	unknownRoot := ""
+	for _, root := range dellPolicyRoots {
+		rootExists, rootManual := false, false
+		for _, p := range root.paths {
+			r, err := read(p.key, dellScheduleModeValue)
+			if err != nil {
+				return dellScheduleMode{Source: scheduleSourcePolicy, Key: p.key, Err: fmt.Errorf(`read HKLM\%s: %w`, p.key, err)}
 			}
-			return dellScheduleMode{Source: scheduleSourcePolicy, State: st, Mode: mode}
+			rootExists = rootExists || r.KeyExists
+			switch st := stateOf(r); {
+			case st == scheduleValueAbsent:
+				continue
+			case st == scheduleValueString && r.Value == dellManualUpdates:
+				rootManual = rootManual || p.manual
+			default:
+				mode := ""
+				if st == scheduleValueString {
+					mode = r.Value
+				}
+				return dellScheduleMode{Source: scheduleSourcePolicy, Key: p.key, State: st, Mode: mode}
+			}
+		}
+		anyPolicyManual = anyPolicyManual || rootManual
+		if rootExists && !rootManual && unknownRoot == "" {
+			unknownRoot = root.paths[0].key
 		}
 	}
-	if policyKeyExists && !policyManual {
+	if unknownRoot != "" {
 		// Fail closed: the real layout may set a schedule this does not read.
-		return dellScheduleMode{Source: scheduleSourcePolicy, PolicyUnknown: true,
+		return dellScheduleMode{Source: scheduleSourcePolicy, Key: unknownRoot, PolicyUnknown: true,
 			Note: "policy key present, layout not recognised: no ScheduleMode of ManualUpdates where Breeze looks"}
 	}
-	m := dellScheduleMode{Source: scheduleSourceSettings}
-	if policyManual {
+	m := dellScheduleMode{Source: scheduleSourceSettings, Key: dellScheduleKey}
+	if anyPolicyManual {
 		m.Note = "policy ScheduleMode is ManualUpdates; its precedence is not verified, the settings value decides"
 	}
 	r, err := read(dellScheduleKey, dellScheduleModeValue)
@@ -263,11 +310,11 @@ func (l *dellLane) CheckToolConfig() (Outcome, error) {
 	}
 	if m.PolicyUnknown {
 		log.Warn("a Dell Command | Update policy is present in a layout Breeze does not recognise; the vendor update run is refused and the tool is not started",
-			"errorCode", code, "policyKey", `HKLM\`+dellPolicyKey, "note", m.Note)
-		return OutcomeToolUnavailable, runErr(code, fmt.Errorf(`policy key HKLM\%s is present with no ScheduleMode of %q where Breeze looks`, dellPolicyKey, dellManualUpdates))
+			"errorCode", code, "policyKey", `HKLM\`+m.Key, "note", m.Note)
+		return OutcomeToolUnavailable, runErr(code, fmt.Errorf(`policy key HKLM\%s is present with no ScheduleMode of %q where Breeze looks`, m.Key, dellManualUpdates))
 	}
 	mode := shownMode(m.Mode)
 	log.Warn("Dell Command | Update is not in manual-updates mode; the vendor update run is refused and the tool is not started",
-		"errorCode", code, "source", m.Source, "state", m.State.String(), "mode", mode, "note", m.Note)
-	return OutcomeToolUnavailable, runErr(code, fmt.Errorf("%s ScheduleMode is %s %s, want %q", m.Source, m.State, mode, dellManualUpdates))
+		"errorCode", code, "source", m.Source, "key", `HKLM\`+m.Key, "state", m.State.String(), "mode", mode, "note", m.Note)
+	return OutcomeToolUnavailable, runErr(code, fmt.Errorf(`%s ScheduleMode at HKLM\%s is %s %s, want %q`, m.Source, m.Key, m.State, mode, dellManualUpdates))
 }

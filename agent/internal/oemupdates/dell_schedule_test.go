@@ -36,8 +36,10 @@ func TestDellScheduleCodesMatchShared(t *testing.T) {
 }
 
 // fakeRegistry answers regReader calls from fixed readings. A key it does not
-// know reads as absent. Every read is recorded, so a test can show which keys
-// the detector asked for.
+// know reads as absent, unless a stored key lies beneath it: as in the real
+// registry, a subkey cannot exist without its parents, so setting a deep key
+// makes every ancestor exist too. Every read is recorded, so a test can show
+// which keys the detector asked for.
 type fakeRegistry struct {
 	mu     sync.Mutex
 	values map[string]regRead
@@ -81,7 +83,23 @@ func (f *fakeRegistry) read(key, name string) (regRead, error) {
 	if err, ok := f.errs[regKey(key, name)]; ok {
 		return regRead{KeyExists: true}, err
 	}
-	return f.values[regKey(key, name)], nil
+	if r, ok := f.values[regKey(key, name)]; ok {
+		return r, nil
+	}
+	for k := range f.values {
+		stored, _, _ := strings.Cut(k, "|")
+		if strings.EqualFold(stored, key) || strings.HasPrefix(strings.ToLower(stored), strings.ToLower(key)+`\`) {
+			return regRead{KeyExists: true}, nil
+		}
+	}
+	return regRead{}, nil
+}
+
+// setSubkey makes a key exist with no values, as a sibling or child that the
+// reader is not expected to read.
+func (f *fakeRegistry) setSubkey(key string) *fakeRegistry {
+	f.values[regKey(key, "")] = regRead{KeyExists: true}
+	return f
 }
 
 func manualDellRegistry() *fakeRegistry {
@@ -245,15 +263,18 @@ func TestDellScheduleModeNilReaderRefuses(t *testing.T) {
 	}
 }
 
-// The policy key is read before the settings key, and only the three named
-// keys are asked for.
+// Both policy roots are read before the settings key on every run, and only
+// the named keys are asked for.
 func TestDellScheduleModeReadsOnlyTheNamedKeys(t *testing.T) {
 	reg := manualDellRegistry()
 	readDellScheduleMode(reg.read)
 	want := map[string]bool{
-		regKey(dellPolicyKey, dellScheduleModeValue):         true,
-		regKey(dellPolicyScheduleKey, dellScheduleModeValue): true,
-		regKey(dellScheduleKey, dellScheduleModeValue):       true,
+		regKey(dellPolicyKey, dellScheduleModeValue):            true,
+		regKey(dellPolicyScheduleKey, dellScheduleModeValue):    true,
+		regKey(dellCDMParentKey, dellScheduleModeValue):         true,
+		regKey(dellCDMPolicyKey, dellScheduleModeValue):         true,
+		regKey(dellCDMPolicyScheduleKey, dellScheduleModeValue): true,
+		regKey(dellScheduleKey, dellScheduleModeValue):          true,
 	}
 	if len(reg.reads) != len(want) {
 		t.Fatalf("reads = %q", reg.reads)
@@ -335,5 +356,184 @@ func TestDellRefusalShowsTheValueAsRead(t *testing.T) {
 		if got := shownMode(raw); got != want {
 			t.Fatalf("shownMode(%q) = %s, want %s", raw, got, want)
 		}
+	}
+}
+
+// Dell's settings assembly takes its policy root from Dell Client Device
+// Manager's policy when that is configured, and from the default policy root
+// otherwise (#12267 lab). The agent reads both roots on every run and does not
+// copy that choice: either root saying not manual, or present with no
+// ManualUpdates where Breeze looks, refuses.
+func TestDellScheduleModeClientDeviceManagerRoot(t *testing.T) {
+	auto := func(f *fakeRegistry, key string) *fakeRegistry {
+		return f.setString(key, dellScheduleModeValue, "Auto")
+	}
+	manualAt := func(f *fakeRegistry, key string) *fakeRegistry {
+		return f.setString(key, dellScheduleModeValue, dellManualUpdates)
+	}
+	cases := []struct {
+		name       string
+		reg        *fakeRegistry
+		manual     bool
+		source     string
+		key        string
+		mode       string
+		readErr    bool
+		code       string
+		noteSubstr string
+	}{
+		// The lab's layout: Auto under the Client Device Manager root's
+		// settings path, no default policy key, the tool's own setting manual.
+		// Before this, it passed.
+		{name: "lab layout: CDM schedule Auto, no default policy, settings manual",
+			reg:    auto(manualDellRegistry(), dellCDMPolicyScheduleKey),
+			source: scheduleSourcePolicy, key: dellCDMPolicyScheduleKey, mode: "Auto", code: codeSchedulePolicyNotManual},
+		{name: "CDM root key ScheduleMode Auto",
+			reg:    auto(manualDellRegistry(), dellCDMPolicyKey),
+			source: scheduleSourcePolicy, key: dellCDMPolicyKey, mode: "Auto", code: codeSchedulePolicyNotManual},
+		{name: "CDM parent key ScheduleMode Auto",
+			reg:    auto(manualDellRegistry(), dellCDMParentKey),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, mode: "Auto", code: codeSchedulePolicyNotManual},
+		{name: "CDM schedule value of another type",
+			reg:    manualDellRegistry().setWrongType(dellCDMPolicyScheduleKey, dellScheduleModeValue),
+			source: scheduleSourcePolicy, key: dellCDMPolicyScheduleKey, code: codeSchedulePolicyNotManual},
+		{name: "CDM schedule with an embedded NUL",
+			reg:    manualDellRegistry().setString(dellCDMPolicyScheduleKey, dellScheduleModeValue, "ManualUpdates\x00Auto"),
+			source: scheduleSourcePolicy, key: dellCDMPolicyScheduleKey, mode: "ManualUpdates\x00Auto", code: codeSchedulePolicyNotManual},
+
+		// Present but unknown under the new root.
+		{name: "CDM root key present without ScheduleMode",
+			reg:    manualDellRegistry().setKeyOnly(dellCDMPolicyKey, dellScheduleModeValue),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+		{name: "CDM schedule key present without ScheduleMode",
+			reg:    manualDellRegistry().setKeyOnly(dellCDMPolicyScheduleKey, dellScheduleModeValue),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+		{name: "bare CDM parent key, nothing under it",
+			reg:    manualDellRegistry().setSubkey(dellCDMParentKey),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+		{name: "CDM parent holding only some other module's policy",
+			reg:    manualDellRegistry().setSubkey(dellCDMParentKey + `\SomeOtherModule`),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+		// The parent is a root location, not a settings location: ManualUpdates
+		// on it is not a manual policy.
+		{name: "CDM parent ScheduleMode ManualUpdates only",
+			reg:    manualAt(manualDellRegistry(), dellCDMParentKey),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+
+		// A policy ManualUpdates never replaces the settings value.
+		{name: "CDM schedule manual, settings manual", manual: true,
+			reg:    manualAt(manualDellRegistry(), dellCDMPolicyScheduleKey),
+			source: scheduleSourceSettings, key: dellScheduleKey, mode: dellManualUpdates, noteSubstr: "precedence is not verified"},
+		{name: "CDM root key manual, settings manual", manual: true,
+			reg:    manualAt(manualDellRegistry(), dellCDMPolicyKey),
+			source: scheduleSourceSettings, key: dellScheduleKey, mode: dellManualUpdates, noteSubstr: "precedence is not verified"},
+		{name: "CDM schedule manual, settings Auto",
+			reg:    manualAt(newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "Auto"), dellCDMPolicyScheduleKey),
+			source: scheduleSourceSettings, key: dellScheduleKey, mode: "Auto", code: codeScheduleNotManual, noteSubstr: "precedence is not verified"},
+		{name: "CDM schedule manual, settings absent",
+			reg:    manualAt(newFakeRegistry(), dellCDMPolicyScheduleKey),
+			source: scheduleSourceSettings, key: dellScheduleKey, code: codeScheduleNotManual, noteSubstr: "precedence is not verified"},
+
+		// Unreadable.
+		{name: "CDM parent unreadable",
+			reg:    manualDellRegistry().fail(dellCDMParentKey, dellScheduleModeValue, errAccessDenied),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, readErr: true, code: codeScheduleUnreadable},
+		{name: "CDM schedule unreadable",
+			reg:    manualDellRegistry().fail(dellCDMPolicyScheduleKey, dellScheduleModeValue, errAccessDenied),
+			source: scheduleSourcePolicy, key: dellCDMPolicyScheduleKey, readErr: true, code: codeScheduleUnreadable},
+
+		// Both roots together: each is held to the rule on its own.
+		{name: "both roots manual, settings manual", manual: true,
+			reg:    manualAt(manualAt(manualDellRegistry(), dellPolicyScheduleKey), dellCDMPolicyScheduleKey),
+			source: scheduleSourceSettings, key: dellScheduleKey, mode: dellManualUpdates, noteSubstr: "precedence is not verified"},
+		{name: "default root manual, CDM root Auto",
+			reg:    auto(manualAt(manualDellRegistry(), dellPolicyScheduleKey), dellCDMPolicyScheduleKey),
+			source: scheduleSourcePolicy, key: dellCDMPolicyScheduleKey, mode: "Auto", code: codeSchedulePolicyNotManual},
+		{name: "default root Auto, CDM root manual",
+			reg:    manualAt(auto(manualDellRegistry(), dellPolicyScheduleKey), dellCDMPolicyScheduleKey),
+			source: scheduleSourcePolicy, key: dellPolicyScheduleKey, mode: "Auto", code: codeSchedulePolicyNotManual},
+		{name: "default root manual, CDM root present without ScheduleMode",
+			reg:    manualAt(manualDellRegistry(), dellPolicyScheduleKey).setKeyOnly(dellCDMPolicyKey, dellScheduleModeValue),
+			source: scheduleSourcePolicy, key: dellCDMParentKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+		{name: "default root present without ScheduleMode, CDM root manual",
+			reg:    manualAt(manualDellRegistry(), dellCDMPolicyScheduleKey).setKeyOnly(dellPolicyKey, dellScheduleModeValue),
+			source: scheduleSourcePolicy, key: dellPolicyKey, code: codeSchedulePolicyUnknown, noteSubstr: "layout not recognised"},
+
+		// A clean install has an empty Policies\Dell\Telemetry key. It is not a
+		// policy for the tool and changes nothing.
+		{name: "clean install: empty Telemetry key, settings manual", manual: true,
+			reg:    manualDellRegistry().setSubkey(dellTelemetryPolicyKeyForTest),
+			source: scheduleSourceSettings, key: dellScheduleKey, mode: dellManualUpdates},
+		{name: "clean install: empty Telemetry key, settings Auto",
+			reg:    newFakeRegistry().setSubkey(dellTelemetryPolicyKeyForTest).setString(dellScheduleKey, dellScheduleModeValue, "Auto"),
+			source: scheduleSourceSettings, key: dellScheduleKey, mode: "Auto", code: codeScheduleNotManual},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := readDellScheduleMode(tc.reg.read)
+			if m.Manual() != tc.manual {
+				t.Fatalf("Manual() = %v, want %v (%+v)", m.Manual(), tc.manual, m)
+			}
+			if (m.Err != nil) != tc.readErr {
+				t.Fatalf("Err = %v, want a read error: %v", m.Err, tc.readErr)
+			}
+			if m.Source != tc.source {
+				t.Fatalf("Source = %q, want %q (%+v)", m.Source, tc.source, m)
+			}
+			if m.Key != tc.key {
+				t.Fatalf("Key = %q, want %q", m.Key, tc.key)
+			}
+			if m.Mode != tc.mode {
+				t.Fatalf("Mode = %q, want %q", m.Mode, tc.mode)
+			}
+			if got := m.refusalCode(); got != tc.code {
+				t.Fatalf("refusalCode() = %q, want %q", got, tc.code)
+			}
+			if tc.noteSubstr != "" && !strings.Contains(m.Note, tc.noteSubstr) {
+				t.Fatalf("Note = %q, want it to say %q", m.Note, tc.noteSubstr)
+			}
+			if tc.noteSubstr == "" && m.Note != "" {
+				t.Fatalf("Note = %q, want none", m.Note)
+			}
+		})
+	}
+}
+
+const dellTelemetryPolicyKeyForTest = `SOFTWARE\Policies\Dell\Telemetry`
+
+// The shared parent of every Dell policy is never read: it exists on a clean
+// install (it holds the Telemetry key), so its presence means nothing.
+func TestDellScheduleModeNeverReadsTheBareDellPolicyKey(t *testing.T) {
+	for _, k := range dellRegistryKeys {
+		lk := strings.ToLower(k)
+		if strings.HasPrefix(strings.ToLower(dellTelemetryPolicyKeyForTest)+`\`, lk+`\`) {
+			t.Fatalf("read list key %q is the clean-install Telemetry key or one of its parents", k)
+		}
+	}
+}
+
+// The refusal names the key that decided, so an admin is pointed at the
+// policy that must change.
+func TestDellRefusalNamesTheDecidingPolicyKey(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reg  *fakeRegistry
+		want string
+	}{
+		"CDM Auto":        {manualDellRegistry().setString(dellCDMPolicyScheduleKey, dellScheduleModeValue, "Auto"), dellCDMPolicyScheduleKey},
+		"CDM unknown":     {manualDellRegistry().setKeyOnly(dellCDMPolicyKey, dellScheduleModeValue), dellCDMParentKey},
+		"default unknown": {manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue), dellPolicyKey},
+		"default Auto":    {manualDellRegistry().setString(dellPolicyScheduleKey, dellScheduleModeValue, "Auto"), dellPolicyScheduleKey},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := testDellLane(t, map[string]string{dcu64: "5.7.2"})
+			l.host.registry = tc.reg.read
+			outcome, err := l.CheckToolConfig()
+			if outcome != OutcomeToolUnavailable || err == nil {
+				t.Fatalf("outcome %q, err %v", outcome, err)
+			}
+			if !strings.Contains(err.Error(), `HKLM\`+tc.want) {
+				t.Fatalf("error %q does not name HKLM\\%s", err.Error(), tc.want)
+			}
+		})
 	}
 }
