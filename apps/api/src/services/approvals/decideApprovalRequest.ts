@@ -1396,6 +1396,23 @@ export async function decideApprovalRequest(
     }
   }
 
+  // A high/critical-tier intent (AI Tier 3 and above) approved BELOW the L3
+  // assurance floor — the non-enforcing partner's grace path, a supervised
+  // plain click, or a batch that pre-verified at L1/L2 — still needs a
+  // session that passed MFA. Its REST twins carry `requireMfa()`; without
+  // this the approve route was the weaker way to authorize the same action.
+  // A decision that reached L3 already carries a stronger, per-decision
+  // factor and is not re-gated. Deny is never gated.
+  if (
+    linkedIntent
+    && status === 'approved'
+    && (existing.riskTier === 'high' || existing.riskTier === 'critical')
+    && (assurance.decidedAssuranceLevel ?? 0) < 3
+    && !hasSatisfiedMfa(input.auth)
+  ) {
+    return { httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } };
+  }
+
   // A sole operator approving their OWN diagnostic grant needs a fresh
   // second factor: a hardware-backed assertion (>= L3) made for THIS
   // decision, never a session tap or a reused step-up grant, whatever the

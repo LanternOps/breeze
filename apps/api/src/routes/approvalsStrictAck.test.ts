@@ -289,6 +289,7 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
