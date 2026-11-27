@@ -8,7 +8,7 @@ const payload = {
   owner: { kind: 'backup_workload' as const, ref: 'workload-1' }, ownerKind: 'backup_workload' as const,
   ownerLabel: 'Microsoft 365 mail backup', subjectName: 'Microsoft 365 mail backup · Example customer',
 };
-beforeEach(() => { safeFetch.mockReset().mockResolvedValue({ ok: true, status: 200, text: async () => '' }); });
+beforeEach(() => { safeFetch.mockReset().mockImplementation(async () => new Response('', { status: 200 })); });
 describe('workload webhook channel payload', () => {
   it('renders owner template fields and the legacy device alias without null text', async () => {
     await sendWebhookNotification({ url: 'https://example.com/hook', payloadTemplate: '{"subject":"{{device}}","legacyName":"{{deviceName}}","kind":"{{ownerKind}}","label":"{{ownerLabel}}","name":"{{subjectName}}","ref":"{{owner.ref}}"}' }, payload);

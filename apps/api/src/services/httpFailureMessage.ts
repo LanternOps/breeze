@@ -213,6 +213,37 @@ function maskSecrets(body: string, secrets: readonly string[]): string {
 }
 
 /**
+ * The first `length` characters of `body`, with the caller's secrets masked.
+ *
+ * Mask across a window WIDER than the one returned, then narrow. A secret that
+ * begins inside the window always ends within `length + longest`, so widening
+ * by that much means no occurrence is ever cut in half by the bound before it
+ * can be masked. Narrowing afterwards is safe because the whole window was
+ * masked — every prefix of it is masked too, including content that masking
+ * pulled forward.
+ *
+ * That holds only while the body goes on past the widened window. A body the
+ * caller read only to a byte cap (`bodyTruncated`) can end part-way through a
+ * secret, and that fragment matches nothing. When the widened window reaches
+ * such a cut, the last `longest - 1` characters, where a fragment would sit,
+ * are dropped after masking.
+ */
+function maskedWindow(
+  body: string,
+  length: number,
+  secrets: readonly string[],
+  bodyTruncated: boolean
+): string {
+  const longestSecret = secrets.reduce((longest, secret) => Math.max(longest, secret.length), 0);
+  const widened = length + longestSecret;
+  let masked = maskSecrets(body.slice(0, widened), secrets);
+  if (bodyTruncated && body.length <= widened && longestSecret > 1) {
+    masked = masked.slice(0, Math.max(0, masked.length - (longestSecret - 1)));
+  }
+  return masked.slice(0, length);
+}
+
+/**
  * Reduce an untrusted third-party response body to one short readable line:
  * markup removed, entities decoded, whitespace collapsed, length capped.
  *
@@ -223,21 +254,12 @@ function maskSecrets(body: string, secrets: readonly string[]): string {
 export function summarizeResponseBody(
   body: string | null | undefined,
   maxLength: number = MAX_OPERATOR_ERROR_LENGTH,
-  secrets: readonly string[] = []
+  secrets: readonly string[] = [],
+  bodyTruncated = false
 ): string {
   if (typeof body !== 'string' || body.length === 0) return '';
 
-  // Mask across a window WIDER than the one we summarise, then narrow. A
-  // secret that begins inside the summary window always ends within
-  // `MAX_SUMMARY_INPUT_LENGTH + longest`, so widening by that much means no
-  // occurrence is ever cut in half by the bound before it can be masked.
-  // Narrowing afterwards is safe because the whole window was masked — every
-  // prefix of it is masked too, including content that masking pulled forward.
-  const longestSecret = secrets.reduce((longest, secret) => Math.max(longest, secret.length), 0);
-  const masked = maskSecrets(body.slice(0, MAX_SUMMARY_INPUT_LENGTH + longestSecret), secrets);
-
-  let text = masked
-    .slice(0, MAX_SUMMARY_INPUT_LENGTH)
+  let text = maskedWindow(body, MAX_SUMMARY_INPUT_LENGTH, secrets, bodyTruncated)
     .replace(SCRIPT_OR_STYLE_BLOCK, ' ')
     .replace(UNTERMINATED_SCRIPT_OR_STYLE, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
@@ -276,6 +298,11 @@ export type HttpFailureOptions = {
    */
   secrets?: readonly string[];
   maxLength?: number;
+  /**
+   * The caller read only the start of the body (`readResponseTextPrefix`), so
+   * it may end part-way through a secret.
+   */
+  bodyTruncated?: boolean;
 };
 
 export function formatHttpFailure(
@@ -283,10 +310,10 @@ export function formatHttpFailure(
   body: string | null | undefined,
   options: HttpFailureOptions = {}
 ): string {
-  const { secrets = [], maxLength = MAX_OPERATOR_ERROR_LENGTH } = options;
+  const { secrets = [], maxLength = MAX_OPERATOR_ERROR_LENGTH, bodyTruncated = false } = options;
   const prefix = status === undefined ? 'HTTP error' : `HTTP ${status}`;
   // `: ` is two characters the summary does not get to spend.
-  const summary = summarizeResponseBody(body, maxLength - prefix.length - 2, secrets);
+  const summary = summarizeResponseBody(body, maxLength - prefix.length - 2, secrets, bodyTruncated);
   return summary ? `${prefix}: ${summary}` : prefix;
 }
 
@@ -297,14 +324,64 @@ export function formatHttpFailure(
 export function formatHttpFailureDetail(
   status: number | undefined,
   body: string | null | undefined,
-  secrets: readonly string[] = []
+  secrets: readonly string[] = [],
+  bodyTruncated = false
 ): string {
   const prefix = status === undefined ? 'HTTP error' : `HTTP ${status}`;
   if (typeof body !== 'string' || body.length === 0) return prefix;
   // Masked too. This form is un-normalised on purpose so debugging loses
   // nothing, but "un-normalised" was never meant to include the channel's own
   // credentials — and unlike the operator string, nothing downstream scrubs it.
-  const longestSecret = secrets.reduce((longest, secret) => Math.max(longest, secret.length), 0);
-  const window = body.slice(0, MAX_LOGGED_RESPONSE_BODY_LENGTH + longestSecret);
-  return `${prefix}: ${maskSecrets(window, secrets).slice(0, MAX_LOGGED_RESPONSE_BODY_LENGTH)}`;
+  return `${prefix}: ${maskedWindow(body, MAX_LOGGED_RESPONSE_BODY_LENGTH, secrets, bodyTruncated)}`;
+}
+
+/**
+ * Read at most `maxBytes` of a response body as UTF-8 text, then cancel the
+ * rest. On a `safeFetch` response made with `streamResponse: true`, cancelling
+ * destroys the request: the socket is dropped once the cap is reached, and
+ * nothing past it is buffered beyond the chunk that crossed it.
+ *
+ * For callers whose result is decided by the status code and that keep only
+ * the start of the body (an error summary, a delivery-log excerpt). The
+ * `maxBytes` option of `safeFetch` does not fit them: it fails the whole call
+ * on overrun, so the status is lost.
+ *
+ * `truncated` is true when the body went on past the cap; pass it on as
+ * `bodyTruncated` so secret masking accounts for the cut. A character split by
+ * the cap is dropped, not decoded as U+FFFD. A read error (an abort, a
+ * deadline, a reset) is thrown, as `response.text()` would throw it.
+ */
+export async function readResponseTextPrefix(
+  response: Response,
+  maxBytes: number
+): Promise<{ text: string; truncated: boolean }> {
+  if (!response.body) return { text: '', truncated: false };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let ended = false;
+  let truncated = false;
+  try {
+    while (!ended && !truncated) {
+      const next = await reader.read();
+      if (next.done) {
+        ended = true;
+      } else if (next.value.byteLength > maxBytes - total) {
+        const room = Math.max(0, maxBytes - total);
+        if (room > 0) chunks.push(next.value.subarray(0, room));
+        total += room;
+        truncated = true;
+      } else {
+        chunks.push(next.value);
+        total += next.value.byteLength;
+      }
+    }
+  } finally {
+    if (!ended) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  // `stream: true` holds back an incomplete trailing sequence instead of
+  // emitting U+FFFD for it; the decoder is discarded with what it held.
+  const text = new TextDecoder('utf-8').decode(Buffer.concat(chunks, total), { stream: truncated });
+  return { text, truncated };
 }

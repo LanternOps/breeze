@@ -28,11 +28,8 @@ const HTML_405 =
   '</head><body><h1>Example Domain</h1><p>The method is not allowed for the requested URL.</p></body></html>';
 
 function htmlResponse(status: number): Response {
-  return {
-    ok: false,
-    status,
-    text: async () => HTML_405,
-  } as unknown as Response;
+  // A real Response: the webhook sender reads the body as a stream (#12788).
+  return new Response(HTML_405, { status });
 }
 
 const basePayload = {

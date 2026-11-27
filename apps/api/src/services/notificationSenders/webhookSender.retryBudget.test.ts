@@ -27,11 +27,7 @@ describe('webhook sender retry budget', () => {
   it('performs one bounded network attempt and never sleeps in a worker slot', async () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: async () => 'synthetic retryable failure',
-    } as Response);
+    safeFetchMock.mockImplementation(async () => new Response('synthetic retryable failure', { status: 503 }));
 
     const pending = sendWebhookNotification(
       { url: 'https://example.com/hook', retryCount: 1, timeout: 1_000 },
@@ -47,11 +43,18 @@ describe('webhook sender retry budget', () => {
   });
 
   it('passes the clamped webhook timeout as safeFetch overall deadline (#12788)', async () => {
-    safeFetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '' } as Response);
+    safeFetchMock.mockImplementation(async () => new Response('', { status: 200 }));
     await sendWebhookNotification({ url: 'https://example.com/hook', timeout: 5_000 }, payload);
     await sendWebhookNotification({ url: 'https://example.com/hook', timeout: 999_999 }, payload);
     expect(safeFetchMock.mock.calls[0]![1]).toMatchObject({ deadlineMs: 5_000 });
     expect(safeFetchMock.mock.calls[1]![1]).toMatchObject({ deadlineMs: 60_000 });
+  });
+
+  it('streams the reply so the read can stop at the cap, and sets no maxBytes that would fail a 2xx', async () => {
+    safeFetchMock.mockImplementation(async () => new Response('', { status: 200 }));
+    await sendWebhookNotification({ url: 'https://example.com/hook' }, payload);
+    expect(safeFetchMock.mock.calls[0]![1]).toMatchObject({ streamResponse: true });
+    expect(safeFetchMock.mock.calls[0]![1]).not.toHaveProperty('maxBytes');
   });
 
   it.each([
@@ -69,11 +72,7 @@ describe('webhook sender retry budget', () => {
 
   it('marks 4xx configuration failures non-retryable', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 404,
-      text: async () => 'not found',
-    } as Response);
+    safeFetchMock.mockImplementation(async () => new Response('not found', { status: 404 }));
 
     await expect(sendWebhookNotification(
       { url: 'https://example.com/hook' }, payload,
@@ -83,11 +82,7 @@ describe('webhook sender retry budget', () => {
 
   it.each([408, 425, 429, 503])('marks transient HTTP %d failures retryable', async (status) => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status,
-      text: async () => 'synthetic transient failure',
-    } as Response);
+    safeFetchMock.mockImplementation(async () => new Response('synthetic transient failure', { status }));
 
     await expect(sendWebhookNotification(
       { url: 'https://example.com/hook' }, payload,
