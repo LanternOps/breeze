@@ -34,9 +34,11 @@ func notManualRegistries() map[string]*fakeRegistry {
 		"policy error":          manualDellRegistry().fail(dellPolicyKey, dellScheduleModeValue, errAccessDenied),
 		"policy unknown layout": manualDellRegistry().setKeyOnly(dellPolicyKey, dellScheduleModeValue),
 		"embedded NUL":          newFakeRegistry().setString(dellScheduleKey, dellScheduleModeValue, "ManualUpdates\x00Auto"),
-		// The lab's Client Device Manager layout.
+		// The Client Device Manager root, in the layout of the lab check (the
+		// \Schedule sub-path is inferred), and its bare parent.
 		"CDM policy Auto":           manualDellRegistry().setString(dellCDMPolicyScheduleKey, dellScheduleModeValue, "Auto"),
 		"CDM policy unknown layout": manualDellRegistry().setKeyOnly(dellCDMPolicyKey, dellScheduleModeValue),
+		"CDM parent only":           manualDellRegistry().setSubkey(dellCDMParentKey),
 		"CDM policy error":          manualDellRegistry().fail(dellCDMPolicyScheduleKey, dellScheduleModeValue, errAccessDenied),
 	}
 }
@@ -48,7 +50,7 @@ func notManualCode(name string) string {
 		return codeScheduleUnreadable
 	case "policy Auto", "CDM policy Auto":
 		return codeSchedulePolicyNotManual
-	case "policy unknown layout", "CDM policy unknown layout":
+	case "policy unknown layout", "CDM policy unknown layout", "CDM parent only":
 		return codeSchedulePolicyUnknown
 	}
 	return codeScheduleNotManual
@@ -272,10 +274,14 @@ func TestDellLaneIsToolConfigChecked(t *testing.T) {
 		t.Fatal("the fake lane should not be config-checked")
 	}
 	// The vendor schedule read is Dell's alone: no other built-in lane is
-	// config-checked, so none of them reads the Dell policy roots.
+	// config-checked. Lenovo is not built into this agent yet, so it is checked
+	// only once it is.
 	for _, id := range []string{LaneSurface, LaneHP, LaneLenovo} {
 		l, ok := LaneFor(id)
 		if !ok {
+			if id != LaneLenovo {
+				t.Fatalf("lane %s is not built in", id)
+			}
 			continue
 		}
 		if _, checked := l.(ToolConfigCheckedLane); checked {

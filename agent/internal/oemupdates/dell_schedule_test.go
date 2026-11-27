@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -95,8 +96,7 @@ func (f *fakeRegistry) read(key, name string) (regRead, error) {
 	return regRead{}, nil
 }
 
-// setSubkey makes a key exist with no values, as a sibling or child that the
-// reader is not expected to read.
+// setSubkey makes a key, and so its ancestors, exist with no values.
 func (f *fakeRegistry) setSubkey(key string) *fakeRegistry {
 	f.values[regKey(key, "")] = regRead{KeyExists: true}
 	return f
@@ -359,11 +359,11 @@ func TestDellRefusalShowsTheValueAsRead(t *testing.T) {
 	}
 }
 
-// Dell's settings assembly takes its policy root from Dell Client Device
-// Manager's policy when that is configured, and from the default policy root
-// otherwise (#12267 lab). The agent reads both roots on every run and does not
-// copy that choice: either root saying not manual, or present with no
-// ManualUpdates where Breeze looks, refuses.
+// Dell's settings assembly selects the Dell Client Device Manager policy root
+// when that policy is configured, and the default policy root otherwise
+// (#12267 lab, read from the assembly, not seen at run time). The agent reads
+// both roots on every run and does not copy that choice: either root saying
+// not manual, or present with no ManualUpdates where Breeze looks, refuses.
 func TestDellScheduleModeClientDeviceManagerRoot(t *testing.T) {
 	auto := func(f *fakeRegistry, key string) *fakeRegistry {
 		return f.setString(key, dellScheduleModeValue, "Auto")
@@ -382,9 +382,10 @@ func TestDellScheduleModeClientDeviceManagerRoot(t *testing.T) {
 		code       string
 		noteSubstr string
 	}{
-		// The lab's layout: Auto under the Client Device Manager root's
-		// settings path, no default policy key, the tool's own setting manual.
-		// Before this, it passed.
+		// The layout of the lab check: Auto under the Client Device Manager
+		// root's settings-shaped path (the \Schedule sub-path is inferred), no
+		// default policy key, the tool's own setting manual. Before this, it
+		// passed.
 		{name: "lab layout: CDM schedule Auto, no default policy, settings manual",
 			reg:    auto(manualDellRegistry(), dellCDMPolicyScheduleKey),
 			source: scheduleSourcePolicy, key: dellCDMPolicyScheduleKey, mode: "Auto", code: codeSchedulePolicyNotManual},
@@ -500,6 +501,25 @@ func TestDellScheduleModeClientDeviceManagerRoot(t *testing.T) {
 }
 
 const dellTelemetryPolicyKeyForTest = `SOFTWARE\Policies\Dell\Telemetry`
+
+// Every key a policy root reads is on the reader's fixed list. A key missing
+// from the list would make the Windows reader refuse every Dell run as
+// unreadable rather than fail here.
+func TestDellPolicyRootsAreOnTheReadList(t *testing.T) {
+	n := 0
+	for _, root := range dellPolicyRoots {
+		for _, p := range root.paths {
+			n++
+			if !slices.Contains(dellRegistryKeys, p.key) {
+				t.Fatalf("policy path %q is not on dellRegistryKeys", p.key)
+			}
+		}
+	}
+	// The read list is the policy paths plus the settings key, nothing more.
+	if n+1 != len(dellRegistryKeys) || !slices.Contains(dellRegistryKeys, dellScheduleKey) {
+		t.Fatalf("dellRegistryKeys %q does not match the policy roots plus the settings key", dellRegistryKeys)
+	}
+}
 
 // The shared parent of every Dell policy is never read: it exists on a clean
 // install (it holds the Telemetry key), so its presence means nothing.

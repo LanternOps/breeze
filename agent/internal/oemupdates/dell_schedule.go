@@ -19,16 +19,17 @@ import (
 // to it, even /version, wakes the vendor service, which rewrites its scheduler
 // file.
 //
-// The tool's policy has two roots. Its settings assembly uses the Dell Client
-// Device Manager root when that product's policy is configured, and the
-// default root otherwise; the policy settings live under <root>\Preferences\Settings,
-// so ScheduleMode is taken to be under <root>\Preferences\Settings\Schedule,
-// mirroring the settings key (that sub-path is inferred, not read from the
-// assembly). The assembly also names the bare Client Device Manager key as a
-// root location; what it holds is not known. Neither root's precedence over
-// the settings key was seen to take effect on the lab unit, so the reading
-// below does not copy the tool's choice of root: it reads both on every run,
-// holds each to the same rule, and fails closed:
+// The tool's policy has two roots. Read from its settings assembly, not seen
+// at run time: it selects the Dell Client Device Manager root when that
+// product's policy is configured, and the default root otherwise, and keeps
+// the policy settings under <root>\Preferences\Settings. ScheduleMode is
+// looked for on each root key itself and under <root>\Preferences\Settings\Schedule,
+// mirroring the settings key; neither path is verified (the \Schedule sub-path
+// is inferred, not read from the assembly). The assembly also names the bare
+// Client Device Manager key as a root location; what it holds is not known.
+// Neither root's precedence over the settings key was seen to take effect on
+// the lab unit, so the reading below does not copy the tool's choice of root:
+// it reads both on every run, holds each to the same rule, and fails closed:
 //   - a policy ScheduleMode that is anything but ManualUpdates, under either
 //     root, refuses (vendor_schedule_policy_not_manual);
 //   - a policy root that exists, with no ScheduleMode of exactly ManualUpdates
@@ -66,17 +67,20 @@ const (
 var dellRegistryKeys = []string{dellScheduleKey, dellPolicyKey, dellPolicyScheduleKey,
 	dellCDMParentKey, dellCDMPolicyKey, dellCDMPolicyScheduleKey}
 
-// policyPath is one key under a policy root where ScheduleMode is read.
+// policyPath is one key read for a policy root. Every one is read for
+// ScheduleMode, and a value there that is not ManualUpdates refuses.
 type policyPath struct {
 	key string
-	// manual: a ManualUpdates here satisfies the root. False for a key read
-	// only to learn whether the root exists, or to refuse a non-manual value.
+	// manual: a ManualUpdates here satisfies the root. False only for the
+	// Client Device Manager parent, which is not a known settings location.
 	manual bool
 }
 
-// dellPolicyRoot is one of the tool's policy roots: the keys read under it,
-// outermost first, so the first key also tells whether the root exists at all
-// (a subkey cannot exist without its parents).
+// dellPolicyRoot is one of the tool's policy roots: the keys read for it,
+// outermost first. The root counts as existing if any of them does; the
+// outermost key is the one named when the root is present in a layout this
+// does not recognise. For the Client Device Manager root the outermost key is
+// its parent, ClientDeviceManager, which counts too.
 type dellPolicyRoot struct {
 	paths []policyPath
 }
@@ -184,7 +188,7 @@ type dellScheduleMode struct {
 	// Note is a detail for the log, such as a policy key in a layout this does
 	// not recognise.
 	Note string
-	// PolicyUnknown: the policy key exists but holds no ScheduleMode of exactly
+	// PolicyUnknown: a policy root exists but holds no ScheduleMode of exactly
 	// ManualUpdates at a path this knows.
 	PolicyUnknown bool
 	// Err is a read failure, never an absent key or value.
@@ -224,7 +228,8 @@ func stateOf(r regRead) scheduleValueState {
 	return scheduleValueWrongType
 }
 
-// readDellScheduleMode reads both policy roots, then the settings key. It never
+// readDellScheduleMode reads both policy roots, returning at once on a
+// non-manual value or a read error, then the settings key. It never
 // guesses: an error is an error, an absent value is absent, and only a REG_SZ
 // reading exactly ManualUpdates in the settings key counts as manual.
 func readDellScheduleMode(read regReader) dellScheduleMode {
