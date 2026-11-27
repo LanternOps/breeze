@@ -208,6 +208,15 @@ describe('publishDeltaIndex', () => {
     await expect(publishDeltaIndex(tx, args(1_000))).rejects.toThrow(/1 tombstone\(s\) do not carry the source path of the checkpoint entry they name/);
   });
 
+  it('turns JIT off before its first statement over the index (#12741)', async () => {
+    const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 1, tombstones: 1 });
+    await publishDeltaIndex(tx, args(1_000));
+    const jitOff = statements.findIndex((s) => /set_config\('jit', 'off', true\)/.test(s));
+    const analyze = statements.findIndex((s) => /ANALYZE snapshot_index_incoming/.test(s));
+    expect(jitOff).toBeGreaterThanOrEqual(0);
+    expect(jitOff).toBeLessThan(analyze);
+  });
+
   it('checks each written tombstone against the checkpoint entry it names, in the writing statement', async () => {
     const { tx, statements } = fakeTx({ header: { id: HEADER, entry_count: 1_000 }, adds: 1, tombstones: 1 });
     await publishDeltaIndex(tx, args(1_000));

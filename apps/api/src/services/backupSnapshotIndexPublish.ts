@@ -25,6 +25,7 @@ import type { db } from '../db';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { extractRowCount } from '../db/rowCount';
 import type { SnapshotEntryKind } from './backupSnapshotEntryKind';
+import { disableJitForIndexReads } from './backupSnapshotIndexEntries';
 
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -425,6 +426,12 @@ export async function publishDeltaIndex(
   if (owner[0].org_id !== lineage.orgId || owner[0].device_id !== lineage.deviceId) {
     throw new Error(`snapshot ${snapshotDbId}: the index lineage names another org or device than the snapshot`);
   }
+
+  // The diff, write and content check statements are priced far above what
+  // they cost, like the readers' (disableJitForIndexReads): with JIT they took
+  // 0.4 to 0.6 s longer per 100,000-entry delta publish, under the locks
+  // below (#12741). Transaction-local, so it ends with the hydrator's publish.
+  await disableJitForIndexReads(tx);
 
   // Temp tables are never autovacuumed; the diff's plan needs a row estimate.
   await tx.execute(sql`ANALYZE snapshot_index_incoming`);

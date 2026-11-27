@@ -245,7 +245,8 @@ export type SnapshotIndexEntries = ReturnType<typeof snapshotIndexEntries>;
 /**
  * Turns JIT off for the rest of the reader's transaction, before it runs a
  * statement built on snapshotIndexEntries. Every reader calls it on the same
- * executor it then reads with (#12741).
+ * executor it then reads with, and so does the delta publisher before its
+ * diff (#12741).
  *
  * Why: the planner prices these statements at about 470,000 to 510,000 once
  * backup_tree_checkpoint_entries has statistics with rows (the checkpoint
