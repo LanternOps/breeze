@@ -24,6 +24,7 @@ import { randomBytes } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { snapshotIndexEntries } from '../../services/backupSnapshotIndexEntries';
 import { treeDigestQuery } from '../../services/backupSnapshotIndexPublish';
 import { WRITE_IDENTITY, insertSnapshotRow, seedWriteTenant } from './backupWriteFixtures';
 import { getTestDb } from './setup';
@@ -159,6 +160,57 @@ describe('the publisher\'s content check is linear in what it reads (#12741)', (
     const plan = await explainDigest(snapshotDbId, checkpointId);
     expect(snapshotRowsRead(plan)).toBeLessThanOrEqual(2 * STORED_ROWS);
     expect(removedByJoinFilter(plan)).toBeLessThanOrEqual(STORED_ROWS);
+  }, 120_000);
+
+  runDb('agrees with the read layer on duplicate, misnamed and dangling tombstones, identical entries and NULL columns', async () => {
+    const admin = getTestDb();
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const [header] = (await admin.execute(sql`
+      INSERT INTO backup_tree_checkpoints (org_id, device_id, config_id, storage_identity, backup_type, key_layout, key_prefix,
+                                           entry_count, source_manifest_sha256)
+      VALUES (${t.orgId}, ${t.deviceId}, ${t.configId}, ${WRITE_IDENTITY}, 'file', 'legacy_flat', NULL, 6, ${'0'.repeat(64)})
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    const checkpointId = header!.id;
+    // Entries 1 and 2 are identical; 4 has NULL size, time and kind; 5 is a directory; 6 a file.
+    await admin.execute(sql`
+      INSERT INTO backup_tree_checkpoint_entries (checkpoint_id, entry_no, source_path, backup_path, size, modified_at, kind) VALUES
+        (${checkpointId}, 1, '/d/same', 'snapshots/s0/same', 7, timestamp '2026-11-01', NULL),
+        (${checkpointId}, 2, '/d/same', 'snapshots/s0/same', 7, timestamp '2026-11-01', NULL),
+        (${checkpointId}, 3, '/d/three', 'snapshots/s0/three', 3, timestamp '2026-11-01', NULL),
+        (${checkpointId}, 4, '/d/nulls', 'snapshots/s0/nulls', NULL, NULL, NULL),
+        (${checkpointId}, 5, '/d/dir', '', NULL, NULL, 'dir'),
+        (${checkpointId}, 6, '/d/six', 'snapshots/s0/six', 6, timestamp '2026-11-01', NULL)
+    `);
+    const snapshotDbId = await insertSnapshotRow(t, `snapshot-20261101T000003Z-${randomBytes(4).toString('hex')}`);
+    // Tombstones: entry 2 named twice (hidden once), entry 3 named with another
+    // path (hides nothing), entry 99 that does not exist (hides nothing), entry
+    // 6 once. Adds: a NULL-column file and a duplicate of a hidden entry.
+    await admin.execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path, size, modified_at, kind, checkpoint_entry_no) VALUES
+        (${snapshotDbId}, '/d/same', '', NULL, NULL, NULL, 2),
+        (${snapshotDbId}, '/d/same', '', NULL, NULL, NULL, 2),
+        (${snapshotDbId}, '/d/not-three', '', NULL, NULL, NULL, 3),
+        (${snapshotDbId}, '/d/ghost', '', NULL, NULL, NULL, 99),
+        (${snapshotDbId}, '/d/six', '', NULL, NULL, NULL, 6),
+        (${snapshotDbId}, '/d/added', 'snapshots/s1/added', NULL, NULL, NULL, NULL),
+        (${snapshotDbId}, '/d/same', 'snapshots/s0/same', 7, timestamp '2026-11-01', NULL, NULL)
+    `);
+    await admin.execute(sql`
+      UPDATE backup_snapshots SET file_index_format = 'delta', file_index_checkpoint_id = ${checkpointId}::uuid,
+             file_index_status = 'complete', file_index_manifest_sha256 = ${'b'.repeat(64)}
+       WHERE id = ${snapshotDbId}::uuid
+    `);
+    // The oracle is the production read layer itself.
+    const entries = snapshotIndexEntries(snapshotDbId);
+    const readLayer = await digest(sql`
+      SELECT count(*) AS n, coalesce(sum(hashtextextended(ROW(x.source_path, x.backup_path, x.size, x.modified_at, x.kind)::text, 0)), 0) AS h
+        FROM (SELECT ${entries.sourcePath} AS source_path, ${entries.backupPath} AS backup_path, ${entries.size} AS size,
+                     ${entries.modifiedAt} AS modified_at, ${entries.kind} AS kind
+                FROM ${entries}) x`);
+    // 6 entries - entries 2 and 6 + 2 adds.
+    expect(readLayer.n).toBe('6');
+    expect(await digest(treeDigestQuery(snapshotDbId, checkpointId))).toEqual(readLayer);
   }, 120_000);
 
   runDb('digests exactly the tree the snapshot should read as', async () => {

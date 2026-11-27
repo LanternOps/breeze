@@ -107,15 +107,18 @@ async function seedSkewedFleet() {
   return { orgId: t.orgId, snapshotDbId };
 }
 
-/** EXPLAIN of one selection page, run the way the selection walk runs it, in the org's request context. */
+/** EXPLAIN of one selection page, under the settings the selection walk runs it with, in the org's request context. */
 async function explainPage(orgId: string, snapshotDbId: string, after: string | null): Promise<FlatPlanNode[]> {
-  return runOutsideDbContext(() => withDbAccessContext(orgContext(orgId), () => db.transaction((tx) =>
-    withSelectionPagePlan(tx, async () => {
+  return runOutsideDbContext(() => withDbAccessContext(orgContext(orgId), () =>
+    withSelectionPagePlan(30_000, async (tx) => {
       const rows = (await tx.execute(sql`EXPLAIN (FORMAT JSON) ${readableSourcePathPageQuery(snapshotDbId, after, tx).getSQL()}`)) as unknown as Array<{ 'QUERY PLAN': Array<{ Plan: PlanNode }> }>;
       return flattenPlan(rows[0]!['QUERY PLAN'][0]!.Plan);
     }),
-  )));
+  ));
 }
+
+const currentSetting = async (name: string) =>
+  ((await db.execute(sql`SELECT current_setting(${name}) AS v`)) as unknown as Array<{ v: string }>)[0]!.v;
 
 describe('a large checkpoint among many small ones is still paged as index ranges (#12741)', () => {
   runDb('every keyset position reads the checkpoint entries in index order, never sorted', async () => {
@@ -131,10 +134,15 @@ describe('a large checkpoint among many small ones is still paged as index range
     for (const [label, after] of positions) {
       const nodes = await explainPage(fx.orgId, fx.snapshotDbId, after);
       const entries = scansOf(nodes, 'sie_entry');
-      seen[label] = { entries: entries.map((n) => `${n['Node Type']} ${n['Index Name'] ?? ''}`.trim()), underSort: entries.map((n) => n.underSort) };
+      // An ordered scan of the (checkpoint_id, source_path) index, plain or
+      // index-only (either can appear across Postgres majors), never under a Sort.
+      seen[label] = {
+        entries: entries.map((n) => (/^Index (Only )?Scan$/.test(n['Node Type']) ? n['Index Name'] ?? '' : n['Node Type'])),
+        underSort: entries.map((n) => n.underSort),
+      };
     }
     expect(seen).toEqual(Object.fromEntries(positions.map(([label]) => [label, {
-      entries: ['Index Scan backup_tree_checkpoint_entries_checkpoint_source_idx'],
+      entries: ['backup_tree_checkpoint_entries_checkpoint_source_idx'],
       underSort: [false],
     }])));
   }, 180_000);
@@ -142,11 +150,37 @@ describe('a large checkpoint among many small ones is still paged as index range
   runDb('the selection walk over it returns every path, and leaves the request\'s enable_sort as it was', async () => {
     const fx = await seedSkewedFleet();
     const outcome = await runOutsideDbContext(() => withDbAccessContext(orgContext(fx.orgId), async () => {
-      const before = ((await db.execute(sql`SELECT current_setting('enable_sort') AS v`)) as unknown as Array<{ v: string }>)[0]!.v;
+      const before = await currentSetting('enable_sort');
       const result = await resolveSelectedSnapshotPathsInDb(fx.snapshotDbId, ['/data']);
-      const after = ((await db.execute(sql`SELECT current_setting('enable_sort') AS v`)) as unknown as Array<{ v: string }>)[0]!.v;
-      return { before, after, ok: result.ok };
+      return { before, after: await currentSetting('enable_sort'), ok: result.ok };
     }));
     expect(outcome).toEqual({ before: 'on', after: 'on', ok: true });
   }, 180_000);
+});
+
+describe('withSelectionPagePlan (#12741)', () => {
+  runDb('a page runs with sorts off and the request gets its own value back, off included', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const seen = await runOutsideDbContext(() => withDbAccessContext(orgContext(t.orgId), async () => {
+      const during = await withSelectionPagePlan(30_000, async (tx) =>
+        ((await tx.execute(sql`SELECT current_setting('enable_sort') AS v`)) as unknown as Array<{ v: string }>)[0]!.v);
+      const afterDefault = await currentSetting('enable_sort');
+      await db.execute(sql`SELECT set_config('enable_sort', 'off', true)`);
+      await withSelectionPagePlan(30_000, async () => null);
+      return { during, afterDefault, afterOff: await currentSetting('enable_sort') };
+    }));
+    expect(seen).toEqual({ during: 'off', afterDefault: 'on', afterOff: 'off' });
+  });
+
+  runDb('a page that fails leaves the request\'s enable_sort as it was (the savepoint rolls it back)', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const seen = await runOutsideDbContext(() => withDbAccessContext(orgContext(t.orgId), async () => {
+      const failure = await withSelectionPagePlan(30_000, async (tx) => {
+        await tx.execute(sql`SELECT 1 / 0`);
+      }).then(() => null, (err: unknown) => (err instanceof Error ? err.message : String(err)));
+      return { failure, after: await currentSetting('enable_sort') };
+    }));
+    expect(seen.failure).toMatch(/SELECT 1 \/ 0/);
+    expect(seen.after).toBe('on');
+  });
 });

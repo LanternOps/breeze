@@ -58,7 +58,9 @@ async function withStatementTimeout<T>(boundMs: number, query: (tx: Executor) =>
   try {
     return await db.transaction(async (tx) => {
       const priorMs = await tightenStatementTimeout(tx, boundMs);
-      // Every query run here reads the file index.
+      // Every query run here reads the file index, so JIT goes off
+      // (disableJitForIndexReads). Unlike statement_timeout it is not put
+      // back: a released savepoint keeps it for the rest of the request.
       await disableJitForIndexReads(tx);
       const result = await query(tx);
       if (lockTimeoutWasChanged(priorMs, boundMs)) {
@@ -206,10 +208,12 @@ export type SelectionWalkOptions = {
 };
 
 /**
- * Runs one selection page's statement (readableSourcePathPageQuery) with sorts
- * disabled, so its plan is the merge of the two ordered index ranges, then
- * puts the caller's enable_sort back. Call it inside the page's own savepoint
- * (withStatementTimeout): a page that fails rolls the setting back with it.
+ * Runs one selection page's statement (readableSourcePathPageQuery) in its own
+ * savepoint (withStatementTimeout: the page's timeout, JIT off) with sorts
+ * disabled, so its plan is the merge of the two ordered index ranges, and puts
+ * the request's enable_sort back after a page that succeeded. A page that
+ * fails rolls the savepoint back, and the setting with it: no restore runs in
+ * an aborted transaction, where it would hide the page's own error.
  *
  * Why (#12741): the read layer's checkpoint id is only known at run time, so
  * the planner estimates a checkpoint's entries as the table's rows over its
@@ -220,14 +224,18 @@ export type SelectionWalkOptions = {
  * to 1.9 s for such pages, and the walk passed its 30 s deadline. Every leg
  * has an index in source_path order, so with sorts disabled the ordered path
  * is always available (pinned by backupSnapshotIndexSkewedPlans.integration.test.ts).
+ * Exported so that test can EXPLAIN a page under exactly these settings.
  */
-export async function withSelectionPagePlan<T>(executor: Executor, read: () => Promise<T>): Promise<T> {
-  const [prior] = (await executor.execute(sql`
-    SELECT current_setting('enable_sort') AS prior, set_config('enable_sort', 'off', true) AS applied
-  `)) as unknown as Array<{ prior: string }>;
-  const result = await read();
-  await executor.execute(sql`SELECT set_config('enable_sort', ${prior?.prior ?? 'on'}, true)`);
-  return result;
+export async function withSelectionPagePlan<T>(boundMs: number, read: (tx: Executor) => Promise<T>): Promise<T> {
+  return withStatementTimeout(boundMs, async (tx) => {
+    const [setting] = (await tx.execute(sql`
+      SELECT current_setting('enable_sort') AS prior, set_config('enable_sort', 'off', true) AS applied
+    `)) as unknown as Array<{ prior: string }>;
+    if (!setting) throw new Error('withSelectionPagePlan: reading enable_sort returned no row');
+    const result = await read(tx);
+    await tx.execute(sql`SELECT set_config('enable_sort', ${setting.prior}, true)`);
+    return result;
+  });
 }
 
 /**
@@ -247,9 +255,9 @@ async function* readableSourcePaths(
     const remaining = endsAt - Date.now();
     if (remaining <= 0) throw new IndexQueryTimeoutError();
     const cursor = after;
-    const page: ReadableSourcePath[] = await withStatementTimeout(
+    const page: ReadableSourcePath[] = await withSelectionPagePlan(
       Math.max(1, Math.min(pageTimeoutMs, remaining)),
-      (tx) => withSelectionPagePlan(tx, () => readableSourcePathPageQuery(snapshotDbId, cursor, tx)),
+      (tx) => readableSourcePathPageQuery(snapshotDbId, cursor, tx),
     );
     if (page.length > 0) yield page;
     if (page.length < SELECTION_PAGE_SIZE) return;

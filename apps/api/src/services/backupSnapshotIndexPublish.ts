@@ -316,7 +316,8 @@ const entryText = (alias: string) => sql.raw(
  * here even though the two anti-joins still agree on the counts.
  *
  * Counted as three sums, all entries minus the tombstoned ones plus the adds,
- * not as an anti-join, so its cost does not depend on the planner's estimates.
+ * not as an anti-join, so no join strategy the planner picks can make it
+ * re-read the snapshot's rows per entry.
  * As an anti-join, with statistics taken while the tables were nearly empty
  * (a new database, or the first checkpoints after the flag is turned on: a
  * publish under 100,000 rows refreshes nothing), the planner ran a nested loop
@@ -330,7 +331,8 @@ const entryText = (alias: string) => sql.raw(
  *
  * Cost: one pass over the checkpoint's entries (its primary key range), one
  * over the snapshot's own rows for the adds and one for the tombstones, and one
- * index lookup per tombstone. Sums, so no sort.
+ * index lookup per tombstone. Sums, so no sort of the entries (the DISTINCT
+ * sorts or hashes the tombstones only).
  *
  * Exported, unexecuted, so a test can EXPLAIN this exact statement
  * (backupSnapshotIndexPublishPlans.integration.test.ts).

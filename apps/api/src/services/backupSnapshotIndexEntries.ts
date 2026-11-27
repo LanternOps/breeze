@@ -262,6 +262,11 @@ export type SnapshotIndexEntries = ReturnType<typeof snapshotIndexEntries>;
  * Transaction-local (set_config(..., true)): it lasts until the reader's
  * transaction ends or its savepoint rolls back, so later statements of the
  * same request also run without JIT. A no-op where Postgres has no JIT.
+ *
+ * Precondition: `executor` is the transaction the read then runs in (the
+ * request's, a savepoint of it, or the hydrator's). On the bare pool, outside
+ * any DB context, the setting would apply to that one statement only; every
+ * caller runs inside withDbAccessContext or withSystemDbAccessContext.
  */
 export async function disableJitForIndexReads(executor: { execute: (query: SQL) => Promise<unknown> }): Promise<void> {
   await executor.execute(sql`SELECT set_config('jit', 'off', true)`);
