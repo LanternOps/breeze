@@ -152,7 +152,13 @@
     "noConversations": "No conversations yet",
     "m365Customer": "M365 customer",
     "noM365Customer": "No M365 customer",
-    "dismiss": "Dismiss"
+    "dismiss": "Dismiss",
+    "tabs": {
+      "label": "Assistant mode",
+      "session": "Direct session",
+      "sessionHint": "Work on this yourself. Breeze AI acts in this chat and asks here for any approval it needs.",
+      "wispHint": "Your standing assistant. Wisp hands longer jobs to specialists and reports back."
+    }
   },
   "aiConversationMove": {
     "openInAssistant": "Open in Breeze AI",

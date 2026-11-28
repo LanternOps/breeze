@@ -113,6 +113,8 @@ Relationships the UI should make visible, because they are already true in the e
 - There is **one** approval object and one Approvals page. Every AI surface should say "Approvals" and link there.
 - There is **one** chat conversation model (a conversation moves between side panel and full page without duplication). So there is one door, which speaks as Wisp when the person has a Wisp and as Breeze AI when they do not.
 
+  > **Amendment 2026-11-24.** Under an active grant the side panel now has two tabs: **Direct session** (Breeze AI, the default) and **Wisp**. Wisp delegation landed on 2026-11-05, after this decision. Wisp hands multi-step device work to a specialist run, so letting the grant decide the voice left a technician no way to work on a device directly in the panel, step by step with inline approvals. This does not bring back the three conversations of §7: there is still one Wisp conversation, shown on `/wisp` and in the Wisp tab; the direct session is the same Breeze AI conversation model as before; and the choice is between two named places, not a toggle inside one conversation. `/ai/chat` and mobile are unchanged.
+
 ## 5. Proposed navigation
 
 ### Before (12 entries + 3 elsewhere + 2 under Extensions)

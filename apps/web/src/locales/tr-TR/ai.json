@@ -152,7 +152,13 @@
     "noConversations": "Henüz görüşme yok",
     "m365Customer": "M365 müşterisi",
     "noM365Customer": "M365 müşterisi yok",
-    "dismiss": "Kapat"
+    "dismiss": "Kapat",
+    "tabs": {
+      "label": "Asistan modu",
+      "session": "Doğrudan oturum",
+      "sessionHint": "Bunun üzerinde kendiniz çalışın. Breeze AI bu sohbette işlem yapar ve gereken her onayı burada ister.",
+      "wispHint": "Kalıcı asistanınız. Wisp uzun işleri uzmanlara devreder ve sonucu bildirir."
+    }
   },
   "aiConversationMove": {
     "openInAssistant": "Breeze AI'da aç",

@@ -10,7 +10,7 @@ import {
   ExternalLink,
   Sparkles,
 } from "lucide-react";
-import { isActiveGrant, useAiStore, type WispState } from "@/stores/aiStore";
+import { isActiveGrant, useAiStore, type AiPanelTab, type WispState } from "@/stores/aiStore";
 import { wispPaneHandedOff } from "@/stores/aiPageContext";
 import { useJwtClaims } from "@/lib/authScope";
 import { useWispEnabled } from "@/lib/wispVisibility";
@@ -34,7 +34,7 @@ import AiConversationList from "./AiConversationList";
 import { useAiConversationSource, type ConversationRow } from "./useAiConversationSource";
 import { useContinueInPanel } from "../workspace/useContinueInPanel";
 import { showToast } from "../shared/Toast";
-import { ActionMenu, type ActionMenuItem } from "../shared/ActionMenu";
+import type { ActionMenuItem } from "../shared/ActionMenu";
 import BuyCreditsLink from "./BuyCreditsLink";
 import WispThreadHeader from "./WispThreadHeader";
 import WispAttachmentsButton from "./WispAttachmentsButton";
@@ -135,8 +135,7 @@ export default function AiChatSidebar() {
     wispPageThreadId,
     focusWispPageComposer,
     wisp,
-    enterWispMode,
-    startPlainChat,
+    selectPanelTab,
     topologySiteId,
     joinedMidResponse,
     recheckPendingApproval,
@@ -210,10 +209,13 @@ export default function AiChatSidebar() {
     if (isOpen) loadM365Connections();
   }, [isOpen, loadM365Connections]);
 
-  // W05 (#10136, spec §7 + §11 decision 4): the grant decides the voice — no
-  // toggle. Asked only where a grant can exist: the server has Wisp on, the
-  // token is partner-scoped (grants are partner-staff only) and the plan
-  // carries `wisp`. Org tokens never ask the partner route at all.
+  // An active grant gives the panel a second tab, Wisp, beside the direct
+  // session. It no longer decides the voice (W05, #10136, did that): Wisp
+  // hands device work to specialist runs, and a technician working on a
+  // device wants to do it here, step by step. Asked only where a grant can
+  // exist: the server has Wisp on, the token is partner-scoped (grants are
+  // partner-staff only) and the plan carries `wisp`. Org tokens never ask the
+  // partner route at all.
   const jwtClaims = useJwtClaims();
   const partnerToken = jwtClaims.status === "resolved" && jwtClaims.claims.scope === "partner";
   const wispServerOn = useWispEnabled({ enabled: partnerToken });
@@ -227,13 +229,12 @@ export default function AiChatSidebar() {
   // panel opened. When the grant it speaks under goes away from the shared
   // store — revoked on /wisp (the home's exitWispMode), a create the server
   // refused as unusable, a plain chat picked from History — the answer from
-  // before is stale: forget it and ask again, so Meet Wisp (or another live
-  // grant) is what the panel shows. That grant itself is not re-entered on
-  // the strength of that one read (whatever dropped it knew better); the guard
-  // is spent by it, so a later open, org change or New conversation decides
-  // afresh.
-  // (A grant created on /wisp reaches the panel through the home binding the
-  // shared store to its thread, WispHomeThread.)
+  // before is stale: forget it and ask again, so Meet Wisp (or the Wisp tab
+  // of another live grant) is what the panel shows. Leaving by the direct
+  // session tab takes the same path: the read confirms the grant is still
+  // there. That grant itself is not re-entered on the strength of that one
+  // read (whatever dropped it knew better); the guard is spent by it, so a
+  // later open or org change decides afresh.
   const wispGrantId = wisp?.grantId ?? null;
   const shownGrantIdRef = useRef<string | null>(wispGrantId);
   const endedGrantIdRef = useRef<string | null>(null);
@@ -253,10 +254,10 @@ export default function AiChatSidebar() {
 
   // Once per page and selected org, the first time the panel is open with
   // every gate passed (a failed read is asked again on the next open). An
-  // active grant gives a panel with no conversation the Wisp voice at once.
-  // A conversation already open (a restored chat — its own Wisp state comes
-  // back through the store's rehydrate — or a device task being created) is
-  // never abandoned for it: the next new conversation starts on the grant.
+  // active grant offers the Wisp tab. Only a panel the user last left on that
+  // tab goes into Wisp by itself, and only when it has no conversation: one
+  // already open (a restored chat, a device task being created) is never
+  // abandoned for it.
   useEffect(() => {
     if (!isOpen || !wispEligible) return;
     const key = selectedOrgId ?? "";
@@ -273,10 +274,62 @@ export default function AiChatSidebar() {
       if (result.kind !== "active") return;
       if (result.grant.grantId === justEnded) return;
       const now = useAiStore.getState();
-      if (now.wisp || now.sessionId || now.isLoading) return;
+      if (now.panelTab !== "wisp" || now.wisp || now.sessionId || now.isLoading) return;
       void now.enterWispMode(result.grant);
     });
   }, [isOpen, wispEligible, selectedOrgId, wispGrantId]);
+
+  // The grant behind the Wisp tab, kept across a tab switch: leaving Wisp
+  // drops the store's grant and the read above starts over, and the tabs must
+  // not blink out meanwhile. A read that finds no grant (or fails) removes it.
+  const [tabGrant, setTabGrant] = useState<NonNullable<WispState> | null>(null);
+  useEffect(() => {
+    if (wisp) {
+      if (wisp.status === "active") setTabGrant(wisp);
+      return;
+    }
+    if (grantLookup.kind === "active") setTabGrant(grantLookup.grant);
+    else if (grantLookup.kind !== "idle") setTabGrant(null);
+  }, [wisp, grantLookup]);
+  const activeTab: AiPanelTab = wisp ? "wisp" : "session";
+  const [tabSwitching, setTabSwitching] = useState(false);
+  // No switch while the pane is mid-bind: a session being created (the first
+  // message of a chat, a device task, "+") or loaded would land on the other
+  // tab, and its message with it.
+  const tabsBusy = tabSwitching || isLoading;
+
+  const handleSelectTab = useCallback(async (tab: AiPanelTab) => {
+    if (tabSwitching || useAiStore.getState().isLoading) return;
+    if (tab === activeTab) {
+      // Already on screen (a device task showing the direct session over a
+      // panel left on Wisp, say): the click still makes it the picked tab.
+      await selectPanelTab(tab, wisp ?? undefined);
+      return;
+    }
+    setTabSwitching(true);
+    try {
+      if (tab === "session") {
+        await selectPanelTab("session");
+        return;
+      }
+      // The grant as it is NOW, never the read from when the panel opened: one
+      // revoked, paused or expired since then must not start a session the
+      // server refuses. Its thread also names the conversation to continue.
+      const result = await lookUpActiveGrant(selectedOrgId);
+      if (result.kind === "failed") {
+        // Not "no grant": the tabs stay, and the next click reads again.
+        showToast({ type: "error", message: t("wisp.toast.threadFailed") });
+        return;
+      }
+      if (result.kind !== "active") {
+        setGrantLookup(result);
+        return;
+      }
+      await selectPanelTab("wisp", result.grant);
+    } finally {
+      setTabSwitching(false);
+    }
+  }, [activeTab, selectPanelTab, selectedOrgId, t, tabSwitching, wisp]);
 
   // Wisp is on here but there is no active grant (none, paused, ended, or the
   // plan lacks Wisp): point at the home, which explains and starts or resumes one.
@@ -294,29 +347,20 @@ export default function AiChatSidebar() {
     ? m365Connections.find((conn) => conn.id === boundM365ConnectionId)
     : null;
 
+  // A new conversation stays on its tab: direct on the direct session, on the
+  // grant under Wisp (createSession sends the grant only while Wisp is on).
+  // The tabs hold still meanwhile: a switch between the close and the create
+  // would put the new conversation on the other tab's grant.
   const handleNewConversation = useCallback(async () => {
-    await closeSession();
-    // Leaving a plain conversation where Wisp can run: the new one takes the
-    // grant as it is NOW. Re-read, never the lookup from when the panel
-    // opened — a grant revoked, paused or expired since then must start a
-    // plain chat (and offer Meet Wisp), not a session the server refuses.
-    // A Wisp thread is one conversation (#11672): when it still has a live
-    // session, this continues it rather than forking a second one.
-    if (!wisp && wispEligible) {
-      const result = await lookUpActiveGrant(selectedOrgId);
-      setGrantLookup(result);
-      if (result.kind === "active") {
-        await enterWispMode(result.grant);
-        return;
-      }
+    if (tabSwitching) return;
+    setTabSwitching(true);
+    try {
+      await closeSession();
+      await createSession();
+    } finally {
+      setTabSwitching(false);
     }
-    await createSession();
-  }, [closeSession, createSession, enterWispMode, wisp, wispEligible, selectedOrgId]);
-
-  // #10289: a grant is active, so "+" has a choice and a plain conversation
-  // says it isn't Wisp. `grantLookup` is only asked while `wisp` is null.
-  const plainBesideGrant = !wisp && grantLookup.kind === "active";
-  const offerPlainChat = !!wisp || plainBesideGrant;
+  }, [closeSession, createSession, tabSwitching]);
 
   if (!canUseAi) return null;
 
@@ -337,30 +381,7 @@ export default function AiChatSidebar() {
       <History className="h-4 w-4" />
     </button>
   );
-  const newConversationControl = !showHistory && sessionId && (offerPlainChat ? (
-    <ActionMenu
-      label={t("aiChatSidebar.newConversation")}
-      testId="ai-chat-new-menu"
-      triggerClassName={HEADER_ICON_BUTTON}
-      trigger={<Plus className="h-4 w-4" aria-hidden="true" />}
-      items={[
-        {
-          id: "new-chat",
-          label: t("aiConversationMove.newChat"),
-          description: t("wisp.plainChat.wispDescription"),
-          onSelect: () => void handleNewConversation(),
-          testId: "ai-chat-new-conversation",
-        },
-        {
-          id: "new-plain-chat",
-          label: t("wisp.plainChat.new"),
-          description: t("wisp.plainChat.newDescription"),
-          onSelect: () => void startPlainChat(),
-          testId: "ai-chat-new-plain",
-        },
-      ]}
-    />
-  ) : (
+  const newConversationControl = !showHistory && sessionId && (
     <button
       onClick={handleNewConversation}
       className={HEADER_ICON_BUTTON}
@@ -369,7 +390,12 @@ export default function AiChatSidebar() {
     >
       <Plus className="h-4 w-4" />
     </button>
-  ));
+  );
+  const showTabs = !showHistory && !handedOff && (!!wisp || tabGrant !== null);
+  const tabs: Array<{ id: AiPanelTab; label: string; hint: string }> = [
+    { id: "session", label: t("aiChatSidebar.tabs.session"), hint: t("aiChatSidebar.tabs.sessionHint") },
+    { id: "wisp", label: t("wisp.title"), hint: t("aiChatSidebar.tabs.wispHint") },
+  ];
   // #9429: the notification bell sits beside Close in every header shape
   // (plain, Wisp, handed off), so collapsing the Wisp header never drops it.
   const closeButton = (
@@ -453,11 +479,7 @@ export default function AiChatSidebar() {
                 <MessageSquare className="h-4 w-4 text-primary" />
               )}
               <span className="text-sm font-semibold text-foreground">
-                {showHistory
-                  ? t("aiChatSidebar.history")
-                  : plainBesideGrant
-                    ? <span data-testid="ai-chat-mode-plain">{t("wisp.plainChat.label")}</span>
-                    : t("aiChatSidebar.title")}
+                {showHistory ? t("aiChatSidebar.history") : t("aiChatSidebar.title")}
               </span>
             </div>
 
@@ -498,6 +520,54 @@ export default function AiChatSidebar() {
               )}
               {closeButton}
             </div>
+          </div>
+        )}
+
+        {/* Direct session or Wisp: two conversations, one panel. Switching
+            closes neither; each tab comes back to its own. */}
+        {showTabs && (
+          <div
+            role="tablist"
+            aria-label={t("aiChatSidebar.tabs.label")}
+            data-testid="ai-panel-tabs"
+            className="flex gap-1 border-b px-3"
+          >
+            {tabs.map((tab) => {
+              const selected = tab.id === activeTab;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  // aria-disabled, not disabled: focus stays on the tab while the switch runs.
+                  aria-disabled={tabsBusy || undefined}
+                  tabIndex={selected ? 0 : -1}
+                  title={tab.hint}
+                  onClick={() => void handleSelectTab(tab.id)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                    event.preventDefault();
+                    const other = tabs.find((candidate) => candidate.id !== tab.id);
+                    if (!other) return;
+                    const sibling = event.currentTarget.parentElement?.querySelector<HTMLElement>(`[data-testid="ai-panel-tab-${other.id}"]`);
+                    sibling?.focus();
+                    void handleSelectTab(other.id);
+                  }}
+                  data-testid={`ai-panel-tab-${tab.id}`}
+                  className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary aria-disabled:cursor-default ${
+                    selected
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab.id === "wisp"
+                    ? <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                    : <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />}
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
         )}
 

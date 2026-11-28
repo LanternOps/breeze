@@ -91,7 +91,7 @@ in its `note`; judge it over several runs, and never on one UNEXPECTED PASS.
 ```bash
 cd e2e-tests/wisp-eval
 node turn.cjs m01 none 90 "What needs me today?"              # tag, approve|deny|none, max seconds, prompt
-PATHX=/devices/<id> PANE=1 node turn.cjs m18 none 90 "What's wrong with this one?"   # from the pane on a page
+PATHX=/devices/<id> PANE=1 node turn.cjs m18 none 90 "What's wrong with this one?"   # from the pane's Wisp tab on a page
 JSON=1 node turn.cjs t1 none 60 "..."                          # structured result
 STEPS='[["click","[data-testid=\"wisp-settings\"]"],["wait","1000"]]' IDS=1 node look.cjs /wisp settings
 bash sh/truth.sh tools 10      # tool calls of the last 10 minutes: name, status, input, output
@@ -103,6 +103,13 @@ bash sh/sim.sh ls | stop hlmac | restart hlmac
 ```
 
 Screenshots go to `.state/shots/` and the turn log to `.state/turns.log`.
+
+The pane door (`PANE=1`, or `"door": "pane"` in a scenario) opens the side panel and
+clicks its **Wisp** tab. The panel opens on **Direct session**, which is plain Breeze
+AI, and shows the two tabs only while the user holds an active Wisp grant. With no
+grant the door throws `pane has no Wisp tab` instead of running the turn against
+Breeze AI. Clicking the tab also becomes the panel's remembered choice in that
+browser profile.
 
 ## The test world (`sh/world.sh`, ground truth)
 

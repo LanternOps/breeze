@@ -89,8 +89,10 @@ from the 2026-11-10 pass (m01-m25), grouped:
   Northwind tickets.
 - **Check-ins:** "tell me the moment HL-PARTNER-MBP is back online", then
   `sh/sim.sh restart hlmac`, then read the fired post.
-- **Pane and session:** "What's wrong with this one?" from the pane on a device
-  page, then back on `/wisp` ask "what did I first ask you today?".
+- **Pane and session:** "What's wrong with this one?" from the pane's Wisp tab on
+  a device page, then back on `/wisp` ask "what did I first ask you today?". The
+  pane opens on **Direct session** (Breeze AI, not Wisp); `PANE=1` clicks the Wisp
+  tab for you and fails if there is none.
 - **Robustness:** Stop mid-stream; double Enter; reload during a reply.
 
 Next missions (not reached on 2026-11-10):

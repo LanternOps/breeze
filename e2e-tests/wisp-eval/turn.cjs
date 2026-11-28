@@ -3,7 +3,8 @@
 // Library:  const { openDoor, sendTurn } = require('./turn.cjs')
 //           const r = await sendTurn(session, { text, approve: 'approve'|'deny'|'none', maxSec, tag, door })
 // CLI:      node turn.cjs <tag> <approve|deny|none> <maxSec> <prompt...>
-//           env PATHX=/devices/<id> PANE=1   send from the pane on that page instead of /wisp
+//           env PATHX=/devices/<id> PANE=1   send from the pane's Wisp tab on that page instead of /wisp
+//                                            (needs an active grant; the pane opens on Direct session)
 //           env JSON=1                        print the structured result as JSON
 const fs = require('fs');
 const path = require('path');
@@ -23,7 +24,23 @@ const APPROVE = (root) => `${root} button:text-is("Approve"):not([disabled]):not
 
 const threadSelector = (door) => (door === 'pane' ? '[data-testid="ai-chat-sidebar"]' : '[data-testid="wisp-home-thread"]');
 
-// Navigate to the door and wait for the composer. door 'wisp' = /wisp; 'pane' = the assistant pane on `panePath`.
+// Under an active grant the pane has two tabs: Direct session (Breeze AI, the default) and Wisp.
+// A pane scenario means Wisp, so pick its tab. No tab bar means no grant: fail rather than run
+// the scenario against plain Breeze AI.
+const WISP_TAB = '[data-testid="ai-panel-tab-wisp"]';
+async function selectWispTab(p) {
+  await p.waitForSelector(WISP_TAB, { state: 'visible', timeout: 15000 }).catch(() => {
+    throw new Error('pane has no Wisp tab (no active Wisp grant?): a pane scenario would run against plain Breeze AI');
+  });
+  if ((await p.getAttribute(WISP_TAB, 'aria-selected')) !== 'true') await p.click(WISP_TAB);
+  // aria-selected flips before the Wisp session is bound; the tab stays aria-disabled until it is.
+  await p.waitForSelector(`${WISP_TAB}[aria-selected="true"]:not([aria-disabled="true"])`, { timeout: 30000 }).catch(() => {
+    throw new Error('the pane\'s Wisp tab never became selected');
+  });
+}
+
+// Navigate to the door and wait for the composer. door 'wisp' = /wisp; 'pane' = the assistant pane
+// on `panePath`, switched to its Wisp tab.
 async function openDoor(s, { door = 'wisp', panePath } = {}) {
   const p = s.page;
   await s.go(door === 'pane' ? panePath : '/wisp');
@@ -36,6 +53,7 @@ async function openDoor(s, { door = 'wisp', panePath } = {}) {
       return r.width > 50 && r.left < window.innerWidth - 50 && r.right > 50;
     });
     if (!visible) await p.click('[data-testid="ai-assistant-toggle"]');
+    await selectWispTab(p);
     await p.waitForTimeout(2500);
   }
   await p.waitForSelector('[data-testid="ai-chat-input"]', { state: 'visible', timeout: 30000 });

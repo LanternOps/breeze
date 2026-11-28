@@ -152,7 +152,13 @@
     "noConversations": "Noch keine Unterhaltungen",
     "m365Customer": "M365-Kunde",
     "noM365Customer": "Kein M365-Kunde",
-    "dismiss": "Schließen"
+    "dismiss": "Schließen",
+    "tabs": {
+      "label": "Assistentenmodus",
+      "session": "Direkte Sitzung",
+      "sessionHint": "Arbeiten Sie selbst daran. Breeze AI handelt in diesem Chat und fragt hier nach jeder benötigten Genehmigung.",
+      "wispHint": "Ihr ständiger Assistent. Wisp übergibt längere Aufgaben an Spezialisten und berichtet zurück."
+    }
   },
   "aiConversationMove": {
     "openInAssistant": "In Breeze AI öffnen",

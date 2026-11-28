@@ -475,6 +475,7 @@ Reversibility note for the PR body: `exitWispMode` stays in the store; pausing t
 ### Task 5: Docs + PR
 
 - [ ] `apps/docs/src/content/docs/features/ai.mdx` "Chat surfaces" and `wisp.mdx` "Wisp chats": the page is **Breeze AI** at `/ai/chat`; `/workspace` and `/wisp/chat` redirect there; the side panel speaks as Wisp when a grant is active, with no toggle. (W07 regroups the sidebar; this task edits only these two sections, so the two waves do not conflict — W07 runs in batch 1 and lands first.)
+  > Note 2026-11-24: the side panel no longer follows this. Under an active grant it now has **Direct session** and **Wisp** tabs; see the 2026-11-24 amendment under §4 of the spec.
 - [ ] Release-notes line. PR body `Closes #<W05 sub-issue>`; the reversibility note from Task 1; the three guard suites green on the merged tree.
 
 ---

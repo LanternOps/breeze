@@ -152,7 +152,13 @@
     "noConversations": "Ancora nessuna conversazione",
     "m365Customer": "Cliente M365",
     "noM365Customer": "Nessun cliente M365",
-    "dismiss": "Ignora"
+    "dismiss": "Ignora",
+    "tabs": {
+      "label": "Modalità dell’assistente",
+      "session": "Sessione diretta",
+      "sessionHint": "Lavoraci tu stesso. Breeze AI agisce in questa chat e chiede qui ogni approvazione necessaria.",
+      "wispHint": "Il tuo assistente permanente. Wisp affida i lavori più lunghi agli specialisti e ti aggiorna."
+    }
   },
   "aiConversationMove": {
     "openInAssistant": "Apri in Breeze AI",
