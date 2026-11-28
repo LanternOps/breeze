@@ -308,9 +308,13 @@ export async function evaluateEdrAlerts(
           continue;
         }
       }
-      // 2. Event — ids, provider key and severities only.
+      // 2. Event — ids, provider key and severities only. A row whose only stamp is
+      // 'unknown' (held, or first seen below a reportable severity) has had nothing
+      // reportable published, so its first report is a detection: subscribers that
+      // listen for detections must not miss it as an escalation of something unseen.
+      const asEscalation = decision === 'escalated' && row.notifiedSeverity !== 'unknown';
       await deps.publish(
-        decision === 'escalated' ? EVENT_TYPES.EDR_DETECTION_ESCALATED : EVENT_TYPES.EDR_DETECTION_DETECTED,
+        asEscalation ? EVENT_TYPES.EDR_DETECTION_ESCALATED : EVENT_TYPES.EDR_DETECTION_DETECTED,
         row.orgId,
         {
           connectionId,
@@ -321,7 +325,7 @@ export async function evaluateEdrAlerts(
           deviceId: row.breezeDeviceId,
           provider: row.provider,
           severity: row.severity,
-          ...(decision === 'escalated' ? { previousSeverity: row.notifiedSeverity } : {}),
+          ...(asEscalation ? { previousSeverity: row.notifiedSeverity } : {}),
         },
       );
       // 3. Stamp only after the publish succeeded.

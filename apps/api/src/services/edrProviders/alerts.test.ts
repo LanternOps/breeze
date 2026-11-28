@@ -337,8 +337,11 @@ describe('evaluateEdrAlerts: detections with no vendor time (#12825)', () => {
     row.status = 'open';
     expect(await evaluateEdrAlerts('conn-1', { now: NOW }, deps)).toEqual({ published: 1, suppressed: 0 });
     expect(alerts).toHaveLength(1);
-    expect(published.map((p) => p.type)).toEqual(['edr.detection_escalated']);
-    expect(published[0]!.payload).toMatchObject({ severity: 'critical', previousSeverity: 'unknown' });
+    // Nothing reportable was published for it before, so subscribers get its first
+    // report as a detection, not as an escalation of something they never saw.
+    expect(published.map((p) => p.type)).toEqual(['edr.detection_detected']);
+    expect(published[0]!.payload).toMatchObject({ severity: 'critical' });
+    expect(published[0]!.payload).not.toHaveProperty('previousSeverity');
     expect(row.notifiedSeverity).toBe('critical');
     // Nothing alerts twice.
     expect(await evaluateEdrAlerts('conn-1', { now: NOW }, deps)).toEqual({ published: 0, suppressed: 0 });
