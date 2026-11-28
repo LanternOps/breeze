@@ -48,6 +48,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/netattach"
 	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
@@ -97,9 +98,15 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
-	Containment         *ContainmentReport         `json:"containment,omitempty"`
-	NetworkContextV1    *networkcontext.Report     `json:"networkContextV1,omitempty"`
-	NetworkContextReset *NetworkContextReset       `json:"networkContextReset,omitempty"`
+	Containment         *ContainmentReport     `json:"containment,omitempty"`
+	NetworkContextV1    *networkcontext.Report `json:"networkContextV1,omitempty"`
+	NetworkContextReset *NetworkContextReset   `json:"networkContextReset,omitempty"`
+
+	// NetworkAttachmentsV1 is absent on any beat without a fresh, unsent
+	// report (see netAttachReporter); the server reads absence as "no change"
+	// (#12369).
+	NetworkAttachmentsV1 *netattach.Report `json:"networkAttachmentsV1,omitempty"`
+
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
 	MetricsAvailable    *bool                      `json:"metricsAvailable,omitempty"`
 	Status              string                     `json:"status"`
@@ -516,6 +523,7 @@ type Heartbeat struct {
 	networkContextMu          sync.Mutex
 	adjacencyStatePath        string // test override; default is the data dir
 	networkContext            *networkContextManager
+	netAttach                 *netAttachReporter // nil: no networkAttachmentsV1 (tests)
 	config                    *config.Config
 	secureToken               *secmem.SecureString
 	client                    *http.Client
@@ -1414,6 +1422,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		connectionsCol:                 collectors.NewConnectionsCollector(),
 		eventLogCol:                    collectors.NewPersistentEventLogCollector(filepath.Join(config.GetDataDir(), "eventlog_bookmarks.json")),
 		blocks:                         newBlockTracker(filepath.Join(config.GetDataDir(), controlPlaneBlockFile), time.Now),
+		netAttach:                      newNetAttachReporter(filepath.Join(config.GetDataDir(), "network-attachment-state.json")),
 		bootCol:                        collectors.NewBootPerformanceCollector(),
 		reliabilityCol:                 collectors.NewReliabilityCollector(),
 		agentVersion:                   version,
@@ -5885,6 +5894,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Log-shipping health plus the legacy top-level droppedLogs (#8610).
 	attachLogShipping(&payload)
+	h.attachNetworkAttachments(&payload)
 
 	h.attachNetworkContext(&payload)
 

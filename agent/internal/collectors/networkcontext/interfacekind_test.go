@@ -52,30 +52,58 @@ func TestLinuxInterfaceKind(t *testing.T) {
 	}
 }
 
-func TestReadLinuxLinkFacts(t *testing.T) {
-	root := t.TempDir()
-	mk := func(name string, files map[string]string, dirs ...string) {
-		for file, body := range files {
-			p := filepath.Join(root, name, file)
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-				t.Fatal(err)
-			}
+// mk creates root/name/<file> with the given bodies and the listed
+// directories. Real sysfs uses symlinks for brif/* and lower_*; only entry
+// names are read, so directories stand in for them.
+func mk(t *testing.T, root, name string, files map[string]string, dirs ...string) {
+	t.Helper()
+	for file, body := range files {
+		p := filepath.Join(root, name, file)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		for _, dir := range dirs {
-			if err := os.MkdirAll(filepath.Join(root, name, dir), 0o755); err != nil {
-				t.Fatal(err)
-			}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	mk("wg0", map[string]string{"type": "65534\n", "uevent": "DEVTYPE=wireguard\nINTERFACE=wg0\nIFINDEX=5\n"})
-	mk("tun0", map[string]string{"type": "65534\n", "uevent": "INTERFACE=tun0\nIFINDEX=6\n", "tun_flags": "0x1001\n"})
-	mk("wlan0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=wlan\nINTERFACE=wlan0\n"}, "device")
-	mk("eth0", map[string]string{"type": "1\n", "uevent": "INTERFACE=eth0\n"}, "device")
-	mk("veth1", map[string]string{"type": "1\n", "uevent": "INTERFACE=veth1\n"})
-	mk("garbage", map[string]string{"type": "not-a-number\n"})
+	for _, dir := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, name, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestLinuxBridgedUplink(t *testing.T) {
+	root := t.TempDir()
+	mk(t, root, "eth0", map[string]string{"type": "1\n"}, "device")     // physical NIC
+	mk(t, root, "vnet0", map[string]string{"type": "1\n"}, "tun_flags") // tap
+	mk(t, root, "veth1", map[string]string{"type": "1\n"})              // veth
+	mk(t, root, "wlan0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=wlan\n"}, "device")
+	mk(t, root, "br0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=bridge\n"}, "brif/eth0", "brif/vnet0")
+	mk(t, root, "brw", map[string]string{"type": "1\n", "uevent": "DEVTYPE=bridge\n"}, "brif/wlan0")
+	mk(t, root, "virbr0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=bridge\n"}, "brif/vnet0")
+	mk(t, root, "docker0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=bridge\n"}, "brif/veth1")
+	mk(t, root, "mv0", map[string]string{"type": "1\n"}, "lower_eth0")
+	mk(t, root, "empty0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=bridge\n"})
+	mk(t, root, "escape0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=bridge\n"}, "lower_..")
+	for name, want := range map[string]bool{
+		"br0": true, "brw": true, "mv0": true, "virbr0": false, "docker0": false, "empty0": false,
+		"escape0": false, "missing": false, "../br0": false, "": false, ".": false, "..": false,
+	} {
+		if got := LinuxBridgedUplink(root, name); got != want {
+			t.Errorf("LinuxBridgedUplink(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestReadLinuxLinkFacts(t *testing.T) {
+	root := t.TempDir()
+	mk(t, root, "wg0", map[string]string{"type": "65534\n", "uevent": "DEVTYPE=wireguard\nINTERFACE=wg0\nIFINDEX=5\n"})
+	mk(t, root, "tun0", map[string]string{"type": "65534\n", "uevent": "INTERFACE=tun0\nIFINDEX=6\n", "tun_flags": "0x1001\n"})
+	mk(t, root, "wlan0", map[string]string{"type": "1\n", "uevent": "DEVTYPE=wlan\nINTERFACE=wlan0\n"}, "device")
+	mk(t, root, "eth0", map[string]string{"type": "1\n", "uevent": "INTERFACE=eth0\n"}, "device")
+	mk(t, root, "veth1", map[string]string{"type": "1\n", "uevent": "INTERFACE=veth1\n"})
+	mk(t, root, "garbage", map[string]string{"type": "not-a-number\n"})
 
 	tests := []struct {
 		iface string
