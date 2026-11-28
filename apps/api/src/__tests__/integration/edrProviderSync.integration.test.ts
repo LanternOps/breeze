@@ -595,7 +595,6 @@ describe('edr sync — real job functions against Postgres', () => {
       SELECT checksum, applied_at::text AS applied_at FROM breeze_migrations WHERE filename = ${FILE}
     `);
     await admin().execute(sql`DELETE FROM breeze_migrations WHERE filename = ${FILE}`);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await replayMigration(FILE);
       expect(await rowOf(fx.connectionId, misread)).toEqual({ lastSeen: null, synced: null });
@@ -611,7 +610,6 @@ describe('edr sync — real job functions against Postgres', () => {
       await replayMigration(FILE);
       expect(await rowOf(fx.connectionId, ids[0]!)).toEqual({ lastSeen: '2026-11-27T22:17:34.000Z', synced: '2026-11-27T21:00:00.000Z' });
     } finally {
-      warn.mockRestore();
       if (!ledger) await admin().execute(sql`DELETE FROM breeze_migrations WHERE filename = ${FILE}`);
       else {
         await admin().execute(sql`

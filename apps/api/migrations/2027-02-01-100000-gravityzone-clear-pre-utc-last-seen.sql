@@ -10,9 +10,13 @@
 -- rotation: up to ceil(N / 50) - 1 more runs for a company of N endpoints.
 --
 -- What: for provider 'bitdefender' rows that hold a time, set `last_seen_at` and
--- `vendor_detail_synced_at` to NULL. Detail enrichment orders by `vendor_detail_synced_at ASC
--- NULLS FIRST`, so the next inventory run reads exactly these endpoints first and stores their
--- time in UTC. Until then they show an unknown last-seen time, never a wrong one.
+-- `vendor_detail_synced_at` to NULL. A stored value carries no mark of the build that wrote it, so
+-- a correct time written by a build that has #12821 but not this change is cleared too; that costs
+-- one inventory interval of an unknown time for those endpoints. Detail enrichment reads newly
+-- listed endpoints first, then stored ones by `vendor_detail_synced_at ASC NULLS FIRST`, 50 per
+-- company per run, so the cleared rows are read in the next run, alongside any endpoint never read
+-- before, and their time is stored in UTC. Until then they show an unknown last-seen time, never a
+-- wrong one.
 -- `health`, `online` and `agent_version` stay: they come from vendor flags, `state` and the agent
 -- version, not from a time, so the timezone misread never touched them.
 --
@@ -52,6 +56,6 @@ BEGIN
      AND last_seen_at IS NOT NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n > 0 THEN
-    RAISE WARNING '#12825: cleared % GravityZone endpoint last_seen_at value(s) stored before the UTC fix; the next inventory run reads them first', n;
+    RAISE WARNING '#12825: cleared % GravityZone endpoint last_seen_at value(s), some possibly misread before the UTC fix; the next inventory run re-reads them', n;
   END IF;
 END $$;

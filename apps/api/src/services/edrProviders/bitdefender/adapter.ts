@@ -65,12 +65,22 @@ const isSourceDegradation = (e: unknown): e is EdrProviderRequestError =>
   isDegradation(e) || (isReq(e) && e.code === 'method_not_found');
 
 function sourceDegradedWarning(stream: 'incidents' | 'quarantine', e: EdrProviderRequestError): string {
-  if (e.code === 'method_not_found') {
-    // Code only. Without the API itself switched off, this is a Breeze/vendor version mismatch.
-    console.warn(`[edr:bitdefender] ${stream}: vendor method not found (${e.code}); source skipped this run`);
-    return `${stream}: method not served by the vendor`;
-  }
+  if (e.code === 'method_not_found') return `${stream}: method not served by the vendor`;
   return e.code === 'licence' ? `${stream}: licence not available` : `${stream}: API not enabled on key`;
+}
+
+/**
+ * Logs an unserved method once per memoized fetch (the rejection is shared by every tenant of the
+ * run), code only, then rethrows. Without the API itself switched off, this is a Breeze/vendor
+ * version mismatch.
+ */
+function logMethodNotFound(stream: 'incidents' | 'quarantine'): (e: unknown) => never {
+  return (e) => {
+    if (isReq(e) && e.code === 'method_not_found') {
+      console.warn(`[edr:bitdefender] ${stream}: vendor method not found (${e.code}); source skipped this run`);
+    }
+    throw e;
+  };
 }
 
 /** The `capabilities_snapshot` entry for `testConnection`'s capability note (`note:` prefix added by capabilitySnapshot). */
@@ -646,7 +656,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     try {
       const all = await memo<GzIncident[]>(
         ctx, `gz:incidents:${incFrom.toISOString()}:${toIso}`, async () => {
-          const fetched = await client.getIncidentsChangedBetween(incFrom, to);
+          const fetched = await client.getIncidentsChangedBetween(incFrom, to).catch(logMethodNotFound('incidents'));
           const orphaned = fetched.filter((i) => !i.company?.id).length;
           // Once per memoized fetch (not per tenant). Code-only: no incident content.
           if (orphaned > 0) console.warn(`[edr:bitdefender] ${orphaned} incident(s) carried no company id and were not attributed`);
@@ -666,7 +676,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     try {
       const all = await memo<GzQuarantineItem[]>(
         ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, async () => {
-          const fetched = await client.getQuarantineBetween(qFrom, to);
+          const fetched = await client.getQuarantineBetween(qFrom, to).catch(logMethodNotFound('quarantine'));
           // Once per memoized fetch (not per tenant). Codes only, never item content (#12825).
           const odd = fetched.filter((q) => !isDocumentedQuarantineStatus(q.actionStatus));
           if (odd.length > 0) {

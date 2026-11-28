@@ -185,6 +185,18 @@ describe('testConnection', () => {
     const urls = (ctx.fetch as unknown as { mock: { calls: Array<[string]> } }).mock.calls.map((c) => c[0]);
     expect(urls.filter((u) => u.includes('/quarantine/'))).toEqual([`${ctx.baseUrl}/v1.0/jsonrpc/quarantine/computers`]);
   });
+
+  it('#12825: an incidents method the vendor does not serve is noted the same way', async () => {
+    const { ctx } = makeCtx({
+      'general.getApiKeyDetails': { status: 403, body: fx('error-api-not-enabled-quarantine-403.json') },
+      'companies.getCompanyDetails': ok('company-details-customer.json'),
+      'incidents.getIncidentsList': ok('live-error-method-not-found-32601.json'),
+      'quarantine/computers.getQuarantineItemsList': ok('quarantine-page.json'),
+    });
+    const r = await adapter.testConnection(ctx);
+    expect(r).toMatchObject({ ok: true, rootType: 'company' });
+    expect((r as any).capabilityNotes).toEqual(['incidents: method not served by the vendor']);
+  });
 });
 
 describe('listTenants', () => {
@@ -424,6 +436,17 @@ describe('listDetections', () => {
       expect(JSON.parse(page.cursor!)).toEqual({ v: 1, incidentsChangedAfter: NOW.toISOString(), quarantineAfter: old });
       // Logged, code only.
       expect(warn.mock.calls.map((c) => c.join(' '))).toContain('[edr:bitdefender] quarantine: vendor method not found (method_not_found); source skipped this run');
+      warn.mockRestore();
+    });
+
+    it('logged once per run, not once per company: the memoized fetch is shared by every tenant', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { ctx } = makeCtx({ ...routes(), 'quarantine/computers.getQuarantineItemsList': notFound() });
+      for (const t of [C1, C2, C1]) {
+        const page = await adapter.listDetections(ctx, tenant(t), null, NOW);
+        expect(page.warnings).toEqual(['quarantine: method not served by the vendor']);
+      }
+      expect(warn.mock.calls.filter((c) => c.join(' ').includes('vendor method not found'))).toHaveLength(1);
       warn.mockRestore();
     });
 
