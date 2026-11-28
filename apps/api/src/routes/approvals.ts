@@ -13,6 +13,8 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { authMiddleware, hasSatisfiedMfa, isInteractiveUserSession } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { diagnosticAccessGrants } from '../db/schema/diagnosticAccess';
+import { devices as devicesTable } from '../db/schema/devices';
+import { isEligibleApprover as isEligibleDiagnosticApprover } from '../services/diagnosticAccess/grants';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { organizations } from '../db/schema/orgs';
@@ -258,6 +260,105 @@ async function loadElevationTargets(elevationRequestIds: string[]): Promise<Map<
   return new Map(rows.map((r) => [r.id, { orgId: r.orgId, siteId: r.siteId }]));
 }
 
+/** A diagnostic read grant's org, its device's current org and site, and the org's owning partner. */
+interface DiagnosticGrantTarget {
+  orgId: string;
+  deviceOrgId: string;
+  siteId: string;
+  partnerId: string | null;
+}
+
+/** The targets of these diagnostic read grants (system scope); an id that no longer resolves is absent. */
+async function loadDiagnosticGrantTargets(grantIds: string[]): Promise<Map<string, DiagnosticGrantTarget>> {
+  if (grantIds.length === 0) return new Map();
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({
+          id: diagnosticAccessGrants.id,
+          orgId: diagnosticAccessGrants.orgId,
+          deviceOrgId: devicesTable.orgId,
+          siteId: devicesTable.siteId,
+          partnerId: organizations.partnerId,
+        })
+        .from(diagnosticAccessGrants)
+        .innerJoin(devicesTable, eq(devicesTable.id, diagnosticAccessGrants.deviceId))
+        .innerJoin(organizations, eq(organizations.id, diagnosticAccessGrants.orgId))
+        .where(inArray(diagnosticAccessGrants.id, grantIds)),
+    ),
+  );
+  return new Map(rows.map((r) => [
+    r.id,
+    { orgId: r.orgId, deviceOrgId: r.deviceOrgId, siteId: r.siteId, partnerId: r.partnerId ?? null },
+  ]));
+}
+
+/**
+ * "Can `userId` still decide this diagnostic read grant?": the decide core's
+ * own rule (`isEligibleApprover`: an active account holding devices:execute
+ * and approvals:decide for the grant's org, resolved in the org's owning
+ * partner, with access to the device's current site), and the device still
+ * in the grant's org. Memoised per org and site for one request.
+ */
+function makeDiagnosticDecideAuthorizer(
+  userId: string,
+): (target: DiagnosticGrantTarget) => Promise<boolean> {
+  const cache = new Map<string, Promise<boolean>>();
+  return async (target: DiagnosticGrantTarget) => {
+    if (target.deviceOrgId !== target.orgId) return false;
+    const key = `${target.orgId}:${target.siteId}`;
+    let resolved = cache.get(key);
+    if (!resolved) {
+      resolved = isEligibleDiagnosticApprover(
+        userId,
+        { orgId: target.orgId, siteId: target.siteId },
+        target.partnerId,
+      );
+      cache.set(key, resolved);
+    }
+    return resolved;
+  };
+}
+
+/**
+ * THE live-authorization rule for an approval row with no linked intent,
+ * shared by every read surface (`GET /pending`, `GET /pending/count`, the
+ * Recent view, `GET /:id` and `POST /:id/assertion-challenge`) and by
+ * `POST /:id/report-suspicious`:
+ *   - a PAM row: `pam:approve` in the elevation's org and access to its site;
+ *   - a diagnostic read grant row: the decide core's approver rule for it;
+ *   - any other row (one linked to an AI tool execution, a dev seed or test
+ *     approval, or a row whose PAM elevation, grant or execution was deleted,
+ *     which clears the link) concerns only the caller and is allowed.
+ * A row whose linked target cannot be read when this runs is refused.
+ * Targets are read in one query per kind for the given rows, so call it once
+ * per page of rows.
+ */
+async function makeIntentlessRowAuthorizer(
+  userId: string,
+  approvals: readonly (typeof approvalRequests.$inferSelect)[],
+): Promise<(approval: typeof approvalRequests.$inferSelect) => Promise<boolean>> {
+  const intentless = approvals.filter((a) => !a.intentId);
+  const elevationIds = [...new Set(intentless.flatMap((a) => (a.elevationRequestId ? [a.elevationRequestId] : [])))];
+  const grantIds = [...new Set(intentless.flatMap((a) => (a.diagnosticAccessGrantId ? [a.diagnosticAccessGrantId] : [])))];
+  // Sequential: each read opens its own system context.
+  const elevationTargets = await loadElevationTargets(elevationIds);
+  const grantTargets = await loadDiagnosticGrantTargets(grantIds);
+  const pamDecideAuthorizer = makePamDecideAuthorizer(userId);
+  const diagnosticDecideAuthorizer = makeDiagnosticDecideAuthorizer(userId);
+  return async (approval) => {
+    if (approval.elevationRequestId) {
+      const target = elevationTargets.get(approval.elevationRequestId);
+      return !!target && pamDecideAuthorizer(target);
+    }
+    if (approval.diagnosticAccessGrantId) {
+      const target = grantTargets.get(approval.diagnosticAccessGrantId);
+      return !!target && diagnosticDecideAuthorizer(target);
+    }
+    return true;
+  };
+}
+
 /**
  * Per-user live authority over a SUPERVISED AGENT-originated intent (wave 3b
  * Task 6), memoised per intent id for the lifetime of one request — the
@@ -358,12 +459,10 @@ async function isIntentRowVisibleToUser(
  * returns both the verdict and the intent's scope so the caller can serialize
  * it without a second read.
  *
- * A row with NO intent — executionId-linked (legacy AI SDK flow),
- * elevationRequestId-linked (PAM), or a plain dev-seed row with none of the
- * three; the `approval_requests_one_source_chk` constraint permits at most one
- * of execution_id / elevation_request_id / intent_id to be set, and permits
- * all three to be NULL — has no scope/live-authz story to re-check and is
- * authorized unchanged.
+ * A row with NO intent (the `approval_requests_one_source_chk` constraint
+ * permits at most one of its source links) takes the intent-less rule
+ * (`makeIntentlessRowAuthorizer`): a PAM row or a diagnostic read grant row
+ * is authorized only while the caller could still decide it.
  */
 async function resolveRowLiveAuthorization(
   row: typeof approvalRequests.$inferSelect,
@@ -375,12 +474,7 @@ async function resolveRowLiveAuthorization(
   targetRef: IntentTargetRef | null;
 }> {
   if (!row.intentId) {
-    let authorized = true;
-    if (row.elevationRequestId) {
-      // An elevation that no longer resolves is not offered.
-      const target = (await loadElevationTargets([row.elevationRequestId])).get(row.elevationRequestId);
-      authorized = !!target && (await makePamDecideAuthorizer(userId)(target));
-    }
+    const authorized = await (await makeIntentlessRowAuthorizer(userId, [row]))(row);
     return { authorized, approvalScope: null, attribution: null, targetRef: null };
   }
   const intentId = row.intentId;
@@ -444,21 +538,13 @@ async function fetchAuthorizedPendingApprovals(
 
   const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId);
   const agentDecideAuthorizer = makeAgentDecideAuthorizer(userId);
-  const pamDecideAuthorizer = makePamDecideAuthorizer(userId);
+  const intentlessRowAuthorizer = await makeIntentlessRowAuthorizer(userId, rows.map(({ approval }) => approval));
   const authorized: AuthorizedApproval[] = [];
-  // PAM rows: their elevations' orgs and sites, in one read (none when there are none).
-  const elevationIds = [...new Set(
-    rows.flatMap(({ approval }) => (!approval.intentId && approval.elevationRequestId ? [approval.elevationRequestId] : [])),
-  )];
-  const elevationTargetById = await loadElevationTargets(elevationIds);
   for (const { approval, intent } of rows) {
     if (!approval.intentId) {
-      // A PAM row is offered only to a caller who can still decide it; one
-      // whose elevation no longer resolves is not offered.
-      if (approval.elevationRequestId) {
-        const target = elevationTargetById.get(approval.elevationRequestId);
-        if (!target || !(await pamDecideAuthorizer(target))) continue;
-      }
+      // A PAM or diagnostic read grant row is offered only to a caller who
+      // can still decide it.
+      if (!(await intentlessRowAuthorizer(approval))) continue;
       authorized.push({ approval, approvalScope: null, attribution: null, targetRef: null });
       continue;
     }
@@ -524,10 +610,14 @@ async function fetchAuthorizedRecentApprovals(
 
   const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId);
   const agentDecideAuthorizer = makeAgentDecideAuthorizer(userId);
+  const intentlessRowAuthorizer = await makeIntentlessRowAuthorizer(userId, rows.map(({ approval }) => approval));
   const authorized: AuthorizedApproval[] = [];
   for (const { approval, intent } of rows) {
     if (authorized.length >= limit) break;
     if (!approval.intentId) {
+      // The pending list's rule for a row with no intent: a PAM or diagnostic
+      // read grant row is listed only to a caller who could still decide it.
+      if (!(await intentlessRowAuthorizer(approval))) continue;
       authorized.push({ approval, approvalScope: null, attribution: null, targetRef: null, intent: null });
       continue;
     }
@@ -1228,6 +1318,16 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
 
   if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  // A PAM or diagnostic read grant row is reported only by a caller who could
+  // still decide it, the rule every read route applies (a report denies a
+  // diagnostic grant for every approver). Others get the same 404 as a
+  // missing row. An intent row keeps the deny rule: any of its approvers may
+  // refuse it.
+  if (!existing.intentId) {
+    const live = await resolveRowLiveAuthorization(existing, userId);
+    if (!live.authorized) return c.json({ error: 'Not found' }, 404);
+  }
 
   // Set when the intent CAS below matched ZERO rows — i.e. a concurrent decide
   // (or the reaper) already moved the intent out of 'pending_approval'. On an

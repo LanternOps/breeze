@@ -439,12 +439,27 @@ function txSelectForUpdateStub(rows: unknown[] = [{ id: 'intent-1', status: 'pen
 function mockDecideTxWithExecutionMirror(opts: {
   linkedRow: unknown;
   aiReturning: unknown[];
+  /**
+   * Approve only: the AI session org the decide core reads for the row
+   * (`null` = the execution does not resolve). Omit for a deny, which reads
+   * none, so no unconsumed once-mock is left queued.
+   */
+  executionOrg?: { orgId: string } | null;
 }) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue([{ ...(opts.linkedRow as object), status: 'pending' }]),
     }),
   } as any);
+  if (opts.executionOrg !== undefined) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(opts.executionOrg ? [opts.executionOrg] : []),
+        }),
+      }),
+    } as any);
+  }
   const approvalReturning = vi.fn().mockResolvedValue([opts.linkedRow]);
   const approvalSet = vi.fn().mockReturnValue({
     where: vi.fn().mockReturnValue({ returning: approvalReturning }),
@@ -1234,6 +1249,7 @@ describe('POST /approvals/:id/approve', () => {
     const { approvalSet, aiSet } = mockDecideTxWithExecutionMirror({
       linkedRow,
       aiReturning: [{ id: 'exec-42' }],
+      executionOrg: { orgId: 'org-exec' },
     });
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
@@ -1242,6 +1258,21 @@ describe('POST /approvals/:id/approve', () => {
     expect(aiSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: TEST_USER.id }),
     );
+    // The AI session's org joins the policy set beside the session partner's.
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ rowOrgIds: ['org-exec'], decision: 'approved' }),
+    );
+  });
+
+  it('refuses an approve when the linked execution no longer resolves, writing nothing', async () => {
+    const linkedRow = { ...updatedRow, executionId: 'exec-gone' };
+    const { approvalSet } = mockDecideTxWithExecutionMirror({ linkedRow, aiReturning: [], executionOrg: null });
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'execution_not_found' });
+    expect(approvalSet).not.toHaveBeenCalled();
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
   });
 
   it('logs a lost-race warning (not an error) when the ai_tool_executions mirror CAS matches zero rows, and still returns 200 (#3089 review finding)', async () => {
@@ -1251,7 +1282,11 @@ describe('POST /approvals/:id/approve', () => {
     // source of truth and correctly recorded THIS decision, so the decide
     // call must still succeed; only the mirror silently lost the race.
     const linkedRow = { ...updatedRow, executionId: 'exec-42' };
-    const { aiReturning } = mockDecideTxWithExecutionMirror({ linkedRow, aiReturning: [] });
+    const { aiReturning } = mockDecideTxWithExecutionMirror({
+      linkedRow,
+      aiReturning: [],
+      executionOrg: { orgId: 'org-exec' },
+    });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
@@ -4945,7 +4980,7 @@ describe('GET /approvals/pending?view=recent (#6022)', () => {
   // refusal reason; Recent must say why, not "denied" with no reason.
   it('reports a refused elevation approve with the refusal reason', async () => {
     const refusal = 'Target identity could not be verified on the device; re-request elevation.';
-    mockRecentJoinResolves([
+    const node = mockRecentJoinResolves([
       {
         approval: buildPendingApproval({
           id: 'a-refused',
@@ -4959,11 +4994,50 @@ describe('GET /approvals/pending?view=recent (#6022)', () => {
         intent: null,
       },
     ]);
+    mockRecentElevationTargets(node, [{ id: 'elev-1', orgId: 'org-pam', siteId: null }]);
 
     const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
     expect(body.approvals).toHaveLength(1);
     expect(body.approvals[0].refusalReason).toBe(refusal);
     expect(body.approvals[0].intentOutcome).toMatchObject({ status: 'denied', reason: refusal });
+    expect(getDeciderPermissionsForOrg).toHaveBeenCalledWith(TEST_USER.id, 'org-pam');
+  });
+
+  /** 1) the recent query; 2) the elevation-target read; later reads fall back to `node`. */
+  function mockRecentElevationTargets(node: unknown, elevations: Array<{ id: string; orgId: string; siteId: string | null }>) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(node as any)
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(elevations) }) } as any);
+  }
+
+  it('does not list a settled PAM row once the caller lacks pam:approve in its org', async () => {
+    const node = mockRecentJoinResolves([
+      {
+        approval: buildPendingApproval({ id: 'a-pam-old', intentId: null, elevationRequestId: 'elev-1', status: 'expired' }),
+        intent: null,
+      },
+    ]);
+    mockRecentElevationTargets(node, [{ id: 'elev-1', orgId: 'org-pam', siteId: null }]);
+    vi.mocked(getUserPermissions).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-pam', permissions: [{ resource: 'approvals', action: 'decide' }],
+    } as any);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals).toEqual([]);
+  });
+
+  it('does not list a settled PAM row whose elevation no longer resolves', async () => {
+    const node = mockRecentJoinResolves([
+      {
+        approval: buildPendingApproval({ id: 'a-pam-gone', intentId: null, elevationRequestId: 'elev-1', status: 'expired' }),
+        intent: null,
+      },
+    ]);
+    mockRecentElevationTargets(node, []);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals).toEqual([]);
+    expect(getDeciderPermissionsForOrg).not.toHaveBeenCalled();
   });
 
   it('never reports an unlinked row as outcome-less', async () => {

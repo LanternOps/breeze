@@ -672,8 +672,12 @@ export async function decideApprovalRequest(
   // no-op passthrough (db/index.ts), so `runOutsideDbContext` is required to
   // actually elevate.
   // The org the decided row belongs to. Its owning partner's approval-security
-  // policy applies alongside the session partner's (stricter wins), so it is
-  // resolved by every branch below that loads the row's target.
+  // policy applies alongside the session partner's (stricter wins). Resolved
+  // for every linked row: from the elevation, the diagnostic grant or the
+  // intent in the branches below, and from the AI session for a row linked to
+  // an AI tool execution. A row with no link leaves it null: a dev seed or a
+  // test approval, which no org owns, or a row whose target was deleted
+  // (deleting it clears the link, and approving such a row acts on nothing).
   let rowOrgId: string | null = null;
 
   if (existing.elevationRequestId && !existing.intentId) {
@@ -814,6 +818,32 @@ export async function decideApprovalRequest(
         };
       }
     }
+  }
+
+  // A chat approval linked to an AI tool execution belongs to the org of that
+  // execution's AI session. Only an approve reads it, because the row org
+  // feeds the approve-only policy reads; a deny never depends on it. An
+  // execution that cannot be read here (deleted after the row was read)
+  // refuses the approve rather than leaving the owning partner's policy out.
+  if (
+    status === 'approved'
+    && existing.executionId
+    && !existing.intentId
+    && !existing.elevationRequestId
+    && !existing.diagnosticAccessGrantId
+  ) {
+    const executionOrg = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ orgId: aiSessions.orgId })
+          .from(aiToolExecutions)
+          .innerJoin(aiSessions, eq(aiSessions.id, aiToolExecutions.sessionId))
+          .where(eq(aiToolExecutions.id, existing.executionId as string));
+        return row ?? null;
+      }),
+    );
+    if (!executionOrg) return { httpStatus: 404, body: { error: 'execution_not_found' } };
+    rowOrgId = executionOrg.orgId;
   }
 
   // Action intents (spec docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
