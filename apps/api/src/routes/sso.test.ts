@@ -1,10 +1,23 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import http from 'http';
+import https from 'https';
 
 // The holding-org refusal reads the org; the db mocks below do not model it.
 vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
 import { createHmac, createHash } from 'crypto';
 import { Hono } from 'hono';
 import { ssoRoutes } from './sso';
+import {
+  dialLocally,
+  expectSettlesAt,
+  resolveTo,
+  slowPeer,
+  track,
+  until,
+  useFakeClock,
+  type SlowPeer,
+} from '../__tests__/helpers/slowHttpPeer';
+import { __setLookupForTests } from '../services/urlSafety';
 
 // Mirrors the route's signed binding-cookie derivation
 // (HMAC-SHA256 of `sso-login-state:<state>` keyed by the cookie secret).
@@ -244,7 +257,10 @@ vi.mock('../db', () => ({
   // stands in for "the wrap really ran" — default it to 'system' so every
   // existing test (which relies on the wrap being effective) stays green. The
   // dedicated Fix 2 test below overrides this to prove the guard bites.
-  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const }))
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const })),
+  // urlSafety's held-context tripwire: the provider-deadline tests run the real
+  // safeFetch, outside any request transaction.
+  assertOutsideHeldDbContext: vi.fn()
 }));
 
 vi.mock('../db/schema', () => ({
@@ -1213,6 +1229,51 @@ describe('sso routes', () => {
       // unrepairable — discovery is the only writer of those four columns).
       expect(db.insert).not.toHaveBeenCalled();
     });
+
+    it('POST → 400 and creates NOTHING when discovery outlasts the 30 s deadline', async () => {
+      // Real discovery against an issuer that sends headers and then trickles
+      // the body: it ends at 30 s, and the route refuses the write as for any
+      // other failed discovery.
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      resolveTo('10.0.0.5');
+      const peer = await slowPeer();
+      try {
+        const real = await vi.importActual<typeof import('../services/sso')>('../services/sso');
+        vi.mocked(discoverOIDCConfig).mockImplementation(() =>
+          real.discoverOIDCConfig(`http://idp.internal.test:${peer.port}`, { allowPrivateNetwork: true }));
+        const client = dialLocally();
+        const { clockTo } = useFakeClock();
+
+        const t = track(Promise.resolve(app.request('/sso/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Okta',
+            type: 'oidc',
+            issuer: 'https://slow.example.com',
+            clientId: 'client-id',
+            clientSecret: 'client-secret'
+          })
+        })));
+        await until(() => client.headers() === 1, 'the discovery response headers');
+        await expectSettlesAt(clockTo, t, 30_000);
+
+        const res = t.value!;
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.code).toBe('oidc_discovery_failed');
+        expect(body.error).toBe(
+          'OIDC discovery failed for issuer "https://slow.example.com": request did not complete within 30000ms'
+        );
+        expect(db.insert).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        __setLookupForTests(null);
+        vi.mocked(http.request).mockRestore?.();
+        vi.mocked(https.request).mockRestore?.();
+        peer.close();
+      }
+    }, 30_000);
 
     it('PATCH → re-discovers and re-writes all four endpoints when the issuer changes', async () => {
       selectExisting();
@@ -2779,6 +2840,98 @@ describe('sso routes', () => {
       // but the gate block is inside `if (!user)` which is false here — so
       // the callback must NOT have redirected to sso_domain_unverified.
       expect(res.headers.get('location') ?? '').not.toContain('sso_domain_unverified');
+    });
+
+    // The token and userinfo calls run for real against a provider that sends
+    // headers and then trickles the body: each ends at the 30 s total deadline,
+    // and the callback answers with its normal failed-sign-in redirect.
+    describe('provider calls end at the 30 s deadline', () => {
+      let peer: SlowPeer | undefined;
+      const actualSso = () => vi.importActual<typeof import('../services/sso')>('../services/sso');
+      const atPeer = (config: import('../services/sso').OIDCConfig, port: number) => {
+        const base = `http://idp.internal.test:${port}`;
+        return { ...config, tokenUrl: `${base}/token`, userInfoUrl: `${base}/userinfo`, allowPrivateNetwork: true };
+      };
+      const FAILED_SIGN_IN = `/login?error=sso_error&message=${encodeURIComponent('request did not complete within 30000ms')}`;
+
+      beforeEach(() => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        resolveTo('10.0.0.5');
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+        __setLookupForTests(null);
+        vi.mocked(http.request).mockRestore?.();
+        vi.mocked(https.request).mockRestore?.();
+        peer?.close();
+        peer = undefined;
+      });
+
+      async function callbackEndsAt30s(client: { headers: () => number }): Promise<Response> {
+        const { clockTo } = useFakeClock();
+        const t = track(Promise.resolve(app.request('/sso/callback?code=oidc-code&state=state', {
+          method: 'GET',
+          headers: { cookie: ssoStateCookieHeader('state') }
+        })));
+        await until(() => client.headers() === 1, 'the provider response headers');
+        await expectSettlesAt(clockTo, t, 30_000);
+        expect(t.error).toBeUndefined();
+        return t.value!;
+      }
+
+      it('token exchange: a trickling body ends at 30 s and the callback redirects to the sign-in error', async () => {
+        wireHappyPathDb();
+        peer = await slowPeer();
+        const port = peer.port;
+        const real = await actualSso();
+        vi.mocked(exchangeCodeForTokens).mockImplementation((params) =>
+          real.exchangeCodeForTokens({ ...params, config: atPeer(params.config, port) }));
+        const client = dialLocally();
+
+        const res = await callbackEndsAt30s(client);
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe(FAILED_SIGN_IN);
+        expect(getUserInfo).not.toHaveBeenCalled();
+        expect(createTokenPair).not.toHaveBeenCalled();
+      }, 30_000);
+
+      it('userinfo: a trickling body ends at 30 s and the callback redirects to the sign-in error', async () => {
+        wireHappyPathDb();
+        peer = await slowPeer();
+        const port = peer.port;
+        const real = await actualSso();
+        vi.mocked(getUserInfo).mockImplementation((config, accessToken) =>
+          real.getUserInfo(atPeer(config, port), accessToken));
+        const client = dialLocally();
+
+        const res = await callbackEndsAt30s(client);
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe(FAILED_SIGN_IN);
+        expect(exchangeCodeForTokens).toHaveBeenCalledTimes(1);
+        expect(createTokenPair).not.toHaveBeenCalled();
+      }, 30_000);
+
+      it('a provider that answers normally still signs the user in', async () => {
+        wireHappyPathDb();
+        peer = await slowPeer({ body: { sub: 'external-user-1', email: 'test@example.com', name: 'Test User' } });
+        const port = peer.port;
+        const real = await actualSso();
+        vi.mocked(getUserInfo).mockImplementation((config, accessToken) =>
+          real.getUserInfo(atPeer(config, port), accessToken));
+        dialLocally();
+
+        const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+          method: 'GET',
+          headers: { cookie: ssoStateCookieHeader('state') }
+        });
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+        expect(peer.requests()).toBe(1);
+      }, 30_000);
     });
   });
 

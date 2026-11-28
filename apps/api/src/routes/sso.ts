@@ -311,8 +311,8 @@ const tokenExchangeSchema = z.object({
  * The three provider routes that perform OIDC discovery (POST /providers,
  * PATCH /providers/:id, POST /providers/:id/test) are registered in
  * SELF_MANAGED_DB_CONTEXT_ROUTES, so `authMiddleware` does NOT open the ambient
- * request transaction for them: `discoverOIDCConfig` → `safeFetch` is a
- * 10-second-timeout call to a TENANT-CONTROLLED issuer host, and holding a
+ * request transaction for them: `discoverOIDCConfig` → `safeFetch` is a call
+ * of up to 30 s (OIDC_FETCH_DEADLINE_MS) to a TENANT-CONTROLLED issuer host, and holding a
  * pooled `breeze_app` connection idle-in-transaction across it is
  * tenant-triggerable pool starvation (#1105 class — 25 connections in prod, and
  * these routes have no rate limit). `safeFetch`'s `assertOutsideHeldDbContext`

@@ -163,6 +163,7 @@ export async function exchangeCodeForTokens(params: TokenExchangeParams): Promis
     },
     body: body.toString(),
     timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+    deadlineMs: OIDC_FETCH_DEADLINE_MS,
     maxBytes: OIDC_MAX_RESPONSE_BYTES,
     allowPrivateNetwork
   });
@@ -190,6 +191,7 @@ export async function getUserInfo(config: OIDCConfig, accessToken: string): Prom
       'Accept': 'application/json'
     },
     timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+    deadlineMs: OIDC_FETCH_DEADLINE_MS,
     maxBytes: OIDC_MAX_RESPONSE_BYTES,
     allowPrivateNetwork
   });
@@ -226,6 +228,7 @@ export async function refreshAccessToken(config: OIDCConfig, refreshToken: strin
     },
     body: body.toString(),
     timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+    deadlineMs: OIDC_FETCH_DEADLINE_MS,
     maxBytes: OIDC_MAX_RESPONSE_BYTES,
     allowPrivateNetwork
   });
@@ -693,8 +696,16 @@ export function isInternalUrl(urlStr: string, allowPrivateNetwork = false): bool
   return allowPrivateNetwork ? isAlwaysBlockedIp(hostname) : isPrivateIp(hostname);
 }
 
-/** Wall-clock cap for provider-controlled OIDC fetches. None was set before (SR2-14). */
+/** Inactivity cap for provider-controlled OIDC fetches. None was set before (SR2-14). */
 export const OIDC_FETCH_TIMEOUT_MS = 10_000;
+/**
+ * Total deadline for each discovery, token and userinfo call: resolution,
+ * connect, headers and body, from the start of the call. `OIDC_FETCH_TIMEOUT_MS`
+ * only ends a call that goes quiet; a body that keeps arriving resets it. Expires
+ * as `ResponseDeadlineError`, which the callers handle like any other failed call.
+ * The JWKS fetch is bounded separately, by jose's own 5 s signal.
+ */
+export const OIDC_FETCH_DEADLINE_MS = 30_000;
 /** JWKS cap — matches jose's own default so a healthy IdP sees no change. */
 export const OIDC_JWKS_TIMEOUT_MS = 5_000;
 /**
@@ -772,6 +783,7 @@ export async function discoverOIDCConfig(
       headers: { 'Accept': 'application/json' },
       allowPrivateNetwork,
       timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+      deadlineMs: OIDC_FETCH_DEADLINE_MS,
       maxBytes: OIDC_MAX_RESPONSE_BYTES
     });
   } catch (err) {
