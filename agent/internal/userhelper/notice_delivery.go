@@ -143,7 +143,7 @@ func (r *nativePromptRenderer) noticeDeliveryNow() noticeDelivery {
 // returns true when it finished the notice (toasted, or the hold ended
 // because the agent withdrew it or its entry expired) and false when the
 // caller must draw the dialog.
-func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptShow, m nativePromptModel, lease func() ipc.PromptLease) bool {
+func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptShow, m nativePromptModel, act *nativeActive, lease func() ipc.PromptLease) bool {
 	repoll := r.noticeRepoll
 	if repoll <= 0 {
 		repoll = defaultNoticeRepoll
@@ -191,7 +191,7 @@ func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptSh
 		if !toldHeld {
 			toldHeld = true
 			log.Info("holding a notice while the user is presenting or full screen", "promptId", p.PromptID)
-			r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: false})
+			r.reportNotVisible(p, act)
 		}
 		if !r.now().Before(expires) {
 			log.Info("held notice expired before it could be shown; it stays in the agent's list", "promptId", p.PromptID)
@@ -261,7 +261,7 @@ func (r *nativePromptRenderer) screenBusyLocked(promptID string) bool {
 // reports false when the agent closed or replaced the notice meanwhile.
 func (r *nativePromptRenderer) awaitNoticeDialog(ctx context.Context, p ipc.PromptShow, act *nativeActive, lease func() ipc.PromptLease) bool {
 	mustShowBy, forces := noticeMustShowBy(p)
-	told := false
+	told := false // logged once; the agent is told once per notice (reportNotVisible)
 	for {
 		freed := r.freedSignal()
 		force := forces && !r.now().Before(mustShowBy)
@@ -278,12 +278,29 @@ func (r *nativePromptRenderer) awaitNoticeDialog(ctx context.Context, p ipc.Prom
 		if !told {
 			told = true
 			log.Info("notice waits: another dialog is on screen; it is drawn when that dialog ends", "promptId", p.PromptID)
-			r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: false})
+			r.reportNotVisible(p, act)
 		}
 		if !r.waitForScreen(ctx, freed, mustShowBy, forces) {
 			return false
 		}
 	}
+}
+
+// reportNotVisible tells the agent prompt_presented{visible:false} for a
+// notice that is not on screen yet, once per drawing of it. A Windows notice
+// held while the person is full screen that then has to wait for another
+// dialog is one notice not yet visible, not two (#12812): the hold and the
+// wait each used to say so.
+func (r *nativePromptRenderer) reportNotVisible(p ipc.PromptShow, act *nativeActive) {
+	r.mu.Lock()
+	if act.toldNotVisible {
+		r.mu.Unlock()
+		return
+	}
+	act.toldNotVisible = true
+	lease := act.show.Lease // a replay may have moved it
+	r.mu.Unlock()
+	r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease, Visible: false})
 }
 
 // waitForScreen waits until a dialog leaves the screen (freed), the

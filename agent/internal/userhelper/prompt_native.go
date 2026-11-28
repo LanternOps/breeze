@@ -557,6 +557,9 @@ type nativeActive struct {
 	// noticeDialog: an informational notice drawn as a dialog (guarded by
 	// mu). A decision takes it down; another notice never stacks on it.
 	noticeDialog bool
+	// toldNotVisible (guarded by mu): prompt_presented{visible:false} was
+	// sent for this notice (reportNotVisible).
+	toldNotVisible bool
 }
 
 // nativeNoticeDialogLifetime caps how long an informational notice may stay
@@ -923,7 +926,7 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 	}
 	go func() {
 		if notice {
-			if r.deliverNotice(ctx, p, m, lease) {
+			if r.deliverNotice(ctx, p, m, act, lease) {
 				// Toasted, or the hold ended (withdrawn, expired): no dialog,
 				// nothing more to report. The agent's list keeps the entry.
 				r.endWithoutDialog(ctx, p.PromptID, act)
