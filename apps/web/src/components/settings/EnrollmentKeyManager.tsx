@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId } from 'react';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore, type Site } from '../../stores/orgStore';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
@@ -110,6 +110,7 @@ function formatDefaultDuration(minutes: number, locale: string): string {
 }
 
 export default function EnrollmentKeyManager() {
+  const formId = useId();
   const { t, i18n } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId, organizations, enrollmentDefaults: storeDefaults } = useOrgStore();
@@ -992,8 +993,9 @@ export default function EnrollmentKeyManager() {
             </p>
             <form onSubmit={handleCreateSubmit} className="mt-4 space-y-4">
               <div>
-                <label className="text-sm font-medium">{t('common:labels.name')}</label>
+                <label htmlFor={`${formId}-name`} className="text-sm font-medium">{t('common:labels.name')}</label>
                 <input
+                  id={`${formId}-name`}
                   type="text"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
@@ -1004,8 +1006,9 @@ export default function EnrollmentKeyManager() {
               </div>
               {organizations.length > 1 && (
                 <div>
-                  <label className="text-sm font-medium">{t('common:labels.organization')}</label>
+                  <label htmlFor={`${formId}-org`} className="text-sm font-medium">{t('common:labels.organization')}</label>
                   <select
+                    id={`${formId}-org`}
                     data-testid="enrollment-key-org-select"
                     value={formOrgId}
                     onChange={(e) => {
@@ -1022,7 +1025,7 @@ export default function EnrollmentKeyManager() {
                 </div>
               )}
               <div>
-                <label className="text-sm font-medium">{t('common:labels.site')}</label>
+                <label htmlFor={`${formId}-site`} className="text-sm font-medium">{t('common:labels.site')}</label>
                 {formSitesResolved && sitesError ? (
                   <div className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
                     {t('enrollmentKeys.sitesLoadFailed')}{' '}
@@ -1046,6 +1049,8 @@ export default function EnrollmentKeyManager() {
                   </div>
                 ) : (
                   <select
+                    id={`${formId}-site`}
+                    aria-describedby={`${formId}-site-help`}
                     data-testid="enrollment-key-site-select"
                     value={formSiteId}
                     onChange={(e) => setFormSiteId(e.target.value)}
@@ -1059,13 +1064,15 @@ export default function EnrollmentKeyManager() {
                     ))}
                   </select>
                 )}
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p id={`${formId}-site-help`} className="mt-1 text-xs text-muted-foreground">
                   {t('enrollmentKeys.siteHelp')}
                 </p>
               </div>
               <div>
-                <label className="text-sm font-medium">{t('enrollmentKeys.maxUsage')}</label>
+                <label htmlFor={`${formId}-max-usage`} className="text-sm font-medium">{t('enrollmentKeys.maxUsage')}</label>
                 <input
+                  id={`${formId}-max-usage`}
+                  aria-describedby={`${formId}-max-usage-help`}
                   type="number"
                   value={formMaxUsage}
                   onChange={(e) => setFormMaxUsage(e.target.value)}
@@ -1073,13 +1080,15 @@ export default function EnrollmentKeyManager() {
                   min={1}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p id={`${formId}-max-usage-help`} className="mt-1 text-xs text-muted-foreground">
                   {t('enrollmentKeys.maxUsageHelp')}
                 </p>
               </div>
               <div>
-                <label className="text-sm font-medium">{t('enrollmentKeys.expiresAt')}</label>
+                <label htmlFor={`${formId}-expires-at`} className="text-sm font-medium">{t('enrollmentKeys.expiresAt')}</label>
                 <input
+                  id={`${formId}-expires-at`}
+                  aria-describedby={`${formId}-expires-at-help`}
                   type="datetime-local"
                   data-testid="enrollment-key-expires-at"
                   value={formExpiresAt}
@@ -1088,7 +1097,7 @@ export default function EnrollmentKeyManager() {
                   onChange={(e) => setFormExpiresAt(e.target.value)}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p id={`${formId}-expires-at-help`} className="mt-1 text-xs text-muted-foreground">
                   {t('enrollmentKeys.expiresAtHelp', {
                     duration: formatDefaultDuration(defaultTtlMinutes, i18n.language),
                   })}

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Settings → Enrollment Keys → Create Key**: each field label is now tied to its control, so screen readers announce Name, Organization, Site, Max Usage and Expires At, and clicking a label focuses its field. The help text under Site, Max Usage and Expires At is linked to its control. No behavior change otherwise; no new environment variables (#12840).
 - PAM requests can be denied without a reason from the dashboard, API, or mobile approval flow. Missing, empty, and whitespace-only denial reasons now store "Denied without reason"; supplied reasons are trimmed. The database constraint is unchanged.
 
 ### Added
