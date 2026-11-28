@@ -48,6 +48,13 @@ script execution is an RMM feature; unauthorized execution is the security viola
 `withSystemDbAccessContext` is legitimate in background work, seeds and bounded bootstrap
 lookups; assess scope derivation and privilege, not helper presence alone.
 
+Secret/environment exposure is in scope: wherever code runs or model/tenant-authored content
+renders (AI tools and SDK subprocesses, sandboxes, child processes, templates, script delivery,
+error bodies, logs, debug endpoints, agent-spawned device processes), ask whether the model, a
+script or a child can read, print or return server env vars or stored secrets. Check the child's
+effective env, working directory and output-redaction path, not just that redaction exists.
+Guard for server child processes: `apps/api/src/__tests__/childProcessEnv.contract.test.ts`.
+
 ## Deliverables
 
 Use the private workspace `templates/review.md`, `finding.md`, `remediation.md` and
