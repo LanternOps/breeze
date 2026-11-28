@@ -103,6 +103,16 @@ type Session struct {
 	startOnce   sync.Once
 	wg          sync.WaitGroup
 
+	// Bounded teardown (#12624, session_teardown.go). loops names the
+	// goroutines wg counts. captureClosed (guarded by mu) refuses a capturer
+	// opened after the session stopped. pipelineOnce / pipelineReleased guard
+	// the release of the encoder, capturers and backend.
+	loops            loopTracker
+	captureClosed    bool
+	pipelineOnce     sync.Once
+	pipelineReleased atomic.Bool
+	cleanupStage     atomic.Pointer[string]
+
 	// Optimized pipeline components (shared with WS path)
 	differ   *frameDiffer
 	cursor   *cursorOverlay
@@ -623,20 +633,15 @@ func (s *Session) StopWithReason(reason string) {
 			return
 		}
 		s.isActive = false
+		s.captureClosed = true
 		s.stopReason = reason
 		s.mu.Unlock()
 
 		close(s.done)
 
-		// Close peer connection early to unblock any RTCP reads.
-		if s.peerConn != nil {
-			_ = s.peerConn.Close()
-		}
-
-		// Wait for loops we started to exit before tearing down encoder/capturer.
-		s.wg.Wait()
-
-		s.doCleanup()
+		// Waits for the loops we started to exit before tearing down the
+		// encoder/capturer, in bounded time (#12624).
+		s.teardown()
 
 		snap := s.metrics.Snapshot()
 		logArgs := []any{
@@ -679,11 +684,20 @@ func (s *Session) LastStopReason() string {
 	return s.stopReason
 }
 
-func (s *Session) doCleanup() {
+// doCleanup releases everything the session holds. Only when none of its
+// goroutines is running.
+func (s *Session) doCleanup() { s.cleanup(true) }
+
+// cleanup releases what the session holds. releasePipeline=false leaves the
+// encoder, capturers and backend to whichever goroutine is stuck in them
+// (session_teardown.go).
+func (s *Session) cleanup(releasePipeline bool) {
 	s.cleanupOnce.Do(func() {
 		// Before anything else is torn down: nothing this session pressed may
 		// stay pressed on the customer's machine.
+		s.setCleanupStage("release input")
 		s.closeInput()
+		s.setCleanupStage("stop audio and clipboard")
 		if s.trickle != nil {
 			s.trickle.stop()
 		}
@@ -697,30 +711,18 @@ func (s *Session) doCleanup() {
 			s.cursorDC.Close()
 		}
 		s.clearCachedEncodedFrame()
-		if enc := s.encoder.Load(); enc != nil {
-			enc.Close()
-		}
-		for _, oc := range s.oldCapturers {
-			oc.Close()
-		}
-		s.oldCapturers = nil
-		if s.capturer != nil {
-			s.capturer.Close()
-		}
-		// The backend session owns the capturer and the input sink; it is
-		// released after both are done with.
-		if s.backend != nil {
-			if err := s.backend.Close(); err != nil {
-				slog.Warn("Failed to close the capture session", "session", s.id, "error", err.Error())
-			}
+		if releasePipeline {
+			s.releasePipeline()
 		}
 		// After the capturer: the display may sleep again only once nothing
 		// captures it (#10874).
+		s.setCleanupStage("close peer connection")
 		s.displayWake.release()
 		if s.peerConn != nil {
 			s.peerConn.Close()
 		}
 
+		s.setCleanupStage("restore wallpaper and local input")
 		if err := GetWallpaperManager().Restore(); err != nil {
 			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
 		}
@@ -737,6 +739,7 @@ func (s *Session) doCleanup() {
 
 		// Last: in helper mode this is an IPC write that can block, and
 		// nothing above may wait on it.
+		s.setCleanupStage("report clipboard summary")
 		s.reportClipboardSummary()
 	})
 }

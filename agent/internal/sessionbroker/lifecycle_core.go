@@ -183,6 +183,11 @@ type HelperLifecycleManager struct {
 	leases map[HelperKey]*helperLease
 	kickCh chan struct{}
 
+	// Helper recycling (lifecycle_recycle.go). Guarded by m.mu.
+	recycles             map[HelperKey][]time.Time
+	recycling            map[HelperKey]bool
+	recycleRefusalLogged map[HelperKey]time.Time
+
 	// pamHold is set while UAC interception is enabled; in on-demand mode it
 	// adds a SYSTEM helper for every signed-in session to the desired set (see
 	// lifecycle_pam_hold.go). Guarded by m.mu.

@@ -748,12 +748,9 @@ func (s *Session) switchMonitor(index int) {
 	// The old capturer is NOT closed here — the capture loop closes it
 	// after detecting the swap, avoiding a race where Close() is called
 	// while captureAndSendFrameGPU is mid-frame on the old capturer.
-	s.mu.Lock()
-	s.oldCapturers = append(s.oldCapturers, s.capturer)
-	s.capturer = newCap
-	s.displayIndex = index
-	s.captureConfig = cfg
-	s.mu.Unlock()
+	if !s.swapCapturer(newCap, index, cfg) {
+		return // the session stopped while the new capturer was opening
+	}
 	s.capturerSwapped.Store(true)
 	s.applyInputOffset(newCap, index)
 	// Get bounds for viewer notification — encoder dimensions are updated

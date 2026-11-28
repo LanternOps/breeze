@@ -53,6 +53,10 @@ func (l *blockingLifecycleShutdown) HelperRoleAvailable(sessionbroker.HelperKey)
 	return true, nil
 }
 
+func (l *blockingLifecycleShutdown) RecycleHelper(*sessionbroker.Session, string, func() error) error {
+	return nil
+}
+
 func (l *blockingLifecycleShutdown) WaitForHelperReady(context.Context, sessionbroker.HelperKey) sessionbroker.HelperWaitResult {
 	return sessionbroker.HelperWaitResult{Status: sessionbroker.HelperWaitTimeout}
 }

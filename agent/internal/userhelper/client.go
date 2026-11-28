@@ -275,6 +275,10 @@ func (c *Client) Run() error {
 		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, agentHandlesTCC, c)
 	})
 
+	if helperRecycleSupported(runtime.GOOS, c.role) {
+		safeGo("helper_recycle_watch", func() { runRecycleWatch(runDone, c.recycleWatchConfig()) })
+	}
+
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
 
 	// Relay queued and future warn+ log records to the agent for the life of
@@ -610,7 +614,12 @@ func (c *Client) dispatch(env *ipc.Envelope) (done bool, err error) {
 		c.goTracked("desktop_start", func() { c.handleDesktopStart(env) })
 
 	case ipc.TypeDesktopStop:
-		safeGo("desktop_stop", func() { c.handleDesktopStop(env) })
+		// Tracked until its reply is sent: the service reports the session
+		// stopped from that reply (#12624).
+		c.goTracked("desktop_stop", func() { c.handleDesktopStop(env) })
+
+	case ipc.TypeHelperRecyclePrepare:
+		safeGo("helper_recycle_prepare", func() { c.handleRecyclePrepare(env) })
 
 	case ipc.TypeDesktopLeaseUpdate:
 		safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
@@ -713,7 +722,7 @@ func (c *Client) closePendingResponses() {
 
 // goTracked is safeGo for a handler the helper must not restart itself under
 // (#11292): a consent, PAM or notification dialog, a command or process
-// launch, or a desktop session still starting. The count drops when fn
+// launch, or a desktop session still starting or stopping. The count drops when fn
 // returns or panics.
 func (c *Client) goTracked(name string, fn func()) {
 	c.inFlight.Add(1)
@@ -752,6 +761,12 @@ func (c *Client) admitIntake() bool {
 // counted. When something is busy the hold lifts at once; otherwise it stays
 // until the process exits, or selfRestartIntakeHoldLimit passes.
 func (c *Client) holdForSelfRestart() string {
+	return c.holdIntakeFor(selfRestartIntakeHoldLimit, "a self-restart")
+}
+
+// holdIntakeFor is holdForSelfRestart with its own limit; what names the exit
+// that was expected, for the Warn when it does not happen.
+func (c *Client) holdIntakeFor(limit time.Duration, what string) string {
 	hold := make(chan struct{})
 	c.intakeMu.Lock()
 	c.intakeHold = hold
@@ -760,10 +775,9 @@ func (c *Client) holdForSelfRestart() string {
 		c.liftIntakeHold(hold)
 		return busy
 	}
-	limit := selfRestartIntakeHoldLimit
 	time.AfterFunc(limit, func() {
 		if c.liftIntakeHold(hold) {
-			log.Warn("helper did not exit after asking for a self-restart; taking work again",
+			log.Warn("helper was not ended after agreeing to "+what+"; taking work again",
 				"heldFor", limit.String())
 		}
 	})
@@ -784,11 +798,14 @@ func (c *Client) liftIntakeHold(hold chan struct{}) bool {
 }
 
 // selfRestartBusy names what the helper is in the middle of, or "" when a
-// self-restart would interrupt nothing: no remote desktop session, no native
-// prompt on screen, no tracked handler running.
+// self-restart would interrupt nothing: no remote desktop session (or one
+// still stopping), no native prompt on screen, no tracked handler running.
 func (c *Client) selfRestartBusy() string {
 	if c.desktopMgr != nil && c.desktopMgr.hasActiveSessions() {
 		return "remote desktop session active"
+	}
+	if sessionTeardownInProgress() {
+		return "remote desktop session stopping"
 	}
 	if c.prompts != nil && c.prompts.activeCount() > 0 {
 		return "prompt window open"

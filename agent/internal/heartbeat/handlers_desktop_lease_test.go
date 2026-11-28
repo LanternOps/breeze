@@ -38,6 +38,8 @@ type fakeLifecycle struct {
 	blockWait bool
 	// pamHolds records every SetPAMHelperHold call in order.
 	pamHolds []bool
+	// recycled records the reason of each RecycleHelper whose prepare passed.
+	recycled []string
 }
 
 func (f *fakeLifecycle) SetPAMHelperHold(enabled bool) {
@@ -94,6 +96,22 @@ func (f *fakeLifecycle) HelperRoleAvailable(key sessionbroker.HelperKey) (bool, 
 		return false, f.availableErr
 	}
 	return !f.unavailable[key], nil
+}
+
+func (f *fakeLifecycle) RecycleHelper(_ *sessionbroker.Session, reason string, prepare func() error) error {
+	if err := prepare(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recycled = append(f.recycled, reason)
+	return nil
+}
+
+func (f *fakeLifecycle) recycles() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.recycled...)
 }
 
 func (f *fakeLifecycle) WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult {

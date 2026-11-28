@@ -3013,12 +3013,21 @@ func (b *Broker) closeSessionWithReason(session *Session, reason string) error {
 	return closeErr
 }
 
+// TerminateHelperKey closes and kills whichever helper owns key now.
 func (b *Broker) TerminateHelperKey(key HelperKey) {
+	_, _ = b.terminateHelperKeyOwner(key, nil)
+}
+
+// terminateHelperKeyOwner closes and kills the helper owning key. With a
+// non-nil expected it acts only if that exact session is still the owner, so a
+// decision taken about one helper can never kill its successor. owned reports
+// whether there was a helper to act on; err is the kill's failure.
+func (b *Broker) terminateHelperKeyOwner(key HelperKey, expected *Session) (owned bool, err error) {
 	b.mu.Lock()
 	session := b.helperByKey[key]
-	if session == nil {
+	if session == nil || (expected != nil && session != expected) {
 		b.mu.Unlock()
-		return
+		return false, nil
 	}
 	claim := session.peerProcess.claimTermination()
 	removed := b.removeSessionMapsLocked(session)
@@ -3030,7 +3039,7 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 	b.mu.Unlock()
 
 	if claim != nil {
-		if err := claim.terminateAndClose(); err != nil {
+		if err = claim.terminateAndClose(); err != nil {
 			// Warn, not Debug: the default level is info (config.go), so the
 			// previous Debug line meant a failed kill left NO evidence at all.
 			// This is the enforcement path, not best-effort cleanup.
@@ -3064,6 +3073,7 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 			callback(session)
 		}
 	}
+	return true, err
 }
 
 // CloseSessionsByDesktopContext closes all sessions with the given desktop
@@ -3737,7 +3747,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		}
 	case ipc.TypeTrayAction, ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult, ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected,
 		ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew, ipc.TypeDesktopLocalICECandidate, ipc.TypeDesktopStart, ipc.TypeDesktopStop, ipc.TypeLaunchResult,
-		ipc.TypeDesktopClipboardRead:
+		ipc.TypeDesktopClipboardRead, ipc.TypeHelperRecycleRequest:
 		if !shouldForwardUnsolicitedHelperMessage(s, env) {
 			log.Warn("dropping unsolicited or unauthorized helper message",
 				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
@@ -4028,7 +4038,7 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 	case ipc.TypeTrayAction:
 		return session.HasScope("tray")
 	case ipc.TypeSASRequest, ipc.TypeDesktopPeerDisconnected, ipc.TypeDesktopClipboardSummary, ipc.TypeDesktopLeaseRenew,
-		ipc.TypeDesktopLocalICECandidate, ipc.TypeDesktopClipboardRead:
+		ipc.TypeDesktopLocalICECandidate, ipc.TypeDesktopClipboardRead, ipc.TypeHelperRecycleRequest:
 		return session.HasScope("desktop")
 	case ipc.TypeWatchdogCommandResult:
 		return session.HasScope("watchdog")

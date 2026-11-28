@@ -810,6 +810,8 @@ func expectedResponseType(cmdType string) string {
 		return ipc.TypeDesktopStart
 	case ipc.TypeDesktopStop:
 		return ipc.TypeDesktopStop
+	case ipc.TypeHelperRecyclePrepare:
+		return ipc.TypeHelperRecyclePrepare
 	case ipc.TypeSASRequest:
 		return ipc.TypeSASResponse
 	case ipc.TypeLaunchProcess:

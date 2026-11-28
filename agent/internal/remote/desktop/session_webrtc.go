@@ -261,7 +261,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
 	slog.Info("StartSession: capturer created", "session", sessionID, "elapsed", time.Since(capturerStart))
-	session.capturer = capturer
+	if !session.installCapturer(capturer) {
+		return "", fmt.Errorf("session stopped while screen capture was starting")
+	}
 	session.displayIndex = capConfig.DisplayIndex
 	session.captureConfig = capConfig
 	session.gpuVendor = m.gpuVendor
