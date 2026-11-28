@@ -139,6 +139,10 @@ type Session struct {
 	// capture loop drains the swap.
 	oldCapturers []ScreenCapturer
 
+	// screenshots queues one-shot screenshot requests for the capture loop to
+	// serve on its own thread (#12624, session_screenshot.go).
+	screenshots screenshotQueue
+
 	// gpuEncodeErrors tracks consecutive GPU encode failures. The GPU path
 	// is only permanently disabled after 3+ consecutive errors to allow the
 	// MFT to warm up after a monitor switch (first frame often fails).
@@ -453,7 +457,18 @@ func parseICEServers(raw []ICEServerConfig) []webrtc.ICEServer {
 // DXGI/ScreenCaptureKit capturer instead of creating a new one, which would
 // conflict with the WebRTC session's capture pipeline (destroying shared global
 // C state on Close()).
-// Returns ErrNoActiveSession if no session is currently streaming.
+//
+// While the capture loop runs, the frame is taken by the loop, on its own
+// thread, between frames (#12624): calling the capturer from this goroutine
+// raced the loop's held DXGI frame and tore the device down under the
+// encoder. Before the loop has started (peer still connecting) the frame is
+// captured here, with the loop's start held off until it is done (see
+// session_screenshot.go). A LatestFrameProvider (macOS SCStream), whose
+// CaptureLatest reads the frame the stream already has, is always read here
+// directly.
+//
+// Returns ErrNoActiveSession if no session is currently streaming. Any other
+// error means a session is live but did not serve the frame.
 func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, int, error) {
 	m.mu.RLock()
 	var target, fallback *Session
@@ -487,20 +502,21 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 		return nil, 0, 0, ErrNoActiveSession
 	}
 
-	// Force a desktop repaint so DXGI has a dirty frame, then capture it.
-	// The streaming loop runs at 60fps and consumes DXGI frames before
-	// a one-shot Capture() can grab one, so we force new content.
-	forceDesktopRepaint()
-
 	target.mu.RLock()
 	cap := target.capturer
+	sessionDisplay := target.displayIndex
 	target.mu.RUnlock()
 
 	if cap == nil {
 		return nil, 0, 0, ErrNoActiveSession
 	}
 
-	img, err := captureFrameForScreenshot(cap)
+	lp, ok := cap.(LatestFrameProvider)
+	if !ok {
+		return target.captureScreenshotFromLoop(sessionDisplay)
+	}
+
+	img, err := captureLatestForScreenshot(lp)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("capture from active session: %w", err)
 	}
@@ -514,33 +530,19 @@ func (m *SessionManager) CaptureScreenshot(displayIndex int) (*image.RGBA, int, 
 	return img, w, h, nil
 }
 
-// captureFrameForScreenshot grabs one frame from a capturer the streaming loop
-// is also reading. A LatestFrameProvider (the macOS SCStream capturer, #5928)
-// hands back its current frame directly; Capture() there reports an unchanged
-// screen as no frame once the loop has taken it. Other capturers are retried a
-// few times, since the repaint needs a moment to produce a DXGI frame.
-func captureFrameForScreenshot(cap ScreenCapturer) (*image.RGBA, error) {
-	if lp, ok := cap.(LatestFrameProvider); ok {
-		img, err := lp.CaptureLatest()
-		if err != nil {
-			return nil, err
-		}
-		if img == nil {
-			return nil, fmt.Errorf("no frame available")
-		}
-		return img, nil
+// captureLatestForScreenshot reads the current frame of a LatestFrameProvider
+// (the macOS SCStream capturer, #5928) the streaming loop is also reading. Its
+// Capture() reports an unchanged screen as no frame once the loop has taken
+// it, so a one-shot consumer reads CaptureLatest instead.
+func captureLatestForScreenshot(lp LatestFrameProvider) (*image.RGBA, error) {
+	img, err := lp.CaptureLatest()
+	if err != nil {
+		return nil, err
 	}
-	for attempt := 0; attempt < 8; attempt++ {
-		img, err := cap.Capture()
-		if err != nil {
-			return nil, err
-		}
-		if img != nil {
-			return img, nil
-		}
-		time.Sleep(30 * time.Millisecond)
+	if img == nil {
+		return nil, fmt.Errorf("no frame available")
 	}
-	return nil, fmt.Errorf("no frame after retries")
+	return img, nil
 }
 
 // StopSession stops and removes a session

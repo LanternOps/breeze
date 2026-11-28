@@ -260,6 +260,12 @@ func (s *Session) captureLoop() {
 	// sessions (Session 0 → Session 1 SYSTEM helper).
 	prepareCaptureThread()
 
+	// One-shot screenshots are served from this goroutine from now on
+	// (#12624). On exit, including a panic, fail whatever is still pending
+	// rather than leave a caller waiting out its timeout.
+	s.screenshots.markLoopStarted()
+	defer s.screenshots.markLoopExited()
+
 	s.mu.RLock()
 	cap := s.capturer
 	s.mu.RUnlock()
@@ -564,6 +570,19 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
+		// A pending one-shot screenshot takes this iteration's capture (#12624).
+		// Here the loop holds no frame, and the capturer swap and desktop
+		// switch above have run. The stream resumes next iteration, after
+		// the top-of-loop checks have seen any recovery the capture did.
+		if s.serveScreenshotRequest() {
+			consecutiveSkips = 0 // the stream missed a frame; poll at full rate
+			wasIdle = false
+			if elapsed := time.Since(loopStart); elapsed < frameDuration {
+				time.Sleep(frameDuration - elapsed)
+			}
+			continue
+		}
+
 		// Prefer the GPU path when it works; fall back to CPU on any GPU error.
 		frameSent := false
 		encForGPU := s.encoder.Load()
@@ -841,6 +860,10 @@ func (s *Session) captureLoopTicker() captureMode {
 						slog.Debug("Failed to apply dynamic FPS to encoder", "session", s.id, "fps", fps, "error", err.Error())
 					}
 				}
+			}
+			// A pending one-shot screenshot takes this tick's capture (#12624).
+			if s.serveScreenshotRequest() {
+				continue
 			}
 			s.captureAndSendFrame(frameDuration)
 		}

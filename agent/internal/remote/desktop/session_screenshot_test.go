@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"image"
+	"sync/atomic"
 	"testing"
 )
 
@@ -10,51 +11,46 @@ import (
 // loop already consumed the frame, but CaptureLatest() still has it (#5928).
 type latestOnlyCapturer struct {
 	staticTestCapturer
-	captureCalls, latestCalls int
+	captureCalls, latestCalls atomic.Int64
 }
 
 func (c *latestOnlyCapturer) Capture() (*image.RGBA, error) {
-	c.captureCalls++
+	c.captureCalls.Add(1)
 	return nil, nil
 }
 
 func (c *latestOnlyCapturer) CaptureLatest() (*image.RGBA, error) {
-	c.latestCalls++
+	c.latestCalls.Add(1)
 	return image.NewRGBA(image.Rect(0, 0, 8, 4)), nil
 }
 
-func TestCaptureFrameForScreenshot_UsesLatestFrameProvider(t *testing.T) {
+func (c *latestOnlyCapturer) GetScreenBounds() (int, int, error) { return 8, 4, nil }
+
+func TestCaptureLatestForScreenshot_ReturnsLatestFrame(t *testing.T) {
 	cap := &latestOnlyCapturer{}
-	img, err := captureFrameForScreenshot(cap)
+	img, err := captureLatestForScreenshot(cap)
 	if err != nil || img == nil {
-		t.Fatalf("captureFrameForScreenshot = (%v, %v), want the latest frame", img, err)
+		t.Fatalf("captureLatestForScreenshot = (%v, %v), want the latest frame", img, err)
 	}
-	if cap.latestCalls != 1 || cap.captureCalls != 0 {
+	if cap.latestCalls.Load() != 1 || cap.captureCalls.Load() != 0 {
 		t.Fatalf("latest=%d capture=%d, want one CaptureLatest and no Capture (Capture would consume the stream loop's frame)",
-			cap.latestCalls, cap.captureCalls)
+			cap.latestCalls.Load(), cap.captureCalls.Load())
 	}
 }
 
-type nilThenFrameCapturer struct {
-	staticTestCapturer
-	calls int
-}
+// The macOS branch is unchanged by #12624: a LatestFrameProvider session is
+// read directly, without the capture loop (none runs in this test).
+func TestCaptureScreenshot_LatestFrameProviderReadDirectly(t *testing.T) {
+	cap := &latestOnlyCapturer{}
+	s := &Session{id: "mac", isActive: true, done: make(chan struct{})}
+	s.capturer = cap
+	m := &SessionManager{sessions: map[string]*Session{s.id: s}}
 
-func (c *nilThenFrameCapturer) Capture() (*image.RGBA, error) {
-	c.calls++
-	if c.calls < 3 {
-		return nil, nil
+	img, w, h, err := m.CaptureScreenshot(0)
+	if err != nil || img == nil || w != 8 || h != 4 {
+		t.Fatalf("CaptureScreenshot = (%v, %d, %d, %v), want the latest 8x4 frame", img, w, h, err)
 	}
-	return image.NewRGBA(image.Rect(0, 0, 2, 2)), nil
-}
-
-func TestCaptureFrameForScreenshot_RetriesNilFramesForOtherCapturers(t *testing.T) {
-	cap := &nilThenFrameCapturer{}
-	img, err := captureFrameForScreenshot(cap)
-	if err != nil || img == nil {
-		t.Fatalf("captureFrameForScreenshot = (%v, %v)", img, err)
-	}
-	if cap.calls != 3 {
-		t.Fatalf("calls = %d, want retries until a frame arrives", cap.calls)
+	if cap.captureCalls.Load() != 0 {
+		t.Fatalf("Capture() called %d times, want none", cap.captureCalls.Load())
 	}
 }
