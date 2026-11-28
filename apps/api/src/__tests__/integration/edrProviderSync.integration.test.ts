@@ -929,6 +929,48 @@ describe('edr sync — real job functions against Postgres', () => {
     expect(after[0]!.status).toBe('resolved');
   });
 
+  // #12825: a detection with no vendor time and an unknown status is held, not consumed: it raises
+  // nothing while unknown, and alerts exactly once when the vendor later calls it open, however old.
+  // A row with a vendor time is decided by that time, as before.
+  runDb('Phase 4 #12825: a held no-time unknown detection alerts once when it turns open; a timed one is unchanged', async () => {
+    const fx = await seedJob();
+    const tenantId = await fx.addTenant(`co-hold-${sfx()}`, fx.orgA.id, { lastDetectionSyncAt: new Date() });
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3_600_000);
+    const [held, timed] = await withSystemDbAccessContext(() => db.insert(edrDetections).values([
+      {
+        connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, provider: 'bitdefender',
+        vendorDetectionId: `q-hold-${sfx()}`, vendorKind: 'quarantine_item', severity: 'high', status: 'unknown',
+        breezeDeviceId: fx.deviceA.id, title: 'Quarantined file', detectedAt: null, createdAt: tenDaysAgo,
+      },
+      {
+        connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, provider: 'bitdefender',
+        vendorDetectionId: `inc-old-${sfx()}`, vendorKind: 'incident', severity: 'high', status: 'unknown',
+        breezeDeviceId: fx.deviceA.id, title: 'Old', detectedAt: tenDaysAgo, createdAt: tenDaysAgo,
+      },
+    ]).returning({ id: edrDetections.id }));
+    const notified = async (id: string) => (await adminRows<Row>(sql`
+      SELECT notified_severity FROM edr_detections WHERE id = ${id}::uuid`))[0]!.notified_severity;
+    const alertsFor = (id: string) => adminRows<Row>(sql`
+      SELECT id FROM alerts WHERE context->>'source' = 'edr_provider' AND context->>'detectionId' = ${id}`);
+
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 1 });
+    expect(await notified(held!.id)).toBe('unknown');
+    expect(await notified(timed!.id)).toBe('high');
+    expect(await alertsFor(held!.id)).toHaveLength(0);
+
+    // Still unknown: nothing.
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 0 });
+    expect(await notified(held!.id)).toBe('unknown');
+
+    await admin().execute(sql`UPDATE edr_detections SET status = 'open' WHERE id = ${held!.id}::uuid`);
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 1, suppressed: 0 });
+    expect(await notified(held!.id)).toBe('high');
+    expect(await alertsFor(held!.id)).toHaveLength(1);
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 0 });
+    expect(await alertsFor(held!.id)).toHaveLength(1);
+    expect(await alertsFor(timed!.id)).toHaveLength(0);
+  });
+
   // #8166 review: endpoint-health alerts are bounded per run, raised once per
   // endpoint, and resolve when the vendor reports the endpoint healthy again.
   runDb('Phase 4: endpoint-health alerts are capped per run, deduped, and resolve on recovery', async () => {
