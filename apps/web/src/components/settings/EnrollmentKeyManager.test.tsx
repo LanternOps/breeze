@@ -321,6 +321,35 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     expect(post?.body?.orgId).toBe('org-1');
   });
 
+  it('ties each create-form label to its control and each help text to the control it explains', async () => {
+    seedOrgState({
+      currentOrgId: 'org-1',
+      organizations: [makeOrg('org-1', 'Org One'), makeOrg('org-2', 'Org Two')],
+    });
+    routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+
+    fireEvent.click(screen.getByText('Create Key'));
+
+    // getByLabelText resolves through htmlFor/id, so it fails for a bare <label>.
+    expect(screen.getByLabelText('Name')).toBe(screen.getByPlaceholderText('e.g., Production servers'));
+    expect(screen.getByLabelText('Organization')).toBe(screen.getByTestId('enrollment-key-org-select'));
+    expect(screen.getByLabelText('Site')).toBe(screen.getByTestId('enrollment-key-site-select'));
+    expect(screen.getByLabelText('Expires At (optional)')).toBe(screen.getByTestId('enrollment-key-expires-at'));
+    expect(screen.getByLabelText('Max Usage (optional)')).toHaveAttribute('type', 'number');
+
+    expect(screen.getByLabelText('Site')).toHaveAccessibleDescription(
+      'Devices enrolled with this key are assigned to this site.',
+    );
+    expect(screen.getByLabelText('Max Usage (optional)')).toHaveAccessibleDescription(
+      'Maximum number of agents that can enroll with this key.',
+    );
+    expect(screen.getByLabelText('Expires At (optional)')).toHaveAccessibleDescription(
+      expect.stringContaining('Leave blank'),
+    );
+  });
+
   it('rejects a past expiry inline, sets a min on the input, and does not submit', async () => {
     seedOrgState({ currentOrgId: 'org-1', organizations: [makeOrg('org-1', 'Org One')] });
     const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
