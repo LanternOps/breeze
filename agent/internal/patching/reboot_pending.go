@@ -27,8 +27,13 @@
 //     record is cleared on every one of those paths, and it is tied to the
 //     boot it was written in, so a machine that restarted for any reason
 //     (including this restart) never restarts again because of it.
-//   - A record that is corrupt, out of range, writable by others, or from a
-//     boot that cannot be identified is discarded and logged, never acted on.
+//   - A record that is corrupt, out of range, or from a boot that cannot be
+//     identified is discarded and logged, never acted on. One another account
+//     could have written (a link, loose permissions, a foreign owner or
+//     directory) is refused and logged without being read or rewritten.
+//   - A write that fails removes the file rather than leave a stale record:
+//     a lost restore is today's behaviour, a stale one is a resurrected or
+//     early restart.
 package patching
 
 import (
@@ -127,8 +132,11 @@ func usableBootID(id string) bool {
 
 // persistPendingLocked writes the current schedule (or, with nothing
 // scheduled, clears the schedule part) to the ledger. Callers hold r.mu.
-// Best-effort: the in-memory schedule is the truth for this process, and a
-// record that could not be written costs only the restore.
+// Best-effort: the in-memory schedule is the truth for this process. A write
+// that fails removes the file instead, because the record it would have
+// replaced describes an EARLIER time (before a postponement) or a different
+// restart (before a new schedule): restoring that is worse than restoring
+// nothing. Losing the file costs the restore and, at most, one postponement.
 func (r *RebootManager) persistPendingLocked() error {
 	if !r.state.RebootScheduled || r.state.ScheduledAt.IsZero() || r.campaign == 0 {
 		return r.clearPendingLocked()
@@ -156,14 +164,20 @@ func (r *RebootManager) persistPendingLocked() error {
 			BootID:          r.currentBootIDLocked(),
 		},
 	}
-	return writeDeferralLedger(path, ledger)
+	if !usableBootID(ledger.Pending.BootID) {
+		// Written anyway (the count still matters), but say now that it
+		// cannot be restored, not at the next start when it is too late.
+		log.Warn("no boot identity: this restart will not survive an agent restart",
+			"bootId", ledger.Pending.BootID, "campaign", r.campaign)
+	}
+	return writeOrRemoveLedger(path, ledger)
 }
 
 // savePendingLocked is persistPendingLocked for the paths where a failure is
 // only worth a warning.
 func (r *RebootManager) savePendingLocked(why string) {
 	if err := r.persistPendingLocked(); err != nil {
-		log.Warn("pending restart record not written; an agent restart before the restart would lose it",
+		log.Warn("pending restart record not written; an agent restart before the restart drops it",
 			"path", r.ledgerPath(), "after", why, "error", err.Error())
 	}
 }
@@ -192,14 +206,34 @@ func (r *RebootManager) clearPendingLocked() error {
 		return nil
 	}
 	ledger.Pending = nil
-	return writeDeferralLedger(path, ledger)
+	return writeOrRemoveLedger(path, ledger)
 }
 
+// writeOrRemoveLedger writes the ledger and, if that fails, removes the file:
+// a record left behind by a failed rewrite is a restart that was cancelled,
+// superseded or moved, and an agent restart in the same boot would re-arm it.
+// The error says whether the fallback worked.
+func writeOrRemoveLedger(path string, ledger DeferralLedger) error {
+	err := writeLedger(path, ledger)
+	if err == nil {
+		return nil
+	}
+	if rmErr := removeLedger(path); rmErr != nil {
+		return fmt.Errorf("%w; the previous record could not be removed either and may be restored after an agent restart in this boot: %v", err, rmErr)
+	}
+	return fmt.Errorf("%w; the previous record was removed instead (the postponement count is lost)", err)
+}
+
+// writeLedger is the ledger write, a seam for the failure tests.
+var writeLedger = writeDeferralLedger
+
 // dropPendingLocked clears the record on a path that has already decided
-// nothing will be restored, logging a failure instead of returning it.
+// nothing will be restored, logging a failure instead of returning it. Error,
+// not Warn: if both the rewrite and the removal failed, an agent restart in
+// this boot brings the restart back.
 func (r *RebootManager) dropPendingLocked(why string) {
 	if err := r.clearPendingLocked(); err != nil {
-		log.Warn("pending restart record not cleared; it is ignored on the next start only if the machine restarts first",
+		log.Error("pending restart record not cleared",
 			"path", r.ledgerPath(), "after", why, "error", err.Error())
 	}
 }
@@ -220,6 +254,14 @@ func (r *RebootManager) RestorePendingReboot() bool {
 	}
 	path := r.ledgerPath()
 	if path == "" {
+		return false
+	}
+	// Trust before content: a file that fails it is neither read nor
+	// rewritten, only reported.
+	if err := r.trustStateFile(path); errors.Is(err, os.ErrNotExist) {
+		return false
+	} else if err != nil {
+		log.Warn("pending restart record is not trusted; not restoring it", "path", path, "error", err.Error())
 		return false
 	}
 	ledger, err := readDeferralLedger(path)
@@ -249,9 +291,6 @@ func (r *RebootManager) RestorePendingReboot() bool {
 		return false
 	}
 
-	if err := r.trustStateFile(path); err != nil {
-		return discard("pending restart record is not trusted; discarding it", "error", err.Error())
-	}
 	now := r.nowFn()
 	opts, err := rec.restoreOptions(ledger, now)
 	if err != nil {

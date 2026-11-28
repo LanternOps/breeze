@@ -104,3 +104,35 @@ func TestRestartCardComesBackAfterAnAgentRestart(t *testing.T) {
 		t.Fatalf("OS invoked during the test: %d / %d", os1, os2)
 	}
 }
+
+// The heartbeat's own entry point: RestorePendingReboot on the Heartbeat
+// re-arms the restart, and the next heartbeat payload reports it.
+func TestHeartbeatRestorePendingRebootFeedsTheNextHeartbeat(t *testing.T) {
+	seams := tempRebootSeams(t)
+	seams.BootID = func() string { return "linux:same-boot" }
+	// Real timers here: never let one reach the OS.
+	seams.ExecOSReboot = func(time.Duration) error { t.Error("OS restart invoked"); return nil }
+	seams.AbortOSReboot = func() error { return nil }
+	first := patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, seams)
+	if err := first.Schedule(time.Hour, time.Now().Add(time.Hour), "Patch", "patch_job"); err != nil {
+		t.Fatal(err)
+	}
+	want := first.State().ScheduledAt
+	first.Stop()
+
+	h := &Heartbeat{rebootMgr: patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, seams)}
+	t.Cleanup(h.rebootMgr.Stop)
+	if h.rebootStatusForHeartbeat() != nil {
+		t.Fatal("setup: something scheduled before the restore")
+	}
+	if !h.RestorePendingReboot() {
+		t.Fatal("Heartbeat.RestorePendingReboot restored nothing")
+	}
+	report := h.rebootStatusForHeartbeat()
+	if report == nil || !report.ScheduledAt.Round(0).Equal(want.Round(0)) || report.Source != "patch_job" {
+		t.Fatalf("heartbeat rebootStatus after restore = %+v, want the restart at %v", report, want)
+	}
+	if (&Heartbeat{}).RestorePendingReboot() {
+		t.Fatal("a heartbeat with no reboot manager reported a restore")
+	}
+}

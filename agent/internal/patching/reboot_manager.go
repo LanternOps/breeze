@@ -1024,12 +1024,6 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	// machine then went down anyway at the original time. Only exec's own success
 	// promotes this to osInvoked, from which point the abort is real.
 	r.osInvoking = true
-	// The restart now belongs to the OS. Clear the record before the command
-	// runs, so neither an agent stopped inside the grace minute nor a failed
-	// invocation re-arms it on the next start (#12827). The boot id is the
-	// backstop if this write fails: after the restart the record is from an
-	// earlier boot and is discarded.
-	r.dropPendingLocked("handing a restart to the operating system")
 	// Opened here, under the same lock hold that passed the stopped/generation
 	// check, so there is no instant at which the reboot is committed but Stop
 	// cannot see that it must wait.
@@ -1044,6 +1038,16 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	if resumingFromHold && resumeNotifyFn != nil {
 		resumeNotifyFn(flashHoldResumeTitle, flashHoldResumeBody, "critical")
 	}
+
+	// The restart now belongs to the OS. Clear the record before the command
+	// runs, so neither an agent stopped inside the grace minute nor a failed
+	// invocation re-arms it on the next start (#12827). Outside the lock, like
+	// the history write below, so a slow disk cannot stall State() or Stop;
+	// osInvoking refuses every other schedule, postponement, cancel and
+	// restore meanwhile, so nothing else writes the record. If it fails, the
+	// boot id is the backstop: after the restart the record is from an
+	// earlier boot and is discarded.
+	r.dropPendingLocked("handing a restart to the operating system")
 
 	// Persist history before rebooting
 	r.saveRebootHistory()
