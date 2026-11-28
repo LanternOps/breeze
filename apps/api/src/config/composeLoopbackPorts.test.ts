@@ -24,7 +24,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * BREEZE_DEV_BIND_ADDR: docker-compose.override.yml.dev (the documented
  * quickstart, whose Postgres password comes from .env, where .env.example
  * ships a placeholder) and docker-compose.dev.yml (the legacy stack, with
- * fixed breeze/breeze Postgres and minioadmin MinIO credentials). Both are
+ * fixed breeze/breeze Postgres and rustfsadmin RustFS credentials). Both are
  * checked with no per-service exceptions, so adding a published port to either
  * file without a host address fails here.
  */
@@ -136,7 +136,7 @@ describe('the dev stacks publish on loopback (#9382)', () => {
   // this test fails, which is the point of extending it here.
   it.each([
     ['docker-compose.override.yml.dev', ['api', 'portal', 'postgres', 'redis', 'web']],
-    ['docker-compose.dev.yml', ['api', 'minio', 'postgres', 'redis', 'web']],
+    ['docker-compose.dev.yml', ['api', 'postgres', 'redis', 'rustfs', 'web']],
   ])('binds every published port in %s to 127.0.0.1', (composeFile, expectedServices: string[]) => {
     const mappings = renderedMappings(composeFile, {});
     // Pinned so a service that stops publishing — or starts — is noticed here
@@ -169,6 +169,6 @@ describe('the dev stacks publish on loopback (#9382)', () => {
     const legacy = renderedMappings('docker-compose.dev.yml', {});
     expect(legacy.postgres).toEqual(['127.0.0.1:5432:5432']);
     expect(legacy.redis).toEqual(['127.0.0.1:6379:6379']);
-    expect(legacy.minio).toEqual(['127.0.0.1:9000:9000', '127.0.0.1:9001:9001']);
+    expect(legacy.rustfs).toEqual(['127.0.0.1:9000:9000', '127.0.0.1:9001:9001']);
   });
 });

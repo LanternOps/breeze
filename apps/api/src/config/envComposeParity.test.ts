@@ -54,8 +54,6 @@ const ROOT_ALLOWLIST: Record<string, string> = {
   COMPOSE_PROJECT_NAME: 'Compose project name (host-level, not a container env)',
   POSTGRES_PORT: 'postgres service host port',
   WEB_PORT: 'web service host port',
-  MINIO_API_PORT: 'optional MinIO service host port',
-  MINIO_CONSOLE_PORT: 'optional MinIO console host port',
   GRAFANA_ADMIN_USER: 'consumed by docker-compose.monitoring.yml, not the core stack',
   GRAFANA_ADMIN_PASSWORD: 'consumed by docker-compose.monitoring.yml, not the core stack',
   BREEZE_API_HOST_PORT: 'guided-setup external-proxy bookkeeping (host bind port)',
