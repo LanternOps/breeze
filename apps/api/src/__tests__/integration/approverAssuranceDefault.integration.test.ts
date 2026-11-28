@@ -113,7 +113,7 @@ async function seedHighRiskSupervisedIntent(s: Scenario): Promise<{ intentId: st
   return { intentId: snapshot.id, approvalRowId };
 }
 
-async function approveWithEmptyBody(s: Scenario, approvalRowId: string): Promise<Response> {
+async function approveWithEmptyBody(s: Scenario, approvalRowId: string, mfa = true): Promise<Response> {
   const payload: Omit<TokenPayload, 'type'> = {
     sub: s.requester.id,
     email: s.requester.email,
@@ -121,7 +121,7 @@ async function approveWithEmptyBody(s: Scenario, approvalRowId: string): Promise
     orgId: s.orgId,
     partnerId: s.partnerId,
     scope: 'organization',
-    mfa: false,
+    mfa,
     aep: 1,
     mep: 1,
     sid: randomUUID(),
@@ -213,6 +213,20 @@ describe('approver assurance platform default — POST /approvals/:id/approve wi
     const { row, intent } = await readDecision(approvalRowId, intentId);
     expect(row).toMatchObject({ status: 'approved', decidedAssuranceLevel: 1, decidedVia: 'session_tap' });
     expect(intent?.status).toBe('approved');
+  });
+
+  runDb('explicit "not required" policy: an L1 approve from a session that has not passed MFA is refused, nothing written', async () => {
+    process.env.APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM = PAST;
+    await setPolicy(s.partnerId, false);
+    const { intentId, approvalRowId } = await seedHighRiskSupervisedIntent(s);
+
+    const res = await approveWithEmptyBody(s, approvalRowId, false);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
+
+    const { row, intent } = await readDecision(approvalRowId, intentId);
+    expect(row?.status).toBe('pending');
+    expect(intent?.status).toBe('pending_approval');
   });
 
   runDb('explicit "not required" policy, after the platform date: still accepted at L1', async () => {

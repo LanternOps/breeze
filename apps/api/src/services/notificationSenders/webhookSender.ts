@@ -1,3 +1,4 @@
+import { logLine } from '../logLine';
 import type { AlertSubject } from '@breeze/shared';
 /**
  * Webhook Notification Sender
@@ -402,7 +403,7 @@ export async function sendWebhookNotification(
     clearTimeout(timeoutId);
   }
 
-  console.error(`[WebhookSender] Failed to send to ${redactUrlForLogs(config.url)}: ${lastErrorDetail ?? lastError}`);
+  console.error(`[WebhookSender] Failed to send to ${redactUrlForLogs(config.url)}: ${logLine(lastErrorDetail ?? lastError)}`);
 
   return {
     success: false,

@@ -58,7 +58,7 @@ function partnerSession(user: Person, partnerId: string, sessionOrgId: string, r
 
 async function approve(approver: Person, orgId: string, partnerId: string, approvalRowId: string) {
   const token = await createAccessToken({
-    sub: approver.id, email: approver.email, roleId: approver.roleId, orgId, partnerId, scope: 'organization', mfa: false, aep: 1, mep: 1, sid: randomUUID(),
+    sub: approver.id, email: approver.email, roleId: approver.roleId, orgId, partnerId, scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   });
   const app = new Hono();
   app.route('/approvals', approvalRoutes);

@@ -26,6 +26,8 @@ import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 
+const ASSET_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const DISCOVERY_TABS = ['assets', 'profiles', 'jobs', 'topology', 'changes', 'baselines'] as const;
 type DiscoveryTab = (typeof DISCOVERY_TABS)[number];
 
@@ -353,8 +355,10 @@ export default function DiscoveryPage() {
   // discovered asset in the detail modal, reusing the topology-node viewer.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Only a UUID is accepted: the value is interpolated into an API path, so a
+    // crafted link must not be able to aim the fetch at another endpoint.
     const assetId = new URLSearchParams(window.location.search).get('asset');
-    if (assetId) setTopologyAssetId(assetId);
+    if (assetId && ASSET_ID_PATTERN.test(assetId)) setTopologyAssetId(assetId);
   }, []);
 
   // Fetch asset detail when a topology node is clicked (or via the `?asset=`
@@ -367,7 +371,7 @@ export default function DiscoveryPage() {
     }
     let cancelled = false;
     setTopologyAssetLoading(true);
-    fetchWithAuth(`/discovery/assets/${topologyAssetId}`)
+    fetchWithAuth(`/discovery/assets/${encodeURIComponent(topologyAssetId)}`)
       .then(async res => {
         if (cancelled) return;
         if (!res.ok) {

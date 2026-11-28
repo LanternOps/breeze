@@ -1,3 +1,4 @@
+import { logError } from '../logLine';
 import type { DnsEvent, DnsProvider } from './index';
 import { DnsProviderHttpError, requestJson } from './http';
 import { asArray, asNumber, asRecord, asString } from './helpers';
@@ -247,7 +248,7 @@ export class PiHoleV6Provider implements DnsProvider {
     try {
       await this.callWithSid('/api/auth', sid, { method: 'DELETE' });
     } catch (error) {
-      console.warn('[PiHoleV6] failed to release session:', error instanceof Error ? error.message : error);
+      console.warn('[PiHoleV6] failed to release session:', logError(error instanceof Error ? error.message : error));
     }
   }
 }

@@ -27,6 +27,7 @@
  *   covers all `aiTools*.ts` handlers without per-file changes.
  */
 
+import { logLine } from './logLine';
 import { redactLogMessage } from './logRedaction';
 
 export const GENERIC_TOOL_ERROR_MESSAGE =
@@ -152,7 +153,7 @@ function logScrubbedReturnedError(
 ): void {
   console.error(
     `[aiTools] ${ctx?.toolName ?? 'unknown tool'} returned an error that was ${action} before reaching the chat; full original:`,
-    redactLogMessage(text.length > MAX_LOGGED_ERROR_CHARS ? `${text.slice(0, MAX_LOGGED_ERROR_CHARS)}… [log-truncated, ${text.length} chars total]` : text),
+    logLine(redactLogMessage(text.length > MAX_LOGGED_ERROR_CHARS ? `${text.slice(0, MAX_LOGGED_ERROR_CHARS)}… [log-truncated, ${text.length} chars total]` : text)),
   );
 }
 

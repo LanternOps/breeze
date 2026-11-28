@@ -1,3 +1,4 @@
+import { logLine } from '../../logLine';
 import { recordLlmEgressEvent } from '../../llm/llmEgressRecorder';
 import { ResponseHeadersTimeoutError, ResponseTooLargeError, safeFetch, SsrfBlockedError } from '../../urlSafety';
 import { byoEgressAllowances } from './byoEndpointPolicy';
@@ -182,7 +183,7 @@ export async function forwardUpstream(
     } catch (error) {
       // Fail closed: an unverifiable grant does not dial.
       console.warn(`[modelGateway] connection check failed (${logIds(grant)}):`,
-        scrubSecrets(describeError(error), [grant.credential.secret]));
+        logLine(scrubSecrets(describeError(error), [grant.credential.secret])));
       current = false;
     }
     if (current !== true) {
@@ -256,7 +257,7 @@ export async function forwardUpstream(
     }
     if (signal.aborted) throw new GatewayError(499, 'api_error', 'client_aborted', 'Request aborted.');
     console.warn(`[modelGateway] upstream unreachable (${logIds(grant)}):`,
-      scrubSecrets(describeError(error), [grant.credential.secret]));
+      logLine(scrubSecrets(describeError(error), [grant.credential.secret])));
     throw new GatewayError(502, 'api_error', 'upstream_unreachable', 'The endpoint could not be reached.');
   }
   auditGatewayEgress(grant, target.hostname, resolvedIp, false);

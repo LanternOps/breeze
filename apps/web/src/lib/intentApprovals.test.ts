@@ -178,6 +178,24 @@ describe('decideIntentApproval — supervised scope skips the ceremony (#5600)',
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
+  it('supervised + 403 MFA_REQUIRED: retries EXACTLY once with the ceremony (an L3 proof satisfies it)', async () => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'MFA required', code: 'MFA_REQUIRED' }), { status: 403 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised');
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    const [, retryInit] = fetchWithAuth.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(retryInit.body as string)).toEqual({ proof: PROOF });
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
   it('supervised + 403 step_up_required + no approver device: needs_device, no second POST', async () => {
     runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
     const err = new Error('No registered approver device');

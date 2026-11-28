@@ -2434,6 +2434,88 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     );
   });
 
+  describe('session MFA for high-tier intent approvals under the floor', () => {
+    const graceL1 = {
+      requiredLevel: 3,
+      decidedAssuranceLevel: 1,
+      decidedVia: 'session_tap',
+      authenticatorDeviceId: null,
+      graceDowngrade: true,
+    } as const;
+
+    it.each(['high', 'critical'])('refuses a %s-tier approve below L3 from a session that has not passed MFA', async (riskTier) => {
+      mockDecideWithIntent({ requestedByUserId: 'requester-1', riskTier });
+      const { intentCasSet, tx } = mockIntentFanInTx();
+      vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({ ...graceL1 });
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+      try {
+        const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
+        expect(intentCasSet).not.toHaveBeenCalled();
+        expect(tx.insert).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+      }
+    });
+
+    it('allows the same under-floor approve when the session passed MFA', async () => {
+      mockDecideWithIntent({ requestedByUserId: 'requester-1', riskTier: 'high' });
+      mockIntentFanInTx();
+      vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({ ...graceL1 });
+
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(200);
+    });
+
+    it('allows a high-tier approve that reached L3 even without session MFA', async () => {
+      mockDecideWithIntent({ requestedByUserId: 'requester-1', riskTier: 'high' });
+      mockIntentFanInTx();
+      vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+        requiredLevel: 3,
+        decidedAssuranceLevel: 3,
+        decidedVia: 'webauthn_platform',
+        authenticatorDeviceId: 'authdev-1',
+      } as any);
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+      try {
+        const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+        expect(res.status).toBe(200);
+      } finally {
+        vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+      }
+    });
+
+    it('leaves a medium-tier approve without session MFA unchanged', async () => {
+      mockDecideWithIntent({ requestedByUserId: 'requester-1', riskTier: 'medium' });
+      mockIntentFanInTx();
+      vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({ ...graceL1, requiredLevel: 2 });
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+      try {
+        const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+        expect(res.status).toBe(200);
+      } finally {
+        vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+      }
+    });
+
+    it('never blocks a deny', async () => {
+      mockDecideWithIntent({ requestedByUserId: 'requester-1', riskTier: 'high' });
+      mockIntentFanInTx();
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+      try {
+        const res = await buildApp().request('/approvals/appr-1/deny', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'no' }),
+        });
+        expect(res.status).toBe(200);
+      } finally {
+        vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+      }
+    });
+  });
+
   it('leaves the grace marker off a four-eyes approve whose assurance met the floor', async () => {
     mockDecideWithIntent({ requestedByUserId: 'requester-1' });
     mockIntentFanInTx();
@@ -3064,6 +3146,20 @@ describe('Task 6: supervised intent plain-decide branch', () => {
     // Gated to approve-only — a deny never spends a partner-policy read.
     expect(loadPartnerPolicy).not.toHaveBeenCalled();
     expect(assertApprovalAssurance).not.toHaveBeenCalled();
+  });
+
+  it('refuses a plain-click supervised high-tier approve from a session that has not passed MFA', async () => {
+    mockDecideWithSupervisedIntent({ riskTier: 'high' });
+    const { approvalCasSet } = mockSupervisedFanInTx();
+    vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+    try {
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(expect.objectContaining({ code: 'MFA_REQUIRED' }));
+      expect(approvalCasSet).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+    }
   });
 
   it('marks a plain-click supervised approve below the risk floor as a grace downgrade, recording the same L1/session_tap', async () => {

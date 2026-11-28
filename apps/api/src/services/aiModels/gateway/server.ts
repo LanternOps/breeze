@@ -10,6 +10,7 @@
  * forward.ts. An unknown, expired or revoked token gets one fixed 401 body —
  * no oracle for whether a token ever existed — and no upstream call.
  */
+import { logLine } from '../../logLine';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { captureException } from '../../sentry';
 import { scrubSecrets } from './scrub';
@@ -257,7 +258,7 @@ export async function startModelGateway(
             if (!UPSTREAM_CODES_LOGGED_AT_SOURCE.has(error.code)) {
               console.warn(`[modelGateway] upstream failure ${error.code} (grant ${grant.id}, connection ${grant.config.connectionId}, `
                 + `model ${model === null ? 'unknown' : JSON.stringify(model)}, path ${path}, status ${error.status}): `
-                + scrubSecrets(error.message, [grant.credential.secret]));
+                + logLine(scrubSecrets(error.message, [grant.credential.secret])));
             }
           }
           if (error.status === 413) res.setHeader('connection', 'close');

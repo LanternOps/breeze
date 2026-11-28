@@ -83,7 +83,10 @@ const ROWS: Row[] = [
  * Tier 3 actions whose route twin requires MFA, deliberately NOT enrolled.
  *
  * One rule: an action that needs approval keeps relying on the approval gate.
- * In web chat both the chat route and the approve route require MFA; over MCP
+ * In web chat the chat approve route requires MFA. An intent-backed Tier 3
+ * action is decided in the Approvals area instead, where decideApprovalRequest
+ * refuses a high/critical-tier approve below L3 from a session that has not
+ * passed MFA (an L3 approver-device assertion is the stronger factor); over MCP
  * the call is refused with MCP_APPROVAL_REQUIRED (or filed as an approval
  * intent). Enrolling a Tier 3 action would remove that MCP approval path and
  * drop a wholly gated tool from MCP's tools/list, which is a product change

@@ -1,3 +1,4 @@
+import { logError } from '../../services/logLine';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -326,7 +327,7 @@ const ecImportSchema = z.object({
 function handleEcError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TdSynnexEcExpressError) return c.json({ error: err.message, code: err.code }, err.status);
   if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
-  console.error('[td-synnex-ec] unexpected error', err);
+  console.error('[td-synnex-ec] unexpected error', logError(err));
   throw err;
 }
 
@@ -455,7 +456,7 @@ const pax8ImportSchema = z.object({
 function handlePax8Error(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof Pax8CatalogError) return c.json({ error: err.message, code: err.code }, err.status);
   if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
-  console.error('[pax8-catalog] unexpected error', err);
+  console.error('[pax8-catalog] unexpected error', logError(err));
   throw err;
 }
 
