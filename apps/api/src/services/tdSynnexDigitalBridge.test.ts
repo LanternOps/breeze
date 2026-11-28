@@ -2,6 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   class SsrfBlockedError extends Error {}
+  class ResponseTooLargeError extends Error {
+    constructor(public readonly maxBytes: number) {
+      super(`response body exceeded maxBytes (${maxBytes})`);
+      this.name = 'ResponseTooLargeError';
+    }
+  }
   return {
     db: {
       select: vi.fn(),
@@ -13,6 +19,7 @@ const mocks = vi.hoisted(() => {
     createCatalogItem: vi.fn(),
     safeFetch: vi.fn(),
     SsrfBlockedError,
+    ResponseTooLargeError,
     enrichDistributorListing: vi.fn(),
     // #2190 — pass-through wrapper; kept as a vi.fn (not an inline arrow) so
     // tests can assert call ORDER relative to enrichDistributorListing.
@@ -32,6 +39,7 @@ vi.mock('./catalogEnrichmentService', () => ({ enrichDistributorListing: mocks.e
 vi.mock('./urlSafety', () => ({
   safeFetch: mocks.safeFetch,
   SsrfBlockedError: mocks.SsrfBlockedError,
+  ResponseTooLargeError: mocks.ResponseTooLargeError,
 }));
 
 import {
@@ -43,6 +51,7 @@ import {
   normalizeTdSynnexBaseUrl,
   normalizeTdSynnexEndpointPath,
   TD_SYNNEX_MASKED_SECRET,
+  TD_SYNNEX_DIGITAL_BRIDGE_MAX_RESPONSE_BYTES,
   TdSynnexDigitalBridgeError,
 } from './tdSynnexDigitalBridge';
 
@@ -466,6 +475,20 @@ describe('tdSynnexDigitalBridge service', () => {
       mocks.safeFetch.mockRejectedValueOnce(abort);
       await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
         .rejects.toMatchObject({ code: 'TD_SYNNEX_PROVIDER_ERROR' });
+    });
+
+    it('caps the reply size it reads from the partner-configured base URL', async () => {
+      mocks.safeFetch.mockResolvedValueOnce(fakeResponse(200, JSON.stringify({ products: [] })));
+      await searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor);
+      expect(TD_SYNNEX_DIGITAL_BRIDGE_MAX_RESPONSE_BYTES).toBe(16 * 1024 * 1024);
+      const init = mocks.safeFetch.mock.calls[0]![1] as { maxBytes?: number };
+      expect(init.maxBytes).toBe(16 * 1024 * 1024);
+    });
+
+    it('maps an oversize reply to a too-large TD_SYNNEX_PROVIDER_ERROR', async () => {
+      mocks.safeFetch.mockRejectedValueOnce(new mocks.ResponseTooLargeError(16 * 1024 * 1024));
+      await expect(searchTdSynnexProducts({ q: 'dock', limit: 20 }, actor))
+        .rejects.toMatchObject({ code: 'TD_SYNNEX_PROVIDER_ERROR', message: 'TD SYNNEX response was too large' });
     });
 
     it('maps an SSRF block to TD_SYNNEX_ENDPOINT_NOT_CONFIGURED', async () => {

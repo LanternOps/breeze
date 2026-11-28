@@ -155,6 +155,85 @@ describe('webhook delivery worker', () => {
     expect(init.requirePrivateForCleartext).toBe(true);
     expect(init).toHaveProperty('allowPrivateNetwork');
   });
+
+  // #12788: the receiver is tenant-chosen. Its abort timer bounds time, not
+  // bytes: a fast peer can send gigabytes inside 30 s. The worker reads only
+  // the start of the reply and drops the rest; the status still decides.
+  describe('reply size', () => {
+    const CAP = 64 * 1024;
+
+    /** A 4 MiB reply in 16 KiB pieces that records how far it was read. */
+    function largeReply(prefix: string) {
+      const piece = new TextEncoder().encode('x'.repeat(16 * 1024));
+      const state = { pulls: 0, cancelled: false };
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode(prefix)); },
+        pull(controller) {
+          state.pulls++;
+          if (state.pulls > 256) controller.close();
+          else controller.enqueue(piece);
+        },
+        cancel() { state.cancelled = true; }
+      });
+      return { body, state };
+    }
+
+    it('asks safeFetch for a live body', async () => {
+      safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
+      await deliverWebhook(makeJob());
+      expect(safeFetchMock.mock.calls[0]?.[1]).toMatchObject({ streamResponse: true });
+    });
+
+    it('a 2xx with a large reply is delivered, read only to the cap', async () => {
+      const { body, state } = largeReply('accepted ');
+      safeFetchMock.mockResolvedValueOnce(new Response(body, { status: 200 }));
+
+      const result = await deliverWebhook(makeJob());
+
+      expect(result.success).toBe(true);
+      expect(result.responseStatus).toBe(200);
+      expect(result.responseBody?.startsWith('accepted ')).toBe(true);
+      expect(state.cancelled).toBe(true);
+      expect(state.pulls * 16 * 1024).toBeLessThan(2 * CAP);
+    });
+
+    it('a 5xx with a large reply keeps its status and its summary', async () => {
+      const { body, state } = largeReply('Upstream is overloaded. ');
+      safeFetchMock.mockResolvedValueOnce(new Response(body, { status: 503 }));
+
+      const result = await deliverWebhook(makeJob());
+
+      expect(result.success).toBe(false);
+      expect(result.responseStatus).toBe(503);
+      expect(result.errorMessage).toMatch(/^HTTP 503: Upstream is overloaded\./);
+      expect(state.cancelled).toBe(true);
+    });
+
+    it('the abort timer still ends a reply that stops part-way', async () => {
+      vi.useFakeTimers();
+      try {
+        safeFetchMock.mockImplementationOnce(async (_url: string, init: { signal: AbortSignal }) => {
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('partial'));
+              init.signal.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true });
+            }
+          });
+          return new Response(body, { status: 200 });
+        });
+
+        const pending = deliverWebhook(makeJob());
+        await vi.advanceTimersByTimeAsync(30_000);
+        const result = await pending;
+
+        expect(result.success).toBe(false);
+        expect(result.errorMessage).toBe('aborted');
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
 
 describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling gate contract §7E)', () => {

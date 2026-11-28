@@ -85,7 +85,8 @@ export class ResponseTooLargeError extends Error {
 /**
  * The whole exchange — resolution, connect, headers and body — outlasted the
  * caller's `deadlineMs`. `timeoutMs` measures inactivity; `deadlineMs` bounds
- * total duration.
+ * total duration. A call without `deadlineMs` is still bounded overall, by the
+ * default, which expires as a plain `request timed out after Nms` error instead.
  */
 export class ResponseDeadlineError extends Error {
   constructor(public readonly deadlineMs: number) {
@@ -94,9 +95,12 @@ export class ResponseDeadlineError extends Error {
   }
 }
 
-/** The error an aborted request settles with: the deadline's own, or the caller's plain abort. */
+/** The error an aborted request settles with: the overall bound's own, or the caller's plain abort. */
 function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof ResponseDeadlineError ? signal.reason : new Error('aborted');
+  const reason: unknown = signal.reason;
+  if (reason instanceof ResponseDeadlineError) return reason;
+  if (reason instanceof Error && defaultBoundErrors.has(reason)) return reason;
+  return new Error('aborted');
 }
 
 /**
@@ -135,7 +139,8 @@ const MAX_CONNECT_ATTEMPTS = 3;
 /**
  * How long one address gets to establish a connection (TCP connect, plus the
  * TLS handshake for https) before the next validated address is tried. Never
- * applied to the last address, which is governed by `timeoutMs` as before.
+ * applied to the last address: that one is bounded by `timeoutMs` (the connect
+ * timer in `dialPinned`, then the inactivity timer) and by the overall bound.
  */
 const DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
 let connectAttemptTimeoutMs = DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
@@ -143,6 +148,156 @@ let connectAttemptTimeoutMs = DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
 /** Test hook — override the per-address connect timeout. Pass `null` to restore default. */
 export function __setConnectAttemptTimeoutForTests(ms: number | null): void {
   connectAttemptTimeoutMs = ms ?? DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
+}
+
+/**
+ * The default overall bound (#12788), for a call that passes no valid
+ * `deadlineMs`. It is a backstop so that nothing runs unbounded, not a timeout:
+ * a request that makes steady progress at a slow but working rate never
+ * reaches it. Stalls are the phase timers' job (`timeoutMs` covers DNS, the TCP
+ * connect, the TLS handshake, the wait for headers and a body that goes quiet;
+ * `headersTimeoutMs` the whole wait for headers), and they still fire at the
+ * caller's value. The bound has two parts:
+ *
+ * - **Until the response headers arrive** (DNS, connect, TLS, sending the
+ *   request, the wait for the status line): max(30 s, `headersTimeoutMs`,
+ *   2 × `timeoutMs`), plus the time to send the request body at
+ *   `MIN_TRANSFER_BYTES_PER_SECOND`. 30 s covers a call with no timeouts at
+ *   all. Twice `timeoutMs` because two waits can each legitimately take just
+ *   under it: establishing the connection, then the server's answer.
+ * - **Then the body**, timed from the headers: max(60 s, 2 × `timeoutMs`) for
+ *   pauses, plus the time to receive its expected size at that rate. The
+ *   expected size is the smaller of `Content-Length` and `maxBytes`. The peer
+ *   declares `Content-Length`, so it can only buy what the caller allows: with
+ *   `maxBytes` the bound is at most 60 min; without it, at most 10 min, which
+ *   is also the bound when neither size is known.
+ *
+ * A caller that needs a different total sets `deadlineMs`, which replaces both
+ * parts with one bound from the start of the call.
+ */
+const DEFAULT_REQUEST_DEADLINE_MS = 30_000;
+let defaultRequestDeadlineMs = DEFAULT_REQUEST_DEADLINE_MS;
+
+/** Test hook — override the 30 s floor of the default response bound. Pass `null` to restore default. */
+export function __setDefaultDeadlineForTests(ms: number | null): void {
+  defaultRequestDeadlineMs = ms ?? DEFAULT_REQUEST_DEADLINE_MS;
+}
+
+/**
+ * The slowest transfer the default bound allows for: 64 KiB/s, about
+ * 0.5 Mbit/s. That is half of a 1 Mbit/s link, so a slow link that works
+ * today has twice the time it needs.
+ */
+export const MIN_TRANSFER_BYTES_PER_SECOND = 64 * 1024;
+/** The body's allowance for pauses, at least: two inactivity windows when `timeoutMs` is longer. */
+const DEFAULT_BODY_PAUSE_MS = 60_000;
+/** Most the body may have when the caller caps it with `maxBytes`. */
+const DEFAULT_BODY_CAPPED_CEILING_MS = 60 * 60_000;
+/** Most the body may have without `maxBytes`, whatever the peer declares. */
+const DEFAULT_BODY_UNCAPPED_CEILING_MS = 10 * 60_000;
+
+/**
+ * Time to move `bytes` at `MIN_TRANSFER_BYTES_PER_SECOND`, in whole ms. For a
+ * caller that sizes its own `deadlineMs` from a size it knows.
+ */
+export function transferAllowanceMs(bytes: number): number {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 0;
+  return Math.ceil((bytes * 1000) / MIN_TRANSFER_BYTES_PER_SECOND);
+}
+
+/** Node runs a timer longer than this after 1 ms, so every delay is clamped to it. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * A usable timer delay, or undefined for unset, zero, negative or non-finite
+ * values. Every timer this module arms takes its delay through here, so no
+ * value can overflow into Node's 1 ms fallback: `Infinity` means no timer for
+ * that phase, and a huge finite value is clamped.
+ */
+function positiveMs(ms: number | undefined): number | undefined {
+  return ms !== undefined && Number.isFinite(ms) && ms > 0 ? Math.min(ms, MAX_TIMER_MS) : undefined;
+}
+
+/**
+ * Errors raised when the DEFAULT overall bound expires. They are plain `Error`s
+ * with the message an inactivity timeout has always had, because callers match
+ * on that message to classify (and retry) timeouts; membership here is how this
+ * module recognises its own.
+ */
+const defaultBoundErrors = new WeakSet<Error>();
+
+function defaultBoundError(ms: number): Error {
+  const err = new Error(`request timed out after ${ms}ms`);
+  defaultBoundErrors.add(err);
+  return err;
+}
+
+/** The overall bound on one call: the caller's `deadlineMs`, or the default. */
+interface RequestBound {
+  /**
+   * For the caller's `deadlineMs`, the whole exchange. For the default, the
+   * time until the response headers arrive; the body then gets `bodyMs`.
+   */
+  ms: number;
+  /** True when it is the caller's own `deadlineMs`, which expires as `ResponseDeadlineError`. */
+  explicit: boolean;
+  /**
+   * The bound named in the expiry error, when it differs from `ms`: a redirect
+   * hop runs on what is left of the chain, but reports the chain's own bound.
+   */
+  reportMs?: number;
+  /**
+   * Default bound only: the body's allowance from the moment the headers
+   * arrive, given the response's `Content-Length` (undefined when absent).
+   */
+  bodyMs?: (contentLength: number | undefined) => number;
+}
+
+/** Bytes in a request body of a type `safeFetchRequest` serialises; 0 for anything else. */
+function requestBodyBytes(body: SafeFetchInit['body']): number {
+  if (body == null) return 0;
+  if (typeof body === 'string') return Buffer.byteLength(body);
+  if (body instanceof URLSearchParams) return Buffer.byteLength(body.toString());
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  return 0;
+}
+
+/**
+ * The default body allowance (see `DEFAULT_REQUEST_DEADLINE_MS`). The ceiling
+ * never undercuts the pause allowance, so it cannot cut short a body that
+ * pauses for less than the caller's own `timeoutMs`.
+ */
+function defaultBodyMs(
+  maxBytes: number | undefined,
+  timeoutMs: number
+): (contentLength: number | undefined) => number {
+  const cap = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes >= 0 ? maxBytes : undefined;
+  const pauses = Math.max(DEFAULT_BODY_PAUSE_MS, 2 * timeoutMs);
+  const ceiling = Math.max(cap === undefined ? DEFAULT_BODY_UNCAPPED_CEILING_MS : DEFAULT_BODY_CAPPED_CEILING_MS, pauses);
+  return (contentLength) => {
+    const known = [contentLength, cap].filter((n): n is number => n !== undefined);
+    if (known.length === 0) return ceiling;
+    return Math.min(pauses + transferAllowanceMs(Math.min(...known)), ceiling);
+  };
+}
+
+function requestBound(init: SafeFetchInit): RequestBound {
+  const explicit = positiveMs(init.deadlineMs);
+  if (explicit !== undefined) return { ms: explicit, explicit: true };
+  const timeoutMs = positiveMs(init.timeoutMs) ?? 0;
+  const responseBy = Math.max(defaultRequestDeadlineMs, positiveMs(init.headersTimeoutMs) ?? 0, 2 * timeoutMs)
+    + transferAllowanceMs(requestBodyBytes(init.body));
+  return {
+    ms: Math.min(responseBy, MAX_TIMER_MS),
+    explicit: false,
+    bodyMs: defaultBodyMs(init.maxBytes, timeoutMs)
+  };
+}
+
+function boundExpired(bound: RequestBound): Error {
+  const ms = bound.reportMs ?? bound.ms;
+  return bound.explicit ? new ResponseDeadlineError(ms) : defaultBoundError(ms);
 }
 
 export interface SsrfGuardOptions {
@@ -311,6 +466,14 @@ export function createGuardedHttpAgents(opts?: SsrfGuardOptions): {
 }
 
 export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
+  /**
+   * Socket-INACTIVITY timeout: the request fails when it makes no progress for
+   * this long. That includes a TCP connect that never completes, DNS
+   * resolution and a TLS handshake that stalls, as well as a peer that goes
+   * quiet. Data that keeps arriving resets it, so it does not bound the total
+   * duration; the overall bound does (see `deadlineMs`). Expires as
+   * `Error('request timed out after Nms')`.
+   */
   timeoutMs?: number;
   signal?: AbortSignal;
   /**
@@ -396,12 +559,14 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * Deadline, from the moment `safeFetch` is called, for the response HEADERS
    * to arrive — DNS resolution, connect, TLS and the wait for the status line.
    * Once headers arrive it no longer applies: a body that takes longer (a slow
-   * non-streamed generation, say) is bounded only by `timeoutMs` inactivity,
-   * `maxBytes` and the caller's `signal`. On expiry the request is destroyed
+   * non-streamed generation, say) is bounded by `timeoutMs` inactivity,
+   * `maxBytes`, the caller's `signal` and the overall bound (`deadlineMs`, or
+   * its default). On expiry the request is destroyed
    * and the call rejects with `ResponseHeadersTimeoutError`.
    *
-   * Distinct from `timeoutMs`, which is a socket-INACTIVITY timeout. Unset =
-   * no headers deadline (existing behaviour).
+   * Distinct from `timeoutMs`, which is a socket-INACTIVITY timeout. Unset (or
+   * not finite) = no separate headers deadline; the overall bound still
+   * applies. Values past Node's timer maximum are clamped to it.
    */
   headersTimeoutMs?: number;
   /**
@@ -409,7 +574,19 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * exchange: resolution, connect, headers and the body. `timeoutMs` measures
    * inactivity; `deadlineMs` bounds total duration. On expiry the request is
    * destroyed and the call (or, with `streamResponse`, the body) fails with
-   * `ResponseDeadlineError`. Unset = no total deadline (existing behaviour).
+   * `ResponseDeadlineError`.
+   *
+   * There is ALWAYS an overall bound (#12788). Unset (or zero, negative or not
+   * finite, none of which can switch it off) means the default, which is sized
+   * so that a slow but working request never reaches it: the response must
+   * arrive within max(30 s, `headersTimeoutMs`, 2 × `timeoutMs`) plus the time
+   * to send the request body at 64 KiB/s, and the body then gets max(60 s,
+   * 2 × `timeoutMs`) plus the time to receive its `Content-Length` (capped by
+   * `maxBytes`) at 64 KiB/s: at most 60 min with `maxBytes`, 10 min without.
+   * See `DEFAULT_REQUEST_DEADLINE_MS`. The default expires as a plain
+   * `Error('request timed out after Nms')`, the error a timeout has always
+   * produced. An explicit value is one total from the start of the call, so
+   * it can be longer or shorter than the default.
    */
   deadlineMs?: number;
 }
@@ -586,6 +763,14 @@ function streamedResponseBody(
  * by default, or streamed when `init.streamResponse` is set.
  */
 export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promise<Response> {
+  return safeFetchBounded(urlStr, init, requestBound(init));
+}
+
+/**
+ * `safeFetch` under an explicit overall `bound` (a redirect chain passes each
+ * hop what is left of its own). `init.deadlineMs` is not read here.
+ */
+async function safeFetchBounded(urlStr: string, init: SafeFetchInit, bound: RequestBound): Promise<Response> {
   // #1105 tripwire: an outbound HTTP request inside a held withDbAccessContext
   // transaction pins a pooled connection idle-in-transaction across the network
   // round-trip — the exact txn-around-slow-work pattern that poisoned the pool
@@ -603,31 +788,53 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   // connection just the same.
   assertOutsideHeldDbContext('safeFetch', { includeOuterTransaction: true });
 
-  const deadlineMs = init.deadlineMs !== undefined && init.deadlineMs > 0 ? init.deadlineMs : undefined;
-  if (deadlineMs === undefined) return safeFetchWithin(urlStr, init, init.signal, () => {});
+  // Every call is bounded overall (#12788). Aborting this signal releases a
+  // pending DNS lookup (`boundPreDial`), and destroys the request and its
+  // socket wherever it is: mid-connect, mid-handshake, waiting on headers or
+  // mid-body. One timer spans every address the request may try. Under the
+  // default bound it is re-armed once, when the headers arrive, with the
+  // body's allowance.
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(new ResponseDeadlineError(deadlineMs)), deadlineMs);
-  timer.unref?.();
+  const arm = (ms: number, expiry: RequestBound): NodeJS.Timeout => {
+    const t = setTimeout(() => deadline.abort(boundExpired(expiry)), ms);
+    t.unref?.();
+    return t;
+  };
+  let timer = arm(bound.ms, bound);
+  let released = false;
+  const release = (): void => {
+    released = true;
+    clearTimeout(timer);
+  };
+  const bodyMs = bound.bodyMs;
+  const onHeaders = (contentLength: number | undefined): void => {
+    if (bodyMs === undefined || released || deadline.signal.aborted) return;
+    clearTimeout(timer);
+    const ms = Math.min(bodyMs(contentLength), MAX_TIMER_MS);
+    timer = arm(ms, { ms, explicit: false });
+  };
   const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
-  return safeFetchWithin(urlStr, init, signal, () => clearTimeout(timer));
+  return safeFetchWithin(urlStr, init, signal, release, onHeaders);
 }
 
 /**
  * `safeFetch` after its deadline is armed. `signal` is the caller's signal
  * combined with the deadline; `release` clears the deadline once the request
- * is over (or never started).
+ * is over (or never started); `onHeaders` is told when the response headers
+ * arrive, with their `Content-Length`.
  */
 async function safeFetchWithin(
   urlStr: string,
   init: SafeFetchInit,
   signal: AbortSignal | undefined,
   release: () => void,
+  onHeaders: (contentLength: number | undefined) => void,
 ): Promise<Response> {
   let started = false;
   try {
     const response = await safeFetchRequest(urlStr, init, signal, () => {
       started = true;
-    }, release);
+    }, release, onHeaders);
     return response;
   } finally {
     if (!started) release();
@@ -640,6 +847,7 @@ async function safeFetchRequest(
   signal: AbortSignal | undefined,
   onRequestStarted: () => void,
   release: () => void,
+  onHeaders: (contentLength: number | undefined) => void,
 ): Promise<Response> {
   const u = new URL(urlStr);
 
@@ -649,8 +857,9 @@ async function safeFetchRequest(
 
   const hostname = bareHostname(u.hostname);
 
-  const headersTimeoutMs =
-    init.headersTimeoutMs !== undefined && init.headersTimeoutMs > 0 ? init.headersTimeoutMs : undefined;
+  // Phase timers, normalised once so none can overflow (see `positiveMs`).
+  const timeoutMs = positiveMs(init.timeoutMs);
+  const headersTimeoutMs = positiveMs(init.headersTimeoutMs);
   const startedAt = Date.now();
 
   // Resolve + filter through the SHARED policy helper, so `safeFetch`,
@@ -663,7 +872,7 @@ async function safeFetchRequest(
       allowPrivateNetwork: init.allowPrivateNetwork,
       allowCarrierNat: init.allowCarrierNat
     }),
-    { signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
+    { signal, timeoutMs, headersTimeoutMs }
   );
   const firstRecord = safe[0]!;
 
@@ -747,7 +956,7 @@ async function safeFetchRequest(
 
   const attempt: DialContext = {
     url: u, hostname, port, method, headers, bodyBuf, init, signal,
-    headersTimeoutMs, startedAt, onRequestStarted, release
+    timeoutMs, headersTimeoutMs, startedAt, onRequestStarted, release, onHeaders
   };
 
   // Try the candidates in order. Only an attempt that could not establish its
@@ -781,10 +990,14 @@ interface DialContext {
   bodyBuf: Buffer | undefined;
   init: SafeFetchInit;
   signal: AbortSignal | undefined;
+  /** `init.timeoutMs`, normalised (see `positiveMs`). */
+  timeoutMs: number | undefined;
   headersTimeoutMs: number | undefined;
   startedAt: number;
   onRequestStarted: () => void;
   release: () => void;
+  /** Told when the response headers arrive, with their `Content-Length`. */
+  onHeaders: (contentLength: number | undefined) => void;
 }
 
 /**
@@ -811,11 +1024,10 @@ class ConnectAttemptFailed extends Error {
 function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): Promise<Response> {
   const {
     url: u, hostname, port, method, headers, bodyBuf, init, signal,
-    headersTimeoutMs, startedAt, onRequestStarted, release
+    timeoutMs, headersTimeoutMs, startedAt, onRequestStarted, release, onHeaders
   } = ctx;
   const isHttps = u.protocol === 'https:';
   const requester = isHttps ? https.request : http.request;
-  const timeoutMs = init.timeoutMs;
 
   // Build a `lookup` that always hands back the validated record, so a DNS
   // rebind between now and the TCP connect cannot redirect us.
@@ -826,8 +1038,8 @@ function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): P
       | undefined;
 
     // Unreachable via Node's connect path (it always supplies a callback), but
-    // if it ever happened, silently returning would hang the request forever
-    // when no timeoutMs is set — throw so it surfaces as a connection error.
+    // if it ever happened, silently returning would leave the request stalled
+    // until the overall bound — throw so it surfaces as a connection error.
     if (!callback) throw new Error('pinnedLookup invoked without a callback');
 
     if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
@@ -916,6 +1128,9 @@ function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): P
       responded = true;
       clearHeadersTimer();
       markEstablished();
+      // The overall bound moves on to the body (the default bound only).
+      const declared = res.headers['content-length'];
+      onHeaders(declared !== undefined && /^\d+$/.test(declared) ? Number(declared) : undefined);
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const status = res.statusCode ?? 0;
@@ -1007,9 +1222,30 @@ function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): P
       if (!responded) reject(new Error('connection closed before a response was received'));
     });
 
+    // `req.setTimeout` (below) is armed on the socket only when its TCP connect
+    // completes, so on its own it leaves a connect that never completes (a host
+    // that drops packets) to the kernel's SYN retries (#12788). This covers that
+    // window on the last address when `timeoutMs` is set (without it, only the
+    // overall bound does); earlier addresses have `attemptTimer`. From the
+    // connect on, the inactivity timer covers the TLS handshake too.
+    let connectTimer: NodeJS.Timeout | undefined;
+    const clearConnectTimer = (): void => {
+      if (connectTimer !== undefined) clearTimeout(connectTimer);
+      connectTimer = undefined;
+    };
+    const connectTimeoutMs = isLast ? timeoutMs : undefined;
+    if (connectTimeoutMs !== undefined) {
+      connectTimer = setTimeout(() => {
+        connectTimer = undefined;
+        req.destroy(new Error(`request timed out after ${connectTimeoutMs}ms`));
+      }, connectTimeoutMs);
+      req.once('close', clearConnectTimer);
+    }
+
     req.on('socket', (socket: Socket) => {
       const onTcpConnect = (): void => {
         tcpConnected = true;
+        clearConnectTimer();
         if (!isHttps) markEstablished();
       };
       if (socket.connecting) socket.once('connect', onTcpConnect);
@@ -1170,8 +1406,10 @@ export async function safeFetchFollowingRedirects(
 ): Promise<Response> {
   let currentUrl = urlStr;
   let currentInit: SafeFetchInit = init;
-  // One deadline for the whole chain, not a fresh one per hop.
-  const endsAt = init.deadlineMs !== undefined && init.deadlineMs > 0 ? Date.now() + init.deadlineMs : undefined;
+  // One overall bound for the whole chain (the caller's `deadlineMs`, or the
+  // default), not a fresh one per hop.
+  const chain = requestBound(init);
+  const endsAt = Date.now() + chain.ms;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
     if (options.allowHost) {
@@ -1180,20 +1418,16 @@ export async function safeFetchFollowingRedirects(
         throw new HostNotAllowedError(target.hostname);
       }
     }
-    if (endsAt !== undefined) {
-      const remaining = endsAt - Date.now();
-      if (remaining <= 0) throw new ResponseDeadlineError(init.deadlineMs!);
-      currentInit = { ...currentInit, deadlineMs: remaining };
-    }
-    let response: Response;
-    try {
-      response = await safeFetch(currentUrl, currentInit);
-    } catch (err) {
-      // A hop runs on what is left of the chain's deadline; report the
-      // caller's own deadline, not the remainder.
-      if (err instanceof ResponseDeadlineError && init.deadlineMs !== undefined) throw new ResponseDeadlineError(init.deadlineMs);
-      throw err;
-    }
+    const remaining = endsAt - Date.now();
+    if (remaining <= 0) throw boundExpired(chain);
+    // A hop runs on what is left of the chain's bound but reports the chain's
+    // own: for an explicit `deadlineMs` also when it expires later, while the
+    // caller reads the last body. Under the default, the chain's response
+    // bound covers every hop's headers, and each hop's body then gets its own
+    // allowance from its headers.
+    const response = await safeFetchBounded(currentUrl, currentInit, {
+      ms: remaining, explicit: chain.explicit, reportMs: chain.ms, bodyMs: chain.bodyMs
+    });
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get('location');

@@ -132,7 +132,14 @@ export type EdrTestResult =
 
 export type GuardedFetch = (
   url: string,
-  init: { method: 'GET' | 'POST' | 'PATCH'; headers: Record<string, string>; body?: string; timeoutMs?: number },
+  init: {
+    method: 'GET' | 'POST' | 'PATCH';
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+    /** Overall bound on the whole exchange (safeFetch `deadlineMs`); unset = safeFetch's default. */
+    deadlineMs?: number;
+  },
 ) => Promise<{ status: number; headers: Headers; text(): Promise<string> }>;
 
 export interface EdrRateLimiter { acquire(operationClass?: string): Promise<void> }

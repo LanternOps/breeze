@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // stack at module load; none of it is exercised by resolveBackupBinary.
 // `safeFetch` (now on the download path) calls `assertOutsideHeldDbContext`,
 // so the `../db` mock has to expose it or the import fails at call time.
+const redirectInits = vi.hoisted(() => [] as unknown[]);
 vi.mock('../db', () => ({ db: {}, assertOutsideHeldDbContext: vi.fn() }));
 vi.mock('./recoveryBootstrap', () => ({
   asRecord: (v: unknown) => (v && typeof v === 'object' ? v : {}),
@@ -24,7 +25,10 @@ vi.mock('./recoveryBootstrap', () => ({
 // `recoveryMediaService.redirect.test.ts` + `urlSafety.test.ts`.
 vi.mock('./urlSafety', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./urlSafety')>()),
-  safeFetchFollowingRedirects: (url: string) => globalThis.fetch(url),
+  safeFetchFollowingRedirects: (url: string, init?: unknown) => {
+    redirectInits.push(init);
+    return globalThis.fetch(url);
+  },
 }));
 vi.mock('./recoverySigning', () => ({
   getRecoverySigningKey: () => null,
@@ -107,6 +111,26 @@ describe('resolveBackupBinary (github mode, spec 3d)', () => {
       sha256: createHash('sha256').update(bytes).digest('hex'),
       manifestVersion: 'v1.2.3',
     });
+  });
+
+  it('leaves the binary download to the size-scaled default bound, not a fixed total (#12788)', async () => {
+    // The binary's size is only known from the response (the manifest is read
+    // after the download), so the download sets no fixed `deadlineMs`: the
+    // default bound gives the body time for its Content-Length at 64 KiB/s
+    // (urlSafety.overallDeadline.test.ts), where a fixed 10 min would cut off a
+    // large binary on a slow link. A declared size counts only up to
+    // `maxBytes`, so the download must pass one.
+    const bytes = Buffer.from('backup binary bytes');
+    const signed = makeSignedBackupManifest('breeze-backup-linux-amd64', bytes);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    stubFetch('breeze-backup-linux-amd64', bytes, signed);
+    redirectInits.length = 0;
+
+    await resolveBackupBinary('linux', 'amd64', workingDir);
+    // The first call is the binary download; the manifest pair follows it.
+    const init = redirectInits[0] as { deadlineMs?: number; maxBytes?: number } | undefined;
+    expect(init?.deadlineMs).toBeUndefined();
+    expect(init?.maxBytes).toBe(512 * 1024 * 1024);
   });
 
   it('fails closed when the downloaded bytes do not match the manifest hash', async () => {

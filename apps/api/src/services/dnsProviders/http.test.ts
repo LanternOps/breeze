@@ -302,4 +302,22 @@ describe('requestJson — SSRF safety via safeFetch', () => {
       expect(httpError.responseBody).toBe('not json UPSTREAM_BODY_MARKER');
     });
   });
+
+  describe('maxBytes', () => {
+    it('rejects a reply past an explicit cap with ResponseTooLargeError and does not retry it', async () => {
+      const requestSpy = mockHttpsOnce({ statusCode: 200, statusMessage: 'OK', body: 'x'.repeat(2048) });
+      const error = await requestJson('https://10.0.0.5/x', {
+        allowPrivateNetwork: true,
+        maxRetries: 3,
+        maxBytes: 1024
+      }).then(
+        () => {
+          throw new Error('expected requestJson to reject');
+        },
+        (e: unknown) => e
+      );
+      expect((error as Error).name).toBe('ResponseTooLargeError');
+      expect(requestSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 });

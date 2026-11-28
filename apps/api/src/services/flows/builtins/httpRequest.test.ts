@@ -239,6 +239,14 @@ describe('executeHttpRequestStep — caps and deadlines', () => {
     expect(calledInit().timeoutMs).toBeLessThanOrEqual(30_000);
   });
 
+  it('passes the step budget as safeFetch overall deadline (#12788)', async () => {
+    fetchMock().mockResolvedValueOnce(json({}));
+    await executeHttpRequestStep(get(), ctx({ step: { id: 'call', tool: 'http_request', input: {}, timeoutSec: 600 } as never }));
+    // Capped to the 30 s flow HTTP limit, the same value the abort timer uses.
+    expect(calledInit().deadlineMs).toBe(30_000);
+    expect(calledInit().headersTimeoutMs).toBeLessThanOrEqual(calledInit().deadlineMs as number);
+  });
+
   it('slow body past the absolute deadline aborts (fake timers; inactivity never trips)', async () => {
     vi.useFakeTimers();
     // Headers arrive at once; the body trickles one byte every 5 s forever —

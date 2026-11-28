@@ -11,7 +11,7 @@ import type { BreezeEvent } from '../services/eventBus';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
-import { formatHttpFailure } from '../services/httpFailureMessage';
+import { formatHttpFailure, readResponseTextPrefix, RESPONSE_PREFIX_MAX_BYTES } from '../services/httpFailureMessage';
 import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
@@ -257,15 +257,18 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
   let responseBody: string | undefined;
   let errorMessage: string | undefined;
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
-
     const response = await safeFetch(webhook.url, {
       method: 'POST',
       headers,
       body: payload,
       signal: controller.signal,
+      // The receiver is tenant-chosen and the timer above bounds time, not
+      // bytes. A live body lets the read below stop at the cap and drop the
+      // socket while the status still decides the result (#12788).
+      streamResponse: true,
       redirect: 'error',
       // Same pair the notification-channel sender uses. Without
       // `allowPrivateNetwork` a self-hosted install could SAVE an on-LAN
@@ -276,10 +279,11 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       requirePrivateForCleartext: true
     });
 
-    clearTimeout(timeoutId);
-
+    // The timer stays armed through the read. A read that fails part-way is a
+    // failed delivery, as it was when safeFetch buffered the body itself.
+    const reply = await readResponseTextPrefix(response, RESPONSE_PREFIX_MAX_BYTES);
     responseStatus = response.status;
-    responseBody = await response.text().catch(() => undefined);
+    responseBody = reply.text;
 
     // Consider 2xx as success
     if (response.ok) {
@@ -312,7 +316,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
         url: webhook.url,
         headers: webhook.headers,
         authToken: webhook.secret
-      })
+      }),
+      bodyTruncated: reply.truncated
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
@@ -329,6 +334,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     // Transport errors can quote the request URL, and a webhook URL can carry
     // credentials in its userinfo, query or path. Keep only scheme + host.
     errorMessage = scrubUrlsInText(errorMessage);
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   return {

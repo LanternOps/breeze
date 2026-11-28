@@ -3,6 +3,7 @@ import {
   formatHttpFailure,
   formatHttpFailureDetail,
   summarizeResponseBody,
+  readResponseTextPrefix,
   MAX_OPERATOR_ERROR_LENGTH,
 } from './httpFailureMessage';
 import { scrubChannelTestError } from './notificationChannelSecrets';
@@ -401,5 +402,82 @@ describe('credentials in the raw body are redacted before anything rewrites it',
     );
 
     expect(scrubbed).not.toContain(authPassword);
+  });
+});
+
+// A body read only to a byte cap (#12788) can end part-way through a secret.
+// The fragment matches no secret, so masking alone would publish it.
+describe('a body cut short at a byte cap', () => {
+  const secret = 'tok_live_9f8e7d6c5b4a39281706';
+  const cut = `Unauthorized for key. Check the token configured on the channel: ${secret.slice(0, 20)}`;
+
+  it('drops a trailing secret fragment from the operator summary', () => {
+    const message = formatHttpFailure(401, cut, { secrets: [secret], bodyTruncated: true });
+    expect(message).toMatch(/^HTTP 401: Unauthorized for key/);
+    expect(message).not.toContain(secret.slice(0, 8));
+  });
+
+  it('drops it from the log detail too', () => {
+    const detail = formatHttpFailureDetail(401, cut, [secret], true);
+    expect(detail).toMatch(/^HTTP 401: Unauthorized for key/);
+    expect(detail).not.toContain(secret.slice(0, 8));
+  });
+
+  it('still masks a whole secret before the cut', () => {
+    const detail = formatHttpFailureDetail(401, `bad key ${secret} and the rest of the page, which goes on for a while longer`, [secret], true);
+    expect(detail).toContain('bad key ********');
+    expect(detail).not.toContain(secret);
+  });
+
+  it('keeps the whole body when it was not cut', () => {
+    expect(formatHttpFailure(401, cut, { secrets: [secret] })).toContain(secret.slice(0, 20));
+  });
+
+  it('leaves a cut body alone when the cut is past the masking window', () => {
+    const long = `Readable sentence. ${'x'.repeat(20_000)}${secret.slice(0, 12)}`;
+    expect(formatHttpFailure(500, long, { secrets: [secret], bodyTruncated: true })).toMatch(/^HTTP 500: Readable sentence\./);
+  });
+});
+
+describe('readResponseTextPrefix', () => {
+  it('returns a body under the cap whole', async () => {
+    await expect(readResponseTextPrefix(new Response('short reply'), 64)).resolves.toEqual({ text: 'short reply', truncated: false });
+  });
+
+  it('returns a body of exactly the cap whole', async () => {
+    await expect(readResponseTextPrefix(new Response('x'.repeat(64)), 64)).resolves.toEqual({ text: 'x'.repeat(64), truncated: false });
+  });
+
+  it('stops at the cap and cancels the rest of the body', async () => {
+    let cancelled = false;
+    let pulls = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new TextEncoder().encode('abcdefghij'));
+      },
+      cancel() { cancelled = true; }
+    });
+    const result = await readResponseTextPrefix(new Response(endless), 25);
+    expect(result).toEqual({ text: 'abcdefghijabcdefghijabcde', truncated: true });
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(10);
+  });
+
+  it('drops a character the cap splits instead of decoding it as U+FFFD', async () => {
+    // '€' is three bytes; a cap of 4 keeps one whole and one partial.
+    const result = await readResponseTextPrefix(new Response('€€€'), 4);
+    expect(result).toEqual({ text: '€', truncated: true });
+  });
+
+  it('returns an empty text for a response without a body', async () => {
+    await expect(readResponseTextPrefix(new Response(null, { status: 204 }), 64)).resolves.toEqual({ text: '', truncated: false });
+  });
+
+  it('throws a read error, as response.text() would', async () => {
+    const failing = new ReadableStream<Uint8Array>({
+      start(controller) { controller.error(new Error('aborted')); }
+    });
+    await expect(readResponseTextPrefix(new Response(failing), 64)).rejects.toThrow('aborted');
   });
 });

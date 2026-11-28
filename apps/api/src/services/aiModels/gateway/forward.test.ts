@@ -54,6 +54,13 @@ describe('forwardUpstream', () => {
     expect(caps).toEqual([1024 * 1024, 32 * 1024 * 1024, 32 * 1024 * 1024]);
   });
 
+  it('passes the 15 min total-generation deadline to safeFetch, not its 30 s default (#12788)', async () => {
+    const inits: Array<Record<string, unknown>> = [];
+    __setUpstreamFetchForTests((async (_u: string, init: Record<string, unknown>) => { inits.push(init); return new Response('{}'); }) as never);
+    await forwardUpstream(grant(), { url: 'https://llm.example.com/v1/chat/completions', method: 'POST', headers: {}, stream: false }, new AbortController().signal);
+    expect(inits[0]).toMatchObject({ deadlineMs: 900_000 });
+  });
+
   it('refuses an off-origin URL before dialling (adapters cannot be tricked into another host)', async () => {
     const spy = vi.fn();
     __setUpstreamFetchForTests(spy as never);

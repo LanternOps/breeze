@@ -21,8 +21,8 @@ vi.mock('./urlSafety', async (importOriginal) => {
   return { ...actual, safeFetch: vi.fn() };
 });
 
-import { bulkIndexEvents, getOrgForwardingConfig, bulkIndexToEndpoint, resolveForwardingDestination } from './logForwarding';
-import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { bulkIndexEvents, getOrgForwardingConfig, bulkIndexToEndpoint, resolveForwardingDestination, LOG_FORWARDING_MAX_RESPONSE_BYTES } from './logForwarding';
+import { safeFetch, SsrfBlockedError, ResponseTooLargeError } from './urlSafety';
 import { captureException } from './sentry';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -62,6 +62,24 @@ describe('bulkIndexToEndpoint', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('caps the receiver reply size passed to safeFetch', async () => {
+    safeFetchMock.mockResolvedValue(okBulkResponse());
+
+    await bulkIndexToEndpoint(baseConfig, [event]);
+
+    const [, init] = safeFetchMock.mock.calls[0]!;
+    expect(LOG_FORWARDING_MAX_RESPONSE_BYTES).toBe(8 * 1024 * 1024);
+    expect((init as { maxBytes?: number }).maxBytes).toBe(8 * 1024 * 1024);
+  });
+
+  it('treats an oversize receiver reply as terminal: no throw (no retry), whole batch counted as errors', async () => {
+    safeFetchMock.mockRejectedValue(new ResponseTooLargeError(8 * 1024 * 1024));
+
+    const result = await bulkIndexToEndpoint(baseConfig, [event, event]);
+
+    expect(result).toEqual({ indexed: 0, errors: 2 });
   });
 
   it('POSTs idempotent NDJSON to the /_bulk endpoint via safeFetch', async () => {

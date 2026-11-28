@@ -70,8 +70,9 @@ const MAX_CHECKSUMS_BYTES = 1024 * 1024;
 /** A GitHub release JSON: asset list + release notes (GitHub caps body ~125KB). */
 const MAX_RELEASE_API_JSON_BYTES = 8 * 1024 * 1024;
 
-// `safeFetch` applies NO timeout unless asked (urlSafety.ts: `if (timeoutMs &&
-// timeoutMs > 0)`), and the bare `fetch` these replaced had none either. That
+// `safeFetch` once applied NO timeout unless asked, and the bare `fetch` these
+// replaced had none either. It now bounds every call overall by default
+// (#12788); this constant is the separate inactivity timeout. A time limit
 // matters more here than at most call sites: every one of these runs inside a
 // held DB access context (see the note on assertOutsideHeldDbContext below), so
 // a hung socket to GitHub pins a pooled Postgres connection idle-in-transaction

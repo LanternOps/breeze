@@ -4,6 +4,13 @@ export const DEFAULT_PAX8_API_BASE_URL = 'https://api.pax8.com/v1';
 export const DEFAULT_PAX8_TOKEN_URL = 'https://api.pax8.com/v1/token';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_PAGE_SIZE = 200;
+
+/**
+ * Largest Pax8 reply read (API pages and the token response). A list page is at
+ * most DEFAULT_PAGE_SIZE (200) records, a few hundred KB; 16 MiB is ample. The
+ * base URL is tenant-configured, so a reply is not trusted to be small.
+ */
+export const PAX8_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_PAGES = 250;
 
 type JsonRecord = Record<string, unknown>;
@@ -512,7 +519,8 @@ export class Pax8Client {
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       timeoutMs: DEFAULT_TIMEOUT_MS,
-    } as RequestInit & { timeoutMs?: number });
+      maxBytes: PAX8_MAX_RESPONSE_BYTES,
+    } as RequestInit & { timeoutMs?: number; maxBytes?: number });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       // Pax8 puts per-line-item validation failures in `details[]`. Keep the raw
@@ -539,7 +547,8 @@ export class Pax8Client {
         grant_type: 'client_credentials',
       }),
       timeoutMs: DEFAULT_TIMEOUT_MS,
-    } as RequestInit & { timeoutMs?: number });
+      maxBytes: PAX8_MAX_RESPONSE_BYTES,
+    } as RequestInit & { timeoutMs?: number; maxBytes?: number });
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -556,4 +565,4 @@ export class Pax8Client {
   }
 }
 
-type Pax8Fetch = (url: string, init?: RequestInit & { timeoutMs?: number }) => Promise<Response>;
+type Pax8Fetch = (url: string, init?: RequestInit & { timeoutMs?: number; maxBytes?: number }) => Promise<Response>;

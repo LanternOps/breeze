@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Pax8ApiError, Pax8Client } from './pax8Client';
+import { Pax8ApiError, Pax8Client, PAX8_MAX_RESPONSE_BYTES } from './pax8Client';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -471,5 +471,22 @@ describe('Pax8Client.getProductDependencies', () => {
       allowForEarlyCancellation: false,
       cancellationFeeApplied: true,
     }]);
+  });
+});
+
+describe('Pax8Client response size cap', () => {
+  it('passes the cap on the token call and on API calls', async () => {
+    const doFetch = vi.fn(async (url: string, _init?: RequestInit & { maxBytes?: number }) =>
+      url.endsWith('/token')
+        ? jsonResponse({ access_token: 'token-1', expires_in: 3600 })
+        : jsonResponse({ content: [], page: 0, totalPages: 1 }),
+    );
+    await makeClient(doFetch).listCompanies();
+
+    expect(PAX8_MAX_RESPONSE_BYTES).toBe(16 * 1024 * 1024);
+    const tokenCall = doFetch.mock.calls.find(([u]) => u.endsWith('/token'))!;
+    const apiCall = doFetch.mock.calls.find(([u]) => u.includes('/companies'))!;
+    expect(tokenCall[1]?.maxBytes).toBe(16 * 1024 * 1024);
+    expect(apiCall[1]?.maxBytes).toBe(16 * 1024 * 1024);
   });
 });

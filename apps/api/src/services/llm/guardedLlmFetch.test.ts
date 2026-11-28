@@ -64,6 +64,12 @@ describe('buildGuardedLlmFetch', () => {
     expect(calledInit).toMatchObject({ method: 'POST', body: '{"a":1}' });
   });
 
+  it('passes the 15 min overall deadline to safeFetch, not its 30 s default (#12788)', async () => {
+    const fetchImpl = buildGuardedLlmFetch({ allowedOrigin: ALLOWED_ORIGIN, recordEgress: vi.fn() });
+    await fetchImpl(`${ALLOWED_ORIGIN}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(safeFetchMock.mock.calls[0]![1]).toMatchObject({ deadlineMs: 900_000 });
+  });
+
   it('never follows a 3xx: an off-origin Location is handed back unfollowed, with no second request', async () => {
     safeFetchMock.mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { Location: 'https://evil.example.com/v1/messages' } }),

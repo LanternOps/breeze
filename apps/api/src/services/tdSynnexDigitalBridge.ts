@@ -7,7 +7,7 @@ import { importedCost } from './catalogPricing';
 import { enrichDistributorListing } from './catalogEnrichmentService';
 import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 import { checkSsrfSafe } from './ssrfGuard';
-import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { safeFetch, SsrfBlockedError, ResponseTooLargeError } from './urlSafety';
 import { urlOriginChanged } from './credentialOriginBinding';
 
 const TABLE = 'td_synnex_digital_bridge_integrations';
@@ -16,6 +16,13 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const MIN_REQUEST_TIMEOUT_MS = 1_000;
 const MAX_REQUEST_TIMEOUT_MS = 60_000;
 export const TD_SYNNEX_MASKED_SECRET = '********';
+/**
+ * Largest reply read from the distributor API. Replies are JSON product, price
+ * and order documents (search results are cut to the caller's limit, at most
+ * 50, after parsing), well under a few MB. The base URL is partner-configured,
+ * so the read is bounded rather than trusting the peer to stop.
+ */
+export const TD_SYNNEX_DIGITAL_BRIDGE_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 type AuthType = 'api_key' | 'bearer' | 'basic';
 type HttpMethod = 'GET' | 'POST';
@@ -377,11 +384,15 @@ async function requestDigitalBridge(row: typeof tdSynnexDigitalBridgeIntegration
       method,
       headers,
       body: method === 'POST' ? JSON.stringify(options.body ?? {}) : undefined,
-      timeoutMs: requestTimeoutMs()
+      timeoutMs: requestTimeoutMs(),
+      maxBytes: TD_SYNNEX_DIGITAL_BRIDGE_MAX_RESPONSE_BYTES
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
       throw new TdSynnexDigitalBridgeError('TD SYNNEX base URL resolved to a blocked address', 'TD_SYNNEX_ENDPOINT_NOT_CONFIGURED');
+    }
+    if (err instanceof ResponseTooLargeError || (err as Error)?.name === 'ResponseTooLargeError') {
+      throw new TdSynnexDigitalBridgeError('TD SYNNEX response was too large', 'TD_SYNNEX_PROVIDER_ERROR');
     }
     const isTimeout = err instanceof Error && (err.name === 'AbortError' || err.message.toLowerCase().includes('timed out'));
     throw new TdSynnexDigitalBridgeError(

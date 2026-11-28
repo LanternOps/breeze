@@ -316,6 +316,24 @@ describe('McpClient', () => {
     );
   });
 
+  it('passes a 5 min overall deadline to safeFetch (#12788)', async () => {
+    safeFetchMock.mockResolvedValueOnce(jsonResponse({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
+    const client = new McpClient({ endpointUrl: BASE_URL, credentialOrigin: ORIGIN, auth: { authKind: 'none' } });
+    await client.listTools();
+    expect(safeFetchMock.mock.calls[0]![1]).toMatchObject({ deadlineMs: 300_000 });
+  });
+
+  it('maps a ResponseDeadlineError to a timeout McpClientError (#12788)', async () => {
+    const err = new Error('request did not complete within 300000ms');
+    err.name = 'ResponseDeadlineError';
+    const fetchImpl = vi.fn().mockRejectedValueOnce(err);
+    const client = new McpClient({ endpointUrl: BASE_URL, credentialOrigin: ORIGIN, auth: { authKind: 'none' }, fetchImpl });
+
+    const caught = await client.listTools().catch((e) => e);
+    expect(caught).toBeInstanceOf(McpClientError);
+    expect(caught).toMatchObject({ code: 'timeout' });
+  });
+
   it('forwards allowPrivateNetwork through to the fetch transport (self-hosted SSRF opt-in, TOOL_SOURCES_ALLOW_PRIVATE_EGRESS)', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
     const client = new McpClient({

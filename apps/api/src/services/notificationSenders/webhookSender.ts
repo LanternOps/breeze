@@ -16,7 +16,12 @@ import {
 import { canonicalIpLiteral, classifyNonRoutableHostname, isIpLiteralHost } from '../ipRanges';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
-import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
+import {
+  formatHttpFailure,
+  formatHttpFailureDetail,
+  readResponseTextPrefix,
+  RESPONSE_PREFIX_MAX_BYTES
+} from '../httpFailureMessage';
 import { collectChannelSecretStrings } from '../notificationChannelSecrets';
 
 export function redactUrlForLogs(rawUrl: string): string {
@@ -66,6 +71,7 @@ export interface SendResult {
   success: boolean;
   statusCode?: number;
   error?: string;
+  /** The start of a 2xx reply, at most `WEBHOOK_RESPONSE_BODY_MAX_BYTES`. */
   responseBody?: string;
   /** Whether a durable queue may safely retry this transport result. */
   retryable?: boolean;
@@ -73,6 +79,14 @@ export interface SendResult {
 
 /** Configured retries exclude the initial attempt. The queue stores total attempts. */
 export const MAX_WEBHOOK_RETRIES = 2;
+
+/**
+ * The most of a receiver's reply the sender reads (#12788): 64 KiB. The
+ * receiver is tenant-chosen, so its reply is untrusted; past this the socket
+ * is dropped. The status code decides the result, and the body is used only
+ * for the failure summary and log line. See `RESPONSE_PREFIX_MAX_BYTES`.
+ */
+export const WEBHOOK_RESPONSE_BODY_MAX_BYTES = RESPONSE_PREFIX_MAX_BYTES;
 
 /** Clamp legacy JSON and convert configured retries to BullMQ total attempts. */
 export function webhookTotalAttempts(config: unknown): number {
@@ -314,6 +328,17 @@ export async function sendWebhookNotification(
       headers,
       body,
       signal: controller.signal,
+      // The configured timeout (up to 60 s) is the whole budget. The timer
+      // above is armed first and still ends the request; this keeps
+      // safeFetch's default overall bound (#12788), which wants the response
+      // within 30 s for this call, from ending it sooner when the configured
+      // timeout is longer.
+      deadlineMs: timeout,
+      // The body arrives as a live stream so the read below can stop at
+      // `WEBHOOK_RESPONSE_BODY_MAX_BYTES` and drop the socket while the status
+      // still decides the result. safeFetch's `maxBytes` would instead fail
+      // the call on overrun, turning a receiver's 2xx into a failed delivery.
+      streamResponse: true,
       redirect: 'error',
       // Must mirror the save-time decision, or a URL we accepted would be
       // refused at delivery — the TOCTOU re-check is meant to catch DNS
@@ -325,8 +350,12 @@ export async function sendWebhookNotification(
       requirePrivateForCleartext: true
     });
 
-    const responseBody = await response.text();
+    const { text: responseBody, truncated } = await readResponseTextPrefix(
+      response,
+      WEBHOOK_RESPONSE_BODY_MAX_BYTES
+    );
 
+    // The receiver accepted the notification: a long reply does not undo that.
     if (response.ok) {
       return {
         success: true,
@@ -338,8 +367,8 @@ export async function sendWebhookNotification(
     // Non-2xx response. Redact the channel's own credentials from the RAW
     // body first: the route's scrub runs on the already-transformed string.
     const secrets = collectChannelSecretStrings('webhook', config);
-    lastError = formatHttpFailure(response.status, responseBody, { secrets });
-    lastErrorDetail = formatHttpFailureDetail(response.status, responseBody, secrets);
+    lastError = formatHttpFailure(response.status, responseBody, { secrets, bodyTruncated: truncated });
+    lastErrorDetail = formatHttpFailureDetail(response.status, responseBody, secrets, truncated);
 
     // Retry only statuses that can reasonably be transient. In particular,
     // rate limiting is not a durable configuration failure, while ordinary

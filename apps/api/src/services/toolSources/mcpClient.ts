@@ -61,6 +61,13 @@ export class McpClientError extends Error {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/**
+ * Overall bound on one JSON-RPC exchange (#12788). `timeoutMs` is inactivity
+ * only, and an event-stream reply can keep a slow tool call alive past it.
+ * One total of 5 min from the start of the call caps a tool call, in place
+ * of safeFetch's size-based default (#12788).
+ */
+const MCP_REQUEST_DEADLINE_MS = 5 * 60_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const PROTOCOL_VERSION = '2025-06-18';
 const MAX_LIST_PAGES = 50;
@@ -191,6 +198,7 @@ export class McpClient {
         headers,
         body: JSON.stringify(payload),
         timeoutMs: this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        deadlineMs: MCP_REQUEST_DEADLINE_MS,
         maxBytes: this.opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
         allowPrivateNetwork: this.opts.allowPrivateNetwork,
       });
@@ -200,7 +208,7 @@ export class McpClient {
       if (err instanceof Error && err.name === 'ResponseTooLargeError') {
         throw new McpClientError(message, 'too_large');
       }
-      if (/timed out/i.test(message)) {
+      if ((err instanceof Error && err.name === 'ResponseDeadlineError') || /timed out/i.test(message)) {
         throw new McpClientError(`MCP request timed out: ${message}`, 'timeout');
       }
       throw new McpClientError(`MCP transport error: ${message}`, 'transport');

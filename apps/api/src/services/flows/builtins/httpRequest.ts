@@ -196,6 +196,11 @@ export async function executeHttpRequestStep(input: HttpRequestInput, ctx: Built
         body,
         redirect: 'manual',
         signal: controller.signal,
+        // The step's budget bounds the whole exchange, streamed body included.
+        // The timer above is armed first and still ends it; this keeps
+        // safeFetch's default overall bound (#12788) from ending it sooner when
+        // the budget is over 30 s.
+        deadlineMs: budgetMs,
         headersTimeoutMs: Math.min(10_000, budgetMs),
         timeoutMs: Math.min(10_000, budgetMs),
         maxBytes: FLOW_RUN_LIMITS.httpMaxResponseBytes,
