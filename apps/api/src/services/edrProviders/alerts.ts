@@ -14,7 +14,9 @@
  * time (persist.ts), so a new connection's 30-day back-fill never reaches this
  * evaluator as unnotified. As a second guard, a never-notified row first seen
  * longer ago than the notify horizon (24 h) is stamped silently — the horizon
- * applies to FIRST publication only; an escalation always publishes.
+ * applies to FIRST publication only; an escalation always publishes. "First
+ * seen" is the vendor's detected time; a row without one counts as new only
+ * while the vendor calls it open or in progress (see `decideDetection`).
  * `notified_severity` is stamped only after the publish succeeded, row by row,
  * so a failed row retries on the next run and never blocks the others.
  *
@@ -22,7 +24,7 @@
  * detection alert resolves once its detection is closed, tombstoned or gone.
  */
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
-import type { EdrSeverity } from '@breeze/shared';
+import type { EdrDetectionStatus, EdrSeverity } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { alerts, devices, edrConnections, edrDetections, edrEndpoints, edrTenants } from '../../db/schema';
 import { createSourcedAlert, resolveAlert } from '../alertService';
@@ -68,6 +70,8 @@ export interface DetectionCandidate {
   provider: string;
   severity: EdrSeverity;
   notifiedSeverity: EdrSeverity | null;
+  /** One of the candidate statuses: open, in_progress or unknown. */
+  status: EdrDetectionStatus;
   detectedAt: Date | null;
   createdAt: Date;
   /** Vendor text: alert rows only, never event payloads. */
@@ -86,8 +90,16 @@ export function decideDetection(row: DetectionCandidate, now: Date, horizonMs: n
     return current > previous && REPORTABLE.has(row.severity) ? 'escalated' : 'silent';
   }
   if (!REPORTABLE.has(row.severity)) return 'silent';
-  const firstSeen = row.detectedAt ?? row.createdAt;
-  return firstSeen.getTime() < now.getTime() - horizonMs ? 'suppress' : 'detected';
+  const cutoff = now.getTime() - horizonMs;
+  if (row.detectedAt !== null) return row.detectedAt.getTime() < cutoff ? 'suppress' : 'detected';
+  // No vendor time (#12825). When Breeze first stored the row says nothing about how old the
+  // detection is: a source first read on a later sync back-fills its lookback window, and only a
+  // tenant's first detection sync is stamped at persist. Such a row counts as new only while the
+  // vendor still calls it active (open / in_progress) and Breeze first saw it inside the horizon.
+  // An `unknown` status gives no evidence it is either, so it is stamped silently: it is still
+  // listed, it raises no alert, and a later severity escalation still publishes.
+  if (row.status !== 'open' && row.status !== 'in_progress') return 'suppress';
+  return row.createdAt.getTime() < cutoff ? 'suppress' : 'detected';
 }
 
 export interface EdrAlertDeps {
@@ -122,6 +134,7 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
         provider: edrDetections.provider,
         severity: edrDetections.severity,
         notifiedSeverity: edrDetections.notifiedSeverity,
+        status: edrDetections.status,
         detectedAt: edrDetections.detectedAt,
         createdAt: edrDetections.createdAt,
         title: edrDetections.title,

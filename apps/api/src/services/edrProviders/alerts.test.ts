@@ -45,6 +45,7 @@ function candidate(over: Partial<DetectionCandidate> = {}): DetectionCandidate {
     provider: 'bitdefender',
     severity: 'critical',
     notifiedSeverity: null,
+    status: 'open',
     detectedAt: ago(HOUR),
     createdAt: ago(HOUR),
     title: 'Trojan.Generic',
@@ -81,6 +82,39 @@ describe('decideDetection', () => {
   });
   it('falls back to created_at when the vendor gave no detected_at', () => {
     expect(decideDetection(candidate({ detectedAt: null, createdAt: ago(48 * HOUR) }), NOW, H24)).toBe('suppress');
+  });
+
+  // #12825: with no vendor time, Breeze's own first-seen time says nothing about how old the
+  // detection is (a source first read on a later sync back-fills its lookback window, and those
+  // rows are not stamped at persist). It counts as new only while the vendor still calls it active.
+  describe('no vendor time (#12825)', () => {
+    it('vendor says open or in progress, first seen by Breeze inside the horizon -> detected', () => {
+      for (const status of ['open', 'in_progress'] as const) {
+        expect(decideDetection(candidate({ status, detectedAt: null, createdAt: ago(HOUR) }), NOW, H24), status).toBe('detected');
+      }
+    });
+    it('vendor status unknown -> suppressed (stamped silently), however recently Breeze first saw it', () => {
+      expect(decideDetection(candidate({ status: 'unknown', detectedAt: null, createdAt: ago(HOUR) }), NOW, H24)).toBe('suppress');
+      expect(decideDetection(candidate({ status: 'unknown', detectedAt: null, createdAt: NOW }), NOW, H24)).toBe('suppress');
+    });
+    it('first seen by Breeze outside the horizon -> suppressed, whatever the status', () => {
+      for (const status of ['open', 'in_progress', 'unknown'] as const) {
+        expect(decideDetection(candidate({ status, detectedAt: null, createdAt: ago(25 * HOUR) }), NOW, H24), status).toBe('suppress');
+      }
+    });
+    it('an escalation still publishes without a vendor time', () => {
+      expect(decideDetection(candidate({ status: 'unknown', detectedAt: null, notifiedSeverity: 'medium' }), NOW, H24)).toBe('escalated');
+    });
+  });
+
+  it('every provider that supplies a vendor time decides exactly as before, whatever the status', () => {
+    for (const provider of ['bitdefender', 'emsisoft', 'some_future_provider']) {
+      for (const status of ['open', 'in_progress', 'unknown'] as const) {
+        // created_at is deliberately on the other side of the horizon: only the vendor time counts.
+        expect(decideDetection(candidate({ provider, status, detectedAt: ago(HOUR), createdAt: ago(48 * HOUR) }), NOW, H24), `${provider}/${status}`).toBe('detected');
+        expect(decideDetection(candidate({ provider, status, detectedAt: ago(25 * HOUR), createdAt: ago(HOUR) }), NOW, H24), `${provider}/${status}`).toBe('suppress');
+      }
+    }
   });
   it('an escalation always publishes, however old (the horizon is first-publication only)', () => {
     expect(decideDetection(candidate({ severity: 'critical', notifiedSeverity: 'high', detectedAt: ago(48 * HOUR) }), NOW, H24)).toBe('escalated');
@@ -201,6 +235,27 @@ describe('evaluateEdrAlerts', () => {
   it('never throws out of the evaluator when the loader fails', async () => {
     const { deps } = fakeDeps([], { loadCandidates: vi.fn(async () => { throw new Error('boom'); }) });
     await expect(evaluateEdrAlerts('conn-1', { now: NOW }, deps)).resolves.toEqual({ published: 0, suppressed: 0 });
+  });
+});
+
+describe('evaluateEdrAlerts: detections with no vendor time (#12825)', () => {
+  it('a back-filled item with no vendor time and no readable status raises no alert and no event; it is stamped', async () => {
+    // E.g. a GravityZone quarantine item first read on a later sync (30-day window), stored with a
+    // null time (no account timezone) and an undocumented actionStatus.
+    const row = candidate({ status: 'unknown', detectedAt: null, createdAt: NOW });
+    const { deps, published, alerts, stamped } = fakeDeps([row]);
+    expect(await evaluateEdrAlerts('conn-1', { now: NOW }, deps)).toEqual({ published: 0, suppressed: 1 });
+    expect(published).toEqual([]);
+    expect(alerts).toEqual([]);
+    expect(stamped).toEqual([row.id]);
+  });
+
+  it('an open detection with no vendor time, first seen inside the horizon, still alerts', async () => {
+    const row = candidate({ provider: 'emsisoft', status: 'open', detectedAt: null, createdAt: ago(HOUR) });
+    const { deps, published, alerts } = fakeDeps([row]);
+    expect(await evaluateEdrAlerts('conn-1', { now: NOW }, deps)).toEqual({ published: 1, suppressed: 0 });
+    expect(published).toHaveLength(1);
+    expect(alerts).toHaveLength(1);
   });
 });
 
