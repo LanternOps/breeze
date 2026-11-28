@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.131.0',
+    date: '2026-11-28',
+    title: 'Configuration policy redesign, endpoint chat, a flow editor and a new device header',
+    highlights: [
+      'Configuration policies show where they apply and where a more specific policy outranks each feature. Change targets with one Apply that counts the devices added and removed, and copy a policy to another organization or your MSP. New policies start inactive until you Activate them and choose where they apply.',
+      'Send a message to the person signed in at a Windows computer’s console, or open a live chat from the device’s new Chat tab. Turn on Endpoint messaging in the Breeze Assist policy first; needs agent and Breeze Assist 0.128.0 or later.',
+      'Build flows by hand in the new flow editor; Flows is still a preview. Flows and Jobs now share one Automations entry in the sidebar, and New job works again while Flows is on.',
+      'The device page header shows model, serial, LAN IP, contact, warranty and rack placement at a glance. Edit a device’s name, tags and purchase date on its Details tab.',
+      'Disconnect a SentinelOne or Huntress integration from its panel, mark a secret script parameter as optional, and type a folder path straight into the remote file browser.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.130.0',
     date: '2026-11-20',
     title: 'Ticket import, reinstall reattach, portal SCIM and remote desktop fixes',
