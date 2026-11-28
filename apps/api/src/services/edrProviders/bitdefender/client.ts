@@ -574,8 +574,8 @@ export class GravityZoneClient {
   }
 
   /**
-   * The scan tasks named exactly `name` (a normal retrying read). The vendor's `name` filter is a
-   * prefix match, so the exact comparison happens here. Live shape (2026-11-27):
+   * The scan tasks named exactly `name` (a normal retrying read). The vendor documents its `name`
+   * filter as a prefix match, so the exact comparison happens here. Live shape (2026-11-27):
    * `{total,page,perPage,pagesCount,items:[{id,name,startDate,status}]}`. A Breeze task name is
    * unique to one action, so more than one page of them is not a list this can trust.
    */

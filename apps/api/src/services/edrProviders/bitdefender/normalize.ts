@@ -86,7 +86,7 @@ function onlineFromState(state: unknown): boolean | null {
 }
 
 /**
- * `timeZone` is the API key owner's account timezone (`UTC` for a service key), or null when it
+ * `timeZone` is the API key owner's account timezone, or null when it
  * could not be read: `lastSeen` has no offset, so it is then stored as null (#12821).
  */
 export function toEndpointDetail(id: string, d: GzEndpointDetails, timeZone: string | null): VendorEdrEndpointDetail {

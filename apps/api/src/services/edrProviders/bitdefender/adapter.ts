@@ -104,8 +104,10 @@ const TRANSIENT_CODES: ReadonlySet<string> = new Set(['rate_limited', 'upstream_
  * the profile has no usable zone) the answer is null and those times are stored as null, never read
  * as UTC; that is logged once per run, code only. A connection-level or transient failure throws.
  *
- * A service API key (#12817) answers in UTC (verified live 2026-11-27) and must not read this:
- * its getAccountDetails needs an accountId, and its own account is not the reference.
+ * Only personal API keys are supported today (basic auth). A service API key answers in UTC
+ * (observed live 2026-11-27), and its getAccountDetails refuses a call with no accountId
+ * (invalid_params here, so every offset-less time would be null). TODO(#12817): a service-key
+ * connection must resolve `{ timeZone: 'UTC' }` without calling this.
  */
 function accountTimeZone(ctx: EdrAdapterContext): Promise<AccountTimeZone> {
   return memo(ctx, 'gz:account-timezone', async (): Promise<AccountTimeZone> => {
@@ -468,9 +470,19 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
    */
   async getActionStatus(ctx, _tenant, vendorActionId) {
     const ref = parseScanRef(vendorActionId);
-    if (!ref) return { status: 'submitted' };
+    if (!ref) {
+      // Not a reference this adapter wrote: the row waits for the submitted timeout. Length only.
+      console.warn(`[edr:bitdefender] unrecognised scan reference (${vendorActionId.length} chars); left submitted`);
+      return { status: 'submitted' };
+    }
     const tasks = await clientFor(ctx).listScanTasksNamed(gzScanTaskName(ref.actionId));
     const mine = ref.taskId ? tasks.filter((t) => t.id === ref.taskId) : tasks;
+    for (const t of mine) {
+      if (t.status !== 1 && t.status !== 2 && t.status !== 3) {
+        // Documented: 1 pending, 2 in progress, 3 finished. Anything else is not guessed at.
+        console.warn(`[edr:bitdefender] undocumented scan task status ${JSON.stringify(t.status)?.slice(0, 20)}; left submitted`);
+      }
+    }
     return mine.length > 0 && mine.every((t) => t.status === 3) ? { status: 'succeeded' } : { status: 'submitted' };
   },
 

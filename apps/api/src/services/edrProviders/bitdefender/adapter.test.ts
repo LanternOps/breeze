@@ -467,6 +467,70 @@ describe('vendor times in the key owner timezone (#12821)', () => {
     warn.mockRestore();
   });
 
+  it('a dead key on the account read throws (reauth), never reads as "timezone unavailable"', async () => {
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': { status: 401, body: '{}' },
+      'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+    });
+    await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ reauth: true });
+  });
+
+  it('an unavailable timezone is read once per run: a second tenant makes no account call and logs nothing new', async () => {
+    const warn = quietWarn();
+    const { ctx, count } = makeCtx({
+      'accounts.getAccountDetails': { status: 403, body: fx('error-api-not-enabled-accounts-403.json') },
+      'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+    });
+    await adapter.enrichEndpoints!(ctx, T1, ['a']);
+    await adapter.enrichEndpoints!(ctx, { vendorTenantId: C2, apiHost: null }, ['b']);
+    expect(count('accounts.getAccountDetails')).toBe(1);
+    expect(warn.mock.calls.filter((c) => String(c.join(' ')).includes('timezone'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('a zone with surrounding whitespace is trimmed and used', async () => {
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': rpc({ profile: { timezone: ' America/New_York ' } }),
+      'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+    });
+    const [d] = await adapter.enrichEndpoints!(ctx, T1, ['a']);
+    expect(d!.lastSeenAt?.toISOString()).toBe('2026-11-27T22:17:34.000Z');
+  });
+
+  it('an incident WITHOUT an offset is read in the account timezone, or stored with null times and a warning', async () => {
+    const inc = JSON.parse(fx('live-incidents-personal-key.json'));
+    Object.assign(inc.result.items[0], { company: { id: C1 }, created: '2026-11-25T16:26:45', lastIncidentChange: '2026-11-25T16:29:18' });
+    const empty = rpc({ total: 0, page: 1, perPage: 100, pagesCount: 0, items: [] });
+    const known = makeCtx({ 'incidents.getIncidentsList': { body: JSON.stringify(inc) }, 'quarantine/computers.getQuarantineItemsList': empty });
+    const page = await adapter.listDetections(known.ctx, T1, null, NOW);
+    expect(page.detections[0]).toMatchObject({ vendorKind: 'incident' });
+    expect(page.detections[0]!.detectedAt?.toISOString()).toBe('2026-11-25T21:26:45.000Z');
+    expect(page.detections[0]!.lastVendorUpdateAt?.toISOString()).toBe('2026-11-25T21:29:18.000Z');
+    expect(page.warnings).toEqual([]);
+
+    const warn = quietWarn();
+    const unknown = makeCtx({
+      'accounts.getAccountDetails': { status: 403, body: fx('error-api-not-enabled-accounts-403.json') },
+      'incidents.getIncidentsList': { body: JSON.stringify(inc) },
+      'quarantine/computers.getQuarantineItemsList': empty,
+    });
+    const p2 = await adapter.listDetections(unknown.ctx, T1, null, NOW);
+    expect(p2.detections.map((d) => [d.detectedAt, d.lastVendorUpdateAt])).toEqual([[null, null]]);
+    expect(p2.warnings).toEqual(['incidents: times not stored (Accounts API not enabled on key)']);
+    warn.mockRestore();
+  });
+
+  it('a transient account read during detection sync throws, so no cursor comes back to advance', async () => {
+    const q = JSON.parse(fx('live-quarantine-service-key.json'));
+    q.result.items[0].companyId = C1;
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': { status: 429, body: fx('error-429-nginx.html'), headers: { 'Retry-After': '600' } },
+      'incidents.getIncidentsList': rpc({ total: 0, page: 1, perPage: 1000, pagesCount: 0, items: [] }),
+      'quarantine/computers.getQuarantineItemsList': { body: JSON.stringify(q) },
+    });
+    await expect(adapter.listDetections(ctx, T1, null, NOW)).rejects.toMatchObject({ code: 'rate_limited' });
+  });
+
   it('a transient account read failure fails the run instead of storing a guessed time', async () => {
     const { ctx } = makeCtx({
       'accounts.getAccountDetails': { status: 429, body: fx('error-429-nginx.html'), headers: { 'Retry-After': '600' } },
@@ -664,10 +728,33 @@ describe('response actions', () => {
       expect(await adapter.getActionStatus!(done.ctx, T, `scan:${ACT}`)).toEqual({ status: 'succeeded' });
     });
 
-    it('a reference it does not recognise is left submitted with no vendor call', async () => {
+    it('a reference it does not recognise is left submitted with no vendor call, and says so (code only)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { ctx, calls } = makeCtx({});
       expect(await adapter.getActionStatus!(ctx, T, '6a0000000000000000000b01')).toEqual({ status: 'submitted' });
       expect(calls).toHaveLength(0);
+      expect(warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('scan reference'))).toHaveLength(1);
+      warn.mockRestore();
+    });
+
+    it('an undocumented task status is logged (code only), never read as failed or finished', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { ctx } = makeCtx({ 'network.getScanTasksList': list({ id: 't1', status: 4 }) });
+      expect(await adapter.getActionStatus!(ctx, T, `scan:${ACT}:t1`)).toEqual({ status: 'submitted' });
+      const msgs = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('undocumented scan task status'));
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain('4');
+      warn.mockRestore();
+    });
+
+    it('end to end: the reference performAction returns is the one getActionStatus resolves', async () => {
+      const { ctx } = makeCtx({
+        'network.createScanTask': ok('action-scan-accepted-live.json'),
+        'network.getScanTasksList': list({ id: 't1', status: 3 }),
+      });
+      const r = await adapter.performAction!(ctx, T, endpointReq('scan'), ACT);
+      expect(r.status).toBe('submitted');
+      expect(await adapter.getActionStatus!(ctx, T, (r as { vendorActionId: string }).vendorActionId)).toEqual({ status: 'succeeded' });
     });
   });
 

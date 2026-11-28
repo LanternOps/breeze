@@ -1,15 +1,17 @@
-import { zonedWallClockToUtc } from '../../zonedTime';
+import { getLocalTimeParts } from '../../zonedTime';
 
 /*
  * GravityZone timestamps (#12821).
  *
- * The Network, Quarantine, Companies and General APIs send date-times with no
- * offset ("2026-11-27T17:17:34"), written in the timezone of the account that
- * owns the API key. A personal key therefore answers in its owner's timezone,
- * DST included; a service API key answers in UTC. The Incidents API sends an
- * explicit offset ("-05:00" for the same personal key, "+00:00" for a service
- * key), and the vendor reads the ISO `Z` instants Breeze sends as UTC. All
- * verified live 2026-11-27 with both key types against one endpoint.
+ * Observed live 2026-11-27, reading one endpoint with both key types: the
+ * Network, Companies and General APIs send date-times with no offset
+ * ("2026-11-27T17:17:34") in the timezone of the account that owns the API
+ * key, DST included, for a personal key, and in UTC for a service key (which
+ * Breeze does not support yet, #12817). Quarantine `quarantinedOn` has no
+ * offset either (seen with the service key; the personal key had no
+ * Quarantine API). The Incidents API sends an explicit offset ("-05:00" for
+ * the personal key, "+00:00" for the service key), and the vendor reads the
+ * ISO `Z` instants Breeze sends as UTC.
  *
  * So an offset-less vendor time is only an instant once the account timezone
  * is known. When it is not, the value is null: a time off by an unknown offset
@@ -43,13 +45,38 @@ export function lacksOffset(raw: unknown): boolean {
   return typeof raw === 'string' && NO_OFFSET.test(raw.trim());
 }
 
+const DAY_MS = 86_400_000;
+
+/** The zone's UTC offset (ms) at a whole-minute instant, from the runtime's timezone database. */
+function offsetAt(instant: number, timeZone: string): number {
+  const p = getLocalTimeParts(new Date(instant), timeZone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - instant;
+}
+
+/**
+ * The UTC instant of a whole-minute wall-clock time in `timeZone`. The offsets
+ * in force a day before and a day after are each tried; a candidate is valid
+ * when the zone really has that offset at that instant. Two valid candidates
+ * (a fall-back hour) give the earlier one, east or west of UTC. None (a
+ * spring-forward gap) reads the wall time with the offset from before the gap,
+ * which moves it forward. A real zone changes offset at most once in a day.
+ */
+function wallMinuteToUtc(wallAsUtc: number, timeZone: string): number {
+  const before = offsetAt(wallAsUtc - DAY_MS, timeZone);
+  const after = offsetAt(wallAsUtc + DAY_MS, timeZone);
+  const valid = [...new Set([before, after])]
+    .map((offset) => wallAsUtc - offset)
+    .filter((candidate) => offsetAt(candidate, timeZone) === wallAsUtc - candidate);
+  return valid.length > 0 ? Math.min(...valid) : wallAsUtc - before;
+}
+
 /**
  * The instant of a GravityZone date-time. An explicit offset (or `Z`) is used
  * as sent. An offset-less value is read as wall-clock time in `timeZone` (the
- * key owner's account timezone, `UTC` for a service key) using the runtime's
- * timezone database; with no known zone it is null. On a DST fall-back day the
- * repeated hour resolves to its first occurrence; a wall time skipped by a
- * spring-forward moves forward into the new offset.
+ * API key owner's account timezone) using the runtime's timezone database;
+ * with no known zone it is null. On a DST fall-back day the repeated hour
+ * resolves to its first occurrence; a wall time skipped by a spring-forward
+ * moves forward into the new offset.
  */
 export function parseGzDate(raw: unknown, timeZone: string | null): Date | null {
   if (typeof raw !== 'string') return null;
@@ -72,6 +99,6 @@ export function parseGzDate(raw: unknown, timeZone: string | null): Date | null 
   if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) return null;
 
   // Offsets change on whole minutes, so seconds and milliseconds are added after the minute is placed.
-  const atMinute = zonedWallClockToUtc({ year, month, day, hour, minute }, timeZone);
-  return new Date(atMinute.getTime() + second * 1000 + millis);
+  const atMinute = wallMinuteToUtc(Date.UTC(year, month - 1, day, hour, minute), timeZone);
+  return new Date(atMinute + second * 1000 + millis);
 }
