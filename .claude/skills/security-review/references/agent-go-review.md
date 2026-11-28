@@ -48,6 +48,8 @@ the fleet), so it gets a dedicated class block. Run this as a Pass-1 specialist 
       readability as a vuln — that's by design (#988).**
 - [ ] Tokens (`brz_`) SHA-256 hashed; raw tokens never written to disk or logs.
 - [ ] In-memory secret handling (`secmem.SecureString`) — no plaintext token lingering in logs/errors.
+- [ ] Agent-spawned children (scripts, terminal, helper): what is their effective environment, and is
+      output returned to the server redacted for the exact values of the device's own credentials?
 - [ ] `backup_s3_*` and other secret-suffixed keys are stripped from non-secret config and read back
       from secrets.yaml (the drift-proof denylist, #6/#997).
 

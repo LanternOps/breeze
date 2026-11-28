@@ -19,6 +19,7 @@ apps/api/src/__tests__/alertTriggeredWriters.contract.test.ts
 apps/api/src/__tests__/backupSnapshotIndexReadPath.contract.test.ts
 apps/api/src/__tests__/capacityDashboard.contract.test.ts
 apps/api/src/__tests__/caughtQuerySavepoint.contract.test.ts
+apps/api/src/__tests__/childProcessEnv.contract.test.ts
 apps/api/src/__tests__/credentialOriginBindingCoverage.test.ts
 apps/api/src/__tests__/dbTransactionPromiseAll.contract.test.ts
 apps/api/src/__tests__/forceRebootExposure.contract.test.ts
