@@ -125,6 +125,7 @@ import { EdrProviderRequestError } from '../../services/edrProviders/types';
 import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { applyDetectionStatusUpdates, loadOpenDetectionRefs, persistDetections, persistInventory } from '../../services/edrProviders/persist';
 import { evaluateEdrAlerts, evaluateEdrEndpointHealth } from '../../services/edrProviders/alerts';
@@ -541,6 +542,97 @@ describe('edr sync — real job functions against Postgres', () => {
     const [after] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
     expect(after!.last_seen_at === null ? null : new Date(after!.last_seen_at as string).toISOString()).toBe('2026-11-27T22:17:34.000Z');
     expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
+  });
+
+  runDb('#12825 data step: clears GravityZone last seen times stored before the UTC fix, once, and queues those endpoints first', async () => {
+    const FILE = '2027-02-01-100000-gravityzone-clear-pre-utc-last-seen.sql';
+    const fx = await seedJob();
+    const co = `co-clear-${sfx()}`;
+    const tenantId = await fx.addTenant(co, fx.orgA.id);
+    // 51 endpoints, one more than a run enriches. Before the fix only the batch read last held a
+    // time (each list upsert nulled the rest), so the misread rows are the most recently read ones.
+    const ids = Array.from({ length: 51 }, (_, i) => `ep-clear-${String(i).padStart(2, '0')}-${sfx()}`);
+    const misread = ids[50]!;
+    const unknownTime = ids[49]!;
+    for (const id of ids) await fx.addEndpoint(tenantId, fx.orgA.id, id, id);
+    const set = (id: string, lastSeen: string | null, synced: string | null) => admin().execute(sql`
+      UPDATE edr_endpoints SET last_seen_at = ${lastSeen}::timestamptz, vendor_detail_synced_at = ${synced}::timestamptz
+       WHERE connection_id = ${fx.connectionId}::uuid AND vendor_endpoint_id = ${id}
+    `);
+    for (const [i, id] of ids.entries()) {
+      await set(id, null, `2026-11-27T${10 + Math.floor(i / 10)}:0${i % 10}:00Z`);
+    }
+    // A New York key's 17:17:34 wall time read as UTC (5 h early), from the last run before the deploy.
+    await set(misread, '2026-11-27T17:17:34Z', '2026-11-27T20:00:00Z');
+    // A row with no stored time keeps its place in the rotation.
+    await set(unknownTime, null, '2026-11-27T19:00:00Z');
+    // Another provider's time is not touched.
+    const emsiConn = randomUUID();
+    await withSystemDbAccessContext(() => db.insert(edrConnections).values({
+      id: emsiConn, partnerId: fx.partner.id, provider: 'emsisoft', name: `Emsisoft ${sfx()}`,
+      credentialsEncrypted: 'enc:test', vendorRootId: 'root-emsi', vendorRootType: 'partner',
+    }));
+    const emsiTenant = await withSystemDbAccessContext(async () => (await db.insert(edrTenants).values({
+      connectionId: emsiConn, partnerId: fx.partner.id, vendorTenantId: randomUUID(), vendorTenantName: `WS ${sfx()}`,
+      vendorTenantType: 'workspace', orgId: fx.orgA.id, mappingSource: 'manual',
+    }).returning({ id: edrTenants.id }))[0]!.id);
+    await withSystemDbAccessContext(() => db.insert(edrEndpoints).values({
+      connectionId: emsiConn, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId: emsiTenant, provider: 'emsisoft',
+      vendorEndpointId: 'em-keep', hostname: 'pc-keep',
+      lastSeenAt: new Date('2026-11-27T17:17:34Z'), vendorDetailSyncedAt: new Date('2026-11-27T20:00:00Z'),
+    }));
+    const rowOf = async (connectionId: string, vendorEndpointId: string) => {
+      const [r] = await adminRows<Row>(sql`
+        SELECT last_seen_at, vendor_detail_synced_at FROM edr_endpoints
+         WHERE connection_id = ${connectionId}::uuid AND vendor_endpoint_id = ${vendorEndpointId}
+      `);
+      const iso = (v: unknown) => (v === null ? null : new Date(v as string).toISOString());
+      return { lastSeen: iso(r!.last_seen_at), synced: iso(r!.vendor_detail_synced_at) };
+    };
+
+    // First application, as autoMigrate runs it: the file's own ledger row is written after it.
+    const [ledger] = await adminRows<{ checksum: string; applied_at: string }>(sql`
+      SELECT checksum, applied_at::text AS applied_at FROM breeze_migrations WHERE filename = ${FILE}
+    `);
+    await admin().execute(sql`DELETE FROM breeze_migrations WHERE filename = ${FILE}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await replayMigration(FILE);
+      expect(await rowOf(fx.connectionId, misread)).toEqual({ lastSeen: null, synced: null });
+      expect(await rowOf(fx.connectionId, unknownTime)).toEqual({ lastSeen: null, synced: '2026-11-27T19:00:00.000Z' });
+      expect(await rowOf(emsiConn, 'em-keep')).toEqual({ lastSeen: '2026-11-27T17:17:34.000Z', synced: '2026-11-27T20:00:00.000Z' });
+
+      // A replay once the ledger holds the file (a manual psql -f, an integration replay) changes nothing.
+      await admin().execute(sql`
+        INSERT INTO breeze_migrations (filename, checksum, applied_at)
+        VALUES (${FILE}, ${ledger?.checksum ?? 'test-ledger-row'}, COALESCE(${ledger?.applied_at ?? null}::timestamptz, now()))
+      `);
+      await set(ids[0]!, '2026-11-27T22:17:34Z', '2026-11-27T21:00:00Z');
+      await replayMigration(FILE);
+      expect(await rowOf(fx.connectionId, ids[0]!)).toEqual({ lastSeen: '2026-11-27T22:17:34.000Z', synced: '2026-11-27T21:00:00.000Z' });
+    } finally {
+      warn.mockRestore();
+      if (!ledger) await admin().execute(sql`DELETE FROM breeze_migrations WHERE filename = ${FILE}`);
+      else {
+        await admin().execute(sql`
+          INSERT INTO breeze_migrations (filename, checksum, applied_at)
+          VALUES (${FILE}, ${ledger.checksum}, ${ledger.applied_at}::timestamptz) ON CONFLICT DO NOTHING
+        `);
+      }
+    }
+    await set(ids[0]!, null, '2026-11-27T10:00:00Z');
+
+    // The next run reads the cleared endpoint first (NULLS FIRST) and stores its time in UTC.
+    gz.companies = [{ id: co, name: `Clear ${sfx()}` }];
+    gz.inventory.set(co, ids.map((id, i) => gzEndpoint(id, co, `WS-C${i}`, `ws-c${i}.corp.example`)));
+    for (const id of ids) gz.endpointDetails.set(id, { state: 1, lastSeen: '2026-11-27T17:17:34', agent: { productVersion: '8.26.11.679' } });
+    gz.account = { profile: { timezone: 'America/New_York' } };
+    await syncEdrInventory(fx.connectionId);
+    const after = await rowOf(fx.connectionId, misread);
+    expect(after.lastSeen).toBe('2026-11-27T22:17:34.000Z');
+    expect(after.synced).not.toBeNull();
+    // The 50-per-run cap still holds: the freshest of the others waits for the next run.
+    expect(await rowOf(fx.connectionId, unknownTime)).toEqual({ lastSeen: null, synced: '2026-11-27T19:00:00.000Z' });
   });
 
   runDb('#12821: after a confirmed release, an account read failing transiently does not fail inventory: isolation_state goes not_isolated and isolate is offered', async () => {
