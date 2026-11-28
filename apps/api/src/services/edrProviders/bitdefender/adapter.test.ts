@@ -445,6 +445,18 @@ describe('listDetections', () => {
     });
   });
 
+  it('#12825: an undocumented quarantine actionStatus is stored as unknown and its code logged once per fetch (no item content)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ctx } = makeCtx(routes());
+    const a = await adapter.listDetections(ctx, tenant(C1), null, NOW);
+    const b = await adapter.listDetections(ctx, tenant(C2), null, NOW);
+    expect(a.detections.find((d) => d.vendorKind === 'quarantine_item')).toMatchObject({ status: 'mitigated', vendorStatus: '0' });
+    expect(b.detections.find((d) => d.vendorKind === 'quarantine_item')).toMatchObject({ status: 'unknown', vendorStatus: '99' });
+    const logged = warn.mock.calls.map((c) => c.join(' ')).filter((m) => m.includes('actionStatus'));
+    expect(logged).toEqual(['[edr:bitdefender] 1 quarantine item(s) with an undocumented actionStatus stored as unknown (codes: 99)']);
+    warn.mockRestore();
+  });
+
   it('unknown incident status / severityScore -> unknown bucket, never throws', async () => {
     const { ctx } = makeCtx(routes());
     const page = await adapter.listDetections(ctx, tenant(C1), null, NOW);

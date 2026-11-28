@@ -32,7 +32,8 @@ import {
   type GzQuarantineItem,
 } from './client';
 import {
-  toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint, ZONE_NOT_READ, type GzZone,
+  isDocumentedQuarantineStatus, toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint, ZONE_NOT_READ,
+  type GzZone,
 } from './normalize';
 import { verifyGravityZoneWebhook } from './push';
 import { isKnownTimeZone, lacksOffset } from './time';
@@ -659,7 +660,16 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const qFrom = windowFrom(cursor.quarantineAfter, now, caps.firstSyncLookbackDays);
     try {
       const all = await memo<GzQuarantineItem[]>(
-        ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, () => client.getQuarantineBetween(qFrom, to),
+        ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, async () => {
+          const fetched = await client.getQuarantineBetween(qFrom, to);
+          // Once per memoized fetch (not per tenant). Codes only, never item content (#12825).
+          const odd = fetched.filter((q) => !isDocumentedQuarantineStatus(q.actionStatus));
+          if (odd.length > 0) {
+            const codes = [...new Set(odd.map((q) => String(JSON.stringify(q.actionStatus ?? null)).slice(0, 20)))].slice(0, 10);
+            console.warn(`[edr:bitdefender] ${odd.length} quarantine item(s) with an undocumented actionStatus stored as unknown (codes: ${codes.join(', ')})`);
+          }
+          return fetched;
+        },
       );
       for (const q of all) {
         if (q.companyId === tenant.vendorTenantId) quarantine.push(q);
