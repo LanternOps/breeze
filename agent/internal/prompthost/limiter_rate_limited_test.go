@@ -41,7 +41,15 @@ func TestCardLimiterMarksOnlyTheShowItLimited(t *testing.T) {
 	hh.dir.add(back)
 	hh.h.RendererConnected(back)
 	hh.tick(time.Second)
-	for _, s := range showsTo(hh.dir.take(), "native-2") {
+	replayed := showsTo(hh.dir.take(), "native-2")
+	found := false
+	for _, s := range replayed {
+		found = found || s.PromptID == "notice:flood:k"
+	}
+	if !found {
+		t.Fatalf("the limited notice was not replayed (%d shows): nothing below would be checked", len(replayed))
+	}
+	for _, s := range replayed {
 		if s.RateLimited {
 			t.Errorf("replay of %s is marked rate-limited: a replay would deliver it again", s.PromptID)
 		}

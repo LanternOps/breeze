@@ -555,7 +555,8 @@ type nativeActive struct {
 	// indicator is set for a session pill (prompt_native_indicator.go).
 	indicator *nativeIndicatorState
 	// noticeDialog: an informational notice drawn as a dialog (guarded by
-	// mu). A decision takes it down; another notice never stacks on it.
+	// mu). A decision takes it down, except from the notice's last useful
+	// minute (noticeKeptUp); another notice never stacks on it.
 	noticeDialog bool
 	// toldNotVisible (guarded by mu): prompt_presented{visible:false} was
 	// sent for this notice (reportNotVisible).
@@ -593,6 +594,12 @@ type nativePromptRenderer struct {
 	// again (#12794).
 	ended      map[string]ipc.PromptShow
 	endedOrder []string
+	// told (guarded by mu) is, per ended prompt, the text the person was
+	// last given (announcementText): the dialog when it ended on screen, then
+	// each update announced as a notification, so a repeat of it is not
+	// announced again (#12812). A failed announcement is taken back. Bounded
+	// with ended.
+	told map[string]string
 	// freed (guarded by mu) is closed and replaced whenever a dialog leaves
 	// the screen (a prompt leaves active, or a pill's confirm step ends), so
 	// a notice waiting for the screen to clear tries again (#12794).
@@ -621,7 +628,7 @@ type nativePromptRenderer struct {
 }
 
 func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func(string, any) error, now func() time.Time) *nativePromptRenderer {
-	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{},
+	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{}, told: map[string]string{},
 		freed: make(chan struct{}), goAsync: func(f func()) { go f() },
 		noticeState: platformNotificationState, toast: showNotification, noticeRepoll: defaultNoticeRepoll,
 		indicatorShow: showNativeIndicator, indicatorHide: hideNativeIndicator}
@@ -655,6 +662,7 @@ func (r *nativePromptRenderer) rememberEndedLocked(p ipc.PromptShow) {
 	r.ended[p.PromptID] = p
 	for len(r.endedOrder) > maxEndedNativePrompts {
 		delete(r.ended, r.endedOrder[0])
+		delete(r.told, r.endedOrder[0])
 		r.endedOrder = r.endedOrder[1:]
 	}
 }
@@ -810,16 +818,27 @@ func (r *nativePromptRenderer) onUpdate(u ipc.PromptUpdate) {
 		// postponement budget (#12794). The new content is kept.
 		//
 		// The update is announced only when it changes what the person was
-		// last told about this prompt (the dialog they answered, or the last
-		// announcement): one Postpone sends two updates, the refreshed card
-		// and then the re-planned lead rung with the same text, and gives
-		// one notification (#12812).
+		// last told about this prompt (told: the dialog they answered, then
+		// each announcement that got through). One Postpone sends
+		// two updates, the refreshed card and then the re-planned lead rung
+		// with the same text, and gives one notification (#12812). An
+		// announcement whose notification failed is forgotten, so the next
+		// update with that text tries again.
 		r.mu.Lock()
 		if r.active[u.PromptID] == nil {
+			last, ok := r.told[u.PromptID]
+			if !ok {
+				last = announcementText(base)
+			}
+			next := announcementText(merged)
 			r.rememberEndedLocked(merged)
+			announce := next != last
+			if announce {
+				r.told[u.PromptID] = next
+			}
 			r.mu.Unlock()
-			if announcementChanged(base, merged) {
-				r.announceUpdate(merged)
+			if announce {
+				r.announceUpdate(merged, func() { r.forgetTold(u.PromptID, next, last, ok) })
 			}
 			return
 		}
@@ -960,6 +979,7 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 			r.signalFreedLocked()
 			if out.Err == nil {
 				r.rememberEndedLocked(act.show)
+				r.told[p.PromptID] = announcementText(act.show) // the dialog is what the person last read
 			}
 		}
 		l := act.show.Lease
@@ -1026,7 +1046,7 @@ func (r *nativePromptRenderer) takeNoticeDialogsLocked(promptID string) []*nativ
 // the newer window, so it opens over the notice and is never hidden behind it.
 func noticeKeptUp(p ipc.PromptShow, now time.Time) bool {
 	at, ok := noticeMustShowBy(p)
-	return ok && !now.Before(at)
+	return ok && !now.Before(at) && now.Before(at.Add(nativeNoticeDialogLifetime))
 }
 
 // endWithoutDialog retires a notice that drew no dialog. It reports whether
