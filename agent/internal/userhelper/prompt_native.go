@@ -805,11 +805,19 @@ func (r *nativePromptRenderer) onUpdate(u ipc.PromptUpdate) {
 		// Assist card collapses instead of re-opening (spec §3.3, #4941).
 		// Redrawing here re-asked at once and let a second click spend the
 		// postponement budget (#12794). The new content is kept.
+		//
+		// The update is announced only when it changes what the person was
+		// last told about this prompt (the dialog they answered, or the last
+		// announcement): one Postpone sends two updates, the refreshed card
+		// and then the re-planned lead rung with the same text, and gives
+		// one notification (#12812).
 		r.mu.Lock()
 		if r.active[u.PromptID] == nil {
 			r.rememberEndedLocked(merged)
 			r.mu.Unlock()
-			r.announceUpdate(merged)
+			if announcementChanged(base, merged) {
+				r.announceUpdate(merged)
+			}
 			return
 		}
 		r.mu.Unlock()

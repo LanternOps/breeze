@@ -2,6 +2,8 @@ package userhelper
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -340,6 +342,27 @@ func (r *nativePromptRenderer) announceUpdate(p ipc.PromptShow) {
 			log.Info("updated prompt not announced: the notification was not shown", "promptId", p.PromptID)
 		}
 	})
+}
+
+// announcementChanged reports whether next would announce something other
+// than prev: a different title or body, before the renderer fills its
+// placeholders. The deadline is compared too, because {remaining} is counted
+// from it. A rev bump alone (an empty patch) or a repeat of the same refresh
+// changes nothing the person reads.
+func announcementChanged(prev, next ipc.PromptShow) bool {
+	return announcementText(prev) != announcementText(next)
+}
+
+func announcementText(p ipc.PromptShow) string {
+	parts := []string{p.Copy.Title, p.Copy.Body, p.Copy.Consequence, p.Copy.StateDetail, p.Copy.OperatorNote,
+		strconv.FormatInt(p.Timing.DeadlineUnixMs, 10)}
+	if p.Timing.Expiry != nil {
+		parts = append(parts, p.Timing.Expiry.Text)
+	}
+	for _, f := range p.Facts {
+		parts = append(parts, f.Label, f.Value)
+	}
+	return strings.Join(parts, "\x00")
 }
 
 // deliverRateLimitedNotice delivers a notice the agent's card limiter made
