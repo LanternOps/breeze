@@ -213,6 +213,11 @@ type RebootManager struct {
 	abortOSReboot  func() error
 	historyPath    func() string
 	deferralLedger func() string
+	// bootID identifies the running boot, for the pending-restart record
+	// (#12827). Nil: nothing is ever restored. stateFileTrusted replaces the
+	// record's file-trust check (nil = trustPendingRecordFile).
+	bootID           func() string
+	stateFileTrusted func(path string) error
 }
 
 // NewRebootManager creates a new RebootManager with circuit breaker protection
@@ -286,6 +291,9 @@ func (r *RebootManager) ScheduleWithOptions(delay time.Duration, deadline time.T
 	// An operator's schedule is a new campaign; the re-plans of the
 	// person's own Postpone / Restart now keep theirs (scheduleLockedAt).
 	r.campaign = newCampaignID(r.nowFn())
+	// On disk before the command reports success, so an agent restart from
+	// here on re-arms this restart instead of dropping it (#12827).
+	r.savePendingLocked("scheduling a restart")
 	return nil
 }
 
@@ -532,12 +540,12 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	r.deferralsUsed = used
 	r.state.DeferralsUsed = used
 
-	path := r.ledgerPath()
-	if err := SaveDeferralLedger(path, deadline, used); err != nil {
+	// The count and the moved schedule in one write (#12827).
+	if err := r.persistPendingLocked(); err != nil {
 		// Best-effort: losing the ledger costs the user an extra postponement
 		// after an agent restart, it never lets them exceed the DEADLINE.
 		log.Warn("failed to persist reboot deferral ledger",
-			"path", path, "deadline", deadline, "used", used, "error", err)
+			"path", r.ledgerPath(), "deadline", deadline, "used", used, "error", err)
 	}
 	log.Info("reboot postponed by user",
 		"newDelay", outcome.NewDelay.String(), "used", used, "max", policy.MaxDeferrals,
@@ -545,14 +553,15 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	return outcome.NewDelay, nil
 }
 
-// ledgerPath resolves the deferral ledger location through the test seam,
-// falling back to the real data dir. Nil-safe because RebootManager is also
-// built as a struct literal in tests.
+// ledgerPath resolves the deferral ledger location through the seam every
+// constructor sets. Empty for a manager built as a struct literal (tests),
+// which persists nothing: since #12827 every schedule writes the ledger, and a
+// test must never reach the real agent data dir.
 func (r *RebootManager) ledgerPath() string {
 	if r.deferralLedger != nil {
 		return r.deferralLedger()
 	}
-	return deferralLedgerPath()
+	return ""
 }
 
 // ErrNoRebootScheduled is what Cancel returns when there was nothing to cancel:
@@ -613,6 +622,9 @@ func (r *RebootManager) Cancel() error {
 	r.state.DeferralsUsed = 0
 	r.state.MaxDeferrals = 0
 	r.state.DeferralMinutes = 0
+	// Off disk too, before the lock is released: an agent restart from here
+	// on must not bring the cancelled restart back (#12827).
+	r.dropPendingLocked("cancelling a restart")
 	abort := r.abortOSReboot
 	osInvoked := r.osInvoked
 	r.osInvoked = false
@@ -895,9 +907,15 @@ func (r *RebootManager) restartNow(gen uint64) error {
 	if gen != r.generation || !r.state.RebootScheduled {
 		return fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
 	}
-	return r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
+	if err := r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
 		r.state.Reason, r.state.Source,
-		RebootOptions{Deferral: r.deferral, Prompt: r.promptText, DeadlineAction: r.deadlineAction}, leadRungPrompts)
+		RebootOptions{Deferral: r.deferral, Prompt: r.promptText, DeadlineAction: r.deadlineAction}, leadRungPrompts); err != nil {
+		return err
+	}
+	// scheduleLockedAt reloaded the count from the ledger, which agrees with
+	// memory because every change to it is written; persist the new time.
+	r.savePendingLocked("Restart now")
+	return nil
 }
 
 func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
@@ -978,6 +996,8 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		r.state.RebootScheduled = false
 		r.state.LastError = fmt.Sprintf("blocked by circuit breaker: %d reboots in 24h (max %d)",
 			recentCount, r.maxRebootsPerDay)
+		// A blocked restart is over; an agent restart must not re-arm it.
+		r.dropPendingLocked("the circuit breaker blocking a restart")
 		notifyFn := r.notifyFn
 		maxPerDay := r.maxRebootsPerDay
 		r.mu.Unlock()
@@ -1004,6 +1024,12 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	// machine then went down anyway at the original time. Only exec's own success
 	// promotes this to osInvoked, from which point the abort is real.
 	r.osInvoking = true
+	// The restart now belongs to the OS. Clear the record before the command
+	// runs, so neither an agent stopped inside the grace minute nor a failed
+	// invocation re-arms it on the next start (#12827). The boot id is the
+	// backstop if this write fails: after the restart the record is from an
+	// earlier boot and is discarded.
+	r.dropPendingLocked("handing a restart to the operating system")
 	// Opened here, under the same lock hold that passed the stopped/generation
 	// check, so there is no instant at which the reboot is committed but Stop
 	// cannot see that it must wait.

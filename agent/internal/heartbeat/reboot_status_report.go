@@ -95,3 +95,16 @@ func (h *Heartbeat) rebootStatusForHeartbeat() *RebootStatusReport {
 	}
 	return buildRebootStatusReport(h.rebootMgr.State())
 }
+
+// RestorePendingReboot re-arms the restart this agent had scheduled before it
+// last stopped (#12827). The agent's startup calls it once, before Start, so
+// the first heartbeat already reports the restart: a null rebootStatus is the
+// server's signal that nothing is scheduled, and it clears the device row.
+// Not called from New, so a test that builds a Heartbeat never reads the real
+// agent data directory.
+func (h *Heartbeat) RestorePendingReboot() bool {
+	if h.rebootMgr == nil {
+		return false
+	}
+	return h.rebootMgr.RestorePendingReboot()
+}

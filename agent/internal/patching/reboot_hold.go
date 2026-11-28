@@ -96,6 +96,8 @@ func (r *RebootManager) dropHeldLocked(now time.Time) heldRestart {
 	r.state.DeferralsUsed = 0
 	r.state.MaxDeferrals = 0
 	r.state.DeferralMinutes = 0
+	// A held restart waits for the next window's own schedule (#12827).
+	r.dropPendingLocked("holding a restart")
 	log.Info("restart held: the maintenance window closed before it could begin",
 		"deadline", deadline, "now", now, "source", source)
 	return held

@@ -51,6 +51,10 @@ type RebootSeams struct {
 	AbortOSReboot func() error
 	HistoryPath   string
 	LedgerPath    string
+	// BootID identifies the running boot (#12827); nil restores nothing.
+	BootID func() string
+	// StateFileTrusted replaces the pending-restart record's trust check.
+	StateFileTrusted func(path string) error
 }
 
 // NewRebootManagerWithSeams is NewRebootManagerWithPrompt with injected
@@ -78,6 +82,12 @@ func NewRebootManagerWithSeams(notifyFn NotifyFunc, promptFn PromptFunc, maxRebo
 	if seams.LedgerPath != "" {
 		path := seams.LedgerPath
 		rm.deferralLedger = func() string { return path }
+	}
+	if seams.BootID != nil {
+		rm.bootID = seams.BootID
+	}
+	if seams.StateFileTrusted != nil {
+		rm.stateFileTrusted = seams.StateFileTrusted
 	}
 	return rm
 }
@@ -158,6 +168,16 @@ func newCampaignID(now time.Time) uint64 {
 	}
 	lastCampaign = id
 	return id
+}
+
+// noteCampaignID records a campaign restored from disk (#12827), so the next
+// newCampaignID is still strictly greater than it.
+func noteCampaignID(id uint64) {
+	campaignMu.Lock()
+	defer campaignMu.Unlock()
+	if id > lastCampaign {
+		lastCampaign = id
+	}
 }
 
 // SetRestartSurface installs the restart card. Nil keeps today's ladder.

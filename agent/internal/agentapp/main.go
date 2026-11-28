@@ -1044,6 +1044,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		"agentId": cfg.AgentID,
 	})
 
+	// A restart this agent had scheduled before it last stopped is re-armed
+	// before the first heartbeat, so the console never sees it disappear
+	// (#12827). Never in a support session: it schedules no restarts.
+	if !cfg.SupportMode {
+		hb.RestorePendingReboot()
+	}
+
 	go hb.Start()
 
 	// Start WebSocket client for real-time command delivery

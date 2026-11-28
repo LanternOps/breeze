@@ -109,6 +109,10 @@ func ComputeDeferral(policy DeferralPolicy, used int, now, scheduledAt, deadline
 type DeferralLedger struct {
 	Deadline time.Time `json:"deadline"`
 	Used     int       `json:"used"`
+	// Pending is the schedule this campaign is on, so an agent restart can
+	// re-arm it (#12827, reboot_pending.go). Nil when nothing is scheduled.
+	// An older agent ignores it and reads the file as a plain ledger.
+	Pending *PendingRebootRecord `json:"pending,omitempty"`
 }
 
 func deferralLedgerPath() string {
@@ -156,7 +160,13 @@ func LoadDeferralLedger(path string, deadline, now time.Time) int {
 // truncated file. A torn ledger would read back as zero used, which quietly
 // hands the user their whole budget again.
 func SaveDeferralLedger(path string, deadline time.Time, used int) error {
-	data, err := json.Marshal(DeferralLedger{Deadline: deadline, Used: used})
+	return writeDeferralLedger(path, DeferralLedger{Deadline: deadline, Used: used})
+}
+
+// writeDeferralLedger is SaveDeferralLedger for a whole ledger, pending
+// restart record included (#12827).
+func writeDeferralLedger(path string, ledger DeferralLedger) error {
+	data, err := json.Marshal(ledger)
 	if err != nil {
 		return err
 	}

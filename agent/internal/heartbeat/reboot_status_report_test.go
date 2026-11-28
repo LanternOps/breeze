@@ -158,7 +158,7 @@ func TestRebootStatusForHeartbeatToleratesAMissingManager(t *testing.T) {
 }
 
 func TestRebootStatusForHeartbeatReadsTheLiveManager(t *testing.T) {
-	mgr := patching.NewRebootManager(func(string, string, string) {}, 3)
+	mgr := patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, tempRebootSeams(t))
 	t.Cleanup(mgr.Stop)
 	h := &Heartbeat{rebootMgr: mgr}
 

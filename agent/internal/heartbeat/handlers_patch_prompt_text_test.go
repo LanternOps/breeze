@@ -15,9 +15,9 @@ import (
 func newTestHeartbeatCapturingNotices(t *testing.T) (*Heartbeat, <-chan [2]string) {
 	t.Helper()
 	notices := make(chan [2]string, 16)
-	mgr := patching.NewRebootManager(func(title, body, _ string) {
+	mgr := patching.NewRebootManagerWithSeams(func(title, body, _ string) {
 		notices <- [2]string{title, body}
-	}, 3)
+	}, nil, 3, tempRebootSeams(t))
 	t.Cleanup(mgr.Stop)
 	return &Heartbeat{rebootMgr: mgr}, notices
 }
