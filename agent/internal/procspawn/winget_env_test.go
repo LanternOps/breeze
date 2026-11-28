@@ -1,7 +1,6 @@
 package procspawn
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,8 +28,7 @@ func TestEveryEntryPointPutsVCLibsOnWingetPath(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
 	want := vclibs + string(os.PathListSeparator) + "/usr/bin"
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	for name, cmd := range map[string]*exec.Cmd{
 		"Command":        Command(winget, "--version"),
 		"CommandContext": CommandContext(ctx, winget, "--version"),

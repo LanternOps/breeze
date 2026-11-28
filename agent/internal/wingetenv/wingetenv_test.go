@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -212,8 +213,8 @@ func makeWindowsApps(t *testing.T, vclibs ...string) (wingetPath string, dirs []
 }
 
 func envPath(env []string) string {
-	for i := len(env) - 1; i >= 0; i-- {
-		if k, v, ok := strings.Cut(env[i], "="); ok && strings.EqualFold(k, "PATH") {
+	for _, kv := range slices.Backward(env) {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, "PATH") {
 			return v
 		}
 	}

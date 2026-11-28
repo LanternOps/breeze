@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -123,8 +124,8 @@ func ChildEnv(env []string, dir string, caseInsensitive bool, listSep string) []
 		}
 		return k == "PATH"
 	}
-	for i := len(out) - 1; i >= 0; i-- {
-		k, v, ok := strings.Cut(out[i], "=")
+	for i, kv := range slices.Backward(out) {
+		k, v, ok := strings.Cut(kv, "=")
 		if !ok || !sameName(k) {
 			continue
 		}
