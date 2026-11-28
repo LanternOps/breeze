@@ -496,6 +496,9 @@ async function redeemGrantForDecide(input: {
  *    (`MFA_GATED_TOOL_ACTIONS`: its REST twin carries `requireMfa()`), at any
  *    tier. The agent Tier 2 lane files those at `medium`, and its release runs
  *    as the agent, so the approve is where the human's second factor is checked.
+ *
+ * Called with no intent (a diagnostic read grant row), only the row tier
+ * counts.
  */
 export function requiresSessionMfaToApprove(
   riskTier: string,
@@ -625,10 +628,11 @@ export async function loadDecidableApprovalRow(
 /**
  * Whether an authenticator code sent with an approve of this row can change
  * the outcome. A code counts in two ways: as the second factor, which the
- * decide core reads for a PAM elevation or an action intent, and as the
- * re-authentication a critical row needs. A high row linked to neither is
- * also checked, so this errs towards checking a code. A low or medium row
- * linked to neither uses no code, so the approve route does not check, or
+ * decide core reads for a PAM elevation, an action intent and a diagnostic
+ * read grant at high or critical risk, and as the re-authentication a
+ * critical row needs. Any other high row is also checked, so this errs
+ * towards checking a code. A low or medium row linked to neither an intent
+ * nor an elevation uses no code, so the approve route does not check, or
  * spend, a code sent with it.
  */
 export function approveCodeCanCount(
@@ -817,6 +821,16 @@ export async function decideApprovalRequest(
           },
         };
       }
+    }
+    // An approve needs a second factor (the session's MFA claim, or a code the
+    // approve route verified for this decision) by the same tier rule as an
+    // intent row: high, critical or an unrecognised tier. Checked after the
+    // authority checks above and before the assurance ladder, so a refused
+    // approve spends no challenge. A sole operator's own approve also needs
+    // the fresh hardware-backed assertion checked below; a code counts here
+    // and as the critical tier's re-authentication. A deny is never gated.
+    if (status === 'approved' && requiresSessionMfaToApprove(existing.riskTier) && !secondFactorSatisfied()) {
+      return { httpStatus: 403, body: { ...SESSION_MFA_REQUIRED_BODY } };
     }
   }
 

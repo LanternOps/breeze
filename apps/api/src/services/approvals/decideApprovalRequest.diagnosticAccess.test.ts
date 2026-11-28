@@ -65,8 +65,10 @@ vi.mock('../../db/schema/diagnosticAccess', () => ({
   },
 }));
 
+// Same predicate as the real helper with ENABLE_2FA on: the session's `mfa` claim.
 vi.mock('../../middleware/auth', () => ({
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  hasSatisfiedMfa: (auth: any) => auth?.token?.mfa === true,
 }));
 
 vi.mock('../actionIntents/intentService', () => ({
@@ -169,7 +171,8 @@ const AUTH = {
   partnerId: 'partner-123',
   orgId: null,
   user: { id: USER_ID, email: 't@example.com', name: 'Test User', isPlatformAdmin: false },
-  token: { sid: 'sid-1' },
+  // A session signed in with MFA: an approve of these rows needs a second factor.
+  token: { sid: 'sid-1', mfa: true },
   accessibleOrgIds: [],
   canAccessOrg: () => false,
   orgCondition: () => undefined,
@@ -570,6 +573,32 @@ describe('decideApprovalRequest: diagnostic access grant branch', () => {
     expect(decideDiagnosticGrantInTx).not.toHaveBeenCalled();
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+
+  it('refuses an approve from a session without the MFA claim with 403 MFA_REQUIRED, before the ladder or any write; a deny lands', async () => {
+    const noMfa = { ...AUTH, token: { sid: 'sid-1', mfa: false } };
+    queueApprovalPrefetch(approvalRow());
+    queueGrantTarget(pendingTarget());
+
+    const res = await decideApprovalRequest({ auth: noMfa, id: APPROVAL_ID, status: 'approved' });
+
+    expect(res).toEqual({ httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(decideDiagnosticGrantInTx).not.toHaveBeenCalled();
+
+    queueApprovalPrefetch(approvalRow());
+    queueGrantTarget(pendingTarget());
+    mockDecideTx('denied');
+    vi.mocked(decideDiagnosticGrantInTx).mockResolvedValue(grantRow('denied'));
+
+    const denied = await decideApprovalRequest({ auth: noMfa, id: APPROVAL_ID, status: 'denied' });
+
+    expect(denied.httpStatus).toBe(200);
+    expect(decideDiagnosticGrantInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ grantId: GRANT_ID, status: 'denied' }),
+    );
   });
 
   it('always lets the requester deny their own request, without resolving other approvers', async () => {

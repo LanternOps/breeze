@@ -169,6 +169,44 @@ describe('ApprovalsInbox — authenticator code after a second-factor refusal', 
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
+  it('a diagnostic read grant card: refused → enter a code → approve again with it', async () => {
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [
+          {
+            ...pendingApproval,
+            intentId: null,
+            approvalScope: null,
+            requestingClientLabel: 'Breeze AI',
+            actionLabel: 'Read-only diagnostic access on HOST-1',
+            actionToolName: 'request_diagnostic_access',
+            actionArguments: {
+              grantId: 'grant-1',
+              hostname: 'HOST-1',
+              operations: ['list', 'read'],
+              paths: [{ path: 'C:\\Logs', recursive: true }],
+              purpose: 'Crash logs',
+              durationMinutes: 60,
+            },
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+    await reachCodeEntry();
+
+    approveWith('123456');
+
+    await waitFor(() => expect(intentApprovalsMock.decide).toHaveBeenCalledTimes(2));
+    expect(intentApprovalsMock.decide).toHaveBeenLastCalledWith(
+      'approval-1',
+      'approve',
+      undefined,
+      null,
+      expect.objectContaining({ mfaCode: '123456' }),
+    );
+  });
+
   it('clears the field after the code is used, whatever the answer', async () => {
     await reachCodeEntry();
     sendCodeThenReject(CODE_REFUSED());

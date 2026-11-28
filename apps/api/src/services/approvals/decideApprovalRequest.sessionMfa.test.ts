@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /**
  * Approving a high-or-above action intent needs the same session MFA claim as
@@ -635,6 +635,177 @@ describe('decideApprovalRequest: second factor on a PAM elevation approve', () =
 
     // Reached the (stubbed) write transaction, so every gate passed.
     expect(write.set).toBeDefined();
+  });
+});
+
+/**
+ * A diagnostic read grant decided through the approvals route: an approve at
+ * high or critical risk needs a second factor (the session's MFA claim, or a
+ * code the server verified in this request), by the same tier rule as an
+ * intent row. A deny needs neither. A sole operator approving their own
+ * request still needs a fresh hardware-backed assertion on top.
+ */
+describe('decideApprovalRequest: second factor on a diagnostic read grant approve', () => {
+  const GRANT_ROW = {
+    intentId: null,
+    diagnosticAccessGrantId: 'grant-1',
+    actionToolName: 'request_diagnostic_access',
+    actionArguments: { grantId: 'grant-1' },
+    riskTier: 'high',
+    boundArgumentDigest: null,
+  };
+  const GRANT_TARGET = {
+    orgId: ORG_ID,
+    deviceId: 'dev-1',
+    status: 'pending_approval',
+    deviceOrgId: ORG_ID,
+    siteId: 'site-1',
+    partnerId: 'partner-1',
+    requestedByUserId: REQUESTER,
+  };
+
+  function queueGrantTarget(target: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([target]) }),
+        }),
+      }),
+    } as any);
+  }
+
+  for (const riskTier of ['high', 'critical']) {
+    it(`refuses an approve at ${riskTier} risk from a session without the MFA claim, before the assurance ladder`, async () => {
+      queueSelect([approvalRow(DECIDER, { ...GRANT_ROW, riskTier })]);
+      queueGrantTarget(GRANT_TARGET);
+      const write = captureWrite();
+
+      const res = await decideApprovalRequest({ auth: authFor(DECIDER, false), id: APPROVAL_ID, status: 'approved' });
+
+      expect(res).toEqual({ httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+      expect(assertApprovalAssurance).not.toHaveBeenCalled();
+      expect(write.set).toBeUndefined();
+    });
+  }
+
+  it('an unrecognised row tier counts as gated', async () => {
+    queueSelect([approvalRow(DECIDER, { ...GRANT_ROW, riskTier: 'unknown' })]);
+    queueGrantTarget(GRANT_TARGET);
+    const write = captureWrite();
+
+    const res = await decideApprovalRequest({ auth: authFor(DECIDER, false), id: APPROVAL_ID, status: 'approved' });
+
+    expect(res).toEqual({ httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+    expect(write.set).toBeUndefined();
+  });
+
+  it('a row below high risk is not gated, as for an intent row', async () => {
+    queueSelect([approvalRow(DECIDER, { ...GRANT_ROW, riskTier: 'medium' })]);
+    queueGrantTarget(GRANT_TARGET);
+    const write = captureWrite();
+
+    await decideApprovalRequest({ auth: authFor(DECIDER, false), id: APPROVAL_ID, status: 'approved' });
+
+    expect(write.set).toBeDefined();
+  });
+
+  it('accepts a code the server verified in this request', async () => {
+    queueSelect([approvalRow(DECIDER, GRANT_ROW)]);
+    queueGrantTarget(GRANT_TARGET);
+    const write = captureWrite();
+
+    await decideApprovalRequest({
+      auth: authFor(DECIDER, false),
+      id: APPROVAL_ID,
+      status: 'approved',
+      decisionMfa: recordDecisionMfaVerification(DECIDER),
+    });
+
+    expect(write.set).toBeDefined();
+  });
+
+  it('accepts a session with the MFA claim', async () => {
+    queueSelect([approvalRow(DECIDER, GRANT_ROW)]);
+    queueGrantTarget(GRANT_TARGET);
+    const write = captureWrite();
+
+    await decideApprovalRequest({ auth: authFor(DECIDER, true), id: APPROVAL_ID, status: 'approved' });
+
+    expect(write.set).toBeDefined();
+  });
+
+  it('lets a session without the MFA claim deny', async () => {
+    queueSelect([approvalRow(DECIDER, GRANT_ROW)]);
+    queueGrantTarget(GRANT_TARGET);
+    const write = captureWrite();
+
+    await decideApprovalRequest({ auth: authFor(DECIDER, false), id: APPROVAL_ID, status: 'denied' });
+
+    expect(write.set).toMatchObject({ status: 'denied' });
+  });
+
+  it('an approver who can no longer decide it gets the authority refusal, not the second-factor one', async () => {
+    const { isEligibleApprover } = await import('../diagnosticAccess/grants');
+    vi.mocked(isEligibleApprover).mockResolvedValueOnce(false);
+    queueSelect([approvalRow(DECIDER, GRANT_ROW)]);
+    queueGrantTarget(GRANT_TARGET);
+
+    const res = await decideApprovalRequest({ auth: authFor(DECIDER, false), id: APPROVAL_ID, status: 'approved' });
+
+    expect(res).toEqual({ httpStatus: 403, body: { error: 'diagnostic_access_approver_required' } });
+  });
+
+  describe('a sole operator approving their own request', () => {
+    const SOLE_ROW = { ...GRANT_ROW, riskTier: 'critical' };
+    const SOLE_TARGET = { ...GRANT_TARGET, requestedByUserId: DECIDER };
+
+    beforeEach(async () => {
+      const { resolveEligibleApprovers } = await import('../diagnosticAccess/grants');
+      vi.mocked(resolveEligibleApprovers).mockResolvedValue([DECIDER]);
+    });
+    afterEach(async () => {
+      const { resolveEligibleApprovers } = await import('../diagnosticAccess/grants');
+      vi.mocked(resolveEligibleApprovers).mockResolvedValue([]);
+    });
+
+    it('without the MFA claim or a code: refused for the second factor', async () => {
+      queueSelect([approvalRow(DECIDER, SOLE_ROW)]);
+      queueGrantTarget(SOLE_TARGET);
+      const write = captureWrite();
+
+      const res = await decideApprovalRequest({ auth: authFor(DECIDER, false), id: APPROVAL_ID, status: 'approved' });
+
+      expect(res).toEqual({ httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+      expect(write.set).toBeUndefined();
+    });
+
+    it('a code without a hardware-backed assertion still needs the assertion', async () => {
+      queueSelect([approvalRow(DECIDER, SOLE_ROW)]);
+      queueGrantTarget(SOLE_TARGET);
+      const write = captureWrite();
+
+      const res = await decideApprovalRequest({
+        auth: authFor(DECIDER, false),
+        id: APPROVAL_ID,
+        status: 'approved',
+        reauthVerified: true,
+        decisionMfa: recordDecisionMfaVerification(DECIDER),
+      });
+
+      expect(res).toEqual({ httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } });
+      expect(write.set).toBeUndefined();
+    });
+
+    it('a session with the MFA claim and no assertion still needs the assertion', async () => {
+      queueSelect([approvalRow(DECIDER, SOLE_ROW)]);
+      queueGrantTarget(SOLE_TARGET);
+      const write = captureWrite();
+
+      const res = await decideApprovalRequest({ auth: authFor(DECIDER, true), id: APPROVAL_ID, status: 'approved' });
+
+      expect(res).toEqual({ httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } });
+      expect(write.set).toBeUndefined();
+    });
   });
 });
 
