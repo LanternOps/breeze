@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { edrDetections, edrEndpoints, edrTenants } from '../../db/schema';
 import type { ProviderSyncTx } from '../backupProviders/persist';
 import { validateVendorUrl } from './guardedFetch';
@@ -71,6 +71,9 @@ export const MISSING_TENANT_ENDPOINT_RETENTION_DAYS = 7;
 
 const UPSERT_CHUNK = 500;
 const ERROR_MAX = 1000;
+/** Detection times an adapter may leave undefined ("not read this run", #12821). */
+const DETECTION_TIME_FIELDS = ['detectedAt', 'resolvedAt', 'lastVendorUpdateAt'] as const;
+type DetectionTimeField = (typeof DETECTION_TIME_FIELDS)[number];
 
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -491,7 +494,7 @@ export async function persistDetections(
     // The ON CONFLICT set list omits notified_severity, so an existing row's
     // notification state is never touched by a re-sync.
     const firstSync = tenant.lastDetectionSyncAt === null;
-    const values = [...byKey.values()].map((d) => {
+    const toRow = (d: VendorEdrDetection) => {
       const endpoint = d.vendorEndpointId ? endpointByVendorId.get(d.vendorEndpointId) : undefined;
       return {
         ...(firstSync ? { notifiedSeverity: d.severity } : {}),
@@ -515,15 +518,58 @@ export async function persistDetections(
         filePath: d.filePath,
         processName: clip(d.processName, 500),
         mitreTechniques: d.mitreTechniques,
-        detectedAt: d.detectedAt,
-        resolvedAt: d.resolvedAt,
-        lastVendorUpdateAt: d.lastVendorUpdateAt,
+        detectedAt: d.detectedAt ?? null,
+        resolvedAt: d.resolvedAt ?? null,
+        lastVendorUpdateAt: d.lastVendorUpdateAt ?? null,
         details: withBreezeLocator(d),
         updatedAt: now,
       };
-    });
+    };
 
-    for (const batch of chunk(values, UPSERT_CHUNK)) {
+    // #12821: a time the adapter could not read this run is undefined. It inserts as null and is
+    // left out of ON CONFLICT, so a stored value stays. A SET list is per statement, so rows are
+    // grouped by which times are unread; an adapter that reads every time yields one group.
+    const groups = new Map<string, { unread: readonly DetectionTimeField[]; rows: Array<ReturnType<typeof toRow>> }>();
+    for (const d of byKey.values()) {
+      const unread = DETECTION_TIME_FIELDS.filter((f) => d[f] === undefined);
+      const key = unread.join(',');
+      let group = groups.get(key);
+      if (!group) groups.set(key, (group = { unread, rows: [] }));
+      group.rows.push(toRow(d));
+    }
+
+    for (const { unread, rows } of groups.values()) for (const batch of chunk(rows, UPSERT_CHUNK)) {
+      const set: Record<string, SQL> = {
+        severity: sql`excluded.severity`,
+        vendorSeverity: sql`excluded.vendor_severity`,
+        status: sql`excluded.status`,
+        vendorStatus: sql`excluded.vendor_status`,
+        title: sql`excluded.title`,
+        category: sql`excluded.category`,
+        threatName: sql`excluded.threat_name`,
+        filePath: sql`excluded.file_path`,
+        processName: sql`excluded.process_name`,
+        mitreTechniques: sql`excluded.mitre_techniques`,
+        detectedAt: sql`excluded.detected_at`,
+        resolvedAt: sql`excluded.resolved_at`,
+        lastVendorUpdateAt: sql`excluded.last_vendor_update_at`,
+        details: sql`excluded.details`,
+        // STICKY attribution: a detection's vendor endpoint is fixed at its first non-null
+        // attribution. A later rename / name reuse can never re-bind it to another machine;
+        // a later value only fills a null. (No-op for GravityZone: its endpoint id never changes.)
+        vendorEndpointId: sql`COALESCE(${edrDetections.vendorEndpointId}, excluded.vendor_endpoint_id)`,
+        // endpoint_id / breeze_device_id may only be FILLED while they describe the SAME vendor endpoint the
+        // row keeps. If the stored vendor id differs from the incoming one (name reuse after a re-enrol), a
+        // NULLed link (endpoint row pruned -> FK SET NULL) must not be filled from the other machine.
+        endpointId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.endpointId}, excluded.endpoint_id) ELSE ${edrDetections.endpointId} END`,
+        // A closed detection keeps its historical device; refreshDetectionDeviceLinks
+        // re-points open ones. Only fill a missing link here (same-endpoint rule as above).
+        breezeDeviceId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id) ELSE ${edrDetections.breezeDeviceId} END`,
+        updatedAt: sql`excluded.updated_at`,
+        // org_id / tenant_id / notified_severity / detached_at / last_site_id are
+        // DELIBERATELY absent: a live row never moves across orgs.
+      };
+      for (const field of unread) delete set[field];
       const written = await tx
         .insert(edrDetections)
         .values(batch)
@@ -533,36 +579,7 @@ export async function persistDetections(
           // (detached_at set) is invisible to this conflict target, so a
           // re-fetched detection after a remap inserts a fresh row.
           targetWhere: sql`${edrDetections.detachedAt} IS NULL`,
-          set: {
-            severity: sql`excluded.severity`,
-            vendorSeverity: sql`excluded.vendor_severity`,
-            status: sql`excluded.status`,
-            vendorStatus: sql`excluded.vendor_status`,
-            title: sql`excluded.title`,
-            category: sql`excluded.category`,
-            threatName: sql`excluded.threat_name`,
-            filePath: sql`excluded.file_path`,
-            processName: sql`excluded.process_name`,
-            mitreTechniques: sql`excluded.mitre_techniques`,
-            detectedAt: sql`excluded.detected_at`,
-            resolvedAt: sql`excluded.resolved_at`,
-            lastVendorUpdateAt: sql`excluded.last_vendor_update_at`,
-            details: sql`excluded.details`,
-            // STICKY attribution: a detection's vendor endpoint is fixed at its first non-null
-            // attribution. A later rename / name reuse can never re-bind it to another machine;
-            // a later value only fills a null. (No-op for GravityZone: its endpoint id never changes.)
-            vendorEndpointId: sql`COALESCE(${edrDetections.vendorEndpointId}, excluded.vendor_endpoint_id)`,
-            // endpoint_id / breeze_device_id may only be FILLED while they describe the SAME vendor endpoint the
-            // row keeps. If the stored vendor id differs from the incoming one (name reuse after a re-enrol), a
-            // NULLed link (endpoint row pruned -> FK SET NULL) must not be filled from the other machine.
-            endpointId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.endpointId}, excluded.endpoint_id) ELSE ${edrDetections.endpointId} END`,
-            // A closed detection keeps its historical device; refreshDetectionDeviceLinks
-            // re-points open ones. Only fill a missing link here (same-endpoint rule as above).
-            breezeDeviceId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id) ELSE ${edrDetections.breezeDeviceId} END`,
-            updatedAt: sql`excluded.updated_at`,
-            // org_id / tenant_id / notified_severity / detached_at / last_site_id are
-            // DELIBERATELY absent: a live row never moves across orgs.
-          },
+          set,
           // Defence in depth: a conflict row owned by another tenant/org is skipped
           // (and counted below) rather than overwritten.
           setWhere: sql`${edrDetections.tenantId} = excluded.tenant_id AND ${edrDetections.orgId} = excluded.org_id`,

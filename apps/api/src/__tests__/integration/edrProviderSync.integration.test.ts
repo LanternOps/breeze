@@ -129,6 +129,7 @@ import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { applyDetectionStatusUpdates, loadOpenDetectionRefs, persistDetections, persistInventory } from '../../services/edrProviders/persist';
 import { evaluateEdrAlerts, evaluateEdrEndpointHealth } from '../../services/edrProviders/alerts';
 import type { VendorEdrDetection } from '../../services/edrProviders/types';
+import { __testOnly as gzAdapterTestOnly, bitdefenderAdapter } from '../../services/edrProviders/bitdefender/adapter';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -341,6 +342,8 @@ function resetVendor() {
   gz.endpointDetails = new Map();
   gz.inventoryHook = null;
   gz.account = { profile: { timezone: 'UTC' } };
+  // Every seeded connection uses the same key, so the adapter's per-key "failing since" record is reset too.
+  gzAdapterTestOnly.resetAccountReadFailures();
 }
 
 /** partner + orgA(+site+device) + orgB(+site) + a real-credentialled GravityZone connection. */
@@ -473,6 +476,100 @@ describe('edr sync — real job functions against Postgres', () => {
     expect(after!.last_seen_at).toBeNull();
     expect(after!.agent_version).toBe('8.26.11.679');
     expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
+  });
+
+  runDb('#12821: after a confirmed release, an account read failing transiently does not fail inventory: isolation_state goes not_isolated and isolate is offered', async () => {
+    const fx = await seedJob();
+    const co = `co-rel-${sfx()}`;
+    const tenantId = await fx.addTenant(co, fx.orgA.id);
+    const vep = `ep-rel-${sfx()}`;
+    gz.companies = [{ id: co, name: `Rel ${sfx()}` }];
+    gz.inventory.set(co, [gzEndpoint(vep, co, 'WS-REL', 'ws-rel.corp.example', { isIsolated: true })]);
+    gz.endpointDetails.set(vep, { state: 1, lastSeen: '2026-11-27T17:17:34', agent: { productVersion: '8.26.11.679' } });
+    await syncEdrInventory(fx.connectionId);
+    const [isolated] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(isolated!.isolation_state).toBe('isolated');
+    const endpointId = isolated!.id as string;
+
+    // The release is requested, accepted, and confirmed by a live read.
+    const [release] = await withSystemDbAccessContext(() => db.insert(edrActions).values({
+      connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, endpointId,
+      provider: 'bitdefender', action: 'unisolate', status: 'submitted', requestedVia: 'ui', requestedBy: fx.user.id,
+      submittedAt: new Date(), payload: { target: { kind: 'endpoint', vendorEndpointId: vep } },
+    } as typeof edrActions.$inferInsert).returning({ id: edrActions.id }));
+    gz.endpointDetails.set(vep, { ...gz.endpointDetails.get(vep), isIsolated: false });
+    expect(await pollEdrActionStatus(fx.connectionId, new Date())).toMatchObject({ checked: 1, settled: 1 });
+    expect((await adminRows<{ status: string }>(sql`SELECT status FROM edr_actions WHERE id = ${release!.id}::uuid`))[0]!.status)
+      .toBe('succeeded');
+
+    // Next inventory run: the vendor lists the endpoint released; the account read fails transiently.
+    gz.inventory.set(co, [gzEndpoint(vep, co, 'WS-REL', 'ws-rel.corp.example', { isIsolated: false })]);
+    gz.account = new EdrProviderRequestError('GravityZone accounts.getAccountDetails failed: Server error', {
+      code: 'vendor_error', reauth: false, scope: 'operation',
+    });
+    await withSystemDbAccessContext(() => db.update(edrEndpoints).set({ vendorDetailSyncedAt: null })
+      .where(sql`${edrEndpoints.connectionId} = ${fx.connectionId}::uuid`));
+    gz.calls = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await syncEdrInventory(fx.connectionId);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(gz.calls).toContain('getAccountDetails');
+    expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
+    const [after] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(after).toMatchObject({ isolation_state: 'not_isolated', agent_version: '8.26.11.679' });
+    // The action check reads exactly this column.
+    expect(bitdefenderAdapter.supportsAction!({
+      vendorEndpointId: vep, osPlatform: after!.os_platform as never, isolationState: after!.isolation_state as never,
+      online: after!.online as boolean | null, tenantUnsupportedActions: [], connectionCapabilityNotes: [],
+    }, 'isolate')).toEqual({ ok: true });
+  });
+
+  runDb('#12821: a detection sync whose account read fails transiently still stores new detections and status changes; stored times are kept, a new row has none', async () => {
+    const fx = await seedJob();
+    const co = `co-dtz-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    const offsetless = (id: string, status: number) => ({
+      ...gzIncident(id, co, status), created: '2026-11-25T16:26:45', lastIncidentChange: '2026-11-25T16:29:18',
+    });
+    const known = `inc-k-${sfx()}`;
+    gz.account = { profile: { timezone: 'America/New_York' } };
+    gz.incidents = [offsetless(known, 1)];
+    await syncEdrDetections(fx.connectionId);
+    const byVendorId = async () => new Map((await adminRows<Row>(sql`
+      SELECT vendor_detection_id, status, detected_at, resolved_at, last_vendor_update_at
+      FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid`)).map((r) => [r.vendor_detection_id as string, r]));
+    const iso = (v: unknown) => (v === null ? null : new Date(v as string).toISOString());
+    const first = (await byVendorId()).get(known)!;
+    expect([iso(first.detected_at), iso(first.last_vendor_update_at)]).toEqual(['2026-11-25T21:26:45.000Z', '2026-11-25T21:29:18.000Z']);
+    const cursor1 = (await tenantRow(fx.connectionId, co)).detection_cursor;
+
+    // Next run: the account read fails; the known incident is closed and a new one appears.
+    gz.account = new EdrProviderRequestError('GravityZone accounts.getAccountDetails failed: Server error', {
+      code: 'vendor_error', reauth: false, scope: 'operation',
+    });
+    const fresh = `inc-n-${sfx()}`;
+    gz.incidents = [offsetless(known, 3), offsetless(fresh, 1)];
+    await new Promise((r) => setTimeout(r, 20)); // distinct window end
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await syncEdrDetections(fx.connectionId);
+    } finally {
+      warn.mockRestore();
+    }
+    const rows = await byVendorId();
+    const k = rows.get(known)!;
+    expect(k.status).toBe('resolved');
+    // Stored times kept, not nulled and not guessed.
+    expect([iso(k.detected_at), iso(k.last_vendor_update_at)]).toEqual(['2026-11-25T21:26:45.000Z', '2026-11-25T21:29:18.000Z']);
+    const n = rows.get(fresh)!;
+    expect(n).toMatchObject({ status: 'open', detected_at: null, last_vendor_update_at: null });
+    const tenant = await tenantRow(fx.connectionId, co);
+    expect(tenant.detection_cursor).not.toBe(cursor1);
+    expect(tenant).toMatchObject({ last_detection_sync_status: 'partial' });
+    expect(tenant.last_detection_sync_error).toContain('incidents: times not updated (account timezone read failed)');
   });
 
   runDb('#12789: a sync that read the vendor BEFORE an isolate and wrote AFTER it does not confirm it; a live read after the request does', async () => {

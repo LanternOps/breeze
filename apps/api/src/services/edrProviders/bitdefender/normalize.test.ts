@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  bucketSeverityScore, toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint,
+  bucketSeverityScore, toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint, ZONE_NOT_READ,
 } from './normalize';
 
 const fx = (n: string) => JSON.parse(readFileSync(join(__dirname, '__fixtures__', n), 'utf8')).result;
@@ -127,5 +127,24 @@ describe('vendor times arrive in the key owner timezone (#12821, live shapes)', 
     const unknown = toQuarantineDetection(q, T, null);
     expect(unknown.detectedAt).toBeNull();
     expect(unknown.lastVendorUpdateAt).toBeNull();
+  });
+
+  it('zone not read this run: offset-less times are left undefined (stored value kept); times with an offset are still read', () => {
+    expect(toEndpointDetail('e', personal, ZONE_NOT_READ)).not.toHaveProperty('lastSeenAt');
+    expect(toEndpointDetail('e', { ...personal, lastSeen: '2026-11-27T17:17:34-05:00' }, ZONE_NOT_READ).lastSeenAt?.toISOString())
+      .toBe('2026-11-27T22:17:34.000Z');
+    // A missing value is known to be empty, not "not read".
+    expect(toEndpointDetail('e', { ...personal, lastSeen: undefined }, ZONE_NOT_READ).lastSeenAt).toBeNull();
+
+    const [q] = fx('live-quarantine-service-key.json').items;
+    const notRead = toQuarantineDetection(q, T, ZONE_NOT_READ);
+    expect([notRead.detectedAt, notRead.lastVendorUpdateAt, notRead.resolvedAt]).toEqual([undefined, undefined, null]);
+
+    const [p] = fx('live-incidents-personal-key.json').items;
+    expect(toIncidentDetection(p, T, ZONE_NOT_READ).detectedAt?.toISOString()).toBe('2026-11-25T21:26:45.000Z');
+    // A closed incident whose last change has no offset: resolvedAt is not read either (kept), never null.
+    const closed = toIncidentDetection({ ...p, status: 'resolved', lastIncidentChange: '2026-11-25T16:29:18' }, T, ZONE_NOT_READ);
+    expect(closed.status).toBe('resolved');
+    expect([closed.resolvedAt, closed.lastVendorUpdateAt]).toEqual([undefined, undefined]);
   });
 });

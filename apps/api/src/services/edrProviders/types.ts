@@ -88,8 +88,14 @@ export interface VendorEdrDetection {
   vendorEndpointId: string | null; severity: EdrSeverity; vendorSeverity: string | null;
   status: EdrDetectionStatus; vendorStatus: string | null; title: string | null;
   category: string | null; threatName: string | null; filePath: string | null;
-  processName: string | null; mitreTechniques: string[]; detectedAt: Date | null;
-  resolvedAt: Date | null; lastVendorUpdateAt: Date | null; details: Record<string, unknown>;
+  processName: string | null; mitreTechniques: string[];
+  /**
+   * The three times: `null` = known to be empty (clears a stored value); `undefined` = could not be
+   * read this run (GravityZone, account timezone read failed, #12821): the stored value is kept and
+   * a new row starts with none. Never a guessed time.
+   */
+  detectedAt: Date | null | undefined;
+  resolvedAt: Date | null | undefined; lastVendorUpdateAt: Date | null | undefined; details: Record<string, unknown>;
   /**
    * Adapter-owned vendor locator for later reads/actions on this object (Emsisoft: the incident's
    * sha1 / host / IP). Written by sync from vendor data only, never from a request. Stored in

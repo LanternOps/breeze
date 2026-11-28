@@ -340,6 +340,39 @@ describe('persistDetections', () => {
     expect((resyncInsert.values as Array<Record<string, unknown>>)[0]).not.toHaveProperty('notifiedSeverity');
   });
 
+  // #12821: an adapter that could not read a time this run leaves it undefined. The stored value
+  // stays on conflict; a new row starts with none. null still clears (it is "fetched as empty").
+  it('an undefined detection time is left out of ON CONFLICT (stored value kept) and inserts as null; null still overwrites', async () => {
+    const { tx, ops } = makeTx({
+      selects: [tenantRows, []],
+      returning: [[{ id: 'd1' }], [{ id: 'd2' }]],
+    });
+    const out = await persistDetections(tx, CONN, [
+      { vendorTenantId: 'co1', ok: true, value: page([
+        detection('known', { detectedAt: NOW, resolvedAt: null, lastVendorUpdateAt: NOW }),
+        detection('unread', { detectedAt: undefined, resolvedAt: null, lastVendorUpdateAt: undefined }),
+      ]) },
+    ], NOW);
+    expect(out).toEqual({ upserted: 2, failedTenants: 0, skipped: 0 });
+
+    const inserts = ops.filter((o) => o.kind === 'insert' && o.table === 'edr_detections');
+    expect(inserts).toHaveLength(2);
+    const byId = (id: string) => inserts.find((o) => (o.values as Array<Record<string, unknown>>).some((v) => v.vendorDetectionId === id))!;
+
+    const known = byId('known');
+    expect(Object.keys(known.conflict!.set!)).toEqual(expect.arrayContaining(['detectedAt', 'resolvedAt', 'lastVendorUpdateAt']));
+    expect((known.values as Array<Record<string, unknown>>).map((v) => v.vendorDetectionId)).toEqual(['known']);
+
+    const unread = byId('unread');
+    const unreadSet = Object.keys(unread.conflict!.set!);
+    expect(unreadSet).not.toContain('detectedAt');
+    expect(unreadSet).not.toContain('lastVendorUpdateAt');
+    // resolvedAt was read (null for an open detection): it still clears a stored value.
+    expect(unreadSet).toContain('resolvedAt');
+    const [row] = unread.values as Array<Record<string, unknown>>;
+    expect(row).toMatchObject({ vendorDetectionId: 'unread', detectedAt: null, lastVendorUpdateAt: null, resolvedAt: null });
+  });
+
   describe('A4: locator, group key, sticky attribution', () => {
     const run = async (d: VendorEdrDetection) => {
       const { tx, ops } = makeTx({ selects: [tenantRows, []], returning: [[{ id: 'd1' }]] });

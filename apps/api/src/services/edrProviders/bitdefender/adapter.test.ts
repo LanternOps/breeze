@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EdrActionKey } from '@breeze/shared';
 import {
   EdrProviderRequestError, type EdrActionRequest, type EdrActionSupport, type EdrActionTargetFacts,
   type EdrAdapterContext, type GuardedFetch,
 } from '../types';
-import { bitdefenderAdapter as adapter } from './adapter';
+import { __testOnly, bitdefenderAdapter as adapter } from './adapter';
 
 const fx = (n: string) => readFileSync(join(__dirname, '__fixtures__', n), 'utf8');
 const C1 = '5f0a1b2c3d4e5f60718293a1';
@@ -431,6 +431,8 @@ describe('listDetections', () => {
 describe('vendor times in the key owner timezone (#12821)', () => {
   const T1 = { vendorTenantId: C1, apiHost: null };
   const quietWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // The "failing since" record is per process and per key; every test starts with none.
+  beforeEach(() => __testOnly.resetAccountReadFailures());
 
   it('enrichment reads the key owner account timezone once per run and stores lastSeen in UTC', async () => {
     const { ctx, calls, count } = makeCtx({ 'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json') });
@@ -467,12 +469,26 @@ describe('vendor times in the key owner timezone (#12821)', () => {
     warn.mockRestore();
   });
 
-  it('a dead key on the account read throws (reauth), never reads as "timezone unavailable"', async () => {
+  it('a 401 on the account read alone does not fail the run: lastSeen is left unset (kept), never stored as null', async () => {
+    const warn = quietWarn();
     const { ctx } = makeCtx({
       'accounts.getAccountDetails': { status: 401, body: '{}' },
       'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
     });
-    await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ reauth: true });
+    const [d] = await adapter.enrichEndpoints!(ctx, T1, ['a']);
+    expect(d).not.toHaveProperty('lastSeenAt');
+    expect(d!.agentVersion).toBe('8.26.11.679');
+    warn.mockRestore();
+  });
+
+  it('a dead key that also fails the other calls of the run fails the run for that reason (reauth)', async () => {
+    const warn = quietWarn();
+    const { ctx } = makeCtx({
+      'accounts.getAccountDetails': { status: 401, body: '{}' },
+      'network.getManagedEndpointDetails': { status: 401, body: '{}' },
+    });
+    await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ code: 'auth', reauth: true });
+    warn.mockRestore();
   });
 
   it('an unavailable timezone is read once per run: a second tenant makes no account call and logs nothing new', async () => {
@@ -520,7 +536,8 @@ describe('vendor times in the key owner timezone (#12821)', () => {
     warn.mockRestore();
   });
 
-  it('a transient account read during detection sync throws, so no cursor comes back to advance', async () => {
+  it('a rate limit on the account read alone: detections still come back with a cursor; offset-less times unset, never guessed', async () => {
+    const warn = quietWarn();
     const q = JSON.parse(fx('live-quarantine-service-key.json'));
     q.result.items[0].companyId = C1;
     const { ctx } = makeCtx({
@@ -528,15 +545,27 @@ describe('vendor times in the key owner timezone (#12821)', () => {
       'incidents.getIncidentsList': rpc({ total: 0, page: 1, perPage: 1000, pagesCount: 0, items: [] }),
       'quarantine/computers.getQuarantineItemsList': { body: JSON.stringify(q) },
     });
-    await expect(adapter.listDetections(ctx, T1, null, NOW)).rejects.toMatchObject({ code: 'rate_limited' });
+    const page = await adapter.listDetections(ctx, T1, null, NOW);
+    expect(page.detections).toHaveLength(1);
+    expect(page.detections[0]).toMatchObject({ vendorKind: 'quarantine_item', detectedAt: undefined, lastVendorUpdateAt: undefined });
+    expect(JSON.parse(page.cursor!).quarantineAfter).toBe(NOW.toISOString());
+    expect(page.warnings).toEqual(['quarantine: times not updated (account timezone read failed)']);
+    warn.mockRestore();
   });
 
-  it('a transient account read failure fails the run instead of storing a guessed time', async () => {
+  it('a rate limit on the account read alone does not fail inventory enrichment; lastSeen is left unset', async () => {
+    const warn = quietWarn();
     const { ctx } = makeCtx({
       'accounts.getAccountDetails': { status: 429, body: fx('error-429-nginx.html'), headers: { 'Retry-After': '600' } },
       'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
     });
-    await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ code: 'rate_limited' });
+    const [d] = await adapter.enrichEndpoints!(ctx, T1, ['a']);
+    expect(d).not.toHaveProperty('lastSeenAt');
+    expect(d!.agentVersion).toBe('8.26.11.679');
+    const msgs = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('timezone'));
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toContain('(rate_limited)');
+    warn.mockRestore();
   });
 
   it('quarantine times use the account timezone; incidents keep their own offset', async () => {
@@ -617,19 +646,44 @@ describe('vendor times in the key owner timezone (#12821)', () => {
       ['an unrecognised code', rpcError(-32099, 'Something'), 'vendor_error'],
       ['not found (-32002)', ok('error-not-found-32002.json'), 'not_found'],
       ['a non-2xx JSON reply without an error', { status: 404, body: '{"jsonrpc":"2.0","id":1}' }, 'http_error'],
-    ])('transient: %s -> the run fails, nothing is stored as null', async (_l, reply, code) => {
+    ])('transient: %s -> the run goes on; lastSeen left unset (the stored time stays), code logged', async (_l, reply, code) => {
       const warn = quietWarn();
       const { ctx } = enrichWith(reply);
-      await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ code });
+      const [d] = await adapter.enrichEndpoints!(ctx, T1, ['a']);
+      expect(d).not.toHaveProperty('lastSeenAt');
+      expect(d!.agentVersion).toBe('8.26.11.679');
+      const msgs = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('timezone'));
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain(`(${code})`);
       warn.mockRestore();
     });
 
-    it('connection-level: an HTTP 403 that is not "API not enabled" fails the run', async () => {
+    it('connection-scope on the account call only (a non-JSON 403): the run goes on, lastSeen left unset', async () => {
+      const warn = quietWarn();
       const { ctx } = enrichWith({ status: 403, body: '<html>denied</html>' });
-      await expect(adapter.enrichEndpoints!(ctx, T1, ['a'])).rejects.toMatchObject({ code: 'forbidden', scope: 'connection' });
+      const [d] = await adapter.enrichEndpoints!(ctx, T1, ['a']);
+      expect(d).not.toHaveProperty('lastSeenAt');
+      expect(d!.agentVersion).toBe('8.26.11.679');
+      warn.mockRestore();
     });
 
-    it('a generic vendor error during detection sync fails the run, so no cursor advances', async () => {
+    it('a network failure on the account read (the fetch itself throws) is transient: never fails the run, never logs the cause', async () => {
+      const warn = quietWarn();
+      const { ctx } = makeCtx({ 'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json') }, freshKey());
+      const real = ctx.fetch;
+      ctx.fetch = (async (url, init) => {
+        if (JSON.parse(init.body!).method === 'getAccountDetails') throw new TypeError('boom SECRET');
+        return real(url, init);
+      }) as GuardedFetch;
+      const [d] = await adapter.enrichEndpoints!(ctx, T1, ['a']);
+      expect(d).not.toHaveProperty('lastSeenAt');
+      const msgs = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('timezone'));
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).not.toContain('SECRET');
+      warn.mockRestore();
+    });
+
+    it('a generic vendor error during detection sync: detections come back with a cursor; quarantine times unset', async () => {
       const warn = quietWarn();
       const q = JSON.parse(fx('live-quarantine-service-key.json'));
       q.result.items[0].companyId = C1;
@@ -638,36 +692,64 @@ describe('vendor times in the key owner timezone (#12821)', () => {
         'incidents.getIncidentsList': rpc({ total: 0, page: 1, perPage: 1000, pagesCount: 0, items: [] }),
         'quarantine/computers.getQuarantineItemsList': { body: JSON.stringify(q) },
       }, freshKey());
-      await expect(adapter.listDetections(ctx, T1, null, NOW)).rejects.toMatchObject({ code: 'vendor_error' });
+      const page = await adapter.listDetections(ctx, T1, null, NOW);
+      expect(page.detections.map((d) => [d.vendorDetectionId, d.detectedAt, d.lastVendorUpdateAt]))
+        .toEqual([['6c0000000000000000000003', undefined, undefined]]);
+      expect(page.cursor).not.toBeNull();
+      expect(page.warnings).toEqual(['quarantine: times not updated (account timezone read failed)']);
       warn.mockRestore();
     });
 
-    it('bound: a read failing for 3 hours with no success stops blocking the run; a success resets the window', async () => {
+    it('an incident with no offset while the read fails: created / last change unset; a non-terminal resolvedAt stays null', async () => {
       const warn = quietWarn();
-      vi.useFakeTimers({ toFake: ['Date'] });
-      try {
-        const key = freshKey();
-        const failing = rpcError(-32000, 'Server error');
-        const t0 = Date.parse('2026-11-27T10:00:00Z');
-        const at = (ms: number) => vi.setSystemTime(new Date(t0 + ms));
-        const H = 3_600_000;
+      const inc = JSON.parse(fx('live-incidents-personal-key.json'));
+      Object.assign(inc.result.items[0], { company: { id: C1 }, created: '2026-11-25T16:26:45', lastIncidentChange: '2026-11-25T16:29:18' });
+      const { ctx } = makeCtx({
+        'accounts.getAccountDetails': rpcError(-32000, 'Server error'),
+        'incidents.getIncidentsList': { body: JSON.stringify(inc) },
+        'quarantine/computers.getQuarantineItemsList': rpc({ total: 0, page: 1, perPage: 100, pagesCount: 0, items: [] }),
+      }, freshKey());
+      const page = await adapter.listDetections(ctx, T1, null, NOW);
+      expect(page.detections.map((d) => [d.detectedAt, d.lastVendorUpdateAt, d.resolvedAt])).toEqual([[undefined, undefined, null]]);
+      expect(page.warnings).toEqual(['incidents: times not updated (account timezone read failed)']);
+      warn.mockRestore();
+    });
 
+    describe('bound: a read that keeps failing becomes "unavailable" (null), counted in attempts AND elapsed time', () => {
+      const failing = rpcError(-32000, 'Server error');
+      const H = 3_600_000;
+      const t0 = Date.parse('2026-11-27T10:00:00Z');
+      const at = (ms: number) => vi.setSystemTime(new Date(t0 + ms));
+      /** One inventory enrichment run at the current time; returns the one detail. */
+      const runOnce = async (key: Partial<EdrAdapterContext>, reply: Route = failing) =>
+        (await adapter.enrichEndpoints!(enrichWith(reply, key).ctx, T1, ['a']))[0]!;
+      const lastSeenOf = (d: Awaited<ReturnType<typeof runOnce>>) => ('lastSeenAt' in d ? d.lastSeenAt : 'unset');
+
+      let warn: ReturnType<typeof quietWarn>;
+      beforeEach(() => {
+        warn = quietWarn();
+        vi.useFakeTimers({ toFake: ['Date'] });
+        return () => { vi.useRealTimers(); warn.mockRestore(); };
+      });
+
+      it('three failed runs spanning 3 hours with no success -> null, logged account_read_failing:<code>; never fails the run', async () => {
+        const key = freshKey();
         at(0);
-        await expect(adapter.enrichEndpoints!(enrichWith(failing, key).ctx, T1, ['a'])).rejects.toMatchObject({ code: 'vendor_error' });
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
+        at(1.5 * H);
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
         at(3 * H - 1);
-        await expect(adapter.enrichEndpoints!(enrichWith(failing, key).ctx, T1, ['a'])).rejects.toMatchObject({ code: 'vendor_error' });
-        // Another key's window is its own.
-        const other = freshKey();
-        await expect(adapter.enrichEndpoints!(enrichWith(failing, other).ctx, T1, ['a'])).rejects.toMatchObject({ code: 'vendor_error' });
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
+        // Another key's record is its own.
+        expect(lastSeenOf(await runOnce(freshKey()))).toBe('unset');
 
         warn.mockClear();
         at(3 * H);
-        const out = await adapter.enrichEndpoints!(enrichWith(failing, key).ctx, T1, ['a']);
-        expect(out.map((d) => [d.lastSeenAt, d.agentVersion])).toEqual([[null, '8.26.11.679']]);
+        const d = await runOnce(key);
+        expect([lastSeenOf(d), d.agentVersion]).toEqual([null, '8.26.11.679']);
         const msgs = warn.mock.calls.map((c) => String(c.join(' '))).filter((m) => m.includes('timezone'));
         expect(msgs).toHaveLength(1);
-        expect(msgs[0]).toContain('account_read_failing');
-        expect(msgs[0]).toContain('vendor_error');
+        expect(msgs[0]).toContain('account_read_failing:vendor_error');
         expect(msgs[0]).not.toContain('Server error');
 
         // Detection sync past the bound: null times, and a warning that says the read is failing.
@@ -679,20 +761,135 @@ describe('vendor times in the key owner timezone (#12821)', () => {
           'quarantine/computers.getQuarantineItemsList': { body: JSON.stringify(q) },
         }, key);
         const page = await adapter.listDetections(det.ctx, T1, null, NOW);
-        expect(page.detections.map((d) => d.detectedAt)).toEqual([null]);
+        expect(page.detections.map((x) => [x.detectedAt, x.lastVendorUpdateAt])).toEqual([[null, null]]);
         expect(page.warnings).toEqual(['quarantine: times not stored (account timezone read failing)']);
+      });
 
-        // A successful read clears the window: the next failure fails the run again.
+      it('one failure, a 4-hour gap, then a second failure is NOT "failing for 3 hours": still unset; the third failure tips it', async () => {
+        const key = freshKey();
+        at(0);
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
+        at(4 * H);
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
+        at(4 * H + 60_000);
+        expect(lastSeenOf(await runOnce(key))).toBeNull();
+      });
+
+      it('many failures inside 3 hours stay unset (attempts alone are not enough)', async () => {
+        const key = freshKey();
+        for (let i = 0; i < 10; i++) {
+          at(i * 15 * 60_000);
+          expect(lastSeenOf(await runOnce(key))).toBe('unset');
+        }
+      });
+
+      it('a successful read clears the record: failures start counting again from zero', async () => {
+        const key = freshKey();
+        at(0); await runOnce(key);
+        at(H); await runOnce(key);
+        at(2 * H); await runOnce(key);
+        at(3 * H); expect(lastSeenOf(await runOnce(key))).toBeNull();
         at(3 * H + 60_000);
-        const [d] = await adapter.enrichEndpoints!(makeCtx({ 'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json') }, key).ctx, T1, ['a']);
-        expect(d!.lastSeenAt?.toISOString()).toBe('2026-11-27T22:17:34.000Z');
+        const okRun = await runOnce(key, { body: fx('account-details.json') });
+        expect((okRun.lastSeenAt as Date).toISOString()).toBe('2026-11-27T22:17:34.000Z');
         at(3 * H + 120_000);
-        await expect(adapter.enrichEndpoints!(enrichWith(failing, key).ctx, T1, ['a'])).rejects.toMatchObject({ code: 'vendor_error' });
-      } finally {
-        vi.useRealTimers();
-        warn.mockRestore();
-      }
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
+        at(7 * H);
+        expect(lastSeenOf(await runOnce(key))).toBe('unset');
+      });
+
+      it('a permanent reason clears a transient record (it is null on its own terms, not via the bound)', async () => {
+        const key = freshKey();
+        at(0); await runOnce(key);
+        at(H); await runOnce(key);
+        at(2 * H); expect(lastSeenOf(await runOnce(key, rpcError(-32601, 'Method not found')))).toBeNull();
+        at(3 * H); expect(lastSeenOf(await runOnce(key))).toBe('unset');
+      });
+
+      it('resetAccountReadFailures forgets every key (tests do not depend on run order)', async () => {
+        const key = freshKey();
+        at(0); await runOnce(key);
+        at(H); await runOnce(key);
+        __testOnly.resetAccountReadFailures();
+        at(3 * H); expect(lastSeenOf(await runOnce(key))).toBe('unset');
+      });
     });
+  });
+
+  describe('a run where only the account read fails still persists everything that does not need the timezone', () => {
+    const rpcError = (code: number, message: string): Reply => ({ body: JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code, message } }) });
+    const quarantineFor = (companyId: string) => {
+      const q = JSON.parse(fx('live-quarantine-service-key.json'));
+      q.result.items[0].companyId = companyId;
+      return { body: JSON.stringify(q) };
+    };
+    it.each([
+      ['permanent (Accounts API not enabled)', null, { status: 403, body: fx('error-api-not-enabled-accounts-403.json') }],
+      ['transient (generic vendor error)', 'unset', rpcError(-32000, 'Server error')],
+      ['connection-scope on that call only (rate limited)', 'unset', { status: 429, body: fx('error-429-nginx.html'), headers: { 'Retry-After': '600' } }],
+    ] as const)('%s: isolation state, identity and new detections come back; times are %s', async (_l, expectedTime, accountReply) => {
+      const warn = quietWarn();
+      const { ctx } = makeCtx({
+        'accounts.getAccountDetails': accountReply as Route,
+        'network.getNetworkInventoryItems': [ok('inventory-page1.json'), ok('inventory-page2.json')],
+        'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+        'incidents.getIncidentsList': rpc({ total: 0, page: 1, perPage: 1000, pagesCount: 0, items: [] }),
+        'quarantine/computers.getQuarantineItemsList': quarantineFor(C1),
+      });
+      // Inventory, as the sync job runs it: list, then enrich.
+      const eps = await adapter.listEndpoints(ctx, T1);
+      expect(eps.map((e) => [e.vendorEndpointId, e.isolationState])).toEqual([
+        ['6a0000000000000000000a01', 'isolated'],
+        ['6a0000000000000000000a02', expect.any(String)],
+      ]);
+      const details = await adapter.enrichEndpoints!(ctx, T1, eps.map((e) => e.vendorEndpointId));
+      expect(details.map((d) => d.agentVersion)).toEqual(['8.26.11.679', '8.26.11.679']);
+      expect(details.map((d) => ('lastSeenAt' in d ? d.lastSeenAt : 'unset'))).toEqual([expectedTime, expectedTime]);
+      // Detection sync: the new quarantine item is returned and the cursor advances.
+      const page = await adapter.listDetections(ctx, T1, null, NOW);
+      expect(page.detections.map((d) => [d.vendorDetectionId, d.status])).toEqual([['6c0000000000000000000003', expect.any(String)]]);
+      expect(page.detections.map((d) => ('detectedAt' in d && d.detectedAt !== undefined ? d.detectedAt : 'unset'))).toEqual([expectedTime]);
+      expect(JSON.parse(page.cursor!).quarantineAfter).toBe(NOW.toISOString());
+      warn.mockRestore();
+    });
+  });
+
+  it('re-isolate after a confirmed release while the account read fails transiently: the next inventory run shows not_isolated and isolate is offered', async () => {
+    const warn = quietWarn();
+    const facts = (isolationState: EdrActionTargetFacts['isolationState']): EdrActionTargetFacts => ({
+      vendorEndpointId: '6a0000000000000000000a01', osPlatform: 'windows', isolationState, online: true,
+      tenantUnsupportedActions: [], connectionCapabilityNotes: [],
+    });
+    const req = (action: 'unisolate'): EdrActionRequest => ({ action, target: { kind: 'endpoint', vendorEndpointId: '6a0000000000000000000a01' } });
+
+    // Before: the endpoint is isolated, so isolate is refused.
+    const before = makeCtx({ 'network.getNetworkInventoryItems': [ok('inventory-page1.json'), ok('inventory-page2.json')] });
+    const [isolated] = await adapter.listEndpoints(before.ctx, T1);
+    expect(isolated!.isolationState).toBe('isolated');
+    expect(adapter.supportsAction!(facts(isolated!.isolationState), 'isolate')).toEqual({ ok: false, reason: 'Already isolated' });
+
+    // Release: accepted, then confirmed by the live read.
+    const release = makeCtx({
+      'incidents.createRestoreEndpointFromIsolationTask': ok('action-restore-ok.json'),
+      'network.getManagedEndpointDetails': rpc({ id: '6a0000000000000000000a01', isIsolated: false }),
+    });
+    expect(await adapter.performAction!(release.ctx, T1, req('unisolate'), '7f0c0000-0000-4000-8000-00000000a0f1')).toEqual({ status: 'succeeded' });
+    expect(await adapter.reconcileAction!(release.ctx, T1, req('unisolate'))).toBe('applied');
+
+    // Next inventory run: the account read fails transiently; the vendor now lists the endpoint released.
+    const page1 = JSON.parse(fx('inventory-page1.json'));
+    page1.result.items[0].details.isIsolated = false;
+    const next = makeCtx({
+      'accounts.getAccountDetails': { body: JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'Server error' } }) },
+      'network.getNetworkInventoryItems': [{ body: JSON.stringify(page1) }, ok('inventory-page2.json')],
+      'network.getManagedEndpointDetails': ok('live-endpoint-details-personal-key.json'),
+    });
+    const [released] = await adapter.listEndpoints(next.ctx, T1);
+    // The run does not fail on the account read, so this row is what inventory writes.
+    await expect(adapter.enrichEndpoints!(next.ctx, T1, [released!.vendorEndpointId])).resolves.toHaveLength(1);
+    expect(released!.isolationState).toBe('not_isolated');
+    expect(adapter.supportsAction!(facts(released!.isolationState), 'isolate')).toEqual({ ok: true });
+    warn.mockRestore();
   });
 
   it('testConnection notes a key without the Accounts API', async () => {
