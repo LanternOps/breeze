@@ -4,14 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/wingetenv"
 )
 
 var errWingetNotFound = errors.New("winget.exe not found under WindowsApps")
-
-var appInstallerDirRe = regexp.MustCompile(`^Microsoft\.DesktopAppInstaller_([0-9]+(?:\.[0-9]+)*)_(?:x64|arm64)__8wekyb3d8bbwe$`)
 
 // wingetLocator finds the SYSTEM-usable winget.exe under the versioned
 // WindowsApps folder, since the per-user PATH shim isn't reachable from the
@@ -33,7 +31,7 @@ func newWingetLocator() *wingetLocator {
 // found under root, or errWingetNotFound if none match.
 func (l *wingetLocator) Locate() (string, string, error) {
 	// The wildcard spans both `<version>_x64` and `<version>_arm64`; the
-	// stricter appInstallerDirRe filter below rejects anything else the glob
+	// stricter wingetenv.ParseAppInstallerDir filter below rejects anything else the glob
 	// happens to match (e.g. neutral/split language packages).
 	matches, err := l.glob(filepath.Join(l.root, "Microsoft.DesktopAppInstaller_*__8wekyb3d8bbwe", "winget.exe"))
 	if err != nil {
@@ -75,31 +73,10 @@ func LocateSystemWinget() (path, version string, err error) {
 // parseAppInstallerVersion extracts the version string from a
 // Microsoft.DesktopAppInstaller_<ver>_<x64|arm64>__8wekyb3d8bbwe directory name.
 func parseAppInstallerVersion(dir string) (string, bool) {
-	m := appInstallerDirRe.FindStringSubmatch(dir)
-	if m == nil {
-		return "", false
-	}
-	return m[1], true
+	ver, _, ok := wingetenv.ParseAppInstallerDir(dir)
+	return ver, ok
 }
 
 // compareVersions compares two dotted-numeric version strings, returning
 // -1, 0, or 1 as a is less than, equal to, or greater than b.
-func compareVersions(a, b string) int {
-	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(pa) || i < len(pb); i++ {
-		var x, y int
-		if i < len(pa) {
-			x, _ = strconv.Atoi(pa[i])
-		}
-		if i < len(pb) {
-			y, _ = strconv.Atoi(pb[i])
-		}
-		if x != y {
-			if x < y {
-				return -1
-			}
-			return 1
-		}
-	}
-	return 0
-}
+func compareVersions(a, b string) int { return wingetenv.CompareVersions(a, b) }
