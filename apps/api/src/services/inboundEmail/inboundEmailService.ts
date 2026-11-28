@@ -19,6 +19,7 @@ import { addressDomain } from './authenticationResults';
 import { normalizeMailgunForm } from './mailgun';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../unassignedPool/orgType';
 import { maybeSendAutoresponse } from './autoresponder';
+import { guardedReplyTo } from './replyToGuard';
 import { applyDefaultInboundAssignee } from './defaultAssignee';
 import { insertEmailAuthoredComment } from './emailComments';
 import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
@@ -72,6 +73,9 @@ async function logInbound(
     provider: n.provider,
     providerMessageId: n.providerMessageId,
     fromAddress: n.from,
+    // Only ever the guarded value (processInboundEmail clears it until
+    // guardedReplyTo has run for the resolved partner).
+    replyToAddress: n.replyTo ?? null,
     toAddress: n.to,
     subject: n.subject,
     messageId: n.messageId ?? null,
@@ -117,6 +121,7 @@ async function logInboundFailedDurable(
           provider: n.provider,
           providerMessageId: n.providerMessageId,
           fromAddress: n.from,
+          replyToAddress: n.replyTo ?? null,
           toAddress: n.to,
           subject: n.subject,
           messageId: n.messageId ?? null,
@@ -194,8 +199,10 @@ export async function processInboundEmail(
   dependencies: ProcessInboundEmailDependencies = {},
 ): Promise<void> {
   // Rebuilt below, once the partner is known, so a failed rebuild is recorded
-  // under that partner like any other processing failure.
-  let n = queued;
+  // under that partner like any other processing failure. Reply-To is withheld
+  // until the partner-aware loop guard has run (email-first replies W1): no row
+  // or event ever carries an unguarded one.
+  let n: NormalizedInboundEmail = withoutReplyTo(queued);
   // partnerId is tracked outside the try so the durable-failed log records whatever
   // tenant was resolved before the failure (may be null if resolution itself failed).
   let partnerId: string | null = null;
@@ -247,7 +254,8 @@ export async function processInboundEmail(
     }
 
     // A job queued by an earlier release is rebuilt before any check reads it.
-    n = withCurrentSenderBinding(queued);
+    const bound = withCurrentSenderBinding(queued);
+    n = withoutReplyTo(bound);
 
     // (1a.5) Idempotency — provider retries / at-least-once delivery, scoped to the
     // partner. Runs BEFORE the suppression/audit checks below (partner-status,
@@ -466,6 +474,15 @@ export async function processInboundEmail(
       }
       return;
     }
+
+    // Reply-To (email-first replies W1): where customer mail about a ticket this
+    // message creates goes (requesterReplyAddress.ts). Kept only from here on, for
+    // a sender the gate above verified: an unverified From is spoofable, and a
+    // quarantined row converted from the review queue would otherwise send every
+    // reply to whatever Reply-To the forger chose. Cleared when it names one of
+    // our own addresses; the reply then goes to From.
+    const replyTo = await guardedReplyTo(bound, partnerId);
+    if (replyTo) n = { ...n, replyTo };
 
     // Resolve sender identity lazily so token binding and unmatched fallthrough
     // reuse the same partner-scoped lookups.
@@ -875,6 +892,12 @@ function withCurrentSenderBinding(n: NormalizedInboundEmail): NormalizedInboundE
   const form = n.raw as Record<string, unknown> | null;
   if (!form || typeof form !== 'object' || typeof form.from !== 'string') return n;
   return { ...normalizeMailgunForm(form as Record<string, string>), attachments: n.attachments };
+}
+
+function withoutReplyTo(n: NormalizedInboundEmail): NormalizedInboundEmail {
+  if (n.replyTo === undefined) return n;
+  const { replyTo: _replyTo, ...rest } = n;
+  return rest;
 }
 
 // Lower-cased domain part of an email address (everything after the last '@'),

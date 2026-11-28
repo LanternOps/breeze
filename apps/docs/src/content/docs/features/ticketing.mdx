@@ -142,11 +142,21 @@ Press `Cmd+Enter` (or `Ctrl+Enter`) to send without leaving the keyboard.
 
 ### Public-reply email notice
 
-A public technician reply emails the requester a laid-out transactional notice (subject, heading, and a **View ticket** button). **The reply text is never in the email.** The customer reads the reply in the [customer portal](/features/portal/). They respond by replying to the email. Email-only requesters (no portal login) never see the technician's words. Inbound comments (the customer writing in) also send no requester email, so they don't bounce in a loop.
+A public technician reply emails the requester a laid-out transactional notice (subject, heading, and a **View ticket** button). **By default the reply text is not in the email.** The customer reads the reply in the [customer portal](/features/portal/). They respond by replying to the email. Email-only requesters (no portal login) never see the technician's words unless the partner turns on reply text (below). Inbound comments (the customer writing in) also send no requester email, so they don't bounce in a loop.
 
 Partners edit this notice, the ticket-received acknowledgement, and the resolved-ticket mail under **Settings → Partner → Email templates**. The same tab also holds quote, invoice, and portal-invite mail. The **View ticket** button always goes to `/portal/tickets/:id` on your portal origin; partners cannot point it somewhere else. Self-hosted: set [`PUBLIC_PORTAL_URL`](/deploy/environment/#server) (or `PUBLIC_APP_URL`) so that button is reachable.
 
-Which path sends the mail is unchanged. A connected Microsoft 365 support mailbox still sends via Graph from that mailbox; otherwise the platform email service (EmailService) sends. `EMAIL_PROVIDER=auto` with no SMTP, Resend, or Mailgun host is a no-op on the EmailService path -- nothing is sent that way. Graph still sends if a mailbox is connected.
+A connected Microsoft 365 support mailbox sends via Graph from that mailbox (which one is described below); otherwise the platform email service (EmailService) sends. `EMAIL_PROVIDER=auto` with no SMTP, Resend, or Mailgun host is a no-op on the EmailService path -- nothing is sent that way. Graph still sends if a mailbox is connected.
+
+**Who receives it.** Customer mail about a ticket (the reply notice, the resolved notice, the merge notice and the ticket-received acknowledgement) goes to the requester's **reply address** only:
+
+- For a ticket created from email, that is the `Reply-To` of the message that created it, when that header held exactly one valid address and the sender passed sender authentication. A web form whose `From` is a no-reply relay and whose `Reply-To` is the customer is answered at the customer. A `Reply-To` that names one of your own support mailboxes or inbound addresses is ignored, including a plus-subaddress of one (`support+anything@`). Other aliases of a connected mailbox are not known to Breeze and are not caught.
+- Otherwise it is the requester's email address (the message's `From`, or the address on a portal or technician ticket).
+- A later follow-up's `Reply-To` never changes the address, and changing the requester's email on the ticket takes precedence over it.
+
+On a connected Microsoft 365 mailbox, the reply goes **only** to that address: Cc and Bcc recipients from the customer's message are not carried over, even when the message being replied to came from someone else on the thread. If Microsoft Graph does not apply that recipient list, the draft is deleted instead of sent. The reply leaves from the mailbox that received the ticket. If that mailbox is no longer connected, the platform email service sends instead. A ticket with no message in a connected Microsoft 365 mailbox (portal, technician and API tickets, or mail that arrived another way) is sent from the only connected mailbox, or from the one connected first.
+
+**Reply text.** A partner that does not use the customer portal can have the email carry the public reply itself, ahead of the **View ticket** button, with "Reply to this email to answer" in place of the portal sign-in line. Only a live, public reply on a live ticket is included; internal notes never are. This works on every sending path, including a connected Microsoft 365 mailbox. It is off by default and is currently set only through the partner ticketing settings API (`ticketing.inbound.fullMessageReply`). A custom Public reply notice template keeps its wording, and the reply text is placed before its button.
 
 ### Attachments
 

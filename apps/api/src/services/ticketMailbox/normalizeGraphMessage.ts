@@ -3,6 +3,7 @@ import type { GraphMessage } from './graphMailClient';
 import type { NormalizedInboundEmail, SenderAuth } from '../inboundEmail/types';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import { htmlToText } from '../inboundEmail/htmlToText';
+import { normalizeReplyTo, replyToUnlessOwn } from '../inboundEmail/replyTo';
 import { addressDomain, authservIdOf, buildSenderAuth, envelopeAllowsStamps, leadingAuthservId, normalizeVerdict, parseAuthClauses, parseAuthClausesOrNull, stampsUnreadableReason } from '../inboundEmail/authenticationResults';
 import { MAX_BODY_BYTES } from './normalizeGmailMessage';
 import type { ArcEvaluation } from './arcSeal';
@@ -329,6 +330,16 @@ export function normalizeGraphMessage(
     ? (msg.body?.content ?? '')
     : (html ? htmlToText(html) : '') || (msg.bodyPreview ?? '');
 
+  // Graph's structured replyTo: exactly one valid address, never the mailbox
+  // itself. A mailbox connected before replyTo joined the delta $select keeps
+  // polling its stored delta link, which carries the old $select and so returns
+  // no replyTo property; read every Reply-To header instance instead
+  // (internetMessageHeaders has always been selected).
+  const replyToSource = msg.replyTo !== undefined
+    ? msg.replyTo
+    : (msg.internetMessageHeaders ?? []).filter((h) => h.name.toLowerCase() === 'reply-to').map((h) => h.value);
+  const replyTo = replyToUnlessOwn(normalizeReplyTo(replyToSource), mailboxAddress);
+
   const { senderAuth, consulted } = graphSenderAuth(msg.internetMessageHeaders, mailboxDomain, fromAddr, options?.arc);
 
   return {
@@ -338,6 +349,7 @@ export function normalizeGraphMessage(
     to: mailboxAddress.trim().toLowerCase(),
     from: fromAddr,
     fromName: msg.from?.emailAddress?.name,
+    ...(replyTo ? { replyTo } : {}),
     subject: msg.subject ?? '',
     text,
     html,

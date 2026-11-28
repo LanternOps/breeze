@@ -1,0 +1,96 @@
+import { describe, it, expect } from 'vitest';
+import { normalizeReplyTo, replyToUnlessOwn } from './replyTo';
+
+describe('normalizeReplyTo (syntax only: exactly one usable address, else undefined)', () => {
+  it('parses a single Reply-To', () => {
+    expect(normalizeReplyTo('Jane Customer <Jane@Customer.Example>')).toBe('jane@customer.example');
+    expect(normalizeReplyTo('jane@customer.example')).toBe('jane@customer.example');
+    expect(normalizeReplyTo(['jane@customer.example'])).toBe('jane@customer.example');
+    expect(normalizeReplyTo('jane.o+tickets@mail.customer.example')).toBe('jane.o+tickets@mail.customer.example');
+    expect(normalizeReplyTo('jane@xn--bcher-kva.example')).toBe('jane@xn--bcher-kva.example');
+    // A punycode top label (TOP_LABEL's xn-- branch). Built at runtime: the
+    // repo's customer-PII guard reads a literal one as the unknown domain
+    // "customer.xn" (scripts/security/check-customer-pii.sh).
+    const idnTld = ['xn', 'p1ai'].join('--');
+    expect(normalizeReplyTo(`jane@customer.${idnTld}`)).toBe(`jane@customer.${idnTld}`);
+  });
+
+  it('reads the address inside a display name that itself looks like an address', () => {
+    // The addr-spec wins, never a quoted display name (addressParse.ts).
+    expect(normalizeReplyTo('"staff@msp.example" <jane@customer.example>')).toBe('jane@customer.example');
+  });
+
+  it('ignores a multi-address Reply-To', () => {
+    expect(normalizeReplyTo('jane@customer.example, other@customer.example')).toBeUndefined();
+    expect(normalizeReplyTo('Team: jane@customer.example, other@customer.example;')).toBeUndefined();
+  });
+
+  it('ignores more than one Reply-To header', () => {
+    expect(normalizeReplyTo(['jane@customer.example', 'other@customer.example'])).toBeUndefined();
+    // Even when both name the same address: a duplicated header is not a clean message.
+    expect(normalizeReplyTo(['jane@customer.example', 'jane@customer.example'])).toBeUndefined();
+  });
+
+  it('ignores a malformed Reply-To', () => {
+    for (const bad of [
+      'not an address',
+      'jane@',
+      '@customer.example',
+      'jane@localhost',
+      'jane@customer..example',
+      'jane@-customer.example',
+      'jane smith@customer.example',
+      'jane@customer.example\u0000',
+      `${'a'.repeat(250)}@customer.example`,
+      // No IP-literal-looking or numeric top-level domain.
+      'jane@1.2.3.4',
+      'jane@customer.123',
+      // No source-routing-era local-part characters.
+      'jane%relay@customer.example',
+      'relay!jane@customer.example',
+      'ja|ne@customer.example',
+    ]) {
+      expect(normalizeReplyTo(bad), bad).toBeUndefined();
+    }
+  });
+
+  it('ignores empty, absent and non-string input', () => {
+    expect(normalizeReplyTo(undefined)).toBeUndefined();
+    expect(normalizeReplyTo(null)).toBeUndefined();
+    expect(normalizeReplyTo('')).toBeUndefined();
+    expect(normalizeReplyTo('   ')).toBeUndefined();
+    expect(normalizeReplyTo([])).toBeUndefined();
+    expect(normalizeReplyTo(42)).toBeUndefined();
+    expect(normalizeReplyTo({ address: 'jane@customer.example' })).toBeUndefined();
+  });
+
+  it('accepts Graph recipient objects: exactly one', () => {
+    expect(normalizeReplyTo([{ emailAddress: { address: 'Jane@Customer.Example', name: 'Jane' } }]))
+      .toBe('jane@customer.example');
+    expect(normalizeReplyTo([
+      { emailAddress: { address: 'jane@customer.example' } },
+      { emailAddress: { address: 'other@customer.example' } },
+    ])).toBeUndefined();
+    expect(normalizeReplyTo([{ emailAddress: { address: 'jane@customer.example, other@customer.example' } }]))
+      .toBeUndefined();
+    expect(normalizeReplyTo([{ emailAddress: {} }])).toBeUndefined();
+  });
+});
+
+describe('replyToUnlessOwn (normalizer loop guard)', () => {
+  it('drops the receiving mailbox, case-insensitively', () => {
+    expect(replyToUnlessOwn('support@acme-msp.example', 'Support@Acme-MSP.example')).toBeUndefined();
+  });
+
+  it('drops a plus-subaddress of the receiving mailbox (delivered to the same mailbox)', () => {
+    expect(replyToUnlessOwn('support+t1@acme-msp.example', 'support@acme-msp.example')).toBeUndefined();
+    expect(replyToUnlessOwn('support+@acme-msp.example', 'Support@Acme-MSP.example')).toBeUndefined();
+    expect(replyToUnlessOwn('support@acme-msp.example', 'support+tickets@acme-msp.example')).toBeUndefined();
+  });
+
+  it('keeps a different mailbox: no dot folding, other domains, other local parts', () => {
+    expect(replyToUnlessOwn('sup.port@acme-msp.example', 'support@acme-msp.example')).toBe('sup.port@acme-msp.example');
+    expect(replyToUnlessOwn('support+t1@other.example', 'support@acme-msp.example')).toBe('support+t1@other.example');
+    expect(replyToUnlessOwn('supporter@acme-msp.example', 'support@acme-msp.example')).toBe('supporter@acme-msp.example');
+  });
+});

@@ -23,11 +23,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ---------------------------------------------------------------------------
 // Hoisted mocks (must appear before any import that resolves the mocked modules)
 // ---------------------------------------------------------------------------
-const { selectMock, selectFromTablesMock, insertValuesMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
+const { selectMock, selectFromTablesMock, insertValuesMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock, resolveMailboxMock, sendThreadedMock, sendNewMock } = vi.hoisted(() => {
   const insertValuesMock = vi.fn().mockResolvedValue([]);
   const withSystemDbAccessContextMock = vi.fn((fn: () => unknown) => fn());
   return {
     insertValuesMock,
+    // Connected-mailbox lane (email-first replies W1): null = platform lane.
+    resolveMailboxMock: vi.fn(async (): Promise<unknown> => null),
+    sendThreadedMock: vi.fn(async () => {}),
+    sendNewMock: vi.fn(async () => {}),
     selectMock: vi.fn(),
     // Records the `__t` marker of every table passed to db.select().from(table),
     // so we can assert the composer NEVER queries ticket_comments — comment content
@@ -50,7 +54,16 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 // connection/ownership tables (never ticket_comments), so mocking it keeps the
 // leak invariant meaningful. Same pattern as ticketNotifyWorker.test.ts.
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({
-  resolveOutboundMailbox: vi.fn(async () => null)
+  resolveOutboundMailbox: resolveMailboxMock
+}));
+vi.mock('../services/ticketMailbox/graphReplySender', () => ({
+  sendThreadedReply: sendThreadedMock,
+  sendNewMail: sendNewMock,
+}));
+// Email-first replies W1: the requester's reply address has its own suite;
+// here it is today's behaviour, the submitter's address.
+vi.mock('../services/inboundEmail/requesterReplyAddress', () => ({
+  requesterReplyAddress: vi.fn(async (t: { submitterEmail: string | null }) => t.submitterEmail ?? null),
 }));
 vi.mock('../services/inboundEmail/commentNotificationPortalHref', () => ({
   resolveCommentNotificationPortalHref: vi.fn(async () => ({
@@ -150,6 +163,9 @@ beforeEach(() => {
   updateSetMock.mockReset();
   withSystemDbAccessContextMock.mockImplementation((fn: () => unknown) => fn());
   getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
+  resolveMailboxMock.mockReset().mockResolvedValue(null);
+  sendThreadedMock.mockReset().mockResolvedValue(undefined);
+  sendNewMock.mockReset().mockResolvedValue(undefined);
 
   // Default select sequence for branches that need ticket + partner rows.
   // The db.select mock chains are consumed in call order (the worker calls
@@ -277,11 +293,37 @@ describe('outbound composer never leaks an internal note (spec §6/§9)', () => 
 
 // ---------------------------------------------------------------------------
 // fullMessageReply ON — the actual comment text is emailed to the requester,
-// but ONLY for a live, PUBLIC comment on the EmailService (non-Graph) path.
+// but ONLY for a live, PUBLIC comment. Email-first replies W1 (Refs #8758): this
+// now holds on BOTH lanes — the platform/partner EmailService lane and the
+// connected Microsoft 365 mailbox (Graph), whose recipients are pinned to the
+// requester's reply address (graphReplySender). Before W1 the Graph lane never
+// carried the text; these assertions were inverted for it, not deleted.
 // ---------------------------------------------------------------------------
+const LANES = ['platform', 'graph'] as const;
+type Lane = typeof LANES[number];
+const GRAPH_MAILBOX = { tenantId: '11111111-1111-1111-1111-111111111111', mailbox: 'support@example.com', originalMessageId: 'orig-1' };
+
+function useLane(lane: Lane) {
+  resolveMailboxMock.mockResolvedValue(lane === 'graph' ? GRAPH_MAILBOX : null);
+}
+
+/** The customer html that left on `lane`, or undefined when nothing was sent. */
+function sentHtml(lane: Lane): string | undefined {
+  if (lane === 'graph') {
+    const call = sendThreadedMock.mock.calls[0] as unknown as unknown[] | undefined;
+    return call?.[2] as string | undefined;
+  }
+  return (sendEmailMock.mock.calls[0]?.[0] as { html?: string } | undefined)?.html;
+}
+
+function sendCount(lane: Lane): number {
+  return lane === 'graph' ? sendThreadedMock.mock.calls.length + sendNewMock.mock.calls.length : sendEmailMock.mock.calls.length;
+}
+
 describe('fullMessageReply: public comment body reaches the requester email; private/deleted never do', () => {
   const PUBLIC_TEXT = 'Hi Jane, your printer driver has been reinstalled remotely. Please test.';
   const PARTNER_ROW_FMR = { slug: 'acme', name: 'Acme', settings: { ticketing: { inbound: { fullMessageReply: true } } } };
+  const PARTNER_ROW_OFF = { slug: 'acme', name: 'Acme', settings: {} };
   const ORG_ROW = { name: 'Acme Org' };
   const publicComment = { id: 'c-pub', ticketId: 't-1', isPublic: true, deletedAt: null, content: PUBLIC_TEXT };
 
@@ -293,7 +335,8 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
     } as never;
   }
 
-  it('appends a live public comment body to the outbound email', async () => {
+  it.each(LANES)('appends a live public comment body to the outbound email (%s lane)', async (lane) => {
+    useLane(lane);
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([TICKET_ROW])        // getTicket
@@ -303,19 +346,78 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
 
     await handleTicketEvent(commentedEvent());
 
-    expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(sendCount(lane)).toBe(1);
+    const html = sentHtml(lane)!;
     expect(html).toContain('printer driver has been reinstalled');
     // The reply body must sit INSIDE the document (before </body>), not after
     // </html> where mail clients may strip it.
     const closeBody = html.toLowerCase().lastIndexOf('</body>');
     expect(closeBody).toBeGreaterThan(-1);
     expect(html.indexOf('printer driver has been reinstalled')).toBeLessThan(closeBody);
+    // With the text in the email, the with_reply copy replaces the sign-in line.
+    expect(html).not.toContain('Sign in to the portal');
+    expect(html).toContain('Reply to this email to answer.');
   });
 
-  it('does NOT append a public comment body when the TICKET is soft-deleted (disclosure guard)', async () => {
+  it('appends a live public comment body on the connected-mailbox path', async () => {
+    useLane('graph');
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])
+      .mockResolvedValueOnce([PARTNER_ROW_FMR])
+      .mockResolvedValueOnce([ORG_ROW])
+      .mockResolvedValue([{ ...publicComment, content: 'Line one\n<b>not bold</b>' }]);
+
+    await handleTicketEvent(commentedEvent());
+
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    const call = sendThreadedMock.mock.calls[0] as unknown as unknown[];
+    expect(call[0]).toEqual({ tenantId: GRAPH_MAILBOX.tenantId, mailbox: GRAPH_MAILBOX.mailbox });
+    const html = call[2] as string;
+    // Escaped, newline-preserved.
+    expect(html).toContain('Line one<br>&lt;b&gt;not bold&lt;/b&gt;');
+    expect(html).not.toContain('<b>not bold</b>');
+    // To the requester's reply address only.
+    expect(call[3]).toEqual({ to: TICKET_ROW.submitterEmail });
+  });
+
+  it('flag off + connected mailbox keeps the portal notice', async () => {
+    useLane('graph');
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])
+      .mockResolvedValueOnce([PARTNER_ROW_OFF])
+      .mockResolvedValueOnce([ORG_ROW])
+      .mockResolvedValue([publicComment]);
+
+    await handleTicketEvent(commentedEvent());
+
+    const html = sentHtml('graph')!;
+    expect(html).toContain('Sign in to the portal');
+    expect(html).not.toContain('printer driver has been reinstalled');
+  });
+
+  it.each(LANES)('flag off never selects ticket_comments (%s lane)', async (lane) => {
+    useLane(lane);
+    selectMock.mockReset();
+    selectMock
+      .mockResolvedValueOnce([TICKET_ROW])
+      .mockResolvedValueOnce([PARTNER_ROW_OFF])
+      .mockResolvedValueOnce([ORG_ROW])
+      .mockResolvedValue([publicComment]);
+
+    await handleTicketEvent(commentedEvent());
+
+    expect(sendCount(lane)).toBe(1);
+    const queriedTables = selectFromTablesMock.mock.calls.map((c) => c[0]);
+    expect(queriedTables).toContain('tickets');
+    expect(queriedTables).not.toContain('ticket_comments');
+  });
+
+  it.each(LANES)('does NOT append a public comment body when the TICKET is soft-deleted (disclosure guard, %s lane)', async (lane) => {
     // A soft-deleted ticket is 404 in the portal, so its comment text must not be
     // emailed to the customer even with fullMessageReply on.
+    useLane(lane);
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([{ ...TICKET_ROW, deletedAt: new Date('2026-09-20T00:00:00Z') }]) // getTicket: deleted
@@ -325,11 +427,12 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
 
     await handleTicketEvent(commentedEvent());
 
-    const html = (sendEmailMock.mock.calls[0]?.[0] as { html: string } | undefined)?.html ?? '';
+    const html = sentHtml(lane) ?? '';
     expect(html).not.toContain('printer driver has been reinstalled');
   });
 
-  it('does NOT append a private comment even with fullMessageReply on (isPublic guard)', async () => {
+  it.each(LANES)('does NOT append a private comment even with fullMessageReply on (isPublic guard, %s lane)', async (lane) => {
+    useLane(lane);
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([TICKET_ROW])
@@ -339,11 +442,14 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
 
     await handleTicketEvent(commentedEvent());
 
-    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    const html = sentHtml(lane)!;
     expect(html).not.toContain(SECRET);
+    // Without reply text the default portal notice goes out.
+    expect(html).toContain('Sign in to the portal');
   });
 
-  it('does NOT append a soft-deleted comment (deletedAt guard)', async () => {
+  it.each(LANES)('does NOT append a soft-deleted comment (deletedAt guard, %s lane)', async (lane) => {
+    useLane(lane);
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([TICKET_ROW])
@@ -353,11 +459,12 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
 
     await handleTicketEvent(commentedEvent());
 
-    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    const html = sentHtml(lane)!;
     expect(html).not.toContain(SECRET);
   });
 
-  it('throws to retry when the comment row is not yet visible (pre-commit)', async () => {
+  it.each(LANES)('throws to retry when the comment row is not yet visible (pre-commit, %s lane)', async (lane) => {
+    useLane(lane);
     selectMock.mockReset();
     selectMock
       .mockResolvedValueOnce([TICKET_ROW])
@@ -367,5 +474,7 @@ describe('fullMessageReply: public comment body reaches the requester email; pri
 
     await expect(handleTicketEvent(commentedEvent())).rejects.toThrow(/Comment not found/);
     expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(sendThreadedMock).not.toHaveBeenCalled();
+    expect(sendNewMock).not.toHaveBeenCalled();
   });
 });

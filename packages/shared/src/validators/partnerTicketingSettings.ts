@@ -51,13 +51,11 @@ export const ticketingInboundSettingsSchema = z.object({
   // public tech reply emails the customer the actual comment text (threaded) —
   // for MSPs that do not run the client portal.
   //
-  // Transport caveat: this applies to replies sent through the platform email
-  // service. Partners whose ticket mailbox is a CONNECTED Microsoft 365 mailbox
-  // keep receiving the portal notification even with this enabled — the M365
-  // reply is a Graph createReply against the last inbound message and its
-  // recipient set (external Reply-To/CC) is not yet validated, so the comment
-  // text is withheld from that path until it is, rather than risk sending real
-  // content to an unvalidated recipient.
+  // Applies on every lane, including a CONNECTED Microsoft 365 mailbox
+  // (email-first replies W1, Refs #8758): the Graph reply's recipients are
+  // replaced with exactly the requester's reply address (no Cc/Bcc), and a draft
+  // Graph did not re-address is deleted, never sent. API-only for now; the
+  // "Email with customers" setting replaces it in W2.
   fullMessageReply: z.boolean().optional(),
 });
 export type TicketingInboundSettings = z.infer<typeof ticketingInboundSettingsSchema>;

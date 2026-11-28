@@ -62,6 +62,10 @@ describe('listInboxDelta', () => {
     expect(page.deltaLink).toBe('https://graph.microsoft.com/delta-final');
     expect(fetchMock.mock.calls[0]![0]).toContain('/mailFolders/inbox/messages/delta');
     expect(fetchMock.mock.calls[0]![0]).toContain(SELECT);
+    // normalizeGraphMessage reads `replyTo` (email-first replies W1); a field
+    // missing from $select never arrives, whatever the fixture-fed tests say.
+    const select = decodeURIComponent(String(fetchMock.mock.calls[0]![0])).split('$select=')[1]?.split('&')[0] ?? '';
+    expect(select.split(',')).toContain('replyTo');
   });
 
   it('uses the stored deltaLink verbatim when provided', async () => {

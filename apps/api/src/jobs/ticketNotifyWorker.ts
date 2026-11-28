@@ -39,6 +39,8 @@ import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/c
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
 import { resolveOutboundMailbox } from '../services/ticketMailbox/resolveOutboundMailbox';
 import { sendThreadedReply, sendNewMail } from '../services/ticketMailbox/graphReplySender';
+import { requesterReplyAddress } from '../services/inboundEmail/requesterReplyAddress';
+import { replyBodyHtml } from './ticketReplyBody';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -280,10 +282,15 @@ function asPartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
   };
 }
 
-async function composeLaidOutRequesterMail(
-  ticket: TicketRow,
-  id: 'ticket_comment_notification' | 'ticket_resolved',
-): Promise<{ html: string; subject: string; replyTo: string | undefined; fullMessageReply: boolean; partnerName: string | null }> {
+interface RequesterMailContext {
+  href: string;
+  hasPortalUser: boolean;
+  partner: PartnerMailBits;
+  orgName: string;
+}
+
+/** What a requester notice needs before it renders: the portal link, the partner bits (incl. the reply-text flag) and the org name. */
+async function loadRequesterMailContext(ticket: TicketRow): Promise<RequesterMailContext> {
   let href = '';
   let hasPortalUser = false;
   try {
@@ -299,8 +306,25 @@ async function composeLaidOutRequesterMail(
   }
   const partner = await loadPartnerMailBits(ticket.partnerId);
   const orgName = ticket.orgId ? await getOrgName(ticket.orgId) : '';
+  return { href, hasPortalUser, partner, orgName };
+}
+
+/**
+ * Render the requester notice. With `replyHtml` (a live public comment's text,
+ * replyBodyHtml) the `with_reply` variant renders it before the button, and the
+ * default copy drops "sign in to the portal". A partner's custom template still
+ * applies; the text is spliced in ahead of its button (review focus 3).
+ */
+async function composeLaidOutRequesterMail(
+  ticket: TicketRow,
+  id: 'ticket_comment_notification' | 'ticket_resolved',
+  opts?: { replyHtml?: string; context?: RequesterMailContext },
+): Promise<{ html: string; subject: string; replyTo: string | undefined; partnerName: string | null }> {
+  const { href, hasPortalUser, partner, orgName } = opts?.context ?? await loadRequesterMailContext(ticket);
+  const replyHtml = id === 'ticket_comment_notification' ? opts?.replyHtml : undefined;
   const rendered = renderPartnerEmail({
     id,
+    ...(replyHtml ? { variant: 'with_reply', bodyBeforeCta: replyHtml } : {}),
     custom: asPartnerEmailCustom(partner.emailTemplates?.[id]),
     vars: {
       ticket_number: ticket.ticketNumber ?? '',
@@ -322,7 +346,6 @@ async function composeLaidOutRequesterMail(
     html: rendered.html,
     subject: rendered.subject,
     replyTo: partner.replyTo,
-    fullMessageReply: partner.inbound?.fullMessageReply === true,
     partnerName: partner.name.trim() || null,
   };
 }
@@ -546,6 +569,11 @@ async function collectRequesterEmail(
   // later skip send (missing submitterEmail).
   beforeSend?.(ticket);
   if (!ticket.submitterEmail) return [];
+  // The requester's reply address: the Reply-To stored on the ticket's creating
+  // inbound row, else submitterEmail (email-first replies W1). submitterEmail
+  // stays the identity used for the portal link and the template variables.
+  const to = await requesterReplyAddress(ticket);
+  if (!to) return [];
 
   // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
   // FROM that mailbox via Graph (native threading). Tech/assignee notifications never
@@ -555,7 +583,7 @@ async function collectRequesterEmail(
   if (!commentId) {
     const composed = await composeLaidOutRequesterMail(ticket, 'ticket_resolved');
     return [{
-      to: ticket.submitterEmail,
+      to,
       subject: subjectOverride ?? composed.subject,
       html: composed.html,
       graphMailbox,
@@ -566,26 +594,24 @@ async function collectRequesterEmail(
     }];
   }
 
-  const composed = await composeLaidOutRequesterMail(ticket, 'ticket_comment_notification');
-
   // Reply-content mode (per-partner). By DEFAULT the customer gets the portal
   // "you have a new reply, sign in" notification and the comment text never
   // leaves the platform (leak guard). A partner that does NOT run the client
-  // portal can opt in to `fullMessageReply`, which appends the actual public
-  // comment text to the email so email becomes a real back-and-forth. Only the
-  // just-posted PUBLIC comment is included; internal notes never reach this path
-  // (the worker gates on event.payload.isPublic before calling here).
-  let html = composed.html;
-  // Full message text is appended ONLY on the platform EmailService path (which
-  // sends to the resolved requester address, `ticket.submitterEmail`). On the
-  // connected-M365 path the reply is a Graph createReply against the latest
-  // inbound message, whose recipients can include an external Reply-To/CC we did
-  // not validate; putting the actual comment text there would widen a possible
-  // mis-routed reply from a bare portal notice to real content. Until that
-  // recipient set is validated, M365-mailbox partners keep the notification.
-  // (composed.fullMessageReply comes from the partner bits compose already loaded
-  // — no second partner read here.)
-  if (composed.fullMessageReply && !graphMailbox) {
+  // portal can opt in to `fullMessageReply`, and the email then carries the
+  // just-posted PUBLIC comment's text (internal notes never reach this path: the
+  // worker gates on event.payload.isPublic before calling here).
+  //
+  // Both lanes carry it (email-first replies W1). The platform/partner lane sends
+  // to `to`, the requester's reply address. The connected Microsoft 365 lane is a
+  // Graph createReply, whose draft Graph addresses from the original message; its
+  // recipients are replaced with exactly `to` (no Cc/Bcc), and a draft Graph did
+  // not re-address is deleted, never sent (graphReplySender.sendThreadedReply).
+  //
+  // The flag is read first; ticket_comments is queried ONLY when it is on, so with
+  // it off the comment text is structurally unreachable (leak test).
+  const context = await loadRequesterMailContext(ticket);
+  let replyHtml: string | undefined;
+  if (context.partner.inbound?.fullMessageReply === true) {
     // Bound to THIS ticket (never another ticket's comment). deletedAt is SELECTED
     // (not filtered) so we can tell a soft-deleted comment (row present, deletedAt
     // set — terminal, skip the body) apart from a not-yet-committed one (no row —
@@ -607,7 +633,7 @@ async function collectRequesterEmail(
       // than silently degrading to a portal-only notice for a no-portal partner.
       throw new Error(`Comment not found (likely uncommitted): ${commentId}`);
     }
-    // Append the body only for a live, public comment on a LIVE ticket. A
+    // The text goes out only for a live, public comment on a LIVE ticket. A
     // soft-deleted comment (comment.deletedAt) or a soft-deleted ticket
     // (ticket.deletedAt) must NOT have its text emailed — it is no longer visible
     // in the product (the portal 404s a deleted ticket, routes/portal/tickets.ts
@@ -618,9 +644,11 @@ async function collectRequesterEmail(
     // point comment TEXT would leave the platform. Defense in depth on isPublic:
     // the emitter's gate is the authority; this is a second check.
     if (!ticket.deletedAt && !comment.deletedAt && comment.isPublic && comment.content.trim()) {
-      html = appendFullReplyBody(html, comment.content);
+      replyHtml = replyBodyHtml(comment.content);
     }
   }
+  const composed = await composeLaidOutRequesterMail(ticket, 'ticket_comment_notification', { replyHtml, context });
+  const html = composed.html;
 
   const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
   const headers = Object.keys(built).length > 0 ? built : undefined;
@@ -633,7 +661,7 @@ async function collectRequesterEmail(
   }
 
   return [{
-    to: ticket.submitterEmail,
+    to,
     subject: subjectOverride ?? composed.subject,
     html,
     replyTo: composed.replyTo,
@@ -699,6 +727,8 @@ async function collectMergeNotifications(
     console.warn(`[TicketNotify] merge notice skipped: ticket ${source.id} has no requester email`);
     return [];
   }
+  // Delivered to the source requester's reply address (email-first replies W1).
+  const to = (await requesterReplyAddress(source)) ?? source.submitterEmail;
   let href = '';
   let hasPortalUser = false;
   try {
@@ -743,7 +773,7 @@ async function collectMergeNotifications(
     await db.update(tickets).set({ emailThreadKey: anchor }).where(eq(tickets.id, survivor.id));
   }
   return [{
-    to: source.submitterEmail,
+    to,
     subject: rendered.subject,
     html: rendered.html,
     replyTo: partner.replyTo,
@@ -753,27 +783,6 @@ async function collectMergeNotifications(
     partnerId: partnerId ?? null,
     partnerName: partner.name.trim() || null,
   }];
-}
-
-/**
- * Append the actual reply text to a comment-notification email (fullMessageReply
- * partners only). The body is HTML-escaped and newline-preserved, wrapped in a
- * quoted block below the rendered notification. Kept deliberately simple — the
- * comment `content` is plain text authored by a technician.
- */
-function appendFullReplyBody(html: string, body: string): string {
-  const safe = escapeHtml(body).replace(/\r?\n/g, '<br>');
-  const block =
-    '<div style="margin-top:16px;padding:12px 16px;border-left:3px solid #d1d5db;'
-    + 'color:#374151;font-size:14px;line-height:1.5;white-space:normal;">'
-    + `${safe}</div>`;
-  // Splice the block INSIDE the rendered document, immediately before the closing
-  // </body>, so the reply text sits within the email body. Concatenating after
-  // </html> would place it outside the document, where some mail clients strip or
-  // hide trailing content. Fall back to a plain append only if no </body> exists.
-  const idx = html.toLowerCase().lastIndexOf('</body>');
-  if (idx === -1) return `${html}${block}`;
-  return `${html.slice(0, idx)}${block}${html.slice(idx)}`;
 }
 
 /**
@@ -995,8 +1004,10 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string, opts
         // emits a public ticket.commented event. The DEFAULT notification is
         // template-only (no comment content). The one path that loads ticket_comments
         // is the explicit per-partner fullMessageReply opt-in (see collectRequesterEmail),
-        // gated on isPublic + not-deleted + non-graph and HTML-escaped; every other
-        // outbound body/subject stays content-free (see ticketNotifyWorker.leak.test.ts).
+        // gated on isPublic + not-deleted and HTML-escaped, on both lanes: on the
+        // connected-mailbox lane the Graph draft's recipients are pinned to the
+        // requester's reply address first (sendThreadedReply). Every other outbound
+        // body/subject stays content-free (see ticketNotifyWorker.leak.test.ts).
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {
@@ -1197,11 +1208,13 @@ async function sendEmailPayloads(
       if (payload.graphMailbox) {
         const { tenantId, mailbox, originalMessageId } = payload.graphMailbox;
         if (originalMessageId) {
-          if (payload.threadedReplyUsesSubject) {
-            await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html, { subject: payload.subject });
-          } else {
-            await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html);
-          }
+          // The draft's recipients are replaced with exactly payload.to (the
+          // requester's reply address), Cc/Bcc emptied; a draft Graph did not
+          // re-address is deleted, never sent (graphReplySender, decision 8).
+          await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html, {
+            to: payload.to,
+            ...(payload.threadedReplyUsesSubject ? { subject: payload.subject } : {}),
+          });
         } else {
           await sendNewMail({ tenantId, mailbox }, payload.to, payload.subject, payload.html);
         }

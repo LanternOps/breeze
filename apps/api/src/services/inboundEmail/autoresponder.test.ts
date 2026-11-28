@@ -64,6 +64,33 @@ describe('maybeSendAutoresponse', () => {
     expect(ev.payload.subject).toBe('printer');
   });
 
+  // Email-first replies W1: the guarded Reply-To (ingest cleared any own address)
+  // is where the acknowledgement goes. Suppression and the cap apply to the
+  // sender (From) AND to that recipient, so a Reply-To can only narrow who is
+  // acknowledged, never aim acknowledgements at a third party past the cap.
+  it('autoresponse goes to the Reply-To', async () => {
+    await maybeSendAutoresponse(n({ replyTo: 'jane.home@customer.example' }), 'p-1', ticket);
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    expect(emitMock.mock.calls[0]![0].payload.to).toBe('jane.home@customer.example');
+    expect(rateLimiterMock.mock.calls.map((c) => c[1])).toEqual([
+      'autoresponse:p-1:jane@x.com',
+      'autoresponse:p-1:jane.home@customer.example',
+    ]);
+  });
+
+  it('suppresses when the Reply-To recipient is capped, even if the sender is not', async () => {
+    rateLimiterMock
+      .mockResolvedValueOnce({ allowed: true, remaining: 1, resetAt: new Date() })
+      .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+    await maybeSendAutoresponse(n({ replyTo: 'victim@elsewhere.example' }), 'p-1', ticket);
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses when the Reply-To recipient is a system address', async () => {
+    await maybeSendAutoresponse(n({ replyTo: 'no-reply@forms.example' }), 'p-1', ticket);
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
   it('THROWS on a partner mismatch (spec §6 write-boundary re-assertion) and never emits', async () => {
     await expect(maybeSendAutoresponse(n(), 'p-OTHER', ticket)).rejects.toThrow(/partner mismatch/);
     expect(emitMock).not.toHaveBeenCalled();

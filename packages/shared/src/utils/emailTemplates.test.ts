@@ -300,6 +300,20 @@ describe('billing email defaults (wave 1 copy deck)', () => {
   it('an unknown variant falls back to the base default', () => {
     expect(emailTemplateFieldDefaults('payment_failed', 'nope')).toEqual(emailTemplateFieldDefaults('payment_failed'));
   });
+  // Email-first replies W1 (Refs #8758): the public reply notice that carries the
+  // reply text itself. No "sign in to the portal" and no email-only hint; the
+  // subject and button are inherited.
+  it('ticket_comment_notification:with_reply drops the sign-in copy', () => {
+    expect(EMAIL_TEMPLATE_VARIANTS.ticket_comment_notification).toEqual(['with_reply']);
+    const base = emailTemplateFieldDefaults('ticket_comment_notification');
+    const withReply = emailTemplateFieldDefaults('ticket_comment_notification', 'with_reply');
+    expect(withReply.heading).toBe('New reply on your ticket');
+    expect(withReply.html).toBe('<p>{{cta_button}}</p>\n<p>Reply to this email to answer.</p>');
+    expect(withReply.html).not.toMatch(/sign in/i);
+    expect(withReply.html).not.toContain('{{email_only_hint}}');
+    expect(withReply.subject).toBe(base.subject);
+    expect(withReply.buttonLabel).toBe(base.buttonLabel);
+  });
   it('greets the client by name and restates no terms the locked blocks already carry', () => {
     const billing: EmailTemplateId[] = ['invoice_autopay', 'autopay_request', 'autopay_enrolled', 'autopay_stopped', 'autopay_paused',
       'autopay_resumed', 'card_expiring', 'payment_reminder', 'payment_overdue', 'payment_receipt', 'payment_failed'];

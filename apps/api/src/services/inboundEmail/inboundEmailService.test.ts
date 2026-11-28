@@ -295,6 +295,13 @@ vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
 // that a ticket was created + the inbound row logged.
 const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
 vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
+// Email-first replies W1: the partner-aware Reply-To loop guard has its own unit
+// suite (replyToGuard.test.ts) and integration coverage. Here it is a stand-in
+// that treats CONNECTED_MAILBOX as the partner's connected mailbox, so these
+// tests pin only the wiring: which value ingest stores and hands on.
+const CONNECTED_MAILBOX = 'support@acme-msp.example';
+const { guardedReplyToMock } = vi.hoisted(() => ({ guardedReplyToMock: vi.fn() }));
+vi.mock('./replyToGuard', () => ({ guardedReplyTo: guardedReplyToMock }));
 // Flood protection is the global BullMQ per-second queue limiter configured on the
 // worker (INBOUND_QUEUE_MAX_PER_SEC); there is no per-sender Redis cap in the
 // pipeline, so nothing flood-cap-related is mocked here.
@@ -397,6 +404,9 @@ beforeEach(() => {
   assignTicketMock.mockResolvedValue({});
   emitMock.mockReset();
   maybeSendAutoresponseMock.mockReset();
+  guardedReplyToMock.mockReset();
+  guardedReplyToMock.mockImplementation(async (n: NormalizedInboundEmail) =>
+    n.replyTo && n.replyTo !== CONNECTED_MAILBOX ? n.replyTo : undefined);
   captureExceptionMock.mockReset();
   captureMessageMock.mockReset();
   createTicketMock.mockResolvedValue({ id: 't-new', internalNumber: 'T-2026-0009' });
@@ -762,6 +772,84 @@ describe('processInboundEmail', () => {
     expect(gatedPartner).toBe('p-1');
     expect((gatedTicket as { id: string; partnerId: string }).id).toBe('t-created');
     expect((gatedTicket as { partnerId: string }).partnerId).toBe('p-1');
+  });
+
+  describe('Reply-To at ingest (email-first replies W1, Refs #8758)', () => {
+    function knownSenderCreate() {
+      resolveMock.mockResolvedValue('p-1');
+      state.selectRows['ticket_email_inbound'] = [];
+      state.selectRows['tickets'] = [];
+      state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+      state.selectRows['organizations'] = [{ id: 'o-1' }];
+      createTicketMock.mockResolvedValue({ id: 't-created', internalNumber: 'T-2026-0010' });
+    }
+
+    it('stores reply_to_address on the inbound row', async () => {
+      knownSenderCreate();
+      await processInboundEmail(email({ subject: 'brand new issue', replyTo: 'colleague@customer.com' }));
+
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.parseStatus).toBe('created');
+      expect(log[0]!.replyToAddress).toBe('colleague@customer.com');
+      // From stays the identity: submitterEmail is never the Reply-To.
+      expect((createTicketMock.mock.calls[0]![0] as { submitterEmail: string }).submitterEmail).toBe('jane@customer.com');
+      expect(guardedReplyToMock).toHaveBeenCalledWith(expect.objectContaining({ replyTo: 'colleague@customer.com' }), 'p-1');
+      // The autoresponse gate sees the guarded value, which it mails.
+      const [normalized] = maybeSendAutoresponseMock.mock.calls[0]!;
+      expect((normalized as NormalizedInboundEmail).replyTo).toBe('colleague@customer.com');
+    });
+
+    it('Reply-To equal to the connected mailbox is not stored', async () => {
+      knownSenderCreate();
+      await processInboundEmail(email({ subject: 'brand new issue', replyTo: CONNECTED_MAILBOX }));
+
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.replyToAddress).toBeNull();
+      const [normalized] = maybeSendAutoresponseMock.mock.calls[0]!;
+      expect((normalized as NormalizedInboundEmail).replyTo).toBeUndefined();
+    });
+
+    it('stores null when the message has no Reply-To', async () => {
+      knownSenderCreate();
+      await processInboundEmail(email({ subject: 'brand new issue' }));
+      expect(inboundOf()[0]!.replyToAddress).toBeNull();
+    });
+
+    // An unverified From is spoofable: a quarantined message naming a real
+    // customer in From and an attacker in Reply-To would, once staff convert it
+    // from the review queue, have every reply sent to the attacker. Reply-To is
+    // only kept for a sender the gate verified.
+    it.each([
+      ['quarantined', false],
+      ['ignored', true],
+    ] as const)('an unverified sender\'s Reply-To is not stored (%s)', async (status, dropUnverifiedSenders) => {
+      resolveMock.mockResolvedValue('p-1');
+      state.selectRows['ticket_email_inbound'] = [];
+      state.selectRows['tickets'] = [];
+      loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders });
+      await processInboundEmail(email({
+        replyTo: 'attacker@evil.example',
+        senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false },
+      }));
+
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.parseStatus).toBe(status);
+      expect(log[0]!.replyToAddress).toBeNull();
+      expect(guardedReplyToMock).not.toHaveBeenCalled();
+    });
+
+    it('never stores an unguarded Reply-To on a row with no partner', async () => {
+      resolveMock.mockResolvedValue(null);
+      await processInboundEmail(email({ replyTo: 'colleague@customer.com' }));
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.parseStatus).toBe('ignored');
+      expect(log[0]!.replyToAddress).toBeNull();
+      expect(guardedReplyToMock).not.toHaveBeenCalled();
+    });
   });
 
   it('drops an unknown sender under the drop policy — no ticket, logged ignored', async () => {
