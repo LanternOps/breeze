@@ -356,7 +356,7 @@ A partner-wide admin (all-organization access, `orgs:write`, MFA) connects a Gra
 
 <Steps>
 
-1. In GravityZone, create an API key with access to the companies and endpoints you manage, and note your console's Access URL (a `*.gravityzone.bitdefender.com` address ending in `/api`).
+1. In GravityZone, create an API key with access to the companies and endpoints you manage, and note your console's Access URL (a `*.gravityzone.bitdefender.com` address ending in `/api`). Enable the **Network** and **Companies** APIs (required), **Incidents** and **Quarantine** for detections, and **Accounts** so Breeze can read the timezone GravityZone writes its times in (see [Bitdefender GravityZone](/features/edr-provider-framework/#bitdefender-gravityzone)).
 
 2. Create the connection: `POST /api/v1/edr/connections` with `provider: "bitdefender"`, a `name`, the Access URL as `baseUrl`, and `credentials: { "apiKey": "..." }`. The key is checked against GravityZone, stored encrypted and never returned.
 

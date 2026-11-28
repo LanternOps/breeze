@@ -178,7 +178,12 @@ export default function DeviceEdrGenericSection({ deviceId, orgId, timezone }: P
                 </div>
                 <div className="flex gap-2">
                   <dt className="text-muted-foreground">{t("deviceEdrGenericSection.fields.lastSeen")}</dt>
-                  <dd>{fmt(e.lastSeenAt, timezone)}</dd>
+                  {/* Null means the provider gave no usable time, not "never seen" (#12821). */}
+                  <dd data-testid={`device-edr-last-seen-${e.id}`}>
+                    {e.lastSeenAt && !Number.isNaN(new Date(e.lastSeenAt).getTime())
+                      ? fmt(e.lastSeenAt, timezone)
+                      : t("deviceEdrGenericSection.lastSeenUnknown")}
+                  </dd>
                 </div>
               </dl>
               <EdrActionButtons

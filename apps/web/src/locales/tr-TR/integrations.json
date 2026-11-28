@@ -1563,6 +1563,7 @@
     "hostname": "Ana bilgisayar adı",
     "os": "İşletim sistemi",
     "lastSeen": "Son görülme",
+    "lastSeenUnknown": "Bilinmiyor",
     "health": "Sağlık",
     "device": "Cihaz",
     "selectDevice": "Cihaz seçin",

@@ -4485,6 +4485,7 @@
       "agentVersion": "Agent version",
       "lastSeen": "Last seen"
     },
+    "lastSeenUnknown": "Unknown",
     "health": {
       "healthy": "Healthy",
       "degraded": "Degraded",
@@ -4566,7 +4567,7 @@
         "outcome_unknown_reissue_manually": "The outcome was never confirmed; check the vendor console before trying again",
         "not_sent_or_rejected": "The vendor shows it was not applied",
         "detached_unsettled": "The company mapping changed before this finished",
-        "vendor_status_timeout": "The vendor task did not finish within 24 hours",
+        "vendor_status_timeout": "The vendor did not confirm the task finished within 24 hours; check the vendor console",
         "vendor_task_failed": "The vendor reported that the task failed",
         "isolation_unconfirmed": "Accepted, but the device did not confirm it within 24 hours. The vendor's task may still apply when the device reconnects; check the vendor console",
         "unknown": "The action did not complete"

@@ -1563,6 +1563,7 @@
     "hostname": "Nome host",
     "os": "SO",
     "lastSeen": "Ultima attività",
+    "lastSeenUnknown": "Sconosciuto",
     "health": "Stato di salute",
     "device": "Dispositivo",
     "selectDevice": "Seleziona dispositivo",

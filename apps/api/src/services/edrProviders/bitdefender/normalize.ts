@@ -1,7 +1,24 @@
 import type { EdrDetectionStatus, EdrSeverity } from '@breeze/shared';
-import { bucketStatus, normalizeMacs, osPlatformFromName, parseVendorDate } from '../normalize';
+import { bucketStatus, normalizeMacs, osPlatformFromName } from '../normalize';
 import type { VendorEdrDetection, VendorEdrEndpoint, VendorEdrEndpointDetail } from '../types';
 import type { GzEndpointDetails, GzIncident, GzInventoryItem, GzQuarantineItem } from './client';
+import { lacksOffset, parseGzDate } from './time';
+
+/**
+ * The account timezone as the normalizers use it (#12821):
+ * - a zone name: an offset-less time is read in it;
+ * - `null`: unavailable for a lasting reason: an offset-less time is stored as null;
+ * - `ZONE_NOT_READ`: the read failed this run: an offset-less time is left undefined, so a stored
+ *   value is kept and a new row starts with none.
+ * A time that carries its own offset is read the same way in all three cases. Never a guess.
+ */
+export const ZONE_NOT_READ: unique symbol = Symbol('gz-zone-not-read');
+export type GzZone = string | null | typeof ZONE_NOT_READ;
+
+function gzTime(raw: unknown, zone: GzZone): Date | null | undefined {
+  if (zone === ZONE_NOT_READ) return lacksOffset(raw) ? undefined : parseGzDate(raw, null);
+  return parseGzDate(raw, zone);
+}
 
 /**
  * Incident `status` codes. [U] The numeric set is unconfirmed against a licensed console; unknown
@@ -84,16 +101,21 @@ function onlineFromState(state: unknown): boolean | null {
   return null;
 }
 
-export function toEndpointDetail(id: string, d: GzEndpointDetails): VendorEdrEndpointDetail {
+/**
+ * `zone` is the API key owner's account timezone (see GzZone). `lastSeen` has no offset: it is
+ * null when the zone is unavailable, and absent (the stored value stays) when it was not read (#12821).
+ */
+export function toEndpointDetail(id: string, d: GzEndpointDetails, zone: GzZone): VendorEdrEndpointDetail {
   const agent = d.agent ?? {};
   let health: VendorEdrEndpointDetail['health'] = 'healthy';
   if (d.malwareStatus?.infected) health = 'unhealthy';
   else if (agent.signatureOutdated || agent.productOutdated || agent.licensed === false) health = 'degraded';
+  const lastSeenAt = gzTime(d.lastSeen, zone);
   return {
     vendorEndpointId: id,
     health,
     online: onlineFromState(d.state),
-    lastSeenAt: parseVendorDate(d.lastSeen),
+    ...(lastSeenAt === undefined ? {} : { lastSeenAt }),
     agentVersion: agent.productVersion ?? null,
     osName: d.operatingSystem ?? undefined,
   };
@@ -101,9 +123,10 @@ export function toEndpointDetail(id: string, d: GzEndpointDetails): VendorEdrEnd
 
 const TERMINAL: readonly EdrDetectionStatus[] = ['resolved', 'false_positive', 'dismissed'];
 
-export function toIncidentDetection(item: GzIncident, vendorTenantId: string): VendorEdrDetection {
+/** Incident times carry an explicit offset (live 2026-11-27); `zone` only reads one that does not. */
+export function toIncidentDetection(item: GzIncident, vendorTenantId: string, zone: GzZone): VendorEdrDetection {
   const status = bucketStatus(GZ_INCIDENT_STATUS, item.status as string | number | null | undefined);
-  const lastChange = parseVendorDate(item.lastIncidentChange);
+  const lastChange = gzTime(item.lastIncidentChange, zone);
   return {
     vendorDetectionId: String(item.incidentId),
     vendorKind: 'incident',
@@ -119,7 +142,7 @@ export function toIncidentDetection(item: GzIncident, vendorTenantId: string): V
     filePath: null,
     processName: null,
     mitreTechniques: [],
-    detectedAt: parseVendorDate(item.created),
+    detectedAt: gzTime(item.created, zone),
     resolvedAt: TERMINAL.includes(status) ? lastChange : null,
     lastVendorUpdateAt: lastChange,
     details: {
@@ -132,8 +155,9 @@ export function toIncidentDetection(item: GzIncident, vendorTenantId: string): V
   };
 }
 
-export function toQuarantineDetection(item: GzQuarantineItem, vendorTenantId: string): VendorEdrDetection {
-  const quarantinedOn = parseVendorDate(item.quarantinedOn);
+/** `quarantinedOn` has no offset: read in `zone`; null when it is unavailable, undefined when not read (#12821). */
+export function toQuarantineDetection(item: GzQuarantineItem, vendorTenantId: string, zone: GzZone): VendorEdrDetection {
+  const quarantinedOn = gzTime(item.quarantinedOn, zone);
   const status = bucketStatus(
     GZ_QUARANTINE_STATUS,
     typeof item.actionStatus === 'string' ? item.actionStatus.toLowerCase() : item.actionStatus,

@@ -40,6 +40,16 @@ describe("EdrUnlinkedEndpoints", () => {
     expect(fetchMock).toHaveBeenCalledWith("/edr/endpoints?connectionId=conn-1&state=unlinked");
   });
 
+  it("shows a missing last-seen time as unknown, never as \"Never\" (#12821)", async () => {
+    // A null last-seen means the provider gave no usable time (for GravityZone, also when the
+    // account timezone could not be read), not that the endpoint was never seen.
+    route([{ ...endpoint, lastSeenAt: null }]);
+    render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
+    const cell = await screen.findByTestId("edr-endpoint-last-seen-ep-1");
+    expect(cell).toHaveTextContent("Unknown");
+    expect(cell).not.toHaveTextContent("Never");
+  });
+
   it("switches to the ambiguous filter", async () => {
     render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
     await screen.findByTestId("edr-endpoint-row-ep-1");

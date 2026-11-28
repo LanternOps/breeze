@@ -91,9 +91,22 @@ export interface GzQuarantineItem {
 
 /** What a write call returned: the vendor accepted it, or queued a task we can poll. */
 export type GzTaskResult = { kind: 'accepted' } | { kind: 'task'; taskId: string };
-export type GzScanTaskStatus = 'pending' | 'in_progress' | 'finished' | 'failed' | 'unknown';
+
+/** One scan task list entry. `status` is documented as 1 pending, 2 in progress, 3 finished. */
+export interface GzScanTask { id: string; status: unknown }
+
+/** `getScanTasksList` accepts perPage up to 100. */
+export const GZ_SCAN_TASKS_PAGE_SIZE = 100;
+const GZ_SCAN_TASK_NAME_PREFIX = 'Breeze scan ';
+
+/** The name a Breeze scan task carries in GravityZone: unique per edr_actions id (#12822). */
+export function gzScanTaskName(actionId: string): string {
+  return `${GZ_SCAN_TASK_NAME_PREFIX}${actionId}`;
+}
 
 export interface GzApiKeyDetails { enabledApis?: string[]; createdAt?: string }
+
+export interface GzAccountDetails { profile?: { timezone?: unknown } | null }
 
 export interface GravityZoneClientOptions {
   accessUrl: string;
@@ -379,6 +392,17 @@ export class GravityZoneClient {
     return r ?? {};
   }
 
+  /**
+   * The account that generated a personal API key (`accountId` omitted: the vendor then reads
+   * the key's own account). Its `profile.timezone` is the zone the Network and Quarantine APIs
+   * write their offset-less times in (#12821). Needs the Accounts API on the key. A service key
+   * must pass an `accountId` and answers in UTC (both verified live 2026-11-27).
+   */
+  async getAccountDetails(): Promise<GzAccountDetails> {
+    const r = await this.call<GzAccountDetails | null>('accounts', '1.0', 'getAccountDetails', {});
+    return r ?? {};
+  }
+
   async getCompaniesList(parentId: string, companyType?: 0 | 1): Promise<Array<{ id: string; name: string }>> {
     const params: Record<string, unknown> = { parentId };
     if (companyType !== undefined) params.filters = { companyType };
@@ -493,8 +517,22 @@ export class GravityZoneClient {
     return this.writeTask('incidents', 'createRestoreEndpointFromIsolationTask', { endpointId }, requestId);
   }
 
-  createScanTask(endpointId: string, requestId: string): Promise<GzTaskResult> {
-    return this.writeTask('network', 'createScanTask', { targetIds: [endpointId], type: 1 }, requestId);
+  /**
+   * A quick scan (type 1) named after the edr_actions id, so the scan task list can find it: that
+   * list cannot be filtered by task id (`taskId` is refused with -32602, live 2026-11-27). Live,
+   * without `returnAllTaskIds`, the vendor answers `true`; with it, it documents an array of every
+   * task id the request created. One id is kept; several cannot be told apart from each other, so
+   * the request is then found by its name only (#12822).
+   */
+  async createScanTask(endpointId: string, requestId: string): Promise<GzTaskResult> {
+    const label = 'GravityZone network.createScanTask';
+    const r = await this.call<unknown>('network', '1.0', 'createScanTask', {
+      targetIds: [endpointId], type: 1, name: gzScanTaskName(requestId), returnAllTaskIds: true,
+    }, { operationClass: 'actions', retry: false, requestId, scope: 'tenant' });
+    if (Array.isArray(r) && r.length > 1 && r.every((id) => typeof id === 'string' && id.length > 0)) {
+      return { kind: 'accepted' };
+    }
+    return this.taskResult(label, r);
   }
 
   // ---- push settings (W03 PR-B; operation class `push`, vendor limit 5/min) ----
@@ -540,25 +578,36 @@ export class GravityZoneClient {
     this.expectTrue('GravityZone push.sendTestPushEvent', r);
   }
 
-  /** A normal retrying read. Status codes are [U]; anything unrecognised maps to `unknown`. */
-  async getScanTaskStatus(taskId: string): Promise<GzScanTaskStatus> {
-    const r = await this.call<{ items?: Array<{ id?: string; status?: unknown }> } | null>(
-      'network', '1.0', 'getScanTasksList', { taskId, page: 1, perPage: 10 },
+  /**
+   * The scan tasks named exactly `name` (a normal retrying read). The vendor documents its `name`
+   * filter as a prefix match, so the exact comparison happens here. Live shape (2026-11-27):
+   * `{total,page,perPage,pagesCount,items:[{id,name,startDate,status}]}`. A Breeze task name is
+   * unique to one action, so more than one page of them is not a list this can trust.
+   */
+  async listScanTasksNamed(name: string): Promise<GzScanTask[]> {
+    const r = await this.call<{ total?: unknown; items?: Array<{ id?: unknown; name?: unknown; status?: unknown }> } | null>(
+      'network', '1.0', 'getScanTasksList', { name, page: 1, perPage: GZ_SCAN_TASKS_PAGE_SIZE },
     );
-    const item = Array.isArray(r?.items) ? r!.items.find((i) => i?.id === taskId) : undefined;
-    switch (item?.status) {
-      case 1: return 'pending';
-      case 2: return 'in_progress';
-      case 3: return 'finished';
-      case 4: return 'failed';
-      default: return 'unknown';
+    if (!r || !Array.isArray(r.items)) {
+      throw this.fail('GravityZone getScanTasksList had no items list', { code: 'malformed_response', scope: 'operation' });
     }
+    if (typeof r.total === 'number' && r.total > r.items.length) {
+      throw this.fail(`GravityZone getScanTasksList has ${r.total} tasks under one scan name`, { code: 'malformed_response', scope: 'operation' });
+    }
+    return r.items
+      .filter((i) => i?.name === name && typeof i.id === 'string')
+      .map((i) => ({ id: i.id as string, status: i.status }));
   }
 
   /**
    * Connection-wide (NO companyId filter): incidents are limited to 3 requests/60 s per key, so
    * the adapter fetches once per run and filters per tenant. Paginates by `pagesCount`
    * (this API has no `hasMoreRecords`). Any page failure throws.
+   *
+   * The window is sent as UTC with `Z`, and the vendor reads it as UTC whatever the key owner's
+   * timezone (#12821): live 2026-11-27, a one-minute window around an incident's UTC change time
+   * returned it with both a personal key (account in UTC-5) and a service key, and the same
+   * window shifted to the account's wall-clock time returned nothing.
    */
   async getIncidentsChangedBetween(from: Date, to: Date): Promise<GzIncident[]> {
     const out: GzIncident[] = [];

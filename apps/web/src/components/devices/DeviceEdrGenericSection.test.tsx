@@ -70,6 +70,13 @@ describe('DeviceEdrGenericSection', () => {
     expect(screen.queryByTestId(/device-edr-duplicate-/)).toBeNull();
   });
 
+  it('shows a missing last-seen time as unknown (#12821)', async () => {
+    fetchEdrEndpoints.mockResolvedValue([endpoint('e1', { lastSeenAt: null })]);
+    fetchEdrDetections.mockResolvedValue(page([]));
+    render(<DeviceEdrGenericSection deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('device-edr-last-seen-e1')).toHaveTextContent(/^Unknown$/);
+  });
+
   it('warns when the same provider is linked through two connections', async () => {
     fetchEdrEndpoints.mockResolvedValue([endpoint('e1'), endpoint('e2', { connectionId: 'conn-2' })]);
     fetchEdrDetections.mockResolvedValue(page([]));

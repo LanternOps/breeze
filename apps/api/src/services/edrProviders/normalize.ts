@@ -50,8 +50,9 @@ export function parseVendorDate(raw: unknown): Date | null {
   else if (typeof raw === 'string') {
     const s = raw.trim();
     if (/^\d+$/.test(s)) d = new Date(Number(s) < 1e11 ? Number(s) * 1000 : Number(s));
-    // An ISO date-time with no offset (GravityZone's lastSeen, live 2026-10-08) is read as UTC.
-    // `new Date()` would read it as host-local time, so the stored instant moved with the TZ.
+    // An ISO date-time with no offset is read as UTC: `new Date()` would read it as host-local
+    // time, so the stored instant moved with the TZ. GravityZone does not use this parser: its
+    // offset-less times are in the API key owner's timezone (bitdefender/time.ts, #12821).
     else if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) d = new Date(`${s.replace(' ', 'T')}Z`);
     else d = new Date(s);
   } else return null;

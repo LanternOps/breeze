@@ -266,6 +266,18 @@ describe('edr_endpoint_action — handler', () => {
     expect(String(out.note)).toMatch(/do not retry/i);
   });
 
+  it('#12822: a scan the vendor accepted but has not finished is neither a success nor a failure', async () => {
+    h.dispatch.mockResolvedValue({
+      actionId: 'a', status: 'submitted', outcomeUnknown: false, awaitingConfirmation: false, error: null, message: null, httpStatus: 200,
+    });
+    const out = await run({ deviceId: DEVICE, action: 'scan' });
+    expect(out).toMatchObject({ state: 'in_progress', accepted: true, actionId: 'a', status: 'submitted', outcomeUnknown: false });
+    expect(out).not.toHaveProperty('success');
+    expect(out).not.toHaveProperty('error');
+    expect(String(out.note)).toMatch(/not finished/i);
+    expect(String(out.note)).toMatch(/do not retry/i);
+  });
+
   it('a 429 refusal passes retryAfterSeconds through to the model', async () => {
     h.dispatch.mockRejectedValue(new EdrActionError('rate_limited', 429, 'Too many EDR actions; try again shortly', 42));
     expect(await run({ deviceId: DEVICE, action: 'scan' })).toEqual({

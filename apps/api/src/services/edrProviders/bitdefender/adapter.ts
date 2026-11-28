@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { EdrActionKey } from '@breeze/shared';
 import {
@@ -24,11 +25,16 @@ import {
   GravityZoneClient,
   GZ_HOST_ALLOWLIST,
   GZ_INSTALLER_HOST_ALLOWLIST,
+  gzScanTaskName,
+  type GzAccountDetails,
   type GzIncident,
   type GzQuarantineItem,
 } from './client';
-import { toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint } from './normalize';
+import {
+  toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint, ZONE_NOT_READ, type GzZone,
+} from './normalize';
 import { verifyGravityZoneWebhook } from './push';
+import { isKnownTimeZone, lacksOffset } from './time';
 
 const credentialsSchema = z.object({ apiKey: z.string().trim().min(16).max(512) }).strict();
 
@@ -86,6 +92,141 @@ function memo<T>(ctx: EdrAdapterContext, key: string, load: () => Promise<T>): P
     ctx.runCache.set(key, p);
   }
   return p;
+}
+
+// ---- account timezone (#12821) ----------------------------------------------
+
+/**
+ * The account timezone for one run (#12821):
+ * - `known`: offset-less times are read in `timeZone`;
+ * - `unavailable`: a lasting reason (see below): offset-less times are stored as null;
+ * - `not_read`: the read failed this run for any other reason: offset-less times are left unset,
+ *   so stored values are kept and new rows start with none.
+ * Reading the account never fails a run. Endpoint identity, managed and isolation state, policy and
+ * the detections themselves do not need the timezone, and inventory is the only writer of the
+ * isolation state the action check reads, so a failed run would hold back a re-isolate.
+ */
+type AccountTimeZone =
+  | { state: 'known'; timeZone: string }
+  | { state: 'unavailable'; reason: string }
+  | { state: 'not_read'; reason: string };
+
+function zoneOf(tz: AccountTimeZone): GzZone {
+  return tz.state === 'known' ? tz.timeZone : tz.state === 'unavailable' ? null : ZONE_NOT_READ;
+}
+
+/**
+ * Account-read failures that will not go away on a retry: this key cannot read its account, so the
+ * zone is unavailable now. Only an answer about this call counts: a connection-scope or reauth error
+ * (a 401, a non-JSON 403, which also carries the code `forbidden`, a rate limit) is never permanent.
+ * Every other failure (a generic `vendor_error` such as -32000, 5xx, a malformed or non-2xx reply,
+ * `not_found`, a network error) is `not_read` too.
+ */
+const PERMANENT_ACCOUNT_READ_CODES: ReadonlySet<string> = new Set([
+  'api_not_enabled', 'licence', 'forbidden', 'method_not_found', 'invalid_params',
+]);
+
+function isPermanentAccountReadError(e: unknown): e is EdrProviderRequestError {
+  return isReq(e) && !e.reauth && e.scope !== 'connection' && PERMANENT_ACCOUNT_READ_CODES.has(e.code);
+}
+
+/**
+ * Bound on `not_read`, so a time stored before #12821 (an offset-less value misread as UTC) is not
+ * kept for ever while the read keeps failing. Once the read for one key has failed at least
+ * ACCOUNT_READ_FAILING_ATTEMPTS times, over at least ACCOUNT_READ_FAILING_MS, with no success (and
+ * no lasting reason) in between, it is `unavailable` (null times, logged reason
+ * `account_read_failing:<code>`) until a read succeeds. Counting attempts as well as time means one
+ * failure, a long quiet gap, then a second failure is not read as "failing for hours". Kept per
+ * process (a restart starts over), keyed by a sha256 of the access URL and key, holding only
+ * failing keys, at most MAX_TRACKED_FAILING_KEYS (the oldest is dropped).
+ */
+const ACCOUNT_READ_FAILING_MS = 3 * 60 * 60_000;
+const ACCOUNT_READ_FAILING_ATTEMPTS = 3;
+const MAX_TRACKED_FAILING_KEYS = 1_000;
+/** Key fingerprint -> when its account read started failing (ms) and how many reads have failed since. */
+const accountReadFailing = new Map<string, { since: number; attempts: number }>();
+
+function accountKeyFingerprint(ctx: EdrAdapterContext): string {
+  return createHash('sha256').update(JSON.stringify([ctx.baseUrl ?? '', ctx.creds])).digest('hex');
+}
+
+/** Records one failed read at `now`; true once the bound above is reached. */
+function recordFailedAccountRead(key: string, now: number): boolean {
+  let entry = accountReadFailing.get(key);
+  if (entry === undefined) {
+    if (accountReadFailing.size >= MAX_TRACKED_FAILING_KEYS) {
+      const oldest = accountReadFailing.keys().next().value;
+      if (oldest !== undefined) accountReadFailing.delete(oldest);
+    }
+    entry = { since: now, attempts: 0 };
+    accountReadFailing.set(key, entry);
+  }
+  entry.attempts += 1;
+  return entry.attempts >= ACCOUNT_READ_FAILING_ATTEMPTS && now - entry.since >= ACCOUNT_READ_FAILING_MS;
+}
+
+/**
+ * The API key owner's account timezone, read once per run (memoized on the run context, failures
+ * included). The Network and Quarantine APIs write offset-less times in it (see time.ts). Never
+ * throws: every outcome is logged once per run, code only. A connection-wide failure (key revoked,
+ * rate limited everywhere) still fails the run through the other calls that need the connection.
+ *
+ * Only personal API keys are supported today (basic auth). A service API key answers in UTC
+ * (observed live 2026-11-27), and its getAccountDetails refuses a call with no accountId
+ * (invalid_params here, so every offset-less time would be null). TODO(#12817): a service-key
+ * connection must resolve `{ state: 'known', timeZone: 'UTC' }` without calling this.
+ */
+function accountTimeZone(ctx: EdrAdapterContext): Promise<AccountTimeZone> {
+  return memo(ctx, 'gz:account-timezone', async (): Promise<AccountTimeZone> => {
+    const unavailable = (reason: string): AccountTimeZone => {
+      console.warn(`[edr:bitdefender] account timezone unavailable (${reason}); vendor times without an offset are stored as null`);
+      return { state: 'unavailable', reason };
+    };
+    const key = accountKeyFingerprint(ctx);
+    let details: GzAccountDetails;
+    try {
+      details = await clientFor(ctx).getAccountDetails();
+    } catch (e) {
+      const code = isReq(e) ? e.code : 'unexpected_error';
+      if (isPermanentAccountReadError(e)) {
+        accountReadFailing.delete(key);
+        return unavailable(code);
+      }
+      if (recordFailedAccountRead(key, Date.now())) return unavailable(`account_read_failing:${code}`);
+      console.warn(`[edr:bitdefender] account timezone read failed (${code}); vendor times without an offset keep their stored value this run`);
+      return { state: 'not_read', reason: code };
+    }
+    accountReadFailing.delete(key);
+    const tz = details.profile?.timezone;
+    if (typeof tz !== 'string' || tz.trim() === '') return unavailable('timezone_missing');
+    if (!isKnownTimeZone(tz.trim())) return unavailable('timezone_invalid');
+    return { state: 'known', timeZone: tz.trim() };
+  });
+}
+
+/** The sync warning for detections whose offset-less times could not be read this run. */
+function timesNotReadWarning(stream: 'incidents' | 'quarantine', tz: Exclude<AccountTimeZone, { state: 'known' }>): string {
+  if (tz.state === 'not_read') return `${stream}: times not updated (account timezone read failed)`;
+  const why = tz.reason === 'api_not_enabled'
+    ? 'Accounts API not enabled on key'
+    : tz.reason.startsWith('account_read_failing:') ? 'account timezone read failing' : 'account timezone unavailable';
+  return `${stream}: times not stored (${why})`;
+}
+
+// ---- scan reference (#12822) --------------------------------------------------
+
+/**
+ * A scan's `vendor_action_id`: `scan:<edr_actions id>`, plus `:<task id>` when the vendor returned
+ * exactly one. The action id gives the task's name in GravityZone (gzScanTaskName). Opaque outside
+ * this adapter.
+ */
+function scanRef(actionId: string, taskId: string | null): string {
+  return taskId ? `scan:${actionId}:${taskId}` : `scan:${actionId}`;
+}
+
+function parseScanRef(value: string): { actionId: string; taskId: string | null } | null {
+  const m = /^scan:([^:]+)(?::([^:]+))?$/.exec(value);
+  return m ? { actionId: m[1]!, taskId: m[2] ?? null } : null;
 }
 
 // ---- installer --------------------------------------------------------------
@@ -186,6 +327,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         if (!enabled.has('incidents')) notes.push('incidents: API not enabled on key');
         if (!enabled.has('quarantine')) notes.push('quarantine: API not enabled on key');
         if (!enabled.has('packages')) notes.push('packages: API not enabled on key');
+        // Without it, offset-less vendor times (endpoint last seen, quarantine dates) are not stored (#12821).
+        if (!enabled.has('accounts')) notes.push('accounts: API not enabled on key');
       }
 
       let root: { id: string; name: string; type: number };
@@ -205,6 +348,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
           ['quarantine', () => client.call('quarantine/computers', '1.1', 'getQuarantineItemsList', {
             page: 1, perPage: 1, filters: { startDate: day.toISOString(), endDate: new Date().toISOString() },
           })],
+          ['accounts', () => client.getAccountDetails()],
         ];
         for (const [name, run] of probes) {
           try {
@@ -300,11 +444,15 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   },
 
   async enrichEndpoints(ctx, _tenant, ids): Promise<VendorEdrEndpointDetail[]> {
+    if (ids.length === 0) return [];
     const client = clientFor(ctx);
+    // `lastSeen` has no offset: it is in the key owner's timezone (#12821). The account read never
+    // throws; a connection-wide failure still fails the run through getEndpointDetails below.
+    const zone = zoneOf(await accountTimeZone(ctx));
     const out: VendorEdrEndpointDetail[] = [];
     for (const id of ids) {
       try {
-        out.push(toEndpointDetail(id, await client.getEndpointDetails(id)));
+        out.push(toEndpointDetail(id, await client.getEndpointDetails(id), zone));
       } catch (e) {
         if (!isReq(e) || e.scope === 'connection') throw e;
         // A vanished endpoint: skip it, it stays stale and is retried.
@@ -379,22 +527,43 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     }
     const client = clientFor(ctx);
     const id = req.target.vendorEndpointId;
-    const r = req.action === 'isolate' ? await client.createIsolateEndpointTask(id, traceId)
-      : req.action === 'unisolate' ? await client.createRestoreEndpointFromIsolationTask(id, traceId)
-        : await client.createScanTask(id, traceId);
-    // Only a scan has a pollable task (getScanTasksList). For isolate/restore any
-    // accepted answer — boolean or task id ([U]) — means "the vendor took it";
-    // completion is observed by the reconciler through a live reconcileAction read (#12789).
-    if (req.action !== 'scan' || r.kind === 'accepted') return { status: 'succeeded' };
-    return { status: 'submitted', vendorActionId: r.taskId };
+    if (req.action === 'scan') {
+      // The vendor only accepted it (live: a quick scan stays pending for minutes). It stays
+      // submitted until getActionStatus sees its task finished, or fails at the submitted timeout.
+      const r = await client.createScanTask(id, traceId);
+      return { status: 'submitted', vendorActionId: scanRef(traceId, r.kind === 'task' ? r.taskId : null) };
+    }
+    await (req.action === 'isolate'
+      ? client.createIsolateEndpointTask(id, traceId)
+      : client.createRestoreEndpointFromIsolationTask(id, traceId));
+    // Any accepted answer, boolean or task id ([U]), means "the vendor took it"; dispatch records
+    // it submitted and the reconciler confirms it through a live reconcileAction read (#12789).
+    return { status: 'succeeded' };
   },
 
+  /**
+   * A scan's state, read from the scan task list by the task name Breeze sent (#12822). It is
+   * `succeeded` only when the vendor lists the task (or, with no task id, every task under that
+   * name) as finished (status 3). Pending, running, an undocumented status, or no task listed yet
+   * all stay `submitted`; the reconciler then fails the row at the submitted timeout as
+   * `vendor_status_timeout`, so an unconfirmed scan never ends as a success.
+   */
   async getActionStatus(ctx, _tenant, vendorActionId) {
-    switch (await clientFor(ctx).getScanTaskStatus(vendorActionId)) {
-      case 'finished': return { status: 'succeeded' };
-      case 'failed': return { status: 'failed', code: 'vendor_task_failed', message: 'Scan task failed' };
-      default: return { status: 'submitted' };
+    const ref = parseScanRef(vendorActionId);
+    if (!ref) {
+      // Not a reference this adapter wrote: the row waits for the submitted timeout. Length only.
+      console.warn(`[edr:bitdefender] unrecognised scan reference (${vendorActionId.length} chars); left submitted`);
+      return { status: 'submitted' };
     }
+    const tasks = await clientFor(ctx).listScanTasksNamed(gzScanTaskName(ref.actionId));
+    const mine = ref.taskId ? tasks.filter((t) => t.id === ref.taskId) : tasks;
+    for (const t of mine) {
+      if (t.status !== 1 && t.status !== 2 && t.status !== 3) {
+        // Documented: 1 pending, 2 in progress, 3 finished. Anything else is not guessed at.
+        console.warn(`[edr:bitdefender] undocumented scan task status ${JSON.stringify(t.status)?.slice(0, 20)}; left submitted`);
+      }
+    }
+    return mine.length > 0 && mine.every((t) => t.status === 3) ? { status: 'succeeded' } : { status: 'submitted' };
   },
 
   async reconcileAction(ctx, _tenant, req): Promise<EdrReconcileVerdict> {
@@ -442,7 +611,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const to = now;
     const toIso = to.toISOString();
     const warnings: string[] = [];
-    const detections: VendorEdrDetection[] = [];
+    const incidents: GzIncident[] = [];
+    const quarantine: GzQuarantineItem[] = [];
     // Cursor values are the run window END so every tenant in a run shares one memoized fetch.
     const next: GzCursor = { v: 1, incidentsChangedAfter: cursor.incidentsChangedAfter, quarantineAfter: cursor.quarantineAfter };
 
@@ -458,7 +628,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         },
       );
       for (const i of all) {
-        if (i.company?.id === tenant.vendorTenantId) detections.push(toIncidentDetection(i, tenant.vendorTenantId));
+        if (i.company?.id === tenant.vendorTenantId) incidents.push(i);
       }
       next.incidentsChangedAfter = toIso;
     } catch (e) {
@@ -472,7 +642,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, () => client.getQuarantineBetween(qFrom, to),
       );
       for (const q of all) {
-        if (q.companyId === tenant.vendorTenantId) detections.push(toQuarantineDetection(q, tenant.vendorTenantId));
+        if (q.companyId === tenant.vendorTenantId) quarantine.push(q);
       }
       next.quarantineAfter = toIso;
     } catch (e) {
@@ -480,6 +650,29 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       warnings.push(e.code === 'licence' ? 'quarantine: licence not available' : 'quarantine: API not enabled on key');
     }
 
+    // Incident times carry an explicit offset (live 2026-11-27); quarantine dates do not and are in
+    // the key owner's timezone (#12821). The account is read only when a value needs it, and a failed
+    // read never holds detections back: their offset-less times are null (unavailable) or unset
+    // (not read: a stored value is kept, a new row has none), never guessed.
+    const incidentOffsetless = incidents.some((i) => lacksOffset(i.created) || lacksOffset(i.lastIncidentChange));
+    const quarantineOffsetless = quarantine.some((q) => lacksOffset(q.quarantinedOn));
+    const tz: AccountTimeZone | null = incidentOffsetless || quarantineOffsetless ? await accountTimeZone(ctx) : null;
+    if (tz && tz.state !== 'known') {
+      if (incidentOffsetless) warnings.push(timesNotReadWarning('incidents', tz));
+      if (quarantineOffsetless) warnings.push(timesNotReadWarning('quarantine', tz));
+    }
+    // With no offset-less value the zone is never consulted; null is then only a placeholder.
+    const zone: GzZone = tz ? zoneOf(tz) : null;
+    const detections: VendorEdrDetection[] = [
+      ...incidents.map((i) => toIncidentDetection(i, tenant.vendorTenantId, zone)),
+      ...quarantine.map((q) => toQuarantineDetection(q, tenant.vendorTenantId, zone)),
+    ];
+
     return { detections, cursor: JSON.stringify(next), warnings };
   },
+};
+
+/** Test seams. */
+export const __testOnly = {
+  resetAccountReadFailures: (): void => accountReadFailing.clear(),
 };

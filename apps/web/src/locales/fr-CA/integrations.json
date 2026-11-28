@@ -1563,6 +1563,7 @@
     "hostname": "Nom d'hôte",
     "os": "SE",
     "lastSeen": "Dernière activité",
+    "lastSeenUnknown": "Inconnu",
     "health": "État de santé",
     "device": "Appareil",
     "selectDevice": "Sélectionner un appareil",

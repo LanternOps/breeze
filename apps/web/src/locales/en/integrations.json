@@ -1542,6 +1542,7 @@
     "hostname": "Hostname",
     "os": "OS",
     "lastSeen": "Last seen",
+    "lastSeenUnknown": "Unknown",
     "health": "Health",
     "device": "Device",
     "selectDevice": "Select device",

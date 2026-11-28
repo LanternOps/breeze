@@ -4485,6 +4485,7 @@
       "agentVersion": "Versión del agente",
       "lastSeen": "Última vez visto"
     },
+    "lastSeenUnknown": "Desconocido",
     "health": {
       "healthy": "Saludable",
       "degraded": "Degradado",
@@ -4566,7 +4567,7 @@
         "outcome_unknown_reissue_manually": "El resultado nunca se confirmó; revisa la consola del proveedor antes de volver a intentarlo",
         "not_sent_or_rejected": "El proveedor indica que no se aplicó",
         "detached_unsettled": "La asignación de la empresa cambió antes de que esto terminara",
-        "vendor_status_timeout": "La tarea del proveedor no terminó en 24 horas",
+        "vendor_status_timeout": "El proveedor no confirmó en 24 horas que la tarea terminara; revisa la consola del proveedor",
         "vendor_task_failed": "El proveedor informó que la tarea falló",
         "isolation_unconfirmed": "Aceptada, pero el dispositivo no la confirmó en 24 horas. La tarea del proveedor aún puede aplicarse cuando el dispositivo se vuelva a conectar; revisa la consola del proveedor",
         "unknown": "La acción no se completó"
