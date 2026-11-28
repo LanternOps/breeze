@@ -389,7 +389,7 @@
     "selective": "Selective",
     "expiresInHours": "Expires in hours",
     "optionalTargetConfigJson": "Optional target config JSON",
-    "targetpathsNotesOptional": "{\"targetPaths\":[...],\"notes\":\"optional\"}",
+    "targetpathsNotesOptional": "{\"targetPaths\":{\"/home\":\"/restore/home\",\"C:\\\\Users\":\"D:\\\\Restored\\\\Users\"},\"notes\":\"optional\"}",
     "storedOnTheTokenForTheRecoveryAgent": "Stored on the token for the recovery agent. Leave blank if you do not need overrides.",
     "createToken": "Create token",
     "thePlaintextTokenIsOnlyReturnedOnceSo": "The plaintext token is only returned once, so copy the command immediately after creation.",

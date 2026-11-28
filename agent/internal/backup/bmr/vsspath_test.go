@@ -26,7 +26,7 @@ func TestRestoreFilesDownloadFailureNamesOriginalPath(t *testing.T) {
 		Size:         10,
 	}}}
 
-	_, _, warnings, failedFiles, _ := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	_, _, warnings, failedFiles, _ := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if failedFiles != 1 || len(warnings) == 0 {
 		t.Fatalf("failedFiles=%d warnings=%v, want one download failure", failedFiles, warnings)
 	}

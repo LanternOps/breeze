@@ -163,7 +163,7 @@ describe('RecoveryBootstrapTab', () => {
               timestamp: '2026-03-28T10:00:00Z',
             },
             targetConfig: {
-              targetPaths: ['/mnt/recovery'],
+              targetPaths: { '/home': '/mnt/recovery/home' },
             },
           },
         });

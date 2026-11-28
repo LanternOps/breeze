@@ -723,7 +723,7 @@ func TestRestoreFilesAbortsImmediatelyOnRecoverySessionLost(t *testing.T) {
 	}
 	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
 
-	filesRestored, _, _, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, _, _, failedFiles, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if !errors.Is(err, ErrRecoverySessionLost) {
 		t.Fatalf("err = %v, want ErrRecoverySessionLost", err)
 	}
@@ -1024,7 +1024,7 @@ func TestRestoreFilesSessionLostSaysHowToResume(t *testing.T) {
 	}
 	manifest := &snapshotManifest{ID: "resume-hint", Files: files, Size: 50}
 
-	_, _, warnings, _, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	_, _, warnings, _, err := restoreFiles(context.Background(), manifest, nil, RecoveryConfig{}, provider)
 	if !errors.Is(err, ErrRecoverySessionLost) {
 		t.Fatalf("err = %v, want ErrRecoverySessionLost", err)
 	}

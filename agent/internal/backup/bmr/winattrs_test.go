@@ -48,7 +48,7 @@ func TestRestoreFiles_AppliesWinAttrsAfterModeAndMtime(t *testing.T) {
 	}
 	defer func() { chmodFile, chtimesFile, applyWinAttrsFile = origChmod, origChtimes, origAttrs }()
 
-	restored, _, warnings, failed, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	restored, _, warnings, failed, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil || restored != 1 || failed != 0 {
 		t.Fatalf("restoreFiles = (%d restored, %d failed, %v), warnings %v", restored, failed, err, warnings)
 	}
@@ -76,7 +76,7 @@ func TestRestoreFiles_WinAttrsFailureWarnsButDoesNotFailTheFile(t *testing.T) {
 	applyWinAttrsFile = func(string, uint32) error { return errors.New("injected attribute failure") }
 	defer func() { applyWinAttrsFile = origAttrs }()
 
-	restored, _, warnings, failed, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	restored, _, warnings, failed, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestRestoreFiles_WinAttrsFailureWarnsButDoesNotFailTheFile(t *testing.T) {
 func TestRestoreFiles_ZeroWinAttrsProducesNoWarning(t *testing.T) {
 	provider, manifest := seedWinAttrsManifest(t, 0)
 
-	_, _, warnings, failed, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	_, _, warnings, failed, err := restoreFilesPlanned(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil || failed != 0 || len(warnings) != 0 {
 		t.Fatalf("restoreFiles = (%d failed, %v), warnings %v — want a clean, unchanged restore", failed, err, warnings)
 	}

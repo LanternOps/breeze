@@ -389,7 +389,7 @@
     "selective": "Selektiv",
     "expiresInHours": "Läuft in Stunden ab",
     "optionalTargetConfigJson": "Optionale Zielkonfiguration JSON",
-    "targetpathsNotesOptional": "{\"targetPaths\":[...],\"notes\": \"optional\"}",
+    "targetpathsNotesOptional": "{\"targetPaths\":{\"/home\":\"/restore/home\",\"C:\\\\Users\":\"D:\\\\Restored\\\\Users\"},\"notes\":\"optional\"}",
     "storedOnTheTokenForTheRecoveryAgent": "Wird auf dem Token für den Wiederherstellungsagenten gespeichert. Lassen Sie das Feld leer, wenn Sie keine Überschreibungen benötigen.",
     "createToken": "Token erstellen",
     "thePlaintextTokenIsOnlyReturnedOnceSo": "Das Klartext-Token wird nur einmal zurückgegeben. Kopieren Sie den Befehl daher sofort nach der Erstellung.",

@@ -389,7 +389,7 @@
     "selective": "Seçici",
     "expiresInHours": "Süresi birkaç saat içinde doluyor",
     "optionalTargetConfigJson": "İsteğe bağlı hedef yapılandırması JSON",
-    "targetpathsNotesOptional": "{\"hedefYollar\":[...],\"notlar\":\"isteğe bağlı\"}",
+    "targetpathsNotesOptional": "{\"targetPaths\":{\"/home\":\"/restore/home\",\"C:\\\\Users\":\"D:\\\\Restored\\\\Users\"},\"notes\":\"isteğe bağlı\"}",
     "storedOnTheTokenForTheRecoveryAgent": "Kurtarma aracısı için belirteçte saklanır. Geçersiz kılmaya ihtiyacınız yoksa boş bırakın.",
     "createToken": "Jeton oluştur",
     "thePlaintextTokenIsOnlyReturnedOnceSo": "Düz metin belirteci yalnızca bir kez döndürülür; bu nedenle, oluşturulduktan hemen sonra komutu kopyalayın.",

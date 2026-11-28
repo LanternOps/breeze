@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -100,8 +101,25 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	} else if bootstrap.SnapshotID != "" {
 		effectiveCfg.SnapshotID = bootstrap.SnapshotID
 	}
-	if len(effectiveCfg.TargetPaths) == 0 {
-		effectiveCfg.TargetPaths = targetPathsFromConfig(bootstrap.TargetConfig)
+	// Mappings given on the command line (or in the bmr_recover payload)
+	// replace the token's; otherwise the token's are used, and a token
+	// whose targetPaths has a shape this helper cannot read refuses the
+	// recovery before anything is downloaded (#12650).
+	var tokenPathsNotUsed string
+	tokenPaths, tokenPathsErr := targetPathsFromConfig(bootstrap.TargetConfig)
+	switch {
+	case len(effectiveCfg.TargetPaths) == 0 && tokenPathsErr != nil:
+		result.Error = fmt.Sprintf("recovery token target configuration refused: %s", tokenPathsErr.Error())
+		return completeAndReturn(tokenPathsErr)
+	case len(effectiveCfg.TargetPaths) == 0:
+		effectiveCfg.TargetPaths = tokenPaths
+	case tokenPathsErr != nil:
+		tokenPathsNotUsed = fmt.Sprintf("the recovery token's targetPaths could not be read (%s) and were not used; this run's own path mappings were used instead", tokenPathsErr.Error())
+	case len(tokenPaths) > 0:
+		tokenPathsNotUsed = "the recovery token's targetPaths were not used; this run's own path mappings replace them"
+	}
+	if tokenPathsNotUsed != "" {
+		slog.Warn("bmr: " + tokenPathsNotUsed)
 	}
 	if bootstrap.Snapshot != nil {
 		effectiveCfg.ExpectSystemState = SnapshotExpectsSystemState(bootstrap.Snapshot)
@@ -125,6 +143,10 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
 	if runResult != nil {
 		result = runResult
+	}
+	if tokenPathsNotUsed != "" {
+		// First, so a bounded warnings list never drops this run-level note.
+		result.Warnings = append([]string{tokenPathsNotUsed}, result.Warnings...)
 	}
 	return completeAndReturn(runErr)
 }
@@ -512,37 +534,65 @@ func providerFromAuthenticatedConfig(targetConfig map[string]any) (providers.Bac
 	}
 }
 
-func targetPathsFromConfig(targetConfig map[string]any) map[string]string {
-	extract := func(raw any) map[string]string {
+// targetPathsFromConfig reads the recovery token's targetPaths: an object
+// mapping original paths to targets ({"/home": "/restore/home"}), at the top
+// level of targetConfig or under providerConfig (top level wins when it has
+// any). Absent or null means no mappings. Any other shape — a list, a
+// string, a non-string or empty target — is an error (#12650): helpers
+// before it ignored such a value and restored everything in place.
+func targetPathsFromConfig(targetConfig map[string]any) (map[string]string, error) {
+	extract := func(where string, raw any) (map[string]string, error) {
+		if raw == nil {
+			return nil, nil
+		}
 		record, ok := raw.(map[string]any)
 		if !ok {
-			return nil
+			return nil, fmt.Errorf("bmr: %s must be an object mapping original paths to target paths, such as {\"/home\": \"/restore/home\"}; got %s", where, jsonKind(raw))
 		}
 		paths := make(map[string]string, len(record))
 		for key, value := range record {
-			if target, ok := value.(string); ok && target != "" {
-				paths[key] = target
+			target, isString := value.(string)
+			if strings.TrimSpace(key) == "" || !isString || strings.TrimSpace(target) == "" {
+				return nil, fmt.Errorf("bmr: %s entry %q must map a non-empty original path to a non-empty target path string", where, key)
 			}
+			paths[key] = target
 		}
 		if len(paths) == 0 {
-			return nil
+			return nil, nil
 		}
-		return paths
+		return paths, nil
 	}
 
-	if raw, ok := targetConfig["targetPaths"]; ok && raw != nil {
-		if paths := extract(raw); len(paths) > 0 {
-			return paths
+	top, err := extract("targetConfig.targetPaths", targetConfig["targetPaths"])
+	if err != nil {
+		return nil, err
+	}
+	var nested map[string]string
+	if providerConfig, ok := targetConfig["providerConfig"].(map[string]any); ok {
+		if nested, err = extract("targetConfig.providerConfig.targetPaths", providerConfig["targetPaths"]); err != nil {
+			return nil, err
 		}
 	}
-	if raw, ok := targetConfig["providerConfig"]; ok && raw != nil {
-		if nested, ok := raw.(map[string]any); ok {
-			if paths := extract(nested["targetPaths"]); len(paths) > 0 {
-				return paths
-			}
-		}
+	if len(top) > 0 {
+		return top, nil
 	}
-	return nil
+	return nested, nil
+}
+
+// jsonKind names the JSON type of a decoded value for an error message.
+func jsonKind(v any) string {
+	switch v.(type) {
+	case []any:
+		return "a list"
+	case string:
+		return "a string"
+	case float64, json.Number:
+		return "a number"
+	case bool:
+		return "a boolean"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
 }
 
 func firstString(values ...any) string {
