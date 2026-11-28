@@ -10,7 +10,7 @@ import {
 } from '../services/aiToolHandoff';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { authMiddleware, isInteractiveUserSession } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa, isInteractiveUserSession } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { diagnosticAccessGrants } from '../db/schema/diagnosticAccess';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
@@ -29,7 +29,13 @@ import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { isAgentIntentDecideAuthorized } from '../services/actionIntents/intentApprovers';
-import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
+import { userCanDecideApprovals, canAccessOrg, canAccessSite, hasPermission, PERMISSIONS } from '../services/permissions';
+import { getDeciderPermissionsForOrg } from '../services/approvals/deciderPermissions';
+import { elevationRequests } from '../db/schema/elevations';
+import {
+  recordDecisionMfaVerification,
+  type DecisionMfaVerification,
+} from '../services/approvals/decisionMfaVerification';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
@@ -39,9 +45,12 @@ import { authenticatorDevices } from '../db/schema/authenticatorDevices';
 // file keeps only the thin HTTP adapters over it (see
 // services/approvals/decideApprovalRequest.ts).
 import {
+  approveCodeCanCount,
   decideApprovalRequest,
+  loadDecidableApprovalRow,
   resolveTargetDevices,
   serialize,
+  SESSION_MFA_REQUIRED_BODY,
   toIntentAttribution,
   toIntentTargetRef,
   type DecideApprovalResult,
@@ -50,6 +59,7 @@ import {
 } from '../services/approvals/decideApprovalRequest';
 import {
   batchAssertionKey,
+  batchRequiresSessionMfa,
   decideApprovalBatch,
   loadHomogeneousBatch,
 } from '../services/approvals/batchDecide';
@@ -184,29 +194,68 @@ interface AuthorizedApproval {
  * there's no reason to redo the canAccessOrg/userCanDecideApprovals pairing per
  * row.
  *
- * System-scoped: the org membership/role reads must resolve regardless of the
- * caller's ambient request scope (partner approvers have no
- * `organization_users` row), and a bare (non-exited) `withSystemDbAccessContext`
- * from inside a request context is a no-op passthrough (db/index.ts), hence
- * `runOutsideDbContext`.
+ * Resolved in the partner that owns `orgId` (`getDeciderPermissionsForOrg`),
+ * the same rule the decide core applies, so the list never offers a row the
+ * decide would refuse for lack of authority.
  */
 function makeOrgDecideAuthorizer(
   userId: string,
-  partnerId: string | null,
 ): (orgId: string) => Promise<boolean> {
   const cache = new Map<string, Promise<boolean>>();
   return (orgId: string) => {
     let resolved = cache.get(orgId);
     if (!resolved) {
-      resolved = runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          getUserPermissions(userId, { partnerId: partnerId ?? undefined, orgId }),
-        ),
-      ).then((perms) => !!perms && canAccessOrg(perms, orgId) && userCanDecideApprovals(perms));
+      resolved = getDeciderPermissionsForOrg(userId, orgId)
+        .then((perms) => !!perms && canAccessOrg(perms, orgId) && userCanDecideApprovals(perms));
       cache.set(orgId, resolved);
     }
     return resolved;
   };
+}
+
+/** The org and site of a PAM elevation, as the decide rules read them. */
+interface ElevationTarget {
+  orgId: string;
+  siteId: string | null;
+}
+
+/**
+ * "Can `userId` still decide this elevation?": `pam:approve` for its org and
+ * access to its site, the rules the decide core applies to both approve and
+ * deny of a PAM row, so a row this refuses is one the caller cannot act on at
+ * all. Permissions are memoised per org for one request (a queue can hold
+ * many PAM rows for one org).
+ */
+function makePamDecideAuthorizer(
+  userId: string,
+): (target: ElevationTarget) => Promise<boolean> {
+  const cache = new Map<string, Promise<Awaited<ReturnType<typeof getDeciderPermissionsForOrg>>>>();
+  return async (target: ElevationTarget) => {
+    let resolved = cache.get(target.orgId);
+    if (!resolved) {
+      resolved = getDeciderPermissionsForOrg(userId, target.orgId);
+      cache.set(target.orgId, resolved);
+    }
+    const perms = await resolved;
+    return !!perms
+      && canAccessOrg(perms, target.orgId)
+      && hasPermission(perms, PERMISSIONS.PAM_APPROVE.resource, PERMISSIONS.PAM_APPROVE.action)
+      && (!target.siteId || canAccessSite(perms, target.siteId));
+  };
+}
+
+/** The org and site of these PAM elevations (system scope); an id that no longer resolves is absent. */
+async function loadElevationTargets(elevationRequestIds: string[]): Promise<Map<string, ElevationTarget>> {
+  if (elevationRequestIds.length === 0) return new Map();
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: elevationRequests.id, orgId: elevationRequests.orgId, siteId: elevationRequests.siteId })
+        .from(elevationRequests)
+        .where(inArray(elevationRequests.id, elevationRequestIds)),
+    ),
+  );
+  return new Map(rows.map((r) => [r.id, { orgId: r.orgId, siteId: r.siteId }]));
 }
 
 /**
@@ -319,14 +368,21 @@ async function isIntentRowVisibleToUser(
 async function resolveRowLiveAuthorization(
   row: typeof approvalRequests.$inferSelect,
   userId: string,
-  partnerId: string | null,
 ): Promise<{
   authorized: boolean;
   approvalScope: ActionIntentApprovalScope | null;
   attribution: IntentAttribution;
   targetRef: IntentTargetRef | null;
 }> {
-  if (!row.intentId) return { authorized: true, approvalScope: null, attribution: null, targetRef: null };
+  if (!row.intentId) {
+    let authorized = true;
+    if (row.elevationRequestId) {
+      // An elevation that no longer resolves is not offered.
+      const target = (await loadElevationTargets([row.elevationRequestId])).get(row.elevationRequestId);
+      authorized = !!target && (await makePamDecideAuthorizer(userId)(target));
+    }
+    return { authorized, approvalScope: null, attribution: null, targetRef: null };
+  }
   const intentId = row.intentId;
   const intent = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -340,7 +396,7 @@ async function resolveRowLiveAuthorization(
   const authorized = await isIntentRowLiveAuthorized(
     intent,
     userId,
-    makeOrgDecideAuthorizer(userId, partnerId),
+    makeOrgDecideAuthorizer(userId),
     makeAgentDecideAuthorizer(userId),
   );
   return {
@@ -368,7 +424,6 @@ async function resolveRowLiveAuthorization(
  */
 async function fetchAuthorizedPendingApprovals(
   userId: string,
-  partnerId: string | null,
 ): Promise<AuthorizedApproval[]> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
@@ -387,11 +442,23 @@ async function fetchAuthorizedPendingApprovals(
     ),
   );
 
-  const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId, partnerId);
+  const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId);
   const agentDecideAuthorizer = makeAgentDecideAuthorizer(userId);
+  const pamDecideAuthorizer = makePamDecideAuthorizer(userId);
   const authorized: AuthorizedApproval[] = [];
+  // PAM rows: their elevations' orgs and sites, in one read (none when there are none).
+  const elevationIds = [...new Set(
+    rows.flatMap(({ approval }) => (!approval.intentId && approval.elevationRequestId ? [approval.elevationRequestId] : [])),
+  )];
+  const elevationTargetById = await loadElevationTargets(elevationIds);
   for (const { approval, intent } of rows) {
     if (!approval.intentId) {
+      // A PAM row is offered only to a caller who can still decide it; one
+      // whose elevation no longer resolves is not offered.
+      if (approval.elevationRequestId) {
+        const target = elevationTargetById.get(approval.elevationRequestId);
+        if (!target || !(await pamDecideAuthorizer(target))) continue;
+      }
       authorized.push({ approval, approvalScope: null, attribution: null, targetRef: null });
       continue;
     }
@@ -426,7 +493,6 @@ async function fetchAuthorizedPendingApprovals(
  */
 async function fetchAuthorizedRecentApprovals(
   userId: string,
-  partnerId: string | null,
   limit: number,
 ): Promise<AuthorizedApproval[]> {
   const rows = await runOutsideDbContext(() =>
@@ -456,7 +522,7 @@ async function fetchAuthorizedRecentApprovals(
     ),
   );
 
-  const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId, partnerId);
+  const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId);
   const agentDecideAuthorizer = makeAgentDecideAuthorizer(userId);
   const authorized: AuthorizedApproval[] = [];
   for (const { approval, intent } of rows) {
@@ -576,7 +642,6 @@ async function serializePage(page: AuthorizedApproval[]) {
 
 approvalRoutes.get('/pending', async (c) => {
   const userId = c.get('auth').user.id;
-  const partnerId = c.get('auth').partnerId ?? null;
 
   const requestedLimit = Number(c.req.query('limit'));
   const limit =
@@ -595,11 +660,11 @@ approvalRoutes.get('/pending', async (c) => {
   // decision time, not creation time), so it always returns `nextCursor: null`.
   const recentView = c.req.query('view') === 'recent';
   if (recentView) {
-    const rows = await fetchAuthorizedRecentApprovals(userId, partnerId, Math.min(limit, RECENT_PAGE_MAX));
+    const rows = await fetchAuthorizedRecentApprovals(userId, Math.min(limit, RECENT_PAGE_MAX));
     return c.json({ approvals: await serializePage(rows), nextCursor: null });
   }
 
-  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
+  const authorized = await fetchAuthorizedPendingApprovals(userId);
   const afterCursor = cursor
     ? authorized.filter((r) => isAfterPendingCursor(r.approval, cursor))
     : authorized;
@@ -623,14 +688,13 @@ approvalRoutes.get('/pending', async (c) => {
  * (#11677), which says how many are waiting and nothing about them. Opens its
  * own system context (`runOutsideDbContext`), so call it outside any held one.
  */
-export async function countAuthorizedPendingApprovals(userId: string, partnerId: string | null): Promise<number> {
-  return (await fetchAuthorizedPendingApprovals(userId, partnerId)).length;
+export async function countAuthorizedPendingApprovals(userId: string): Promise<number> {
+  return (await fetchAuthorizedPendingApprovals(userId)).length;
 }
 
 approvalRoutes.get('/pending/count', async (c) => {
   const userId = c.get('auth').user.id;
-  const partnerId = c.get('auth').partnerId ?? null;
-  return c.json({ count: await countAuthorizedPendingApprovals(userId, partnerId) });
+  return c.json({ count: await countAuthorizedPendingApprovals(userId) });
 });
 
 const denySchema = z.object({
@@ -759,6 +823,12 @@ approvalRoutes.post(
     );
     if (!loaded.ok) return c.json(loaded.body, loaded.httpStatus as 422);
 
+    // The decide would refuse this approve for want of the session MFA claim,
+    // so do not send the approver through a ceremony that cannot succeed.
+    if (decision === 'approved' && batchRequiresSessionMfa(loaded) && !hasSatisfiedMfa(auth)) {
+      return c.json({ ...SESSION_MFA_REQUIRED_BODY }, 403);
+    }
+
     const challengeKey = batchAssertionKey(loaded.ids, decision, scope);
 
     // Identical device query to the single-card challenge route: the caller's
@@ -829,7 +899,6 @@ approvalRoutes.post('/batch/decide', zValidator('json', batchDecideSchema), asyn
 
 approvalRoutes.get('/:id', async (c) => {
   const userId = c.get('auth').user.id;
-  const partnerId = c.get('auth').partnerId ?? null;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
   const [row] = await db
@@ -846,7 +915,7 @@ approvalRoutes.get('/:id', async (c) => {
   // demoted after fan-out (or a supervised row whose intent already settled)
   // must not be able to read them just because the row is still theirs.
   // Indistinguishable-from-missing 404, matching the not-found branch above.
-  const live = await resolveRowLiveAuthorization(row, userId, partnerId);
+  const live = await resolveRowLiveAuthorization(row, userId);
   if (!live.authorized) return c.json({ error: 'Not found' }, 404);
 
   const tenants = await lookupCustomerTenants([row]);
@@ -871,7 +940,6 @@ approvalRoutes.get('/:id', async (c) => {
 // and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
 approvalRoutes.post('/:id/assertion-challenge', async (c) => {
   const userId = c.get('auth').user.id;
-  const partnerId = c.get('auth').partnerId ?? null;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
 
@@ -891,7 +959,7 @@ approvalRoutes.post('/:id/assertion-challenge', async (c) => {
   // BEFORE the challenge is minted for the same reason the decide handler
   // orders its stale-approver re-check ahead of the assurance proof: a caller
   // who can no longer act on this row must never consume a challenge/nonce.
-  const live = await resolveRowLiveAuthorization(existing, userId, partnerId);
+  const live = await resolveRowLiveAuthorization(existing, userId);
   if (!live.authorized) return c.json({ error: 'Not found' }, 404);
 
   // Caller's active platform approver devices (RLS scopes to the user; the
@@ -964,6 +1032,35 @@ approvalRoutes.post('/:id/approve', async (c) => {
     stepUpGrantId = parsed.data;
   }
 
+  // W03 (#5612): the script-proposal card submits the STRICT patterns the
+  // approver ticked. Shape-checked here so a malformed array is a 400 rather
+  // than a silently-dropped acknowledgement the approver believes they granted
+  // (same reasoning as unknownSecurityPatternDescriptions in
+  // scriptSecurityAcknowledgement.ts). Resolution against strict_hits, the
+  // scripts:write + MFA bar and the 422s live in the decide core. Checked
+  // before the password and the code below, so a malformed body spends neither.
+  let acknowledgedPatterns: string[] | undefined;
+  if (raw && raw.acknowledgedPatterns !== undefined) {
+    const parsed = acknowledgedPatternsSchema.safeParse(raw.acknowledgedPatterns);
+    if (!parsed.success) return c.json({ error: 'Invalid acknowledgedPatterns' }, 400);
+    acknowledgedPatterns = parsed.data;
+  }
+
+  const sentPassword = Boolean(raw && typeof raw.reauthPassword === 'string' && raw.reauthPassword.length > 0);
+  const sentCode = Boolean(raw && typeof raw.reauthMfaCode === 'string' && raw.reauthMfaCode.length > 0);
+
+  // A password or a code is checked against a per-user attempt limit, and a
+  // code is used up once accepted. Before checking either, run the decide
+  // core's own first checks (a human session; the caller's row, still pending
+  // and not expired) and answer with its refusal, so a request it would refuse
+  // anyway spends nothing. The decide core runs the same checks again below.
+  let codeCanCount = false;
+  if (sentPassword || sentCode) {
+    const decidable = await loadDecidableApprovalRow(c.get('auth'), c.req.param('id'));
+    if ('refusal' in decidable) return respond(c, decidable.refusal);
+    codeCanCount = approveCodeCanCount(decidable.row);
+  }
+
   // L4 (critical) re-auth: the client may include a fresh `reauthPassword` to
   // satisfy the critical-tier re-authentication factor (spec §5). Verified
   // server-side here — a bad/rate-limited password short-circuits with the
@@ -971,7 +1068,11 @@ approvalRoutes.post('/:id/approve', async (c) => {
   // which only matters for a critical approval (it then 401s 'reauth_required'
   // so the client knows to collect the password and retry).
   let reauthVerified = false;
-  if (raw && typeof raw.reauthPassword === 'string' && raw.reauthPassword.length > 0) {
+  // Set only below, after requireFreshMfaStepUp accepted a fresh code for
+  // this user: the code then also counts as the decision's second factor
+  // (alongside the session's MFA claim). Never read from the body.
+  let decisionMfa: DecisionMfaVerification | undefined;
+  if (sentPassword) {
     const reauthError = await requireCurrentPasswordStepUp(
       c,
       c.get('auth').user.id,
@@ -980,9 +1081,14 @@ approvalRoutes.post('/:id/approve', async (c) => {
     );
     if (reauthError) return reauthError;
     reauthVerified = true;
-  } else if (raw && typeof raw.reauthMfaCode === 'string' && raw.reauthMfaCode.length > 0) {
-    // Login-MFA (TOTP) fallback for SSO-only / passwordless accounts that have
-    // no password to satisfy the password step-up above.
+  }
+  // Verified even beside a password: a password is not a second factor, so a
+  // code sent with one is still what satisfies the second-factor rule. Not
+  // checked for a row where no code can change the outcome (approveCodeCanCount):
+  // there it would only be used up.
+  if (sentCode && codeCanCount) {
+    // Login-MFA (TOTP) code: the critical-tier re-auth for accounts with no
+    // password, and the second factor for this decision.
     const reauthError = await requireFreshMfaStepUp(
       c,
       c.get('auth').user.id,
@@ -991,19 +1097,7 @@ approvalRoutes.post('/:id/approve', async (c) => {
     );
     if (reauthError) return reauthError;
     reauthVerified = true;
-  }
-
-  // W03 (#5612): the script-proposal card submits the STRICT patterns the
-  // approver ticked. Shape-checked here so a malformed array is a 400 rather
-  // than a silently-dropped acknowledgement the approver believes they granted
-  // (same reasoning as unknownSecurityPatternDescriptions in
-  // scriptSecurityAcknowledgement.ts). Resolution against strict_hits, the
-  // scripts:write + MFA bar and the 422s live in the decide core.
-  let acknowledgedPatterns: string[] | undefined;
-  if (raw && raw.acknowledgedPatterns !== undefined) {
-    const parsed = acknowledgedPatternsSchema.safeParse(raw.acknowledgedPatterns);
-    if (!parsed.success) return c.json({ error: 'Invalid acknowledgedPatterns' }, 400);
-    acknowledgedPatterns = parsed.data;
+    decisionMfa = recordDecisionMfaVerification(c.get('auth').user.id);
   }
 
   return respond(
@@ -1014,6 +1108,7 @@ approvalRoutes.post('/:id/approve', async (c) => {
       status: 'approved',
       proof,
       reauthVerified,
+      decisionMfa,
       stepUpGrantId,
       acknowledgedPatterns,
     }),

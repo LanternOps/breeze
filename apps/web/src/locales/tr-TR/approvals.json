@@ -82,6 +82,15 @@
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "siteAccessDenied": "Erişiminiz bu isteğin sitesini kapsamıyor, bu nedenle başka bir onaylayıcı karar vermelidir.",
+    "selfApprovalForbidden": "Bu isteği siz oluşturdunuz, bu nedenle başka bir onaylayıcı onaylamalıdır.",
+    "mfaRequired": "Bu isteği onaylamak için ikinci faktör gerekir: çok faktörlü kimlik doğrulamayla açılmış bir oturum veya kimlik doğrulayıcı uygulamanızdaki bir kod. Kodu aşağıya girip yeniden onaylayın ya da oturumu kapatıp ikinci faktörünüzle yeniden oturum açın.",
+    "mfaNoAuthenticator": "Bu isteği onaylamak için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Oturumu kapatıp ikinci faktörünüzle yeniden oturum açın veya profilinizde bir kimlik doğrulayıcı uygulaması kurup ondan alacağınız kodla yeniden onaylayın.",
+    "codeRejected": "Bu kod kabul edilmedi. Her kod yalnızca bir kez geçerlidir; kimlik doğrulayıcı uygulamanızdaki sonraki kodu bekleyip yeniden deneyin.",
+    "codeThrottled": "Çok fazla kod denendi. Birkaç dakika bekleyip yeniden deneyin.",
+    "codeUnavailable": "Kodlar şu anda doğrulanamıyor. Birazdan yeniden deneyin.",
+    "codeNotPermitted": "Kuruluşunuz bunun için kimlik doğrulayıcı kodlarına izin vermiyor. Oturumu kapatın, ikinci faktörünüzle yeniden oturum açın, ardından onaylayın.",
+    "batchMfaRequired": "Bu istekleri birlikte onaylamak için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Her isteği kimlik doğrulayıcı uygulamanızdaki bir kodla ayrı ayrı onaylayın ya da oturumu kapatıp ikinci faktörünüzle yeniden oturum açın.",
     "approverScopeRequired": "Bu onay, iş ortağının tüm organizasyonlarını etkiler; bu nedenle tüm organizasyonlara erişimi olan iş ortağı düzeyinde bir onaylayan gerekir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
     "alreadyDecided": "Bu isteğe zaten karar verildi.",
@@ -92,6 +101,11 @@
     "batchTooLarge": "Bu toplu işlemde birlikte karar verilemeyecek kadar çok istek var. Bunları daha küçük gruplar halinde onaylayın.",
     "batchScopeNotPermitted": "Birden fazla kuruluşun isteklerine yalnızca iş ortağı düzeyinde bir onaylayan birlikte karar verebilir. Her kuruluşun isteklerine ayrı ayrı karar verin.",
     "driftedFromBatch": "Bu istek değişti ve tek başına karara bağlanmalıdır."
+  },
+  "mfaCode": {
+    "label": "Kimlik doğrulayıcı uygulamanızdaki kod",
+    "hint": "Her kod yalnızca bir kez geçerlidir ve yalnızca bu onay için doğrulanır.",
+    "spent": "Girdiğiniz kod kullanıldı. Yeniden onaylamak için kimlik doğrulayıcı uygulamanızdaki sonraki kodu girin."
   },
   "registerDevice": "Cihazı kaydet",
   "alwaysAllow": {

@@ -1,7 +1,7 @@
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa } from '../../middleware/auth';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { getUserPermissions, hasPermission, PERMISSIONS } from '../permissions';
+import { hasPermission, PERMISSIONS } from '../permissions';
+import { getDeciderPermissionsForOrg } from './deciderPermissions';
 
 export type StrictAckOutcome =
   | { ok: true; acknowledged: string[] }
@@ -25,28 +25,27 @@ export type StrictAckOutcome =
  * the run anyway, and a card that said "Approved" would be lying.
  *
  * MFA is checked before permissions so a refused decision never costs a DB read.
+ * The decide core passes `secondFactorSatisfied` (the session's MFA claim, or a
+ * code the server verified for this decision); without it, the session's claim
+ * alone counts.
+ *
+ * `scripts:write` is resolved in the partner that owns the proposal's org.
  */
 export async function resolveStrictAcknowledgement(args: {
   auth: AuthContext;
+  secondFactorSatisfied?: boolean;
   proposal: { strictHits: string[]; orgId: string };
   submitted: string[];
 }): Promise<StrictAckOutcome> {
   const strictHits = args.proposal.strictHits ?? [];
   if (strictHits.length === 0) return { ok: true, acknowledged: [] };
 
-  if (!hasSatisfiedMfa(args.auth)) {
+  if (!(args.secondFactorSatisfied ?? hasSatisfiedMfa(args.auth))) {
     return { ok: false, error: 'strict_acknowledgement_not_permitted', requirement: 'mfa' };
   }
-  const perms = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      getUserPermissions(args.auth.user.id, {
-        partnerId: args.auth.partnerId ?? undefined,
-        // The PROPOSAL's org: a partner approver deciding for org B must hold
-        // scripts:write THERE, not in whatever org their token defaults to.
-        orgId: args.proposal.orgId,
-      }),
-    ),
-  );
+  // The PROPOSAL's org: an approver deciding for org B must hold
+  // scripts:write THERE, not in whatever org their token defaults to.
+  const perms = await getDeciderPermissionsForOrg(args.auth.user.id, args.proposal.orgId);
   const canWrite =
     !!perms && hasPermission(perms, PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action);
   if (!canWrite) {

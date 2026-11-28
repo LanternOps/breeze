@@ -30,6 +30,9 @@ import {
   CeremonyError,
   decideIntentApproval,
   decideIntentApprovalBatch,
+  decisionCodeErrorKind,
+  isSessionMfaRequired,
+  authenticatorCodeUsable,
 } from './intentApprovals';
 import { AssertionChallengeError } from '../stores/authenticator';
 import { ActionError } from './runAction';
@@ -792,4 +795,222 @@ describe('decideIntentApprovalBatch', () => {
       expect((rejection as ActionError).status).toBe(401);
     });
   });
+});
+
+describe('isSessionMfaRequired', () => {
+  const body = { error: 'MFA required', code: 'MFA_REQUIRED' };
+  it('is true for a 403 ActionError carrying body code MFA_REQUIRED', () => {
+    expect(isSessionMfaRequired(new ActionError('x', 403, undefined, body))).toBe(true);
+  });
+  it('is true when only err.code is MFA_REQUIRED', () => {
+    expect(isSessionMfaRequired(new ActionError('x', 403, 'MFA_REQUIRED'))).toBe(true);
+  });
+  it('is false for other statuses, codes, tokens and non-ActionErrors', () => {
+    expect(isSessionMfaRequired(new ActionError('x', 401, undefined, body))).toBe(false);
+    expect(isSessionMfaRequired(new ActionError('x', 403, undefined, { error: 'site_ceiling' }))).toBe(false);
+    expect(isSessionMfaRequired(new ActionError('x', 403))).toBe(false);
+    expect(isSessionMfaRequired(new Error('MFA_REQUIRED'))).toBe(false);
+    expect(isSessionMfaRequired(null)).toBe(false);
+  });
+});
+
+describe('decideIntentApproval — MFA_REQUIRED refusal copy', () => {
+  beforeEach(() => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+  });
+
+  it('toasts the sign-in-again copy, not the generic transient MFA message', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'MFA required', code: 'MFA_REQUIRED' }), { status: 403 }),
+    );
+    const rejection = await decideIntentApproval('ap-1', 'approve').catch((e: unknown) => e);
+    expect(isSessionMfaRequired(rejection)).toBe(true);
+    const toasted = showToast.mock.calls[0][0] as { message: string };
+    expect(toasted.message).toMatch(/sign in again/i);
+  });
+});
+
+/**
+ * An approve may carry a code from the approver's authenticator app. The
+ * server verifies it (single use) and counts it as the decision's second
+ * factor; the client only forwards it, once per approve, and never on a deny.
+ */
+describe('decideIntentApproval — authenticator code', () => {
+  const CODE = '123456';
+  const posts = () => fetchWithAuth.mock.calls.filter(([url]) => String(url).includes('/mobile/approvals/ap-1/'));
+  const postedBody = (i = 0) => JSON.parse((posts()[i][1] as RequestInit).body as string);
+
+  beforeEach(() => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+  });
+
+  it('four_eyes approve: one ceremony, one POST carrying the proof and the code', async () => {
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { mfaCode: CODE });
+    expect(outcome).toBe('decided');
+    expect(getApprovalAssertion).toHaveBeenCalledTimes(1);
+    expect(posts()).toHaveLength(1);
+    expect(postedBody()).toEqual({ proof: PROOF, reauthMfaCode: CODE });
+  });
+
+  it('supervised approve: the code is sent in exactly one POST, with a proof when a device is registered', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'step_up_required', requiredLevel: 3 }), { status: 403 }),
+    );
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised', { mfaCode: CODE });
+    // A code is spent when the server checks it, so it is never resent.
+    expect(posts()).toHaveLength(1);
+    expect(postedBody()).toEqual({ proof: PROOF, reauthMfaCode: CODE });
+    expect(outcome).toBe('needs_device');
+  });
+
+  it('supervised approve without an approver device: one proofless POST carrying the code', async () => {
+    const err = new Error('No registered approver device');
+    err.name = 'NoApproverDeviceError';
+    getApprovalAssertion.mockRejectedValue(err);
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'supervised', { mfaCode: CODE });
+    expect(outcome).toBe('decided');
+    expect(posts()).toHaveLength(1);
+    expect(postedBody()).toEqual({ reauthMfaCode: CODE });
+  });
+
+  it('a blank code is not sent', async () => {
+    await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { mfaCode: '   ' });
+    expect(postedBody()).toEqual({ proof: PROOF });
+  });
+
+  it('deny never carries a code', async () => {
+    await decideIntentApproval('ap-1', 'deny', 'not now', 'four_eyes', { mfaCode: CODE });
+    expect(getApprovalAssertion).not.toHaveBeenCalled();
+    expect(postedBody()).toEqual({ reason: 'not now' });
+  });
+
+  it('a refused code is an inline-classifiable error with copy that says each code works once', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' }),
+        { status: 401 },
+      ),
+    );
+    const rejection = await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { mfaCode: CODE })
+      .catch((e: unknown) => e);
+    expect(decisionCodeErrorKind(rejection)).toBe('codeRejected');
+    const toasted = showToast.mock.calls[0][0] as { message: string };
+    expect(toasted.message).toMatch(/each code works once/i);
+    expect(toasted.message).not.toMatch(/password/i);
+  });
+});
+
+describe('decisionCodeErrorKind', () => {
+  it('maps the code-check refusals of the approve route by their machine code', () => {
+    expect(decisionCodeErrorKind(new ActionError('x', 401, 'invalid_credentials', { code: 'invalid_credentials' })))
+      .toBe('codeRejected');
+    expect(decisionCodeErrorKind(new ActionError('x', 429, 'mfa_check_throttled', {
+      error: 'Too many attempts.', message: 'Too many attempts.', code: 'mfa_check_throttled', retryAfter: 60,
+    }))).toBe('codeThrottled');
+    expect(decisionCodeErrorKind(new ActionError('x', 503, 'mfa_check_unavailable', {
+      error: 'down', message: 'down', code: 'mfa_check_unavailable',
+    }))).toBe('codeUnavailable');
+    expect(decisionCodeErrorKind(new ActionError('x', 403, 'mfa_method_not_permitted', {
+      error: 'This MFA method is not permitted', message: 'This MFA method is not permitted', code: 'mfa_method_not_permitted',
+    }))).toBe('codeNotPermitted');
+  });
+
+  it('leaves every other refusal to the ordinary mapping, whatever its status', () => {
+    expect(decisionCodeErrorKind(new ActionError('x', 401, undefined, { error: 'assertion_failed' }))).toBeNull();
+    expect(decisionCodeErrorKind(new ActionError('x', 403, 'MFA_REQUIRED', { error: 'MFA required', code: 'MFA_REQUIRED' })))
+      .toBeNull();
+    // Decide refusals that carry a message beside their token.
+    expect(decisionCodeErrorKind(new ActionError('x', 403, undefined, { error: 'site_ceiling', message: 'Org-wide.' })))
+      .toBeNull();
+    expect(decisionCodeErrorKind(new ActionError('x', 403, undefined, {
+      error: 'approver_scope_required', message: 'Partner-level approver needed.',
+    }))).toBeNull();
+    // A rate limit or an outage that is not the code check.
+    expect(decisionCodeErrorKind(new ActionError('x', 429, undefined, { error: 'Too many requests' }))).toBeNull();
+    expect(decisionCodeErrorKind(new ActionError('x', 503, undefined, { error: 'audit_unavailable' }))).toBeNull();
+    expect(decisionCodeErrorKind(new CeremonyError(new Error('cancelled')))).toBeNull();
+    expect(decisionCodeErrorKind(null)).toBeNull();
+  });
+});
+
+describe('decideIntentApproval — code sent callback and caller copy', () => {
+  beforeEach(() => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+    getApprovalAssertion.mockResolvedValue(PROOF);
+  });
+
+  it('reports the code as sent only when the POST carrying it goes out', async () => {
+    const onCodeSent = vi.fn();
+    getApprovalAssertion.mockRejectedValueOnce(makeWebAuthnError());
+    await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { mfaCode: '123456', onCodeSent })
+      .catch(() => undefined);
+    expect(onCodeSent).not.toHaveBeenCalled();
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+
+    await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { mfaCode: '123456', onCodeSent });
+    expect(onCodeSent).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('toasts the caller’s own copy for a second-factor refusal', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'MFA required', code: 'MFA_REQUIRED' }), { status: 403 }),
+    );
+    await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { mfaRequiredMessage: 'Enter a code below.' })
+      .catch(() => undefined);
+    expect((showToast.mock.calls[0][0] as { message: string }).message).toBe('Enter a code below.');
+  });
+});
+
+describe('decideIntentApprovalBatch — second factor', () => {
+  beforeEach(() => {
+    runAction.mockImplementation((opts: Parameters<typeof actualRunAction>[0]) => actualRunAction(opts));
+  });
+
+  it('a batch challenge refused with MFA_REQUIRED is its own outcome, not a ceremony failure', async () => {
+    getBatchApprovalAssertion.mockRejectedValue(
+      new AssertionChallengeError('MFA required', 403, 'MFA required', undefined, 'MFA_REQUIRED'),
+    );
+    const outcome = await decideIntentApprovalBatch(['ap-1', 'ap-2'], 'approve');
+    expect(outcome).toEqual({ outcome: 'batch_mfa_required' });
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('a batch decide refused with MFA_REQUIRED is its own outcome', async () => {
+    getBatchApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'MFA required', code: 'MFA_REQUIRED' }), { status: 403 }),
+    );
+    const outcome = await decideIntentApprovalBatch(['ap-1', 'ap-2'], 'approve');
+    expect(outcome).toEqual({ outcome: 'batch_mfa_required' });
+  });
+
+  it('the batch body never carries a code', async () => {
+    getBatchApprovalAssertion.mockResolvedValue(PROOF);
+    fetchWithAuth.mockResolvedValue(new Response(JSON.stringify({ results: [] }), { status: 200 }));
+    await decideIntentApprovalBatch(['ap-1', 'ap-2'], 'approve');
+    const [, init] = fetchWithAuth.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('reauthMfaCode');
+  });
+});
+
+describe('authenticatorCodeUsable — whether the server takes an authenticator code from this account', () => {
+  const cases: Array<[string, Parameters<typeof authenticatorCodeUsable>[0], boolean | undefined]> = [
+    ['no signed-in user: unknown', null, undefined],
+    ['the server says an authenticator app is enrolled', { mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: true }, true],
+    ['the server says none is enrolled (passkey primary, no backup)', { mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: false }, false],
+    ['the server says none, even for a TOTP primary', { mfaEnabled: true, mfaMethod: 'totp', totpEnrolled: false }, false],
+    ['a TOTP primary before the server answered', { mfaEnabled: true, mfaMethod: 'totp' }, true],
+    ['an SMS primary', { mfaEnabled: true, mfaMethod: 'sms' }, false],
+    ['no MFA at all', { mfaEnabled: false, mfaMethod: null }, false],
+    ['a passkey primary before the server answered: unknown', { mfaEnabled: true, mfaMethod: 'passkey' }, undefined],
+    ['an enrolled account with no recorded primary: unknown', { mfaEnabled: true, mfaMethod: null }, undefined],
+  ];
+  for (const [name, user, expected] of cases) {
+    it(name, () => {
+      expect(authenticatorCodeUsable(user)).toBe(expected);
+    });
+  }
 });

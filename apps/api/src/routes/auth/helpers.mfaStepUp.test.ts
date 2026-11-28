@@ -158,6 +158,7 @@ describe('requireFreshMfaStepUp', () => {
       __body: {
         error: 'This MFA method is not permitted',
         message: 'This MFA method is not permitted',
+        code: 'mfa_method_not_permitted',
       },
       __status: 403,
     });
@@ -263,7 +264,7 @@ describe('requireFreshMfaStepUp', () => {
     // #4746: `message` mirrors `error` on both non-rejection bodies, because
     // the web profile form reads `data.message` only.
     expect(c.json).toHaveBeenCalledWith(
-      { error: 'Service temporarily unavailable', message: 'Service temporarily unavailable' },
+      { error: 'Service temporarily unavailable', message: 'Service temporarily unavailable', code: 'mfa_check_unavailable' },
       503,
     );
     expect(rateLimiter).not.toHaveBeenCalled();

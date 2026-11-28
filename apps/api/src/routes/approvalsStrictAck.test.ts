@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 /**
@@ -131,6 +131,15 @@ vi.mock('../services/permissions', () => ({
       ),
   ),
 }));
+// The decider's permissions for a row org (resolved in the org's owning
+// partner in production) go through the mocked getUserPermissions above.
+vi.mock('../services/approvals/deciderPermissions', async () => {
+  const permissions = await import('../services/permissions');
+  return {
+    getDeciderPermissionsForOrg: vi.fn((userId: string, orgId: string) =>
+      permissions.getUserPermissions(userId, { orgId })),
+  };
+});
 
 vi.mock('../db/schema/elevations', () => ({
   elevationRequests: {
@@ -289,6 +298,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  // Session MFA on a high-or-above approve: satisfied unless a test says otherwise.
+  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
@@ -296,7 +307,8 @@ vi.mock('../middleware/auth', () => ({
 
 import { approvalRoutes } from './approvals';
 import { db } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa } from '../middleware/auth';
+import { requireCurrentPasswordStepUp, requireFreshMfaStepUp } from './auth/helpers';
 import { assertApprovalAssurance } from '../services/authenticatorAssurance';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { resolveIntentApprovers, isAgentIntentDecideAuthorized } from '../services/actionIntents/intentApprovers';
@@ -360,6 +372,7 @@ let lastApprovalRow: Record<string, unknown> | undefined;
 function mockFourEyesSelfApprove(opts: {
   riskTier?: string;
   requestedByUserId?: string;
+  withSecret?: boolean;
 } = {}) {
   const approvalRow = {
     id: 'appr-1',
@@ -395,6 +408,13 @@ function mockFourEyesSelfApprove(opts: {
     approvalScope: 'four_eyes',
   };
 
+  // A body carrying a password or a code: the route reads the same row once
+  // before the decide core does (loadDecidableApprovalRow).
+  if (opts.withSecret) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([approvalRow]) }),
+    } as any);
+  }
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([approvalRow]) }),
   } as any);
@@ -537,8 +557,8 @@ const PROPOSAL_ID = '44444444-4444-4444-8444-444444444444';
 const STRICT = ['PowerShell HKLM write', 'Credential dump utility'];
 
 /** A four_eyes CROSS-USER approve of a `run_script { proposalId }` intent. */
-function mockProposalFourEyesApprove() {
-  const { approvalRow, intentRow } = mockFourEyesSelfApprove({ requestedByUserId: 'requester-1' });
+function mockProposalFourEyesApprove(opts: { withSecret?: boolean } = {}) {
+  const { approvalRow, intentRow } = mockFourEyesSelfApprove({ requestedByUserId: 'requester-1', ...opts });
   approvalRow.actionToolName = 'run_script';
   approvalRow.actionArguments = { proposalId: PROPOSAL_ID, deviceIds: ['dev-1'] };
   Object.assign(intentRow, {
@@ -696,5 +716,197 @@ describe('W03 STRICT acknowledgement ceremony on decide', () => {
     const res = await postJson('/approvals/appr-1/approve', { acknowledgedPatterns: [42] });
     expect(res.status).toBe(400);
     expect(db.transaction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * An approve that needs a second factor accepts the session's MFA claim or a
+ * fresh authenticator code verified by the route in the same request. The
+ * session below carries no MFA claim.
+ */
+describe('approve with an authenticator code verified at decision time', () => {
+  beforeEach(() => {
+    vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+  });
+  afterEach(() => {
+    vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+  });
+
+  it('without a code: 403 MFA_REQUIRED, nothing written', async () => {
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1' });
+    mockFanInTx('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', {});
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('with a code the route verified: approved', async () => {
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1', withSecret: true });
+    mockFanInTx('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', { reauthMfaCode: '123456' });
+    expect(res.status).toBe(200);
+    expect(requireFreshMfaStepUp).toHaveBeenCalledWith(expect.anything(), TEST_USER.id, '123456', 'approval:reauth-mfa');
+  });
+
+  it('with a code the route rejected: the rejection, nothing written', async () => {
+    vi.mocked(requireFreshMfaStepUp).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'Invalid credentials', code: 'invalid_credentials' }), { status: 401 }),
+    );
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1', withSecret: true });
+    mockFanInTx('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', { reauthMfaCode: '000000' });
+    expect(res.status).toBe(401);
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a password re-auth is not a second factor: 403 MFA_REQUIRED', async () => {
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1', withSecret: true });
+    mockFanInTx('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', { reauthPassword: 'pw' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('MFA_REQUIRED');
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a code sent beside a password is still verified and counts', async () => {
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1', withSecret: true });
+    mockFanInTx('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', { reauthPassword: 'pw', reauthMfaCode: '123456' });
+    expect(res.status).toBe(200);
+    expect(requireFreshMfaStepUp).toHaveBeenCalledWith(expect.anything(), TEST_USER.id, '123456', 'approval:reauth-mfa');
+  });
+
+  it('client-supplied flags are ignored: 403 MFA_REQUIRED', async () => {
+    mockFourEyesSelfApprove({ requestedByUserId: 'requester-1' });
+    mockFanInTx('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', {
+      decisionMfa: { userId: TEST_USER.id, method: 'totp' },
+      mfa: true,
+      mfaVerified: true,
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('MFA_REQUIRED');
+  });
+
+  it('the verified code also stands for the STRICT acknowledgement second factor', async () => {
+    mockProposalFourEyesApprove({ withSecret: true });
+    vi.mocked(loadProposalRow).mockResolvedValue({ id: PROPOSAL_ID, orgId: 'org-9', strictHits: STRICT } as any);
+    mockFanInTxWithProposalWrite('intent-1');
+
+    await postJson('/approvals/appr-1/approve', { reauthMfaCode: '123456', acknowledgedPatterns: STRICT });
+    expect(resolveStrictAcknowledgement).toHaveBeenCalledWith(expect.objectContaining({ secondFactorSatisfied: true }));
+  });
+});
+
+/**
+ * A password or an authenticator code sent with an approve is checked only
+ * after the decide core's own first checks pass (a human session; the caller's
+ * row, still pending and not expired), so a request those checks refuse
+ * spends neither. Same answers as the decide core gives without them.
+ */
+describe('approve: nothing is checked or spent for a request the first checks refuse', () => {
+  function queueApprovalRow(row: Record<string, unknown> | undefined) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(row ? [row] : []) }),
+    } as any);
+  }
+  function approvalRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'appr-1',
+      userId: TEST_USER.id,
+      riskTier: 'high',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      elevationRequestId: null,
+      intentId: 'intent-1',
+      diagnosticAccessGrantId: null,
+      ...overrides,
+    };
+  }
+  const SECRETS = { reauthMfaCode: '123456', reauthPassword: 'pw' };
+
+  it('a non-human principal: 403 human_decision_required, no password or code checked, no read', async () => {
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', { ...baseAuth(), principal: { kind: 'api_key' } });
+      return next();
+    });
+    const res = await postJson('/approvals/appr-1/approve', SECRETS);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'human_decision_required' });
+    expect(requireFreshMfaStepUp).not.toHaveBeenCalled();
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("a request that is not the caller's or does not exist: 404, nothing checked", async () => {
+    queueApprovalRow(undefined);
+    const res = await postJson('/approvals/appr-1/approve', SECRETS);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(requireFreshMfaStepUp).not.toHaveBeenCalled();
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+  });
+
+  it('a request already decided: 409 with its final status, nothing checked', async () => {
+    queueApprovalRow(approvalRow({ status: 'denied' }));
+    const res = await postJson('/approvals/appr-1/approve', SECRETS);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Already denied', finalStatus: 'denied' });
+    expect(requireFreshMfaStepUp).not.toHaveBeenCalled();
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+  });
+
+  it('a request that has expired: 410, nothing checked', async () => {
+    queueApprovalRow(approvalRow({ expiresAt: new Date(Date.now() - 1_000) }));
+    const res = await postJson('/approvals/appr-1/approve', SECRETS);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({ error: 'Expired', finalStatus: 'expired' });
+    expect(requireFreshMfaStepUp).not.toHaveBeenCalled();
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+  });
+
+  it('a malformed acknowledgedPatterns array: 400 before any code is checked', async () => {
+    const res = await postJson('/approvals/appr-1/approve', { ...SECRETS, acknowledgedPatterns: [42] });
+    expect(res.status).toBe(400);
+    expect(requireFreshMfaStepUp).not.toHaveBeenCalled();
+    expect(requireCurrentPasswordStepUp).not.toHaveBeenCalled();
+  });
+
+  it('a low-risk row linked to no intent or PAM elevation: the code is not checked', async () => {
+    const row = approvalRow({ riskTier: 'low', intentId: null, diagnosticAccessGrantId: 'grant-1' });
+    queueApprovalRow(row);
+    // The decide core's own read of the same row, then its grant read (empty:
+    // the core refuses with 404, which is all this test needs to stop it).
+    queueApprovalRow(row);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+        }),
+      }),
+    } as any);
+    const res = await postJson('/approvals/appr-1/approve', { reauthMfaCode: '123456' });
+    expect(await res.json()).toEqual({ error: 'diagnostic_access_grant_not_found' });
+    expect(requireFreshMfaStepUp).not.toHaveBeenCalled();
+  });
+
+  it("a pending row of the caller's: the code is checked exactly once", async () => {
+    vi.mocked(hasSatisfiedMfa).mockReturnValue(false);
+    try {
+      mockFourEyesSelfApprove({ requestedByUserId: 'requester-1', withSecret: true });
+      mockFanInTx('intent-1');
+      const res = await postJson('/approvals/appr-1/approve', { reauthMfaCode: '123456' });
+      expect(res.status).toBe(200);
+      expect(requireFreshMfaStepUp).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.mocked(hasSatisfiedMfa).mockReturnValue(true);
+    }
   });
 });

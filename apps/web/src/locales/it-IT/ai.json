@@ -61,6 +61,8 @@
     "expired": "Questa richiesta è scaduta prima di poter essere decisa.",
     "notSoleApprover": "Ora è richiesto un altro approvatore — non puoi più approvare la tua stessa richiesta.",
     "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici — un altro approvatore deve decidere questa richiesta.",
+    "mfaRequired": "L'approvazione di questa azione richiede un secondo fattore. Esci e accedi di nuovo con il secondo fattore, oppure approvala nella pagina Approvazioni con un codice della tua app di autenticazione.",
+    "codeRejected": "Il codice non è stato accettato. Ogni codice funziona una sola volta: attendi il codice successivo della tua app di autenticazione e riprova.",
     "approverScopeRequired": "Questa approvazione riguarda tutte le organizzazioni del partner, quindi richiede un approvatore a livello di partner con accesso a tutte le organizzazioni.",
     "noApproverDevice": "Approvare la tua stessa richiesta richiede Touch ID / Windows Hello.",
     "freshFactorRequired": "Questo controllo richiede una nuova conferma con passkey (Touch ID, Windows Hello o una chiave hardware) per questa approvazione. Riprova.",

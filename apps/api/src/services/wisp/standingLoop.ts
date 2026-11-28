@@ -443,7 +443,7 @@ export async function loadStandingStateFacts(
   const { grant, names } = read;
   // The approvals page's own rule; it opens its own context, so it runs outside the one above.
   const approvals = active
-    ? { pending: await (await import('../../routes/approvals')).countAuthorizedPendingApprovals(auth.user.id, auth.partnerId ?? null) }
+    ? { pending: await (await import('../../routes/approvals')).countAuthorizedPendingApprovals(auth.user.id) }
     : null;
 
   const bySeverity = (s: Concern['severity']) => read.concerns.filter((c) => c.severity === s).length;

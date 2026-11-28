@@ -199,6 +199,8 @@ export async function runReviewFailedOverride(args: {
       riskTier: higherRiskTier(floor, 'medium'),
       proof: null,
       partnerId: auth.partnerId ?? null,
+      // The proposal's org: its owning partner's policy applies too.
+      rowOrgIds: [proposal.orgId],
       decision: 'approved',
     });
   } catch (err) {

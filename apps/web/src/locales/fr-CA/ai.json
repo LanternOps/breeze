@@ -61,6 +61,8 @@
     "expired": "Cette demande a expiré avant qu'une décision soit prise.",
     "notSoleApprover": "Un autre approbateur est désormais requis — vous ne pouvez plus approuver votre propre demande.",
     "siteCeiling": "Cette approbation accorde une autorité à l'échelle de l'organisation. Votre accès est limité à des sites spécifiques, donc un autre approbateur doit décider de cette demande.",
+    "mfaRequired": "L'approbation de cette action nécessite un deuxième facteur. Fermez la session et rouvrez-la avec votre deuxième facteur, ou approuvez l'action sur la page Approbations avec un code de votre application d'authentification.",
+    "codeRejected": "Ce code n'a pas été accepté. Chaque code ne fonctionne qu'une seule fois; attendez le prochain code de votre application d'authentification et réessayez.",
     "approverScopeRequired": "Cette approbation touche toutes les organisations du partenaire : elle exige donc un approbateur au niveau du partenaire ayant accès à toutes les organisations.",
     "noApproverDevice": "Approuver votre propre demande nécessite Touch ID / Windows Hello.",
     "freshFactorRequired": "Cette vérification exige une nouvelle confirmation par clé d'accès (Touch ID, Windows Hello ou une clé matérielle) pour cette approbation. Réessayez.",

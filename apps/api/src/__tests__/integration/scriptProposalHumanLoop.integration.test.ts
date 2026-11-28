@@ -182,14 +182,21 @@ describe('STRICT acknowledgement ceremony on decide (real Postgres, breeze_app)'
     expect((await readProposal(proposalId)).acknowledgedPatterns).toEqual([]);
   });
 
-  runDb('refuses an approve without the MFA claim: 422 not_permitted/mfa', async () => {
+  // The decide core refuses ANY high-risk intent approve without the session
+  // MFA claim before the STRICT ceremony runs, with the same body every
+  // requireMfa() route returns; the ceremony's own MFA check stays behind it.
+  runDb('refuses an approve without the MFA claim: 403 MFA_REQUIRED, nothing written', async () => {
     const { proposalId, strictHits } = await seedReviewedStrictProposal(s);
-    const { approvalRowId } = await claimWithIntent(s, proposalId);
+    const { intentId, approvalRowId } = await claimWithIntent(s, proposalId);
     const token = await tokenFor(s, s.requester, s.roleId, false);
 
     const res = await post(`/approvals/${approvalRowId}/approve`, token, { acknowledgedPatterns: strictHits });
-    expect(res.status).toBe(422);
-    expect(await res.json()).toEqual({ error: 'strict_acknowledgement_not_permitted', requirement: 'mfa' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+
+    const [intent] = await withSystemDbAccessContext(() => db.select().from(actionIntents).where(eq(actionIntents.id, intentId)));
+    expect(intent!.status).toBe('pending_approval');
+    expect((await readProposal(proposalId)).acknowledgedPatterns).toEqual([]);
   });
 
   runDb('persists (submitted ∩ strict_hits) on the proposal and approves the intent in one transaction', async () => {

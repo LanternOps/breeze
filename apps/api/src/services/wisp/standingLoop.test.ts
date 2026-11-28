@@ -954,7 +954,7 @@ describe('loadStandingStateFacts', () => {
       h.results.wisp_grants = [[grantRow()]];
       h.countAuthorizedPendingApprovals.mockResolvedValue(2);
       const out = await loadStandingStateFacts(ceiling(), auth(), NOW);
-      expect(h.countAuthorizedPendingApprovals).toHaveBeenCalledWith(U, P);
+      expect(h.countAuthorizedPendingApprovals).toHaveBeenCalledWith(U);
       expect(out?.approvals).toEqual({ pending: 2 });
     });
 

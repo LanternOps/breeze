@@ -240,12 +240,16 @@ export class AssertionChallengeError extends Error {
    *  entirely). Without carrying this through, only the deny path could ever
    *  tell the inbox which cards to deselect. */
   offending?: string[];
-  constructor(message: string, status: number, token?: string, offending?: string[]) {
+  /** The body's machine `code`, when the refusal carries one beside a prose
+   *  `error` (the second-factor refusal: `code: 'MFA_REQUIRED'`). */
+  code?: string;
+  constructor(message: string, status: number, token?: string, offending?: string[], code?: string) {
     super(message);
     this.name = 'AssertionChallengeError';
     this.status = status;
     this.token = token;
     this.offending = offending;
+    this.code = code;
   }
 }
 
@@ -272,11 +276,13 @@ async function completeAssertionCeremony(
     const offending = Array.isArray(challengeData?.offending)
       ? challengeData.offending.filter((id: unknown): id is string => typeof id === 'string')
       : undefined;
+    const code = typeof challengeData?.code === 'string' ? challengeData.code : undefined;
     throw new AssertionChallengeError(
       token ?? `Could not start verification (${challengeResponse.status}).`,
       challengeResponse.status,
       token,
       offending,
+      code,
     );
   }
   // A 2xx whose body isn't a usable challenge (empty body, truncated proxy

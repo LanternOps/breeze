@@ -17,6 +17,13 @@ vi.mock('../../db', async (importOriginal) => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
+// In production this resolves the caller in the partner that owns the org;
+// by default it goes through the mocked getUserPermissions above.
+const getDeciderPermissionsForOrg = vi.fn((userId: string, orgId: string) => getUserPermissions(userId, { orgId }));
+vi.mock('../approvals/deciderPermissions', () => ({
+  getDeciderPermissionsForOrg: (...a: [string, string]) => getDeciderPermissionsForOrg(...a),
+}));
+
 const loadProposalRow = vi.fn();
 const loadProposalRequesterUserId = vi.fn();
 const loadLatestReview = vi.fn<(...a: unknown[]) => Promise<unknown>>(async () => null);
@@ -60,6 +67,7 @@ const baseRow = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getDeciderPermissionsForOrg.mockImplementation((userId: string, orgId: string) => getUserPermissions(userId, { orgId }));
   loadProposalRow.mockResolvedValue(baseRow());
   loadProposalRequesterUserId.mockResolvedValue(REQUESTER);
   getUserPermissions.mockResolvedValue({});
@@ -302,5 +310,16 @@ describe('loadScriptProposalDetail', () => {
     const r = await loadScriptProposalDetail(auth(STRANGER), PROPOSAL);
     expect(r.ok).toBe(true);
     expect(loadProposalDevices).toHaveBeenCalledWith(['dev-1', 'dev-2']);
+  });
+});
+
+describe('loadScriptProposalDetail: permissions come from the partner that owns the proposal org', () => {
+  it('resolves the caller in the partner that owns the proposal org', async () => {
+    const partnerSession = { ...(auth(STRANGER) as object), scope: 'partner', partnerId: 'session-partner', orgId: null } as never;
+    getDeciderPermissionsForOrg.mockResolvedValue(null);
+
+    expect(await loadScriptProposalDetail(partnerSession, PROPOSAL)).toEqual({ ok: false, reason: 'forbidden' });
+    expect(getDeciderPermissionsForOrg).toHaveBeenCalledWith(STRANGER, ORG);
+    expect(getUserPermissions).not.toHaveBeenCalledWith(STRANGER, expect.objectContaining({ partnerId: 'session-partner' }));
   });
 });

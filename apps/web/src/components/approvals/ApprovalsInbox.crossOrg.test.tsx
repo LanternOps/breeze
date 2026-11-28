@@ -12,7 +12,11 @@ const authenticatorMock = vi.hoisted(() => ({
 }));
 const showToastMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: null }) => unknown) => select({ user: null }),
+}));
 vi.mock('../shared/Toast', () => ({ showToast: (...args: unknown[]) => showToastMock(...args) }));
 vi.mock('../../stores/authenticator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/authenticator')>()),

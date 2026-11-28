@@ -57,6 +57,8 @@ vi.mock('../../db/schema/orgs', () => ({
 // Same allowlist-of-one rule as the real helper (middleware/auth.ts).
 vi.mock('../../middleware/auth', () => ({
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  // The real predicate with ENABLE_2FA on: the session's `mfa` claim.
+  hasSatisfiedMfa: (auth: any) => auth?.token?.mfa === true,
 }));
 
 vi.mock('../actionIntents/intentService', () => ({
@@ -96,6 +98,15 @@ vi.mock('../permissions', () => ({
   userCanDecideApprovals: vi.fn(() => true),
   canAccessOrg: vi.fn(() => true),
 }));
+// The decider's permissions for a row org (resolved in the org's owning
+// partner in production) go through the mocked getUserPermissions above.
+vi.mock('./deciderPermissions', async () => {
+  const permissions = await import('../permissions');
+  return {
+    getDeciderPermissionsForOrg: vi.fn((userId: string, orgId: string) =>
+      permissions.getUserPermissions(userId, { orgId })),
+  };
+});
 
 vi.mock('../authenticatorAssurance', () => ({
   resolveApprovalAssurance: vi.fn(() => ({
@@ -148,6 +159,7 @@ const AUTH = {
   partnerId: 'partner-123',
   orgId: null,
   user: { id: USER_ID, email: 't@example.com', name: 'Test User', isPlatformAdmin: false },
+  token: { sid: 'sid-1', mfa: true },
   accessibleOrgIds: [],
   canAccessOrg: () => false,
   orgCondition: () => undefined,
@@ -163,6 +175,8 @@ function buildIntent(n: number, overrides: Record<string, unknown> = {}) {
     source: 'ai_agent',
     status: 'pending_approval',
     approvalScope: 'supervised',
+    // Agent Tier 2 (medium), the lane these approval rows come from.
+    riskTier: 2,
     requestedByUserId: null,
     requestingAgentRunId: 'run-sweep-1',
     requestingClientLabel: 'Patch Hygiene Agent',
@@ -722,6 +736,101 @@ describe('decideApprovalBatch', () => {
  * assertion ceremony cover a set of approvals the approver never read as a
  * single decision.
  */
+describe('decideApprovalBatch — session MFA on a high-or-above approve', () => {
+  const NO_MFA = { ...AUTH, token: { sid: 'sid-1', mfa: false } } as any;
+  const highRow = () => ({ approval: buildApproval(1, { riskTier: 'high' }), intent: buildIntent(1) });
+  /** What the ladder returns under an explicit "Not required" policy. */
+  const graceL1 = {
+    requiredLevel: 3,
+    decidedAssuranceLevel: 1,
+    decidedVia: 'session_tap',
+    authenticatorDeviceId: null,
+    graceDowngrade: true,
+  } as const;
+
+  it('refuses the whole batch for a session without MFA, before the ceremony', async () => {
+    mockDb({ batchRows: [highRow()] });
+    mockDecideTx();
+    vi.mocked(assertApprovalAssurance).mockResolvedValue(graceL1 as any);
+
+    const res = await decideApprovalBatch(NO_MFA, { approvalRequestIds: ['appr-1'], decision: 'approved' });
+
+    expect(res).toEqual({ ok: false, httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('lets the same session DENY the batch', async () => {
+    mockDb({ batchRows: [highRow()] });
+    mockDecideTx();
+    vi.mocked(assertApprovalAssurance).mockResolvedValue(graceL1 as any);
+
+    const res = await decideApprovalBatch(NO_MFA, { approvalRequestIds: ['appr-1'], decision: 'denied' });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.results.map((r) => r.httpStatus)).toEqual([200]);
+  });
+
+  it('approves for a session with MFA, recorded as the grace downgrade', async () => {
+    mockDb({ batchRows: [highRow()] });
+    mockDecideTx();
+    vi.mocked(assertApprovalAssurance).mockResolvedValue(graceL1 as any);
+
+    const res = await decideApprovalBatch(AUTH, { approvalRequestIds: ['appr-1'], decision: 'approved' });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.results.map((r) => r.httpStatus)).toEqual([200]);
+  });
+
+  it("refuses a medium batch whose action's REST route requires MFA, before the ceremony", async () => {
+    const args = { action: 'bulk_approve', patchIds: ['p-1'] };
+    mockDb({
+      batchRows: [{
+        approval: buildApproval(1, { actionToolName: 'manage_patches', actionArguments: args }),
+        intent: buildIntent(1, { actionName: 'manage_patches', arguments: args }),
+      }],
+    });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(NO_MFA, { approvalRequestIds: ['appr-1'], decision: 'approved' });
+
+    expect(res).toEqual({ ok: false, httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+  });
+
+  it('does not gate a medium-only batch', async () => {
+    mockDb({ batchRows: [{ approval: buildApproval(1), intent: buildIntent(1) }] });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(NO_MFA, { approvalRequestIds: ['appr-1'], decision: 'approved' });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it("hands the rows' org to the ceremony, so the row org owner's policy applies too", async () => {
+    mockDb({ batchRows: [highRow()] });
+    mockDecideTx();
+
+    await decideApprovalBatch(AUTH, { approvalRequestIds: ['appr-1'], decision: 'approved' });
+
+    expect(vi.mocked(assertApprovalAssurance)).toHaveBeenCalledWith(
+      expect.objectContaining({ partnerId: 'partner-123', rowOrgIds: ['org-9'] }),
+    );
+  });
+
+  it('an enforcing policy is unchanged: step-up still required', async () => {
+    mockDb({ batchRows: [highRow()] });
+    mockDecideTx();
+    vi.mocked(assertApprovalAssurance).mockRejectedValue(new (StepUpRequiredError as any)(3, 1));
+
+    const res = await decideApprovalBatch(AUTH, { approvalRequestIds: ['appr-1'], decision: 'approved' });
+
+    expect(res).toEqual({ ok: false, httpStatus: 403, body: { error: 'step_up_required', requiredLevel: 3 } });
+  });
+});
+
 describe('batchGroupKey cross-equivalence with the inbox DTO (#4457)', () => {
   /** Exactly what `GET /approvals/pending` hands the inbox for this row, then
    *  exactly what the inbox does with it (`groupIdentity` in

@@ -59,8 +59,15 @@ import {
   type GrantRow as DiagnosticGrantRow,
 } from '../diagnosticAccess/grants';
 import { checkToolPermission } from '../aiGuardrails';
-import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
-import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg, canAccessSite } from '../permissions';
+import { isMfaGatedToolAction } from '../aiToolMfaGate';
+import {
+  approvalPolicyFloorOverrides,
+  isApprovalPolicySetEnforcing,
+  loadApprovalPolicySet,
+} from '../approvalAssurancePolicy';
+import { hasPermission, userCanDecideApprovals, canAccessOrg, canAccessSite } from '../permissions';
+import { getDeciderPermissionsForOrg } from './deciderPermissions';
+import { consumeDecisionMfaVerification, type DecisionMfaVerification } from './decisionMfaVerification';
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { enqueuePamRequestNotify } from '../pamRequestNotify';
@@ -428,7 +435,8 @@ async function resolveGrantSession(
  * #5601: redeem a presented grant into the assurance its original ceremony
  * achieved, or `null` (→ the caller's 403) on any failure.
  *
- * The partner floor is RE-EVALUATED here against the CURRENT policy rather
+ * The partner floor is RE-EVALUATED here against the CURRENT policy set (the
+ * session partner's and the row org's owner's, stricter wins) rather
  * than inherited from the minting decide, so a partner who raises their floor
  * mid-window invalidates outstanding grants in effect without anyone touching
  * Redis. Under a non-enforcing policy an under-assured redeem sets
@@ -441,6 +449,8 @@ async function redeemGrantForDecide(input: {
   riskTier: RiskTier;
   intent: LinkedIntent;
   decision: 'approved' | 'denied';
+  /** The decided row's org: its owning partner's policy applies too. */
+  rowOrgId: string | null;
 }): Promise<AssuranceDecision | null> {
   const scope = await resolveGrantScope(input.intent, input.riskTier);
   if (!scope) return null;
@@ -456,9 +466,11 @@ async function redeemGrantForDecide(input: {
   if (!redeemed) return null;
 
   const isApprove = input.decision === 'approved';
-  const policy = isApprove ? await loadPartnerPolicy(input.auth.partnerId ?? null) : null;
+  const policies = isApprove
+    ? await loadApprovalPolicySet({ sessionPartnerId: input.auth.partnerId ?? null, rowOrgIds: [input.rowOrgId] })
+    : [];
   const decision: AssuranceDecision = {
-    requiredLevel: requiredAssurance(input.riskTier, policy?.floorOverrides ?? null),
+    requiredLevel: requiredAssurance(input.riskTier, approvalPolicyFloorOverrides(policies)),
     decidedAssuranceLevel: redeemed.context.decidedAssuranceLevel,
     decidedVia: redeemed.context.decidedVia,
     authenticatorDeviceId: redeemed.context.authenticatorDeviceId,
@@ -467,11 +479,37 @@ async function redeemGrantForDecide(input: {
   if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
     // An ENFORCING partner whose floor now outranks what the grant proves:
     // refuse, so the operator runs a ceremony that can actually clear it.
-    if (isEnforcing(policy, new Date(), input.riskTier)) return null;
+    if (isApprovalPolicySetEnforcing(policies, new Date(), input.riskTier)) return null;
     decision.graceDowngrade = true;
   }
   return decision;
 }
+
+/**
+ * Whether approving this row needs a second factor (the session's MFA claim,
+ * or a code verified for this decision), the bar the actions' REST routes set
+ * with `requireMfa()`. An approval of a high-risk action requires it:
+ *  - when the approval row's tier, or the linked intent's own tier, is high or
+ *    critical, whichever is higher (an unrecognised row tier, or an intent tier
+ *    that is not a number, counts as gated), and
+ *  - when the intent's action is MFA-gated as a tool call
+ *    (`MFA_GATED_TOOL_ACTIONS`: its REST twin carries `requireMfa()`), at any
+ *    tier. The agent Tier 2 lane files those at `medium`, and its release runs
+ *    as the agent, so the approve is where the human's second factor is checked.
+ */
+export function requiresSessionMfaToApprove(
+  riskTier: string,
+  intent?: Pick<ActionIntent, 'actionName' | 'arguments' | 'riskTier'> | null,
+): boolean {
+  if (riskTier !== 'low' && riskTier !== 'medium') return true;
+  if (!intent) return false;
+  if (!(typeof intent.riskTier === 'number' && intent.riskTier < 3)) return true;
+  const action = (intent.arguments as { action?: unknown } | null)?.action;
+  return isMfaGatedToolAction(intent.actionName, typeof action === 'string' ? action : undefined);
+}
+
+/** The body `requireMfa()` answers with, so every client handles one shape. */
+export const SESSION_MFA_REQUIRED_BODY = Object.freeze({ error: 'MFA required', code: 'MFA_REQUIRED' });
 
 /** Everything the decide core needs from the request. `auth` replaces the
  *  route's `c.get('auth')`; `id` replaces `c.req.param('id')`. */
@@ -482,6 +520,13 @@ export interface DecideApprovalInput {
   reason?: string;
   proof?: ApprovalProof;
   reauthVerified?: boolean;
+  /**
+   * A fresh one-time code the approve route verified for this user in this
+   * request (`recordDecisionMfaVerification`). Counts as the second factor
+   * where an approve requires one, alongside the session's MFA claim. Only a
+   * value minted by that module is accepted, once.
+   */
+  decisionMfa?: DecisionMfaVerification;
   /**
    * W03 (#5612, spec §4.5): STRICT pattern descriptions the approver ticked on
    * the script-proposal card. Only meaningful when the intent is a
@@ -528,41 +573,87 @@ export interface DecideApprovalInput {
  *  path collects it per row. */
 export type DecideApprovalResult = { httpStatus: number; body: Record<string, unknown> };
 
-export async function decideApprovalRequest(
-  input: DecideApprovalInput,
-): Promise<DecideApprovalResult> {
-  const { id, status, reason, proof, reauthVerified = false } = input;
+type ApprovalRequestRow = typeof approvalRequests.$inferSelect;
 
+/**
+ * The first checks of every decide. They read only the caller's own approval
+ * row: the caller is a person in an interactive session, and the row is the
+ * caller's, still pending and not expired.
+ *
+ * The decide core runs them first. The approve route also runs them before it
+ * checks a password or an authenticator code, so a request these checks refuse
+ * spends neither. Both callers get the same answers, so running them early
+ * tells a caller nothing that the decide call would not.
+ */
+export async function loadDecidableApprovalRow(
+  auth: AuthContext,
+  id: string | undefined,
+): Promise<{ row: ApprovalRequestRow } | { refusal: DecideApprovalResult }> {
   // Wave 3b (parent plan §1.2): approval decisions are made by HUMANS,
   // structurally — asserted here on the principal discriminator rather than
   // relying on routing topology (no non-human route mounts this handler
   // today, but nothing else guarantees that stays true). An allowlist of
   // one: api_key, oauth_grant, ai_agent, system — none of them decide.
-  if (!isInteractiveUserSession(input.auth)) {
-    return { httpStatus: 403, body: { error: 'human_decision_required' } };
+  if (!isInteractiveUserSession(auth)) {
+    return { refusal: { httpStatus: 403, body: { error: 'human_decision_required' } } };
   }
+  if (!id) return { refusal: { httpStatus: 400, body: { error: 'Bad request' } } };
 
-  const userId = input.auth.user.id;
-  if (!id) return { httpStatus: 400, body: { error: 'Bad request' } };
-
-  // Pre-fetch so we can resolve the required assurance from the row's risk tier
-  // before deciding (see the assertApprovalAssurance call below for the full
-  // verify + enforcement behavior).
+  // Pre-fetch so the decide core can resolve the required assurance from the
+  // row's risk tier before deciding (see its assertApprovalAssurance call for
+  // the full verify + enforcement behavior).
   const [existing] = await db
     .select()
     .from(approvalRequests)
-    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+    .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, auth.user.id)));
 
-  if (!existing) return { httpStatus: 404, body: { error: 'Not found' } };
+  if (!existing) return { refusal: { httpStatus: 404, body: { error: 'Not found' } } };
   if (existing.status !== 'pending') {
     return {
-      httpStatus: 409,
-      body: { error: `Already ${existing.status}`, finalStatus: existing.status },
+      refusal: {
+        httpStatus: 409,
+        body: { error: `Already ${existing.status}`, finalStatus: existing.status },
+      },
     };
   }
   if (existing.expiresAt <= new Date()) {
-    return { httpStatus: 410, body: { error: 'Expired', finalStatus: 'expired' } };
+    return { refusal: { httpStatus: 410, body: { error: 'Expired', finalStatus: 'expired' } } };
   }
+  return { row: existing };
+}
+
+/**
+ * Whether an authenticator code sent with an approve of this row can change
+ * the outcome. A code counts in two ways: as the second factor, which the
+ * decide core reads for a PAM elevation or an action intent, and as the
+ * re-authentication a critical row needs. A high row linked to neither is
+ * also checked, so this errs towards checking a code. A low or medium row
+ * linked to neither uses no code, so the approve route does not check, or
+ * spend, a code sent with it.
+ */
+export function approveCodeCanCount(
+  row: Pick<ApprovalRequestRow, 'riskTier' | 'intentId' | 'elevationRequestId'>,
+): boolean {
+  if (row.elevationRequestId || row.intentId) return true;
+  return row.riskTier !== 'low' && row.riskTier !== 'medium';
+}
+
+export async function decideApprovalRequest(
+  input: DecideApprovalInput,
+): Promise<DecideApprovalResult> {
+  const { id, status, reason, proof, reauthVerified = false } = input;
+
+  // Human session, then this caller's own pending, unexpired row.
+  const decidable = await loadDecidableApprovalRow(input.auth, id);
+  if ('refusal' in decidable) return decidable.refusal;
+  const existing = decidable.row;
+  const userId = input.auth.user.id;
+
+  // The second factor for this decision: the session's MFA claim, or a fresh
+  // code the approve route verified for this same user in this request.
+  // Consumed here, once, so a verification can never serve a second decide.
+  const decisionMfaVerified = consumeDecisionMfaVerification(input.decisionMfa, userId);
+  const secondFactorSatisfied = (): boolean => decisionMfaVerified || hasSatisfiedMfa(input.auth);
 
   // §6C (fix/pam-dedicated-permissions): the PAM mobile-bridge elevation
   // branch (elevationRequestId set — approval_requests_one_source_chk makes
@@ -580,11 +671,22 @@ export async function decideApprovalRequest(
   // `withSystemDbAccessContext` from inside the ambient request context is a
   // no-op passthrough (db/index.ts), so `runOutsideDbContext` is required to
   // actually elevate.
+  // The org the decided row belongs to. Its owning partner's approval-security
+  // policy applies alongside the session partner's (stricter wins), so it is
+  // resolved by every branch below that loads the row's target.
+  let rowOrgId: string | null = null;
+
   if (existing.elevationRequestId && !existing.intentId) {
     const elevationTarget = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const [row] = await db
-          .select({ orgId: elevationRequests.orgId, flowType: elevationRequests.flowType, deviceId: elevationRequests.deviceId })
+          .select({
+            orgId: elevationRequests.orgId,
+            siteId: elevationRequests.siteId,
+            flowType: elevationRequests.flowType,
+            deviceId: elevationRequests.deviceId,
+            subjectUserId: elevationRequests.subjectUserId,
+          })
           .from(elevationRequests)
           .where(eq(elevationRequests.id, existing.elevationRequestId as string));
         return row ?? null;
@@ -596,15 +698,10 @@ export async function decideApprovalRequest(
       return { httpStatus: 404, body: { error: 'elevation_not_found' } };
     }
     const elevationOrgId = elevationTarget.orgId;
+    rowOrgId = elevationOrgId;
 
-    const deciderPerms = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        getUserPermissions(userId, {
-          partnerId: input.auth.partnerId ?? undefined,
-          orgId: elevationOrgId,
-        }),
-      ),
-    );
+    // Resolved in the partner that owns the elevation's org, not the session's.
+    const deciderPerms = await getDeciderPermissionsForOrg(userId, elevationOrgId);
     // hasPermission alone doesn't establish that the permission reaches THIS
     // org: getUserPermissions falls back to the partner axis when the decider
     // has no organization_users row for elevationOrgId, so a partner-scope
@@ -619,10 +716,22 @@ export async function decideApprovalRequest(
     ) {
       return { httpStatus: 403, body: { error: 'pam_approve_required' } };
     }
-    if (status === 'approved' && elevationTarget.flowType === 'uac_intercept') {
-      if (!hasSatisfiedMfa(input.auth)) {
-        return { httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } };
+    // The same rules as the dedicated PAM respond route, for every flow type:
+    // the decider needs access to the request's site to approve or deny it,
+    // an approve needs a second factor, and the technician a request was
+    // raised for cannot approve it.
+    if (elevationTarget.siteId && !canAccessSite(deciderPerms, elevationTarget.siteId)) {
+      return { httpStatus: 403, body: { error: 'site_access_denied' } };
+    }
+    if (status === 'approved') {
+      if (elevationTarget.subjectUserId && elevationTarget.subjectUserId === userId) {
+        return { httpStatus: 403, body: { error: 'self_approval_forbidden' } };
       }
+      if (!secondFactorSatisfied()) {
+        return { httpStatus: 403, body: { ...SESSION_MFA_REQUIRED_BODY } };
+      }
+    }
+    if (status === 'approved' && elevationTarget.flowType === 'uac_intercept') {
       if (!hasPermission(deciderPerms, 'devices', 'execute')) {
         return { httpStatus: 403, body: { error: 'devices_execute_required' } };
       }
@@ -670,6 +779,7 @@ export async function decideApprovalRequest(
     );
     if (!target) return { httpStatus: 404, body: { error: 'diagnostic_access_grant_not_found' } };
     diagnosticTarget = { orgId: target.orgId, deviceId: target.deviceId };
+    rowOrgId = target.orgId;
     if (target.deviceOrgId !== target.orgId) {
       return { httpStatus: 409, body: { error: 'diagnostic_access_device_moved', finalStatus: 'expired' } };
     }
@@ -733,6 +843,7 @@ export async function decideApprovalRequest(
       // along with its intent), but fail closed rather than proceed blind.
       return { httpStatus: 404, body: { error: 'intent_not_found' } };
     }
+    rowOrgId = linkedIntent.orgId;
 
     // Digest binding (defense-in-depth, spec §3.3): refuse the decision if
     // the intent's content changed since this row was fanned out.
@@ -759,6 +870,38 @@ export async function decideApprovalRequest(
         },
       });
       return { httpStatus: 409, body: { error: 'digest_mismatch' } };
+    }
+
+    // Rule: approving a high-risk action requires a second factor, the same
+    // bar the action's own REST route sets with `requireMfa()` (e.g. POST
+    // /patches/:id/rollback), under every approval-security policy. The
+    // session's MFA claim satisfies it, as does an authenticator code the
+    // approve route verified for this decision (`secondFactorSatisfied`).
+    //
+    // It applies to every approve of such a row, whatever assurance level the
+    // approve reaches: an approver device is registered with a password or an
+    // SSO re-auth, so its assertion is not a second factor for the session.
+    // Placed right after the digest tripwire, ahead of the authority branches
+    // and the assurance ladder: it reads nothing, and a refused approve never
+    // spends a single-use challenge. Same body `requireMfa()` returns, so
+    // clients handle one shape. Automation principals never get here (refused
+    // at the top). Approve-only: a deny must always stay possible.
+    if (
+      status === 'approved'
+      && requiresSessionMfaToApprove(existing.riskTier, linkedIntent)
+      && !secondFactorSatisfied()
+    ) {
+      recordActionIntentEvent({
+        orgId: linkedIntent.orgId,
+        intentId: linkedIntent.id,
+        actionName: linkedIntent.actionName,
+        argumentDigest: linkedIntent.argumentDigest,
+        source: linkedIntent.source,
+        outcome: 'approver_unauthorized',
+        actorId: userId,
+        details: { approvalId: existing.id, errorCode: 'mfa_required' },
+      });
+      return { httpStatus: 403, body: { ...SESSION_MFA_REQUIRED_BODY } };
     }
 
     // Tier-3 supervised/four_eyes split (spec
@@ -902,14 +1045,8 @@ export async function decideApprovalRequest(
       // reads resolve regardless of ambient request scope (partner approvers
       // have no organization_users row).
       if (status === 'approved') {
-        const deciderPerms = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            getUserPermissions(userId, {
-              partnerId: input.auth.partnerId ?? undefined,
-              orgId: linkedIntent!.orgId,
-            }),
-          ),
-        );
+        // Resolved in the partner that owns the intent's org, not the session's.
+        const deciderPerms = await getDeciderPermissionsForOrg(userId, linkedIntent.orgId);
         if (
           !deciderPerms ||
           !canAccessOrg(deciderPerms, linkedIntent.orgId) ||
@@ -1175,6 +1312,7 @@ export async function decideApprovalRequest(
       if (proposal && (proposal.strictHits?.length ?? 0) > 0) {
         const resolved = await resolveStrictAcknowledgement({
           auth: input.auth,
+          secondFactorSatisfied: secondFactorSatisfied(),
           proposal: { strictHits: proposal.strictHits, orgId: proposal.orgId },
           submitted: input.acknowledgedPatterns ?? [],
         });
@@ -1247,12 +1385,13 @@ export async function decideApprovalRequest(
   const checksSupervisedPolicy =
     !input.preverifiedAssurance && isSupervisedSelfDecide && status === 'approved';
   // Kept (not just the boolean) so the plain-click shortcut below can apply
-  // the partner's raise-only floor when it records a grace downgrade.
-  const supervisedPartnerPolicy = checksSupervisedPolicy
-    ? await loadPartnerPolicy(input.auth.partnerId ?? null)
-    : null;
+  // the raise-only floor when it records a grace downgrade. The session
+  // partner's policy AND the row org owner's, stricter wins.
+  const supervisedPolicies = checksSupervisedPolicy
+    ? await loadApprovalPolicySet({ sessionPartnerId: input.auth.partnerId ?? null, rowOrgIds: [rowOrgId] })
+    : [];
   const isPartnerEnforcingForSupervised = checksSupervisedPolicy
-    ? isEnforcing(supervisedPartnerPolicy, new Date(), existing.riskTier as RiskTier)
+    ? isApprovalPolicySetEnforcing(supervisedPolicies, new Date(), existing.riskTier as RiskTier)
     : false;
   // #5601: a presented grant suppresses the shortcut for the same reason a
   // presented proof does — a credential the caller offered must be ADJUDICATED
@@ -1278,7 +1417,7 @@ export async function decideApprovalRequest(
       // from level < floor. The recorded level/factor are untouched.
       assurance.requiredLevel = requiredAssurance(
         existing.riskTier as RiskTier,
-        supervisedPartnerPolicy?.floorOverrides ?? null,
+        approvalPolicyFloorOverrides(supervisedPolicies),
       );
       if (assurance.decidedAssuranceLevel < assurance.requiredLevel) {
         assurance.graceDowngrade = true;
@@ -1310,6 +1449,7 @@ export async function decideApprovalRequest(
       riskTier: existing.riskTier as RiskTier,
       intent: linkedIntent,
       decision: status,
+      rowOrgId,
     });
     if (!redeemed) {
       // FAIL CLOSED. Expired / wrong binding / wrong scope / revoked approver
@@ -1338,6 +1478,7 @@ export async function decideApprovalRequest(
         riskTier: existing.riskTier as RiskTier,
         proof,
         partnerId: input.auth.partnerId ?? null,
+        rowOrgIds: [rowOrgId],
         decision: status,
         reauthVerified,
       });

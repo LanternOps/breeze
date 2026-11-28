@@ -58,7 +58,7 @@ An AI-authored script proposal's risk tier comes from its independent reviewer a
 3. Choose whether an approver device is required:
    - **Platform default** (what a partner that never saved a choice gets) -- high- and critical-risk approvals require a registered approver device from the platform date (5 November 2026 on hosted Breeze; self-hosters can move it with `APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM`). Low- and medium-risk approvals are allowed below the floor and recorded as downgraded. The tab shows the inherited value and its date.
    - **Required** -- enforce the policy at every risk tier: under-assured approvals (including approvals from a technician who hasn't enrolled an Authenticator device) are blocked rather than merely flagged.
-   - **Not required** -- never block; approvals below the floor are allowed and recorded as downgraded. This explicit choice is kept after the platform date.
+   - **Not required** -- never block; approvals below the floor are allowed and recorded as downgraded. This explicit choice is kept after the platform date. Approving a high- or critical-risk AI tool action has its own second-factor requirement, described below.
 
 4. With **Required**, optionally set an **Enforce from** date. This is the grace-window cutoff: before that date the policy is advisory, giving your team time to enroll their devices; on and after it, enforcement is live. Leave it blank to enforce immediately.
 
@@ -83,11 +83,22 @@ Each device in the list carries a badge -- **Hardware-attested** or **Not attest
 
 When an approver acts on a request from any surface (the [Privileged Access](/features/pam/) console, the Helper desktop app, or the mobile app), Breeze looks up the request's risk tier, resolves the required assurance level from this policy, and demands that level of verification on the approver's **Breeze Authenticator** device before recording the decision.
 
-- **PAM elevations** -- UAC intercepts and Tech JIT admin requests are risk-tiered, so the assurance floor you set here is what an approver must clear to grant them.
-- **AI tool actions** -- privileged actions proposed by the Breeze AI agent or Helper carry a risk tier (for example T2 / T3) and are held for a human; the approver must meet the matching assurance level to sign off.
+- **PAM elevations** -- UAC intercepts and Tech JIT admin requests are risk-tiered, so the assurance floor you set here is what an approver must clear to grant them. Wherever an elevation is decided (the Privileged Access console, the Approvals page or the mobile app), the same rules apply: approving it needs a second factor (see [Second factor on approve](#second-factor-on-approve)), deciding it needs access to the request's site, and the technician a request was raised for cannot approve it. The Approvals page lists only the elevations you can decide.
+- **AI tool actions** -- privileged actions proposed by the Breeze AI agent or Helper carry a risk tier (for example T2 / T3) and are held for a human; the approver must meet the matching assurance level to sign off. Approving a high- or critical-risk action, or any action whose own page in Breeze requires multi-factor authentication, also needs a second factor (see [Second factor on approve](#second-factor-on-approve)).
+- **Organizations of another partner** -- deciding a request needs a role in the request's organization or in the partner that owns it. The approval meets the approval security policy of that partner and of the partner you are signed in to, whichever is stricter.
 - **Microsoft 365 identity actions** -- the eight account actions added in v0.124.0 (revoke sessions, assign or remove a licence, add to or remove from a group, retire an Intune device, create a user, set an auto-reply) are always **four-eyes**: the requester never approves their own request, and the second approver takes a fresh ceremony every time. A password reset or account disable additionally needs a current [caller verification](/security/caller-verification/) of the target account; without one it is refused -- in chat, over MCP, and again when an approved request is released -- until a verification exists.
 
 Because an approval always requires a *separate* human identity from the requester, Approval Security is what makes "confirmed with MFA" concrete: it defines exactly how strong that confirmation has to be for the risk at hand.
+
+### Second factor on approve
+
+Where an approval needs a second factor (any PAM elevation, and the AI tool actions above), the second factor is a session that passed the multi-factor sign-in check. On the Approvals page and in the mobile app, a code from your authenticator app entered with the approval also counts; the Privileged Access console needs the multi-factor session. An approver device is not a second factor for this purpose. Denying never needs one and never asks for a code.
+
+- **On the web Approvals page**, an approval refused for want of a second factor shows a field for the code on that request. Enter the current code and approve again. Each code works once: if it is not accepted, or the approval is refused for another reason after the code was checked, wait for the next code. The field appears only for an account with an authenticator app, as its main second factor or as a backup beside a passkey. Any other account, such as one that signs in with a passkey only, is told to sign in again with its second factor or to set up an authenticator app instead.
+- **In the mobile app**, the approval screen asks for the code the same way, and also only for an account with an authenticator app.
+- **Approving several requests together** takes no code: approve each request on its own with a code, or sign out and sign in again with your second factor.
+- A code counts only where your multi-factor policy allows authenticator-app codes.
+- A code is checked only for a request you can still decide. A request that is gone, already decided or expired answers as it would without a code, and the code stays unused.
 
 <Aside type="note" title="Platform default">
   Until a partner saves an enforcement choice, the approvals inbox and this tab show a notice with the date the platform default starts requiring an approver device for high- and critical-risk approvals, and afterwards explain why those approvals ask for one. The server applies the same rule to every surface -- the web console, the mobile app and a direct API call are refused alike.

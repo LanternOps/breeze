@@ -82,6 +82,15 @@
     "noApproverDevice": "Registrieren Sie in Ihrem Profil ein Genehmigungsgerät und versuchen Sie es erneut.",
     "notSoleApprover": "Eine andere berechtigte Person muss diese Anfrage genehmigen.",
     "siteCeiling": "Diese Genehmigung gewährt organisationsweite Berechtigungen. Ihr Zugriff ist auf bestimmte Standorte beschränkt, daher muss eine andere Person diese Anfrage entscheiden.",
+    "siteAccessDenied": "Ihr Zugriff umfasst den Standort dieser Anfrage nicht, daher muss eine andere Person darüber entscheiden.",
+    "selfApprovalForbidden": "Sie haben diese Anfrage gestellt, daher muss eine andere Person sie genehmigen.",
+    "mfaRequired": "Für die Genehmigung dieser Anfrage ist ein zweiter Faktor erforderlich: eine mit Multi-Faktor-Authentifizierung angemeldete Sitzung oder ein Code aus Ihrer Authenticator-App. Geben Sie unten den Code ein und genehmigen Sie erneut, oder melden Sie sich ab und mit Ihrem zweiten Faktor erneut an.",
+    "mfaNoAuthenticator": "Für die Genehmigung dieser Anfrage ist eine mit Multi-Faktor-Authentifizierung angemeldete Sitzung erforderlich. Melden Sie sich ab und mit Ihrem zweiten Faktor erneut an, oder richten Sie in Ihrem Profil eine Authenticator-App ein und genehmigen Sie erneut mit einem Code daraus.",
+    "codeRejected": "Dieser Code wurde nicht akzeptiert. Jeder Code gilt nur einmal. Warten Sie auf den nächsten Code aus Ihrer Authenticator-App und versuchen Sie es erneut.",
+    "codeThrottled": "Es wurden zu viele Codes versucht. Warten Sie einige Minuten und versuchen Sie es erneut.",
+    "codeUnavailable": "Codes können derzeit nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
+    "codeNotPermitted": "Ihre Organisation erlaubt hierfür keine Authenticator-Codes. Melden Sie sich ab, melden Sie sich erneut mit Ihrem zweiten Faktor an und genehmigen Sie dann.",
+    "batchMfaRequired": "Für die gemeinsame Genehmigung dieser Anfragen ist eine mit Multi-Faktor-Authentifizierung angemeldete Sitzung erforderlich. Genehmigen Sie jede Anfrage einzeln mit einem Code aus Ihrer Authenticator-App, oder melden Sie sich ab und mit Ihrem zweiten Faktor erneut an.",
     "approverScopeRequired": "Diese Genehmigung betrifft alle Organisationen des Partners. Sie muss daher von einer genehmigenden Person auf Partnerebene mit Zugriff auf alle Organisationen entschieden werden.",
     "verificationFailed": "Die Überprüfung wurde abgebrochen oder ist fehlgeschlagen. Versuchen Sie es erneut.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
@@ -92,6 +101,11 @@
     "batchTooLarge": "Dieser Stapel enthält zu viele Anfragen, um sie gemeinsam zu entscheiden. Genehmigen Sie sie in kleineren Gruppen.",
     "batchScopeNotPermitted": "Nur eine genehmigende Person auf Partnerebene kann Anfragen aus mehreren Organisationen gemeinsam entscheiden. Entscheiden Sie die Anfragen jeder Organisation einzeln.",
     "driftedFromBatch": "Diese Anfrage hat sich geändert und muss einzeln entschieden werden."
+  },
+  "mfaCode": {
+    "label": "Code aus Ihrer Authenticator-App",
+    "hint": "Jeder Code gilt nur einmal und wird nur für diese Genehmigung geprüft.",
+    "spent": "Der eingegebene Code wurde bereits verwendet. Geben Sie zum erneuten Genehmigen den nächsten Code aus Ihrer Authenticator-App ein."
   },
   "registerDevice": "Gerät registrieren",
   "alwaysAllow": {

@@ -61,6 +61,8 @@
     "expired": "This request expired before it could be decided.",
     "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
     "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
+    "mfaRequired": "Approving this action needs a second factor. Sign out and sign in again with your second factor, or approve it on the Approvals page with a code from your authenticator app.",
+    "codeRejected": "That code was not accepted. Each code works once, so wait for the next code from your authenticator app and try again.",
     "approverScopeRequired": "This approval affects every organization under the partner, so it needs a partner-level approver with access to all organizations.",
     "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
     "freshFactorRequired": "This check needs a fresh passkey confirmation (Touch ID, Windows Hello or a hardware key) made for this approval. Try again.",

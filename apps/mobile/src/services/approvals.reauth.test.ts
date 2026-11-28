@@ -103,6 +103,28 @@ describe('approveRequest critical-tier re-auth (#4052)', () => {
     ).rejects.toThrow('REAUTH_METHOD_NOT_PERMITTED');
   });
 
+  it('maps the code check’s own 403 (code mfa_method_not_permitted) to REAUTH_METHOD_NOT_PERMITTED', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(
+      jsonResponse(403, {
+        error: 'This MFA method is not permitted',
+        message: 'This MFA method is not permitted',
+        code: 'mfa_method_not_permitted',
+      }),
+    );
+    await expect(
+      approveRequest('a1', { reauth: { kind: 'totp', value: '123456' } }),
+    ).rejects.toThrow('REAUTH_METHOD_NOT_PERMITTED');
+  });
+
+  it('does not read a decide refusal that carries a message as a refused code method', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(
+      jsonResponse(403, { error: 'site_ceiling', message: 'This approval grants organization-wide authority.' }),
+    );
+    await expect(
+      approveRequest('a1', { reauth: { kind: 'totp', value: '123456' } }),
+    ).rejects.toThrow('Approve failed: 403');
+  });
+
   it('maps an enforced step-up (403 step_up_required) to STEP_UP_REQUIRED', async () => {
     fetchWithAuthRefreshMock.mockResolvedValue(
       jsonResponse(403, { error: 'step_up_required', requiredLevel: 4 }),
@@ -110,6 +132,12 @@ describe('approveRequest critical-tier re-auth (#4052)', () => {
     await expect(
       approveRequest('a1', { reauth: { kind: 'totp', value: '123456' } }),
     ).rejects.toThrow('STEP_UP_REQUIRED');
+  });
+
+  it('maps a second-factor refusal (403 MFA_REQUIRED) to MFA_REQUIRED', async () => {
+    fetchWithAuthRefreshMock.mockResolvedValue(jsonResponse(403, { error: 'MFA required', code: 'MFA_REQUIRED' }));
+    await expect(approveRequest('a1')).rejects.toThrow('MFA_REQUIRED');
+    await expect(approveRequest('a1', { reauth: { kind: 'password', value: 'hunter2' } })).rejects.toThrow('MFA_REQUIRED');
   });
 
   it('keeps a decide-path 403 token generic even with an authenticator code', async () => {

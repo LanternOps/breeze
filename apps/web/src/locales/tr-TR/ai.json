@@ -61,6 +61,8 @@
     "expired": "Bu isteğin süresi, karar verilmeden doldu.",
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
     "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, artık başka bir onaylayan bu isteğe karar vermelidir.",
+    "mfaRequired": "Bu eylemi onaylamak için ikinci faktör gerekir. Oturumu kapatıp ikinci faktörünüzle yeniden oturum açın veya Onaylar sayfasında kimlik doğrulayıcı uygulamanızdaki bir kodla onaylayın.",
+    "codeRejected": "Bu kod kabul edilmedi. Her kod yalnızca bir kez geçerlidir; kimlik doğrulayıcı uygulamanızdaki sonraki kodu bekleyip yeniden deneyin.",
     "approverScopeRequired": "Bu onay, iş ortağının tüm organizasyonlarını etkiler; bu nedenle tüm organizasyonlara erişimi olan iş ortağı düzeyinde bir onaylayan gerekir.",
     "noApproverDevice": "Kendi isteğinizi onaylamak için Touch ID / Windows Hello gerekir.",
     "freshFactorRequired": "Bu kontrol, bu onay için yapılmış yeni bir geçiş anahtarı doğrulaması (Touch ID, Windows Hello veya donanım anahtarı) gerektirir. Tekrar deneyin.",

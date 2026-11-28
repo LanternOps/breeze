@@ -13,7 +13,11 @@ import { authenticatorAttestationEnforced } from '../config/env';
 import { recordAuthenticatorL4Basis } from './anomalyMetrics';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce, toMobileKeyAlg } from './mobileHwKey';
-import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
+import {
+  approvalPolicyFloorOverrides,
+  isApprovalPolicySetEnforcing,
+  loadApprovalPolicySet,
+} from './approvalAssurancePolicy';
 
 /**
  * Recency window for the L3/L4 ladder: an approval-assertion challenge must be
@@ -253,6 +257,12 @@ export async function assertApprovalAssurance(input: {
   proof?: ApprovalProof | null;
   /** Phase 4: the caller's partner, used to load the enforcement policy. */
   partnerId?: string | null;
+  /**
+   * The org(s) the decided row(s) belong to. The policy of each org's owning
+   * partner applies alongside the session partner's, and the stricter wins
+   * (`services/approvalAssurancePolicy.ts`). Server-loaded ids only.
+   */
+  rowOrgIds?: readonly (string | null | undefined)[];
   /** Phase 4: enforcement applies to an approve only — a deny is never blocked. */
   decision?: 'approved' | 'denied';
   /** L4 re-auth: a fresh account re-authentication completed at the decide
@@ -261,6 +271,15 @@ export async function assertApprovalAssurance(input: {
    * consumed challenge's issued-at, so a real caller passes nothing for it. */
   reauthVerified?: boolean;
 }): Promise<AssuranceDecision> {
+  // 0. Load the policy set (approve only — see step 2 for why a deny never
+  //    reads it) BEFORE any proof is verified: verifying consumes the
+  //    single-use challenge / nonce, so a policy-read fault after it would
+  //    spend the approver's ceremony and surface as a failed verification.
+  const isApprove = (input.decision ?? 'approved') === 'approved';
+  const policies = isApprove
+    ? await loadApprovalPolicySet({ sessionPartnerId: input.partnerId ?? null, rowOrgIds: input.rowOrgIds })
+    : [];
+
   // 1. Establish the achieved factor. No proof → session tap, L1. A
   //    presented-but-invalid proof throws inside these branches (never a silent
   //    downgrade).
@@ -295,12 +314,10 @@ export async function assertApprovalAssurance(input: {
   // unconditionally would make a transient DB fault block a technician from
   // REFUSING a request. That is exactly the state spec §12 says must never
   // occur. A deny therefore never touches the partner policy at all.
-  const isApprove = (input.decision ?? 'approved') === 'approved';
-  const policy = isApprove ? await loadPartnerPolicy(input.partnerId ?? null) : null;
-  decision.requiredLevel = requiredAssurance(input.riskTier, policy?.floorOverrides ?? null);
+  decision.requiredLevel = requiredAssurance(input.riskTier, approvalPolicyFloorOverrides(policies));
 
   if (isApprove && decision.decidedAssuranceLevel < decision.requiredLevel) {
-    if (isEnforcing(policy, new Date(), input.riskTier)) {
+    if (isApprovalPolicySetEnforcing(policies, new Date(), input.riskTier)) {
       throw new StepUpRequiredError(decision.requiredLevel, decision.decidedAssuranceLevel);
     }
     // Under-assured but enforcement is off / still in the grace window — allow,

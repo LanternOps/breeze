@@ -220,7 +220,8 @@ async function accessTokenFor(s: Scenario): Promise<string> {
     orgId: s.orgId,
     partnerId: s.partnerId,
     scope: 'organization',
-    mfa: false,
+    // approving a high-risk intent needs the session MFA claim
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),

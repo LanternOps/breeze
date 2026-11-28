@@ -82,6 +82,15 @@
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
     "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici, quindi un'altra persona autorizzata deve decidere su questa richiesta.",
+    "siteAccessDenied": "Il tuo accesso non include il sito di questa richiesta, quindi un altro approvatore deve decidere.",
+    "selfApprovalForbidden": "Hai creato tu questa richiesta, quindi un altro approvatore deve approvarla.",
+    "mfaRequired": "L'approvazione di questa richiesta richiede un secondo fattore: una sessione avviata con l'autenticazione a più fattori oppure un codice della tua app di autenticazione. Inserisci il codice qui sotto e approva di nuovo, oppure esci e accedi di nuovo con il secondo fattore.",
+    "mfaNoAuthenticator": "L'approvazione di questa richiesta richiede una sessione avviata con l'autenticazione a più fattori. Esci e accedi di nuovo con il secondo fattore, oppure configura un'app di autenticazione nel profilo e approva di nuovo con un codice generato da essa.",
+    "codeRejected": "Il codice non è stato accettato. Ogni codice funziona una sola volta: attendi il codice successivo della tua app di autenticazione e riprova.",
+    "codeThrottled": "Sono stati provati troppi codici. Attendi qualche minuto e riprova.",
+    "codeUnavailable": "Al momento non è possibile verificare i codici. Riprova tra un attimo.",
+    "codeNotPermitted": "La tua organizzazione non consente i codici dell'app di autenticazione per questa operazione. Esci, accedi di nuovo con il secondo fattore, quindi approva.",
+    "batchMfaRequired": "L'approvazione congiunta di queste richieste richiede una sessione avviata con l'autenticazione a più fattori. Approva ogni richiesta singolarmente con un codice della tua app di autenticazione, oppure esci e accedi di nuovo con il secondo fattore.",
     "approverScopeRequired": "Questa approvazione riguarda tutte le organizzazioni del partner, quindi richiede un approvatore a livello di partner con accesso a tutte le organizzazioni.",
     "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
     "alreadyDecided": "Questa richiesta è già stata decisa.",
@@ -92,6 +101,11 @@
     "batchTooLarge": "Questo gruppo contiene troppe richieste per essere deciso insieme. Approvale in gruppi più piccoli.",
     "batchScopeNotPermitted": "Solo un approvatore a livello di partner può decidere insieme richieste di più organizzazioni. Decidi separatamente le richieste di ciascuna organizzazione.",
     "driftedFromBatch": "Questa richiesta è cambiata e deve essere decisa singolarmente."
+  },
+  "mfaCode": {
+    "label": "Codice della tua app di autenticazione",
+    "hint": "Ogni codice funziona una sola volta e viene verificato solo per questa approvazione.",
+    "spent": "Il codice inserito è già stato usato. Per approvare di nuovo, inserisci il codice successivo della tua app di autenticazione."
   },
   "registerDevice": "Registra dispositivo",
   "alwaysAllow": {

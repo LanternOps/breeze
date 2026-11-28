@@ -297,6 +297,11 @@ export function rejectProof(
  */
 const STEP_UP_THROTTLED_MESSAGE = 'Too many attempts. Please try again later.';
 const STEP_UP_UNAVAILABLE_MESSAGE = 'Service temporarily unavailable';
+// Machine codes on the authenticator-code check's own refusals, so a client
+// can tell them apart from any other 403/429/503 the same request may answer.
+export const MFA_CHECK_UNAVAILABLE_CODE = 'mfa_check_unavailable';
+export const MFA_CHECK_THROTTLED_CODE = 'mfa_check_throttled';
+export const MFA_METHOD_NOT_PERMITTED_CODE = 'mfa_method_not_permitted';
 
 export async function requireCurrentPasswordStepUp(
   c: Context,
@@ -389,7 +394,7 @@ export async function requireFreshMfaStepUp(
   const rejectionStatus: ProofRejectionStatus = 401;
   const redis = getRedis();
   if (!redis) {
-    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
+    return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE, code: MFA_CHECK_UNAVAILABLE_CODE }, 503);
   }
 
   const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
@@ -397,6 +402,7 @@ export async function requireFreshMfaStepUp(
     return c.json({
       error: STEP_UP_THROTTLED_MESSAGE,
       message: STEP_UP_THROTTLED_MESSAGE,
+      code: MFA_CHECK_THROTTLED_CODE,
       retryAfter: Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000)
     }, 429);
   }
@@ -413,7 +419,7 @@ export async function requireFreshMfaStepUp(
   }, { failClosedMethods: true });
   if (!policy.allowedMethods.totp) {
     const message = 'This MFA method is not permitted';
-    return c.json({ error: message, message }, 403);
+    return c.json({ error: message, message, code: MFA_METHOD_NOT_PERMITTED_CODE }, 403);
   }
 
   const [user] = await db

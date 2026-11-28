@@ -190,7 +190,8 @@ async function createApprovedMoveOrgIntent(s: Scenario): Promise<string> {
     db.select({ id: approvalRequests.id }).from(approvalRequests).where(eq(approvalRequests.intentId, snapshot.id)));
   const payload: Omit<TokenPayload, 'type'> = {
     sub: s.approver.id, email: s.approver.email, roleId: s.approverRoleId, orgId: s.orgAId,
-    partnerId: s.partnerId, scope: 'organization', mfa: false, aep: 1, mep: 1, sid: randomUUID(),
+    // approving a high-risk intent needs the session MFA claim
+    partnerId: s.partnerId, scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   };
   const token = await createAccessToken(payload);
   const app = new Hono();

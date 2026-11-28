@@ -388,7 +388,7 @@ describe('POST /:id/override-run', () => {
 
   it('checks that floor at medium at the least: an unknown tier is never low', async () => {
     await postRun();
-    expect(m.assertApprovalAssurance).toHaveBeenCalledWith(expect.objectContaining({ riskTier: 'medium', proof: null, decision: 'approved' }));
+    expect(m.assertApprovalAssurance).toHaveBeenCalledWith(expect.objectContaining({ riskTier: 'medium', proof: null, decision: 'approved', rowOrgIds: [ORG] }));
   });
 
   it('the AI data policy on user-profile paths still refuses', async () => {
