@@ -2,23 +2,41 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
 )
 
-// NOTE: this manager keeps the production deferral-ledger path, which these
-// tests never write to — they only ever call handleScheduleReboot, and the
-// ledger READ treats a missing file as zero. A test at this layer that calls
-// Defer() would touch the real agent data dir, so seam the ledger first (the
-// field is unexported in package patching, so that needs an exported option).
+// Every schedule writes the ledger since #12827 (the pending-restart record),
+// so these managers keep it, and the reboot history, in a temp dir: a test
+// must never write the real agent data dir.
 func newTestHeartbeatWithRebootManager(t *testing.T) *Heartbeat {
 	t.Helper()
-	mgr := patching.NewRebootManager(func(string, string, string) {}, 3)
+	mgr := patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, tempRebootSeams(t))
 	t.Cleanup(mgr.Stop)
 	return &Heartbeat{rebootMgr: mgr}
+}
+
+// tempRebootSeams keeps a test manager's files out of the agent data dir and
+// the OS restart command out of reach: these managers run real timers, so a
+// test that stalled past a schedule's closing rung would otherwise restart
+// the machine running the tests. A call fails the test instead.
+func tempRebootSeams(t *testing.T) patching.RebootSeams {
+	t.Helper()
+	dir := t.TempDir()
+	return patching.RebootSeams{
+		HistoryPath: filepath.Join(dir, "reboot_history.json"),
+		LedgerPath:  filepath.Join(dir, "reboot_deferrals.json"),
+		ExecOSReboot: func(time.Duration) error {
+			t.Error("a test reached the OS restart command")
+			return errors.New("test: no OS restart")
+		},
+		AbortOSReboot: func() error { return nil },
+	}
 }
 
 func scheduleRebootResultMap(t *testing.T, res any) map[string]any {

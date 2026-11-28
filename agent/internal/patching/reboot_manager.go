@@ -213,6 +213,24 @@ type RebootManager struct {
 	abortOSReboot  func() error
 	historyPath    func() string
 	deferralLedger func() string
+	// bootID identifies the running boot, for the pending-restart record
+	// (#12827). Nil: nothing is ever restored. stateFileTrusted replaces the
+	// record's file-trust check (nil = readTrustedRecordFile).
+	bootID           func() string
+	stateFileTrusted func(path string) error
+	// enrollment returns this agent's id (#12827): a record written under
+	// another enrollment is never restored. Nil: nothing is restored.
+	enrollment func() string
+	// agentRun identifies this agent process and reads which agents started
+	// since a record's writer (#12827). Zero: nothing is restored.
+	agentRun AgentRun
+	// reannounce is the restored campaign still owed an announcement to the
+	// first session that connects (#12827); zero when none is owed.
+	reannounce uint64
+	// dueAnchor is the time a restored restart was first due, carried across
+	// restores that moved it (#12827); zero for a time an operator or the
+	// person set. The 24-hour cutoff counts from it.
+	dueAnchor time.Time
 }
 
 // NewRebootManager creates a new RebootManager with circuit breaker protection
@@ -286,6 +304,9 @@ func (r *RebootManager) ScheduleWithOptions(delay time.Duration, deadline time.T
 	// An operator's schedule is a new campaign; the re-plans of the
 	// person's own Postpone / Restart now keep theirs (scheduleLockedAt).
 	r.campaign = newCampaignID(r.nowFn())
+	// On disk before the command reports success, so an agent restart from
+	// here on re-arms this restart instead of dropping it (#12827).
+	r.savePendingLocked("scheduling a restart")
 	return nil
 }
 
@@ -368,6 +389,9 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 	r.cancelLocked()
 	r.osInvoked = false
 	gen := r.generation
+	// A new time from a schedule, a postponement or Restart now is a new
+	// promise; only a restore carries the old one (it sets this after).
+	r.dueAnchor = time.Time{}
 
 	plan := PlanReboot(delay)
 
@@ -532,12 +556,12 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	r.deferralsUsed = used
 	r.state.DeferralsUsed = used
 
-	path := r.ledgerPath()
-	if err := SaveDeferralLedger(path, deadline, used); err != nil {
+	// The count and the moved schedule in one write (#12827).
+	if err := r.persistPendingLocked(); err != nil {
 		// Best-effort: losing the ledger costs the user an extra postponement
 		// after an agent restart, it never lets them exceed the DEADLINE.
 		log.Warn("failed to persist reboot deferral ledger",
-			"path", path, "deadline", deadline, "used", used, "error", err)
+			"path", r.ledgerPath(), "deadline", deadline, "used", used, "error", err)
 	}
 	log.Info("reboot postponed by user",
 		"newDelay", outcome.NewDelay.String(), "used", used, "max", policy.MaxDeferrals,
@@ -545,14 +569,15 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	return outcome.NewDelay, nil
 }
 
-// ledgerPath resolves the deferral ledger location through the test seam,
-// falling back to the real data dir. Nil-safe because RebootManager is also
-// built as a struct literal in tests.
+// ledgerPath resolves the deferral ledger location through the seam every
+// constructor sets. Empty for a manager built as a struct literal (tests),
+// which persists nothing: since #12827 every schedule writes the ledger, and a
+// test must never reach the real agent data dir.
 func (r *RebootManager) ledgerPath() string {
 	if r.deferralLedger != nil {
 		return r.deferralLedger()
 	}
-	return deferralLedgerPath()
+	return ""
 }
 
 // ErrNoRebootScheduled is what Cancel returns when there was nothing to cancel:
@@ -613,6 +638,9 @@ func (r *RebootManager) Cancel() error {
 	r.state.DeferralsUsed = 0
 	r.state.MaxDeferrals = 0
 	r.state.DeferralMinutes = 0
+	// Off disk too, before the lock is released: an agent restart from here
+	// on must not bring the cancelled restart back (#12827).
+	r.dropPendingLocked("cancelling a restart")
 	abort := r.abortOSReboot
 	osInvoked := r.osInvoked
 	r.osInvoked = false
@@ -895,9 +923,15 @@ func (r *RebootManager) restartNow(gen uint64) error {
 	if gen != r.generation || !r.state.RebootScheduled {
 		return fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
 	}
-	return r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
+	if err := r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
 		r.state.Reason, r.state.Source,
-		RebootOptions{Deferral: r.deferral, Prompt: r.promptText, DeadlineAction: r.deadlineAction}, leadRungPrompts)
+		RebootOptions{Deferral: r.deferral, Prompt: r.promptText, DeadlineAction: r.deadlineAction}, leadRungPrompts); err != nil {
+		return err
+	}
+	// scheduleLockedAt reloaded the count from the ledger, which agrees with
+	// memory because every change to it is written; persist the new time.
+	r.savePendingLocked("Restart now")
+	return nil
 }
 
 func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
@@ -978,6 +1012,8 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		r.state.RebootScheduled = false
 		r.state.LastError = fmt.Sprintf("blocked by circuit breaker: %d reboots in 24h (max %d)",
 			recentCount, r.maxRebootsPerDay)
+		// A blocked restart is over; an agent restart must not re-arm it.
+		r.dropPendingLocked("the circuit breaker blocking a restart")
 		notifyFn := r.notifyFn
 		maxPerDay := r.maxRebootsPerDay
 		r.mu.Unlock()
@@ -1018,6 +1054,16 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	if resumingFromHold && resumeNotifyFn != nil {
 		resumeNotifyFn(flashHoldResumeTitle, flashHoldResumeBody, "critical")
 	}
+
+	// The restart now belongs to the OS. Clear the record before the command
+	// runs, so neither an agent stopped inside the grace minute nor a failed
+	// invocation re-arms it on the next start (#12827). Outside the lock, like
+	// the history write below, so a slow disk cannot stall State() or Stop;
+	// osInvoking refuses every other schedule, postponement, cancel and
+	// restore meanwhile, so nothing else writes the record. If it fails, the
+	// boot id is the backstop: after the restart the record is from an
+	// earlier boot and is discarded.
+	r.dropPendingLocked("handing a restart to the operating system")
 
 	// Persist history before rebooting
 	r.saveRebootHistory()

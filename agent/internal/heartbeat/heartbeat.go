@@ -43,6 +43,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/inbox"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
@@ -882,6 +883,10 @@ type Heartbeat struct {
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
 
+	// agentStartsAfter replaces auditLog.AgentStartsAfter for the pending
+	// restart's agent history (#12827); tests only. Nil uses the audit log.
+	agentStartsAfter func(token string) ([]string, bool, error)
+
 	// HP warranty (#5511 observe-first): the in-memory CMSL mode and the
 	// observe schedule (warranty_mode.go, hp_warranty_observe.go). The clock
 	// is a seam for tests; nil means time.Now.
@@ -1643,6 +1648,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		),
 		cfg.PatchRebootMaxPerDay,
 	)
+	// The boot a pending restart was scheduled in (#12827): a restart from an
+	// earlier boot is never restored. The same identity network isolation
+	// relies on; it falls back to a per-process id, which restores nothing.
+	h.rebootMgr.SetBootID(isolation.SystemClock().BootID)
+	// ...and the enrollment: a reinstall or re-enroll keeps the data folder
+	// but gets a new agent id, and must not inherit the old one's restart.
+	h.rebootMgr.SetEnrollment(func() string { return h.config.AgentID })
 	flashguard.Default().SetCountdownProbe(h.rebootMgr.OSCountdownArmed)
 	// The restart card (#10190 W05): each rung is offered to the prompt host
 	// first; a rung no session can draw goes out as above, unchanged.
@@ -7711,6 +7723,7 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	// Assist helper. Independent of the token push below.
 	h.replayEndpointMessages(session)
 	h.replayChat(session)
+	h.announceRestoredRestart()
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}

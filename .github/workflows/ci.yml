@@ -2778,6 +2778,37 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # #12827: a restart the agent had scheduled survives an agent restart.
+      # ./internal/patching is not in the package list above (much of it is
+      # Windows-tagged code tested elsewhere), so this step runs only the
+      # restore tests: the restore rules, the record's write and clear paths,
+      # and the Windows trust check on the record file, run for real on a temp
+      # directory (only the agent-start ACL verification of the real ProgramData
+      # folder is injected; its fail-closed default is exercised too). The -run
+      # filter selects exactly the tests in reboot_manager_restore*_test.go and
+      # reboot_pending_windows_test.go. Every OS restart in them is a fake, and
+      # the clock and timers are injected. The tests that need unix permission
+      # bits or unix links skip by design; any other skip, or a missing Windows
+      # trust test, fails the step.
+      - name: Run Windows pending-restart restore tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/patching -run 'Restor|Record|TrustedRead|Reannounc' -count=1 -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $unixOnly = @('TestAnUnreadableRecordIsLeftAlone', 'TestARecordReachedThroughALinkIsRefusedAndNotRewritten', 'TestARecordInADirectoryOthersCanWriteIsRefused', 'TestARecordInAGroupWritableDirectoryIsRefused', 'TestTheTrustedReadNeverFollowsALink', 'TestTheTrustedReadRefusesADirectoryReachedThroughALink', 'TestRestoreRefusesARecordOthersCouldWrite', 'TestPendingRecordIsWrittenOwnerOnly')
+          $skipped = @($out | Select-String -Pattern '^\s*--- SKIP: (\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+          $unexpected = @($skipped | Where-Object { $unixOnly -notcontains $_ })
+          if ($unexpected.Count -ne 0) { throw "restore tests SKIPPED on Windows: $($unexpected -join ', ')" }
+          $windows = @($out | Select-String -Pattern '^--- PASS: TestWindowsTrustedRead').Count
+          if ($windows -ne 6) { throw "expected 6 passing Windows trust tests, got $windows" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -lt 40) { throw "expected at least 40 passing restore tests, got $passes - the -run filter no longer selects them" }
+
       # The local backup store resolves every key through one root handle and
       # requires a private root. Its Windows behaviour (protected DACLs on the
       # root and on directories it creates, refusal of junctions inside the

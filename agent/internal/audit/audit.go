@@ -113,8 +113,15 @@ func NewLogger(cfg *config.Config) (*Logger, error) {
 // gaps: if the write fails, the next entry will re-link to the same prevHash.
 // Safe to call on a nil receiver (no-op).
 func (l *Logger) Log(eventType string, commandID string, details map[string]any) {
+	l.LogEntry(eventType, commandID, details)
+}
+
+// LogEntry is Log, returning the written entry's hash ("" when nothing was
+// written, including on a nil receiver). The hash identifies the entry in
+// the log, as the agent's start token does for the pending-restart record.
+func (l *Logger) LogEntry(eventType string, commandID string, details map[string]any) string {
 	if l == nil {
-		return
+		return ""
 	}
 
 	l.mu.Lock()
@@ -132,7 +139,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	if err != nil {
 		log.Error("failed to compute audit entry hash", "error", err, "eventType", eventType)
 		l.dropped.Add(1)
-		return
+		return ""
 	}
 	entry.EntryHash = entryHash
 
@@ -140,7 +147,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	if err != nil {
 		log.Error("failed to marshal audit entry", "error", err, "eventType", eventType)
 		l.dropped.Add(1)
-		return
+		return ""
 	}
 	data = append(data, '\n')
 
@@ -148,7 +155,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 		if err := l.rotate(); err != nil {
 			log.Error("audit log rotation failed", "error", err)
 			l.dropped.Add(1)
-			return
+			return ""
 		}
 	}
 
@@ -156,7 +163,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 	if err != nil {
 		log.Error("failed to write audit entry", "error", err, "eventType", eventType)
 		l.dropped.Add(1)
-		return
+		return ""
 	}
 	l.written += int64(n)
 
@@ -169,6 +176,7 @@ func (l *Logger) Log(eventType string, commandID string, details map[string]any)
 			log.Error("failed to fsync critical audit entry — durability not guaranteed", "error", err, "eventType", eventType)
 		}
 	}
+	return entry.EntryHash
 }
 
 // Close flushes and closes the audit log file.

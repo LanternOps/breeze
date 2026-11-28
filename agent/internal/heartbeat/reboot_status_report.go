@@ -95,3 +95,44 @@ func (h *Heartbeat) rebootStatusForHeartbeat() *RebootStatusReport {
 	}
 	return buildRebootStatusReport(h.rebootMgr.State())
 }
+
+// RestorePendingReboot re-arms the restart this agent had scheduled before it
+// last stopped (#12827). The agent's startup calls it once, before Start, so
+// the first heartbeat already reports the restart: a null rebootStatus is the
+// server's signal that nothing is scheduled, and it clears the device row.
+// Not called from New, so a test that builds a Heartbeat never reads the real
+// agent data directory.
+//
+// startToken is this process's agent_start audit entry (audit.LogEntry). It
+// goes into every record this process writes, and the restore checks the
+// audit log for an agent of another version that started after the record's
+// writer: an older agent cancels a restart without clearing the record.
+func (h *Heartbeat) RestorePendingReboot(startToken string) bool {
+	if h.rebootMgr == nil {
+		return false
+	}
+	startsAfter := h.agentStartsAfter
+	if startsAfter == nil {
+		startsAfter = h.auditLog.AgentStartsAfter // nil-safe: a disabled log restores nothing
+	}
+	h.rebootMgr.SetAgentRun(patching.AgentRun{
+		Version:     h.agentVersion,
+		StartToken:  startToken,
+		StartsAfter: startsAfter,
+	})
+	return h.rebootMgr.RestorePendingReboot()
+}
+
+// announceRestoredRestart tells the first desktop session that connects
+// after a restore about the restored restart (#12827): the announcement at
+// agent start went out before any helper was up. A session that cannot show
+// a warning (no notify target yet) does not use up the one announcement.
+func (h *Heartbeat) announceRestoredRestart() {
+	if h.rebootMgr == nil || h.sessionBroker == nil {
+		return
+	}
+	if len(h.sessionBroker.NotifyTargetsExcept("")) == 0 {
+		return
+	}
+	h.rebootMgr.AudienceConnected()
+}
