@@ -2176,6 +2176,7 @@
     "perUserBadge": "Kullanıcı başına",
     "perUserBadgeTitle": "Oturum açmış kullanıcının profilinde yüklü; henüz sistem bağlamından yamalanamaz",
     "perUserNotScanned": "Kullanıcı başına uygulamalar taranmadı (etkileşimli kullanıcı oturumu yok) — kullanıcı başına güncellemeler eksik olabilir.",
+    "thirdPartyScanFailed": "Üçüncü taraf taraması başarısız oldu: {{reason}}",
     "rebootRequired": "Yeniden başlatma gerekli",
     "table": {
       "approval": "Onay",

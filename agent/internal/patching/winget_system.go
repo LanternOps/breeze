@@ -45,6 +45,9 @@ type SystemWingetProvider struct {
 	// userScopeIDs holds the lowercased package IDs the last scan saw ONLY at
 	// user scope, so Install/Uninstall can refuse them explicitly.
 	userScopeIDs map[string]struct{}
+	// machineScanFailure is the sanitized reason the last machine-scope scan
+	// failed, "" after a successful one (#12835). See MachineScanReporter.
+	machineScanFailure string
 }
 
 // NewSystemWingetProvider constructs a SystemWingetProvider that invokes the
@@ -64,6 +67,7 @@ func NewSystemWingetProviderWithUserScan(wingetPath string, run cmdRunner, userE
 
 var _ PatchProvider = (*SystemWingetProvider)(nil)
 var _ UserScopeScanner = (*SystemWingetProvider)(nil)
+var _ MachineScanReporter = (*SystemWingetProvider)(nil)
 
 func (p *SystemWingetProvider) ID() string { return "winget" }
 func (p *SystemWingetProvider) Name() string {
@@ -114,10 +118,12 @@ func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 	stdout, stderr, code, err := p.run(p.wingetPath, systemScanArgs(), systemWingetScanTimeout)
 	if err != nil {
 		p.recordUserScanStatus(UserScanStatus{Reason: machinePassFailedReason})
+		p.recordMachineScanFailure(machineScanStartFailure())
 		return nil, fmt.Errorf("winget upgrade failed: %w", err)
 	}
 	if code != 0 && stdout == "" {
 		p.recordUserScanStatus(UserScanStatus{Reason: machinePassFailedReason})
+		p.recordMachineScanFailure(wingetExitReason(code))
 		return nil, fmt.Errorf("winget upgrade failed (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
 	patches, parseErr := parseWingetUpgradeOutput(stdout)
@@ -135,10 +141,12 @@ func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 		// and the unparsable stdout head is the only clue a tech has for why
 		// this device keeps reporting a skipped winget scan.
 		p.recordUserScanStatus(UserScanStatus{Reason: machinePassFailedReason})
+		p.recordMachineScanFailure(machineScanUnreadable(code))
 		return nil, fmt.Errorf("%w: %v (exit %d, stdout: %q, stderr: %q)",
 			ErrScanSkipped, parseErr, code,
 			truncatePatchField(stdout), truncatePatchField(stderr))
 	}
+	p.recordMachineScanFailure("")
 	return p.withUserScope(patches), nil
 }
 

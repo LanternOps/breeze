@@ -719,6 +719,78 @@ describe('device patch routes', () => {
     expect(body.data.pending[0].scope).toBe('user');
   });
 
+  // #12835 — a failed SYSTEM machine-scope winget pass. The agent puts a
+  // sanitized reason in the stdout envelope on completed AND failed patch_scan
+  // results; the tab shows it instead of "No pending third-party updates."
+  it.each([
+    {
+      name: 'unwraps the third-party scan failure from a failed scan envelope',
+      status: 'failed',
+      result: {
+        status: 'failed',
+        exitCode: 1,
+        error: 'patch source "third_party" could not be scanned (provider skipped or failed)',
+        stdout: JSON.stringify({ thirdPartyScanFailure: 'winget exited 0xC0000135 (DLL not found; the Visual C++ runtime is missing)' }),
+      },
+      want: 'winget exited 0xC0000135 (DLL not found; the Visual C++ runtime is missing)',
+    },
+    {
+      name: 'unwraps it from a completed (partial) scan envelope',
+      status: 'completed',
+      result: {
+        status: 'completed',
+        exitCode: 0,
+        stdout: JSON.stringify({ pendingCount: 2, thirdPartyScanFailure: 'winget exited 0xC0000142 (DLL initialization failed)' }),
+      },
+      want: 'winget exited 0xC0000142 (DLL initialization failed)',
+    },
+    {
+      name: 'caps an overlong reason',
+      status: 'completed',
+      result: { status: 'completed', exitCode: 0, stdout: JSON.stringify({ thirdPartyScanFailure: 'x'.repeat(500) }) },
+      want: 'x'.repeat(200),
+    },
+    {
+      name: 'absent field is null',
+      status: 'completed',
+      result: { status: 'completed', exitCode: 0, stdout: JSON.stringify({ pendingCount: 0 }) },
+      want: null,
+    },
+    {
+      name: 'non-string reason is null',
+      status: 'completed',
+      result: { status: 'completed', exitCode: 0, stdout: JSON.stringify({ thirdPartyScanFailure: { code: 1 } }) },
+      want: null,
+    },
+    {
+      name: 'blank reason is null',
+      status: 'completed',
+      result: { status: 'completed', exitCode: 0, stdout: JSON.stringify({ thirdPartyScanFailure: '   ' }) },
+      want: null,
+    },
+  ])('$name', async ({ status, result, want }) => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([
+        {
+          status,
+          createdAt: '2026-02-09T09:59:00.000Z',
+          completedAt: '2026-02-09T10:00:00.000Z',
+          result,
+        }
+      ]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.lastPatchScanThirdPartyFailure).toBe(want);
+  });
+
   it('excludes Linux installed package inventory from patch compliance', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select)

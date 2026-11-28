@@ -81,6 +81,8 @@ type PatchPayload = {
   lastPatchScanStatus?: string | null;
   lastPatchScanUserScopeScanned?: boolean | null;
   lastPatchScanUserScopeSkipReason?: string | null;
+  /** #12835: why the last scan's SYSTEM machine-scope third-party pass failed. */
+  lastPatchScanThirdPartyFailure?: string | null;
   approvalEvaluation?: DevicePatchApprovalEvaluation | null;
   pending?: PatchItem[];
   pendingPatches?: PatchItem[];
@@ -1113,7 +1115,16 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   // Only surface the "not scanned" note when the agent explicitly reported false —
   // null/undefined means the field isn't present (older agent, non-Windows device,
   // or no winget provider), which is not the same as "we tried and failed".
-  const userScopeNotScanned = payload?.lastPatchScanUserScopeScanned === false;
+  // #12835: when the machine-scope third-party pass itself failed, the per-user
+  // pass never ran for that reason, so the "no interactive user session" note
+  // would name the wrong cause. The scan-failure warning replaces it.
+  const thirdPartyScanFailure = payload?.lastPatchScanThirdPartyFailure?.trim() || null;
+  const userScopeNotScanned = payload?.lastPatchScanUserScopeScanned === false && !thirdPartyScanFailure;
+  const thirdPartyScanFailureNotice = thirdPartyScanFailure ? (
+    <p data-testid="device-patch-third-party-scan-failed" className="text-sm text-amber-700 dark:text-amber-400">
+      {t('devicePatchStatusTab.thirdPartyScanFailed', { reason: thirdPartyScanFailure })}
+    </p>
+  ) : null;
   // #7625: which update ring the per-patch approval states were evaluated against.
   const approvalEvaluation = payload?.approvalEvaluation ?? null;
   const approvalRingName = approvalEvaluation?.ring
@@ -1788,6 +1799,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
               </span>
             )}
           </div>
+          {thirdPartyScanFailureNotice && pendingOther.length > 0 && (
+            <div className="mt-3">{thirdPartyScanFailureNotice}</div>
+          )}
           <div className="mt-4 overflow-hidden rounded-md border">
             <div className="max-h-64 overflow-x-auto overflow-y-auto">
               <table className="min-w-full divide-y">
@@ -1804,7 +1818,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                   {pendingOther.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                        {t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingThirdPartyEmpty}`)}
+                        {thirdPartyScanFailureNotice
+                          ?? t(/* i18n-dynamic */ `devicePatchStatusTab.${displayCopy.pendingThirdPartyEmpty}`)}
                       </td>
                     </tr>
                   ) : (

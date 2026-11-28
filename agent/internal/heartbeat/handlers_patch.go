@@ -48,7 +48,7 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	pendingItems, installedItems, coveredSources, err := h.collectPatchInventory()
 	if err != nil && len(pendingItems) == 0 && len(installedItems) == 0 {
 		log.Error("patch scan failed", "source", source, "error", err.Error())
-		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		return h.patchScanErrorResult(err, time.Since(start).Milliseconds())
 	}
 	if err != nil {
 		// Partial success: at least one provider produced items but another
@@ -66,7 +66,7 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		if coveredSources != nil && !slices.Contains(coveredSources, source) {
 			err := fmt.Errorf("patch source %q could not be scanned (provider skipped or failed)", source)
 			log.Warn("patch scan did not cover requested source", "source", source)
-			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+			return h.patchScanErrorResult(err, time.Since(start).Milliseconds())
 		}
 		pendingItems = filterPatchInventoryItemsBySource(pendingItems, source)
 		installedItems = filterPatchInventoryItemsBySource(installedItems, source)
@@ -123,7 +123,25 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 			result["userScopeSkipReason"] = userScan.Reason
 		}
 	}
+	if reason := h.wingetMachineScanFailure(); reason != "" {
+		result["thirdPartyScanFailure"] = reason
+	}
 	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+}
+
+// patchScanErrorResult is the failed patch_scan result. When the SYSTEM winget
+// machine pass is what failed, it also carries {"thirdPartyScanFailure": ...}
+// in Stdout, the same place a completed scan's payload goes: the server stores
+// the envelope as-is and the device Patches tab reads the reason from there
+// (#12835). Error keeps the full message for the command history.
+func (h *Heartbeat) patchScanErrorResult(err error, durationMs int64) tools.CommandResult {
+	res := tools.NewErrorResult(err, durationMs)
+	if reason := h.wingetMachineScanFailure(); reason != "" {
+		if data, mErr := json.Marshal(map[string]any{"thirdPartyScanFailure": reason}); mErr == nil {
+			res.Stdout = string(data)
+		}
+	}
+	return res
 }
 
 func filterPatchInventoryItemsBySource(items []map[string]any, source string) []map[string]any {

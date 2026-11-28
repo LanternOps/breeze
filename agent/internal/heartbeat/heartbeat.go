@@ -4653,6 +4653,24 @@ func (h *Heartbeat) wingetUserScopeStatus() (patching.UserScanStatus, bool) {
 	return scanner.LastUserScan(), true
 }
 
+// wingetMachineScanFailure is the sanitized reason the last SYSTEM machine-scope
+// winget scan failed, or "" when it succeeded or no winget provider is
+// registered (#12835).
+func (h *Heartbeat) wingetMachineScanFailure() string {
+	if h.patchMgr == nil {
+		return ""
+	}
+	provider, ok := h.patchMgr.GetProvider("winget")
+	if !ok {
+		return ""
+	}
+	reporter, ok := provider.(patching.MachineScanReporter)
+	if !ok {
+		return ""
+	}
+	return reporter.LastMachineScanFailure()
+}
+
 func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []map[string]any {
 	items := make([]map[string]any, len(patches))
 	for i, p := range patches {
