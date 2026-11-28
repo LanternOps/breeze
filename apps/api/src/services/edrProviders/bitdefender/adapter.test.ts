@@ -113,6 +113,12 @@ describe('push (W03 PR-B)', () => {
 });
 
 describe('bitdefender adapter metadata', () => {
+  it('#12825: online, health, last seen and agent version are detail-owned (the list carries placeholders for them)', () => {
+    // Without this the inventory list upsert overwrites them with null / 'unknown' on every endpoint
+    // the run does not re-read, and the coverage freshness rule (endpointFreshness.ts) stops applying.
+    expect(adapter.capabilities.detailOwnedFields).toEqual(['lastSeenAt', 'online', 'health', 'agentVersion']);
+  });
+
   it('pins budgets and capabilities', () => {
     expect(adapter.capabilities.operationBudgets?.incidents).toEqual({ perMinute: 2 });
     expect(adapter.capabilities.detectionStatusModel).toBe('delta_with_updates');
@@ -450,14 +456,11 @@ describe('listDetections', () => {
       warn.mockRestore();
     });
 
-    it('incidents: the same degradation; quarantine still delivered', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('incidents: NOT a degradation. The main detection source failing is a failed sync, loudly, as before', async () => {
+      // -32601 was observed only on the quarantine call. On incidents it would mean Breeze cannot
+      // read detections at all, so the run fails and nothing (cursor, quarantine page) is persisted.
       const { ctx } = makeCtx({ ...routes(), 'incidents.getIncidentsList': notFound() });
-      const page = await adapter.listDetections(ctx, tenant(C1), null, NOW);
-      expect(page.detections.map((d) => d.vendorKind)).toEqual(['quarantine_item']);
-      expect(page.warnings).toEqual(['incidents: method not served by the vendor']);
-      expect(JSON.parse(page.cursor!)).toEqual({ v: 1, quarantineAfter: NOW.toISOString() });
-      warn.mockRestore();
+      await expect(adapter.listDetections(ctx, tenant(C1), null, NOW)).rejects.toMatchObject({ code: 'method_not_found' });
     });
 
     it('the quarantine list is called at v1.0, the version the vendor serves (v1.1 answers -32601 live)', async () => {

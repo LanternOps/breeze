@@ -545,7 +545,7 @@ export async function loadPostureEvidence(
   // Same device scoping as the Huntress/SentinelOne evidence above. The caller
   // decides the gate (a portal run honours the strict portal EDR flag).
   const edrDevices = opts.edrEvidenceAllowed && (await opts.edrEvidenceAllowed())
-    ? await loadEdrDeviceCoverage(orgId, deviceIds)
+    ? await loadEdrDeviceCoverage(orgId, deviceIds, asOf)
     : new Set<string>();
 
   // 7–16 org-wide

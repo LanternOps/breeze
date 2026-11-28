@@ -77,6 +77,33 @@ describe('DeviceEdrGenericSection', () => {
     expect(await screen.findByTestId('device-edr-last-seen-e1')).toHaveTextContent(/^Unknown$/);
   });
 
+  // #12825: for a provider whose list does not refresh health / online, they are as of the last
+  // details read. Past the freshness bound they are shown as not verified, never as healthy.
+  it('#12825: health and status past the freshness bound show as not verified, with the time they were read', async () => {
+    fetchEdrEndpoints.mockResolvedValue([
+      endpoint('stale', { stateStale: true, vendorDetailSyncedAt: '2026-09-20T10:00:00Z' }),
+      endpoint('fresh', { stateStale: false, vendorDetailSyncedAt: '2026-10-01T09:00:00Z' }),
+    ]);
+    fetchEdrDetections.mockResolvedValue(page([]));
+    render(<DeviceEdrGenericSection deviceId="dev-1" orgId="org-1" timezone="UTC" />);
+    const staleHealth = await screen.findByTestId('device-edr-health-stale');
+    expect(staleHealth).toHaveTextContent('Not recently verified');
+    expect(staleHealth).not.toHaveTextContent('Healthy');
+    expect(screen.getByTestId('device-edr-status-stale')).toHaveTextContent(/^Unknown$/);
+    expect(screen.getByTestId('device-edr-state-as-of-stale')).toHaveTextContent(/^as of .*2026/);
+    expect(screen.getByTestId('device-edr-health-fresh')).toHaveTextContent('Healthy');
+    expect(screen.getByTestId('device-edr-status-fresh')).toHaveTextContent(/^Online$/);
+    expect(screen.getByTestId('device-edr-state-as-of-fresh')).toHaveTextContent(/^as of .*2026/);
+  });
+
+  it('#12825: a row from an API without the freshness fields shows health as before, with no time', async () => {
+    fetchEdrEndpoints.mockResolvedValue([endpoint('e1')]);
+    fetchEdrDetections.mockResolvedValue(page([]));
+    render(<DeviceEdrGenericSection deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('device-edr-health-e1')).toHaveTextContent(/^Healthy$/);
+    expect(screen.queryByTestId('device-edr-state-as-of-e1')).toBeNull();
+  });
+
   it('warns when the same provider is linked through two connections', async () => {
     fetchEdrEndpoints.mockResolvedValue([endpoint('e1'), endpoint('e2', { connectionId: 'conn-2' })]);
     fetchEdrDetections.mockResolvedValue(page([]));

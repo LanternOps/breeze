@@ -108,7 +108,7 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
           and ha.device_id = ${devices.id}
           and ${agentOfActiveIntegration(sql`ha.integration_id`, activeIntegrations.huntress)}
       )`,
-      ...(edrVisible ? { hasEdrEndpoint: edrEndpointProtectedSql(orgId) } : {}),
+      ...(edrVisible ? { hasEdrEndpoint: edrEndpointProtectedSql(orgId, now) } : {}),
     })
     .from(devices)
     .leftJoin(
@@ -368,7 +368,7 @@ export async function securityDevicesPage(
     where ha.org_id = ${orgId} and ha.device_id = ${devices.id}
       and ${agentOfActiveIntegration(sql`ha.integration_id`, activeIntegrations.huntress)}
   )`;
-  const hasEdrEndpoint = edrEndpointProtectedSql(orgId);
+  const hasEdrEndpoint = edrEndpointProtectedSql(orgId, args.now);
   const protectedByAgent = edrVisible
     ? sql`${hasS1Agent} or ${hasHuntressAgent} or ${hasEdrEndpoint}`
     : sql`${hasS1Agent} or ${hasHuntressAgent}`;

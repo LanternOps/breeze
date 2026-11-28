@@ -34,6 +34,7 @@ import {
   securityOverview,
 } from '../../services/portal/securityReadModel';
 import { isEdrVisibilityEnabled } from '../../services/portal/edrVisibility';
+import { loadEdrDeviceCoverage } from '../../services/securityComplianceReportEdr';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -101,6 +102,8 @@ async function seedOrg(label: string, partnerId: string) {
       vendorEndpointId: `ep-${randomUUID().slice(0, 8)}`,
       hostname: 'WS-01',
       breezeDeviceId: deviceId,
+      // Details read an hour before NOW: inside the #12825 freshness bound unless a test overrides it.
+      vendorDetailSyncedAt: new Date(NOW.getTime() - 3_600_000),
       ...over,
     } as typeof edrEndpoints.$inferInsert);
 
@@ -263,5 +266,41 @@ describe('portal EDR visibility (real PostgreSQL)', () => {
     const [row] = await admin().select({ v: portalBranding.enableEdrVisibility })
       .from(portalBranding).where(eq(portalBranding.orgId, fx.a.org.id));
     expect(row?.v).toBe(false);
+  });
+  // #12825: health / online of a provider whose list does not refresh them are only as current as
+  // the last details read. A healthy + online value read longer ago than the bound is no evidence
+  // of protection, in the portal and in the posture report alike; a recent read is.
+  runDb('a healthy + online endpoint counts as protected only when its details were read within 24 h', async () => {
+    const HOUR = 3_600_000;
+    const fx = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const a = await seedOrg('fresh', partner.id);
+      const fresh = await a.makeDevice('fresh');
+      const stale = await a.makeDevice('stale');
+      const never = await a.makeDevice('never');
+      const staleEmsisoft = await a.makeDevice('stale-emsisoft');
+      const listOwned = await a.makeDevice('list-owned');
+      await a.endpoint(fresh, { health: 'healthy', online: true, vendorDetailSyncedAt: new Date(NOW.getTime() - 23 * HOUR) });
+      await a.endpoint(stale, { health: 'healthy', online: true, vendorDetailSyncedAt: new Date(NOW.getTime() - 48 * HOUR) });
+      await a.endpoint(never, { health: 'healthy', online: true, vendorDetailSyncedAt: null });
+      await a.endpoint(staleEmsisoft, { provider: 'emsisoft', health: 'healthy', online: true, vendorDetailSyncedAt: new Date(NOW.getTime() - 48 * HOUR) });
+      // A provider whose list supplies health every run (none is registered today): unchanged, no read needed.
+      await a.endpoint(listOwned, { provider: 'list_owned_provider', health: 'healthy', online: true, vendorDetailSyncedAt: null });
+      return { a, fresh, stale, never, staleEmsisoft, listOwned };
+    });
+    await setFlag(fx.a.org.id, true);
+    const ids = [fx.fresh, fx.stale, fx.never, fx.staleEmsisoft, fx.listOwned];
+
+    const tile = await withDbAccessContext(fx.a.context, () => devicesProtectedTile(fx.a.org.id, NOW));
+    expect(tile).toMatchObject({ status: 'ok', protected: 2, unprotected: 0, unknown: 3, total: 5 });
+
+    const page = await withDbAccessContext(fx.a.context, () =>
+      securityDevicesPage(fx.a.org.id, { page: 1, limit: 50, timezone: 'UTC', now: NOW }));
+    const byId = new Map(page.data.map((row) => [row.id, row.protection]));
+    expect(ids.map((id) => byId.get(id))).toEqual(['protected', 'unknown', 'unknown', 'unknown', 'protected']);
+
+    // The posture report's coverage set, same rule.
+    const covered = await withDbAccessContext(fx.a.context, () => loadEdrDeviceCoverage(fx.a.org.id, ids, NOW));
+    expect([...covered].sort()).toEqual([fx.fresh, fx.listOwned].sort());
   });
 });

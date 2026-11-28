@@ -56,12 +56,13 @@ const isDegradation = (e: unknown): e is EdrProviderRequestError =>
   isReq(e) && (e.code === 'api_not_enabled' || e.code === 'licence');
 
 /**
- * An optional detection source (incidents, quarantine) this key cannot use: the API is not enabled,
- * not licensed, or the vendor does not serve the method (-32601, e.g. a method version it dropped,
- * #12825). That source is skipped for the run with a sync warning and its cursor is not advanced;
- * the other source and the run still succeed.
+ * The quarantine source this key cannot use: the API is not enabled, not licensed, or the vendor
+ * does not serve the method (-32601, seen live on quarantine v1.1, #12825). Quarantine is skipped
+ * for the run with a sync warning and its cursor is not advanced; incidents and the run still
+ * succeed. Incidents, the main detection source, degrade only on `isDegradation`: a -32601 there
+ * means Breeze cannot read detections at all, so that sync fails loudly.
  */
-const isSourceDegradation = (e: unknown): e is EdrProviderRequestError =>
+const isQuarantineDegradation = (e: unknown): e is EdrProviderRequestError =>
   isDegradation(e) || (isReq(e) && e.code === 'method_not_found');
 
 function sourceDegradedWarning(stream: 'incidents' | 'quarantine', e: EdrProviderRequestError): string {
@@ -70,17 +71,15 @@ function sourceDegradedWarning(stream: 'incidents' | 'quarantine', e: EdrProvide
 }
 
 /**
- * Logs an unserved method once per memoized fetch (the rejection is shared by every tenant of the
- * run), code only, then rethrows. Without the API itself switched off, this is a Breeze/vendor
- * version mismatch.
+ * Logs an unserved quarantine method once per memoized fetch (the rejection is shared by every
+ * tenant of the run), code only, then rethrows. Without the API itself switched off, this is a
+ * Breeze/vendor version mismatch.
  */
-function logMethodNotFound(stream: 'incidents' | 'quarantine'): (e: unknown) => never {
-  return (e) => {
-    if (isReq(e) && e.code === 'method_not_found') {
-      console.warn(`[edr:bitdefender] ${stream}: vendor method not found (${e.code}); source skipped this run`);
-    }
-    throw e;
-  };
+function logQuarantineMethodNotFound(e: unknown): never {
+  if (isReq(e) && e.code === 'method_not_found') {
+    console.warn(`[edr:bitdefender] quarantine: vendor method not found (${e.code}); source skipped this run`);
+  }
+  throw e;
 }
 
 /** The `capabilities_snapshot` entry for `testConnection`'s capability note (`note:` prefix added by capabilitySnapshot). */
@@ -656,7 +655,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     try {
       const all = await memo<GzIncident[]>(
         ctx, `gz:incidents:${incFrom.toISOString()}:${toIso}`, async () => {
-          const fetched = await client.getIncidentsChangedBetween(incFrom, to).catch(logMethodNotFound('incidents'));
+          const fetched = await client.getIncidentsChangedBetween(incFrom, to);
           const orphaned = fetched.filter((i) => !i.company?.id).length;
           // Once per memoized fetch (not per tenant). Code-only: no incident content.
           if (orphaned > 0) console.warn(`[edr:bitdefender] ${orphaned} incident(s) carried no company id and were not attributed`);
@@ -668,7 +667,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
       next.incidentsChangedAfter = toIso;
     } catch (e) {
-      if (!isSourceDegradation(e)) throw e;
+      // Not method_not_found: incidents are the main detection source (see isQuarantineDegradation).
+      if (!isDegradation(e)) throw e;
       warnings.push(sourceDegradedWarning('incidents', e));
     }
 
@@ -676,7 +676,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     try {
       const all = await memo<GzQuarantineItem[]>(
         ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, async () => {
-          const fetched = await client.getQuarantineBetween(qFrom, to).catch(logMethodNotFound('quarantine'));
+          const fetched = await client.getQuarantineBetween(qFrom, to).catch(logQuarantineMethodNotFound);
           // Once per memoized fetch (not per tenant). Codes only, never item content (#12825).
           const odd = fetched.filter((q) => !isDocumentedQuarantineStatus(q.actionStatus));
           if (odd.length > 0) {
@@ -691,7 +691,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
       next.quarantineAfter = toIso;
     } catch (e) {
-      if (!isSourceDegradation(e)) throw e;
+      if (!isQuarantineDegradation(e)) throw e;
       warnings.push(sourceDegradedWarning('quarantine', e));
     }
 

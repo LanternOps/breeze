@@ -340,6 +340,36 @@ describe('persistDetections', () => {
     expect((resyncInsert.values as Array<Record<string, unknown>>)[0]).not.toHaveProperty('notifiedSeverity');
   });
 
+  // #12825: the first-sync stamp must not consume the alert of a row Breeze cannot date or call
+  // active. Such a row is held ('unknown' = nothing reportable published), so it alerts once the
+  // vendor later calls it open; every other row is stamped at its own severity, as before.
+  it('#12825: first sync holds a no-time, unknown-status, reportable row at \'unknown\'; every other row is stamped at its severity', async () => {
+    const firstSync = makeTx({
+      selects: [[{ id: T1, vendorTenantId: 'co1', orgId: ORG, lastDetectionSyncAt: null }], []],
+      returning: [[{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }, { id: 'd4' }, { id: 'd5' }, { id: 'd6' }]],
+    });
+    await persistDetections(firstSync.tx, CONN, [
+      { vendorTenantId: 'co1', ok: true, value: page([
+        detection('held', { detectedAt: null, status: 'unknown', severity: 'high' }),
+        detection('held-undef', { detectedAt: undefined, status: 'unknown', severity: 'critical' }),
+        detection('no-time-open', { detectedAt: null, status: 'open', severity: 'high' }),
+        detection('no-time-low', { detectedAt: null, status: 'unknown', severity: 'low' }),
+        detection('timed-unknown', { status: 'unknown', severity: 'high' }),
+        detection('timed-open', { severity: 'medium' }),
+      ]) },
+    ], NOW);
+    // A row whose time was not read (undefined) is written in its own insert (#12821), so collect them all.
+    const inserted = firstSync.ops.filter((o) => o.kind === 'insert').flatMap((o) => o.values as Array<Record<string, unknown>>);
+    expect(inserted.map((v) => [v.vendorDetectionId, v.notifiedSeverity]).sort()).toEqual([
+      ['held', 'unknown'],
+      ['held-undef', 'unknown'],
+      ['no-time-low', 'low'],
+      ['no-time-open', 'high'],
+      ['timed-open', 'medium'],
+      ['timed-unknown', 'high'],
+    ]);
+  });
+
   // #12821: an adapter that could not read a time this run leaves it undefined. The stored value
   // stays on conflict; a new row starts with none. null still clears (it is "fetched as empty").
   it('an undefined detection time is left out of ON CONFLICT (stored value kept) and inserts as null; null still overwrites', async () => {

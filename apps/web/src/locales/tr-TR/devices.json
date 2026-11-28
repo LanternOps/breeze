@@ -4486,6 +4486,8 @@
       "lastSeen": "Son görülme"
     },
     "lastSeenUnknown": "Bilinmiyor",
+    "healthStale": "Yakın zamanda doğrulanmadı",
+    "stateAsOf": "okunma: {{time}}",
     "health": {
       "healthy": "Sağlıklı",
       "degraded": "Düşük performanslı",

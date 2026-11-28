@@ -4,6 +4,8 @@ import type { ProviderSyncTx } from '../backupProviders/persist';
 import { validateVendorUrl } from './guardedFetch';
 import { getEdrProvider } from './registry';
 import { pgErrorCode } from '../../utils/pgErrors';
+import type { EdrSeverity } from '@breeze/shared';
+import { isHeldAsUnknown } from './detectionHold';
 import type {
   EdrDetailOwnedField,
   EdrDetectionPage,
@@ -493,11 +495,16 @@ export async function persistDetections(
     // last_detection_sync_at, not the cursor (an adapter may never return one).
     // The ON CONFLICT set list omits notified_severity, so an existing row's
     // notification state is never touched by a re-sync.
+    // #12825: except a row it can neither date nor call active (isHeldAsUnknown): that one is held
+    // at 'unknown' so the history it belongs to raises nothing, yet it still alerts once the vendor
+    // calls it open. Every other row is stamped at its own severity, as before.
     const firstSync = tenant.lastDetectionSyncAt === null;
+    const firstSyncStamp = (d: VendorEdrDetection): EdrSeverity =>
+      isHeldAsUnknown({ ...d, notifiedSeverity: null }) ? 'unknown' : d.severity;
     const toRow = (d: VendorEdrDetection) => {
       const endpoint = d.vendorEndpointId ? endpointByVendorId.get(d.vendorEndpointId) : undefined;
       return {
-        ...(firstSync ? { notifiedSeverity: d.severity } : {}),
+        ...(firstSync ? { notifiedSeverity: firstSyncStamp(d) } : {}),
         connectionId: conn.id,
         partnerId: conn.partnerId,
         orgId,

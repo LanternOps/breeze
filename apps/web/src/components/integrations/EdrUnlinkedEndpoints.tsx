@@ -160,7 +160,19 @@ export default function EdrUnlinkedEndpoints({
                       {/* Null means the provider gave no usable time, not "never seen" (#12821). */}
                       {row.lastSeenAt ? formatRelativeTime(row.lastSeenAt) : t("edrProviders.lastSeenUnknown")}
                     </td>
-                    <td className="py-3 pr-4 text-muted-foreground">{t(/* i18n-dynamic */ `edrProviders.healthValue.${row.health}`)}</td>
+                    {/* #12825: as of the last details read; past the freshness bound, not verified. */}
+                    <td className="py-3 pr-4 text-muted-foreground">
+                      <div data-testid={`edr-endpoint-health-${row.id}`}>
+                        {row.stateStale
+                          ? t("edrProviders.healthStale")
+                          : t(/* i18n-dynamic */ `edrProviders.healthValue.${row.health}`)}
+                      </div>
+                      {row.vendorDetailSyncedAt && (
+                        <div data-testid={`edr-endpoint-state-as-of-${row.id}`} className="text-xs">
+                          {t("edrProviders.stateAsOf", { time: formatRelativeTime(row.vendorDetailSyncedAt) })}
+                        </div>
+                      )}
+                    </td>
                     {canManage && (
                       <td className="py-3">
                         <div className="flex items-center gap-2">

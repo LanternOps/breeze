@@ -154,14 +154,27 @@ export default function DeviceEdrGenericSection({ deviceId, orgId, timezone }: P
                 {e.tenantName && <span className="text-xs text-muted-foreground">{e.tenantName}</span>}
               </div>
               <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+                {/* #12825: health / online are as of the last details read; past the server's
+                    freshness bound they are not verified, never shown as healthy or online. */}
                 <div className="flex gap-2">
                   <dt className="text-muted-foreground">{t("deviceEdrGenericSection.fields.health")}</dt>
-                  <dd>{t(/* i18n-dynamic */ `deviceEdrGenericSection.health.${e.health}`)}</dd>
+                  <dd>
+                    <span data-testid={`device-edr-health-${e.id}`}>
+                      {e.stateStale
+                        ? t("deviceEdrGenericSection.healthStale")
+                        : t(/* i18n-dynamic */ `deviceEdrGenericSection.health.${e.health}`)}
+                    </span>
+                    {e.vendorDetailSyncedAt && !Number.isNaN(new Date(e.vendorDetailSyncedAt).getTime()) && (
+                      <span data-testid={`device-edr-state-as-of-${e.id}`} className="ml-2 text-xs text-muted-foreground">
+                        {t("deviceEdrGenericSection.stateAsOf", { time: fmt(e.vendorDetailSyncedAt, timezone) })}
+                      </span>
+                    )}
+                  </dd>
                 </div>
                 <div className="flex gap-2">
                   <dt className="text-muted-foreground">{t("deviceEdrGenericSection.fields.status")}</dt>
-                  <dd>
-                    {e.online === null
+                  <dd data-testid={`device-edr-status-${e.id}`}>
+                    {e.online === null || e.stateStale
                       ? t("deviceEdrGenericSection.online.unknown")
                       : e.online
                         ? t("deviceEdrGenericSection.online.online")

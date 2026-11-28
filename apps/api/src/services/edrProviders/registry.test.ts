@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isEdrStateConfirmedAction } from '@breeze/shared';
 import { EDR_PROVIDER_KEYS, getEdrProvider, isEdrProviderKey, listEdrProviders } from './registry';
-import { EDR_INSTALLER_PROVIDER_KEYS, EDR_PROVIDER_LABELS } from './providerKeys';
+import { EDR_DETAIL_OWNED_STATE_PROVIDER_KEYS, EDR_INSTALLER_PROVIDER_KEYS, EDR_PROVIDER_LABELS } from './providerKeys';
 
 describe('edr provider registry', () => {
   it('throws on an unknown key, including inherited object keys', () => {
@@ -32,6 +32,14 @@ describe('edr provider registry', () => {
   it('EDR_INSTALLER_PROVIDER_KEYS is exactly the adapters that can supply an installer', () => {
     expect([...EDR_INSTALLER_PROVIDER_KEYS]).toEqual(
       listEdrProviders().filter((a) => a.capabilities.installer !== 'none').map((a) => a.key),
+    );
+  });
+
+  it('EDR_DETAIL_OWNED_STATE_PROVIDER_KEYS is exactly the adapters whose health or online is detail-owned (#12825)', () => {
+    expect([...EDR_DETAIL_OWNED_STATE_PROVIDER_KEYS]).toEqual(
+      listEdrProviders()
+        .filter((a) => (a.capabilities.detailOwnedFields ?? []).some((f) => f === 'health' || f === 'online'))
+        .map((a) => a.key),
     );
   });
 
