@@ -16,3 +16,10 @@ describe('pre-assignment OpenAPI registration', () => {
     expect(op!.tags).toEqual(['Devices']);
   });
 });
+
+describe('parked heartbeat signal (#8318 D-1a)', () => {
+  it('documents `parked` on the heartbeat response', () => {
+    const schemas = (openApiSpec.components as unknown as { schemas: Record<string, { properties: Record<string, { type: string }> }> }).schemas;
+    expect(schemas.HeartbeatResponse?.properties.parked?.type).toBe('boolean');
+  });
+});

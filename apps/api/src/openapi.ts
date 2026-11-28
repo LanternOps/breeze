@@ -953,7 +953,15 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
             }
           },
           configUpdate: { type: 'object', nullable: true },
-          upgradeTo: { type: 'string', nullable: true }
+          upgradeTo: { type: 'string', nullable: true },
+          parked: {
+            type: 'boolean',
+            enum: [true],
+            description:
+              'Present (true) only on the minimal beat of a device parked in its partner\'s holding area awaiting assignment; '
+              + 'every agent route outside the parked allow-list answers 403 device_pending_assignment meanwhile. '
+              + 'The full heartbeat never carries it, so a successful beat without it means the device is assigned.'
+          }
         }
       },
 

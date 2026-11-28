@@ -223,6 +223,11 @@ func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string
 		if friendly, ok := classifyIdentityConflict(httpErr); ok {
 			return catIdentityConflict, friendly
 		}
+		// #8318 D-1: a deploy (image) key refusal names its own fix; the
+		// generic 401/403 text below is right for org keys only.
+		if cat, friendly, ok := classifyDeployKeyRefusal(httpErr); ok {
+			return cat, friendly
+		}
 		switch {
 		case httpErr.StatusCode == 401 || httpErr.StatusCode == 403:
 			return catAuth, "enrollment key not recognized — verify the key is active in Settings → Enrollment on the server"

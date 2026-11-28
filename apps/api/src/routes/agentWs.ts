@@ -55,6 +55,7 @@ import { applyCommandProgress } from '../services/commandProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
+import { PARKED_DEVICE_REFUSAL, PARKED_REFUSAL_HEADER } from '../middleware/agentAuthParked';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import {
   enforceAgentCertificateBinding,
@@ -1085,7 +1086,7 @@ type AgentDbContext = {
 
 type AgentTokenValidation =
   | { ok: true; ctx: AgentDbContext }
-  | { ok: false; reason: 'unauthorized' | 're_enrollment_required' };
+  | { ok: false; reason: 'unauthorized' | 're_enrollment_required' | 'pending_assignment' };
 
 // Finding #8: WS command-result ingest has no Hono request context. The
 // header-less shim returns undefined for all client-IP/user-agent headers, so
@@ -1422,9 +1423,17 @@ export async function validateAgentToken(
   // a draining tenant is refused above), so the upgrade is refused here — one
   // closed door instead of gating every push primitive on an open socket. The
   // agent keeps its REST heartbeat, which carries everything it may receive.
+  //
+  // #8318 D-1a: refused with its own reason, rendered as the REST parked
+  // refusal (403 device_pending_assignment), so the agent can tell "waiting
+  // for assignment" from a credential failure and wait for assignment
+  // instead of redialing every minute. It reveals nothing new: every gate
+  // before this one (token, status, tenant) has passed, so the caller holds
+  // this device's valid credential, and the REST middleware already answers
+  // it with the same body. Not cached: an assignment admits the next dial.
   if (isUnassignedPoolOrgType(device.organizationType)) {
     console.warn('[agentWs] agent_ws_refused_pending_assignment', { agentId, deviceId: device.id });
-    return { ok: false, reason: 'unauthorized' };
+    return { ok: false, reason: 'pending_assignment' };
   }
 
   // Security remediation Wave 5, Task 6 — shared certificate/device binding
@@ -5495,6 +5504,17 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
       if (!result.ok) {
         if (result.reason === 're_enrollment_required') {
           return c.json({ error: 'Re-enrollment required', code: ERROR_CODES.RE_ENROLLMENT_REQUIRED }, 401);
+        }
+        // #8318 D-1a: 403, not 401. The Go agent's WS client treats every
+        // non-101 answer alike (a refused dial, backed off; no auth monitor
+        // reads it), so the status changes nothing for an older agent, while
+        // the refusal lets a current one suspend its redials until assignment.
+        // On a real upgrade @hono/node-ws drops the body and keeps only the
+        // allow-listed headers, so the header is what reaches the agent; the
+        // body is for clients that see the response itself.
+        if (result.reason === 'pending_assignment') {
+          c.header(PARKED_REFUSAL_HEADER, PARKED_DEVICE_REFUSAL.error);
+          return c.json(PARKED_DEVICE_REFUSAL, 403);
         }
         return c.json({ error: 'Unauthorized' }, 401);
       }

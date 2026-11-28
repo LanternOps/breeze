@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/parked"
 )
 
 // Reconnect pacing (#8841). The loop used to back off only when a dial failed;
@@ -130,7 +131,11 @@ func classifyDisconnect(err error, local bool) (disconnectKind, int) {
 type upgradeRefusedError struct {
 	StatusCode int
 	RetryAfter time.Duration
-	err        error
+	// PendingAssignment: the server refused the upgrade because the device
+	// is parked in its partner's holding area (403
+	// {"error":"device_pending_assignment"}, #8318 D-1a).
+	PendingAssignment bool
+	err               error
 }
 
 func (e *upgradeRefusedError) Error() string {
@@ -147,6 +152,7 @@ func (e *upgradeRefusedError) Unwrap() error { return e.err }
 // buffered by gorilla and needs no closing.
 func newUpgradeRefusedError(resp *http.Response, err error, now time.Time) *upgradeRefusedError {
 	e := &upgradeRefusedError{StatusCode: resp.StatusCode, err: err}
+	e.PendingAssignment = parked.IsRefusal(resp)
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		e.RetryAfter = httputil.ParseRetryAfter(resp.Header, now)
 	}

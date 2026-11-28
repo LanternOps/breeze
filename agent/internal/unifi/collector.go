@@ -13,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/parked"
 )
 
 type CollectorConfig struct {
@@ -61,6 +62,11 @@ type CollectorDeps struct {
 	// server says this device has collectors. Nil is valid: the loop then
 	// relies on the idle re-check alone.
 	Wake *Waker
+	// Parked is the holding-area state (#8318 D-1a). While it reads parked
+	// the loop neither fetches nor uploads (the server refuses both for a
+	// parked device); it waits for the state to change and fetches at once
+	// when the device is assigned. Nil keeps the old behaviour.
+	Parked *parked.State
 
 	// schedule overrides the fetch cadence; nil means defaultFetchSchedule.
 	schedule *fetchSchedule
@@ -454,9 +460,18 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 		idle := false
 		var lastFetch time.Time
 		for {
+			// Taken before the Parked() check below so a change in between
+			// is not missed. Nil (never fires) without a parked state.
+			parkedChanged := deps.Parked.Changed()
 			select {
 			case <-ctx.Done():
 				return
+			case <-parkedChanged:
+				// Only leaving matters: fetch now instead of at the timer.
+				if deps.Parked.Parked() {
+					continue
+				}
+				timer.Stop()
 			case <-deps.Wake.C():
 				// Only an idle loop gains anything; an active one fetches
 				// within ActiveFetchInterval anyway.
@@ -468,6 +483,11 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 				}
 				timer.Stop()
 			case <-timer.C:
+			}
+			if deps.Parked.Parked() {
+				// Suspended: no request until the state changes. The timer
+				// is spent (or stopped) and is re-armed after the next fetch.
+				continue
 			}
 			configs, err := fetchConfigs(ctx, deps)
 			lastFetch = time.Now()

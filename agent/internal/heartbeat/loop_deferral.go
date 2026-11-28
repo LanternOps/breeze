@@ -116,7 +116,14 @@ func (h *Heartbeat) agentRouteURL(route string) string {
 }
 
 // loopReady reports whether a periodic sender may call method+url now.
+//
+// #8318 D-1a: while the device is parked, a route the server refuses for a
+// parked device is never ready (parked_mode.go). Silent: entering the parked
+// state logged once.
 func (h *Heartbeat) loopReady(method, rawURL string) bool {
+	if h.parkedRefuses(rawURL) {
+		return false
+	}
 	key := loopKey(method, rawURL)
 	ok, until := h.loopDefer.Ready(key)
 	if !ok {

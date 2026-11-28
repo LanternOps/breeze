@@ -20,6 +20,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/parked"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/systemrestore"
 	"github.com/breeze-rmm/agent/internal/wire"
@@ -68,6 +69,13 @@ type Config struct {
 	// dial. nil means defaultStartDialWindow (10 s); a value is clamped to
 	// [0, 10 s]. Tests that start a client set it to 0.
 	StartDialWindow *time.Duration
+	// Parked is the process's holding-area state (#8318 D-1a). While it
+	// reads parked the loop does not dial: it waits for the state to change
+	// (and redials at once when the device is assigned), probing once every
+	// parkedProbeInterval. A refused upgrade that names
+	// device_pending_assignment is reported into it. Nil keeps the old
+	// behaviour.
+	Parked *parked.State
 }
 
 // Command represents a command received via WebSocket
@@ -644,12 +652,21 @@ func (c *Client) reconnectLoop() {
 		if c.stopped() {
 			return
 		}
+		if !c.waitWhileParked() {
+			return
+		}
 
 		var sleep time.Duration
 		c.drain = drainHint{} // a hint belongs to one socket
 		if err := c.connect(); err != nil {
 			if c.stopped() {
 				return // a dial cancelled or discarded by Stop is not a failure
+			}
+			if c.notePendingAssignment(err) {
+				// Expected while parked: the loop top waits for assignment.
+				// Entering the state logged once; no per-attempt warning.
+				log.Debug("upgrade refused: device awaiting assignment")
+				continue
 			}
 			sleep = backoff.afterDialFailure(err)
 			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)

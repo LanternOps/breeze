@@ -47,6 +47,7 @@ agent/internal/ipc/
 agent/internal/logging/
 agent/internal/mtls/
 agent/internal/netcache/
+agent/internal/parked/
 agent/internal/powerrequest/
 agent/internal/procspawn/
 agent/internal/psscript/

@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/parked"
 )
 
 const moduleAbsentBackoff = 6 * time.Hour
@@ -95,6 +96,12 @@ type Deps struct {
 	// is server-driven (no local opt-in), so activation must at least leave a
 	// prominent local log + tamper-evident audit trace (#2425).
 	Audit AuditLogger
+
+	// Parked is the holding-area state (#8318 D-1a): while it reads parked
+	// the loop fetches nothing (the server refuses the device's workspace
+	// routes) and picks up on the first tick after assignment. Nil keeps the
+	// old behaviour.
+	Parked *parked.State
 
 	TickInterval  time.Duration
 	WatchDebounce time.Duration
@@ -358,6 +365,9 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		}
 
 		fetch := func() {
+			if deps.Parked.Parked() {
+				return
+			}
 			now := deps.Now()
 			if !nextFetch.IsZero() && now.Before(nextFetch) {
 				return

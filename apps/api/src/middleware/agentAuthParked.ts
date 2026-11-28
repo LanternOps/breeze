@@ -61,6 +61,14 @@ export const PARKED_ALLOWED_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [string,
 /** The deny body every refused route returns for a parked device. */
 export const PARKED_DEVICE_REFUSAL = { error: 'device_pending_assignment' } as const;
 
+/**
+ * Header naming the same refusal, for the one answer that cannot carry a body:
+ * a refused WebSocket upgrade, which @hono/node-ws writes as a bare status line
+ * (`Content-Length: 0`). patches/@hono__node-ws@1.3.2.patch forwards this
+ * header only with exactly this value (#8318 wave D-1a).
+ */
+export const PARKED_REFUSAL_HEADER = 'X-Breeze-Refusal';
+
 export function isParkedAllowedAgentPath(pathSegments: string[], agentId: string): boolean {
   // /api/v1/agents/<agentId>/<action>
   if (

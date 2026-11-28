@@ -1083,14 +1083,15 @@ describe('validateAgentToken — tenant-status gate', () => {
   // Pre-assignment — a device parked in its partner's
   // holding org gets credential rotation and nothing else, and a WS socket is a
   // fully-capable control channel. The upgrade is refused at authentication,
-  // with the same opaque refusal as a draining tenant.
+  // with its own reason (#8318 D-1a) so the route can answer the REST parked
+  // refusal instead of an opaque 401.
   it('refuses the upgrade for a device parked in a holding org', async () => {
     queueDeviceSelect({ ...deviceRow, organizationType: 'unassigned_pool' });
     const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const result = await validateAgentToken('agent-1', TOKEN);
 
-    expect(result).toEqual({ ok: false, reason: 'unauthorized' });
+    expect(result).toEqual({ ok: false, reason: 'pending_assignment' });
     expect(logSpy.mock.calls.some((call) => String(call[0]).includes('agent_ws_refused_pending_assignment'))).toBe(true);
     logSpy.mockRestore();
   });
@@ -1115,9 +1116,27 @@ describe('validateAgentToken — tenant-status gate', () => {
 
     const res = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
 
-    expect(res.status).toBe(401);
+    // #8318 D-1a: the REST parked refusal, so the agent waits for assignment
+    // instead of redialing. An older agent treats any non-101 alike.
+    expect(res.status).toBe(403);
+    // The header is what survives a real upgrade (node-ws drops the body).
+    expect(res.headers.get('x-breeze-refusal')).toBe('device_pending_assignment');
+    expect(await res.json()).toEqual({ error: 'device_pending_assignment' });
     expect(upgradeHandler).not.toHaveBeenCalled();
     logSpy.mockRestore();
+  });
+
+  it('keeps the opaque 401 for a credential refusal (positive control for the parked 403)', async () => {
+    queueDeviceSelect({ ...deviceRow, status: 'quarantined' });
+    const upgradeHandler = vi.fn(async () => new Response('ws', { status: 101 }));
+    const app = createAgentWsRoutes((() => upgradeHandler) as any);
+
+    const res = await app.request('/agent-1/ws', { headers: { Authorization: `Bearer ${TOKEN}` } });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get('x-breeze-refusal')).toBeNull();
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(upgradeHandler).not.toHaveBeenCalled();
   });
 
   function queueRecheckSelect(orgType: string) {
@@ -1583,14 +1602,14 @@ describe('validateAgentToken — negative cache for terminal rejections (#8050)'
     expect((await validateAgentToken('agent-1', TOKEN)).ok).toBe(true);
   });
 
-  const nonTerminalCases: Array<{ name: string; row: unknown; certRows?: unknown[]; setup?: () => void }> = [
+  const nonTerminalCases: Array<{ name: string; row: unknown; certRows?: unknown[]; setup?: () => void; reason?: string }> = [
     { name: 'quarantined', row: { ...deviceRow, status: 'quarantined' } },
     {
       name: 'draining (offboarding) tenant',
       row: deviceRow,
       setup: () => vi.mocked(getAgentTenantState).mockResolvedValue('draining'),
     },
-    { name: 'parked (holding org)', row: { ...deviceRow, organizationType: 'unassigned_pool' } },
+    { name: 'parked (holding org)', row: { ...deviceRow, organizationType: 'unassigned_pool' }, reason: 'pending_assignment' },
     {
       // enforce mode, an active certificate on file, and no assertion
       // presented: the binding check fails closed.
@@ -1609,9 +1628,10 @@ describe('validateAgentToken — negative cache for terminal rejections (#8050)'
       tc.setup?.();
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+      const reason = tc.reason ?? 'unauthorized';
+      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason });
       const firstSelects = vi.mocked(db.select).mock.calls.length;
-      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason: 'unauthorized' });
+      expect(await validateAgentToken('agent-1', TOKEN)).toEqual({ ok: false, reason });
       expect(vi.mocked(db.select).mock.calls.length).toBe(firstSelects * 2);
       warnSpy.mockRestore();
     });
