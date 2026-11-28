@@ -185,9 +185,9 @@ func TestARecordInADirectoryOthersCanWriteIsRefused(t *testing.T) {
 	}
 }
 
-// Group write on the directory is part of the agent's own installer layout
-// (config.reclaimUnixDir), so it does not by itself block a restore.
-func TestARecordInAGroupWritableDirectoryIsRestored(t *testing.T) {
+// The data dir is 0700. A group member who could write it could swap or
+// delete the record, so group write refuses the restore too.
+func TestARecordInAGroupWritableDirectoryIsRefused(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix permission bits")
 	}
@@ -203,7 +203,31 @@ func TestARecordInAGroupWritableDirectoryIsRestored(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	b := g.manager()
-	if !b.rm.RestorePendingReboot() {
-		t.Fatal("a group-writable agent directory blocked the restore")
+	if b.rm.RestorePendingReboot() {
+		t.Fatal("restored a record from a directory a group member could write")
+	}
+}
+
+// The trust check and the read are one descriptor: a record that becomes a
+// link is refused at open, never followed.
+func TestTheTrustedReadNeverFollowsALink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix links")
+	}
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.json")
+	if err := os.WriteFile(real, []byte(`{"used":0}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, deferralLedgerFile)
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readTrustedRecordFile(link)
+	if _, untrusted := errors.AsType[*untrustedRecordError](err); !untrusted {
+		t.Fatalf("readTrustedRecordFile through a link = %v, want an untrusted-record refusal", err)
+	}
+	if data, err := readTrustedRecordFile(real); err != nil || string(data) != `{"used":0}` {
+		t.Fatalf("the real record = %q, %v", data, err)
 	}
 }

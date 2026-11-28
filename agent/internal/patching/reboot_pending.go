@@ -256,15 +256,15 @@ func (r *RebootManager) RestorePendingReboot() bool {
 	if path == "" {
 		return false
 	}
-	// Trust before content: a file that fails it is neither read nor
+	// Trust before content, on the same file: the checks and the read go
+	// through one descriptor opened without following links, so the file
+	// cannot be swapped between them. A file that fails is neither read nor
 	// rewritten, only reported.
-	if err := r.trustStateFile(path); errors.Is(err, os.ErrNotExist) {
-		return false
-	} else if err != nil {
+	ledger, err := r.readTrustedLedger(path)
+	if _, untrusted := errors.AsType[*untrustedRecordError](err); untrusted {
 		log.Warn("pending restart record is not trusted; not restoring it", "path", path, "error", err.Error())
 		return false
 	}
-	ledger, err := readDeferralLedger(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false
 	}
@@ -394,12 +394,38 @@ func (rec *PendingRebootRecord) restoreOptions(ledger DeferralLedger, now time.T
 	return RebootOptions{Deferral: policy, Prompt: text, DeadlineAction: action}, nil
 }
 
-// trustStateFile resolves the trust check through the test seam.
-func (r *RebootManager) trustStateFile(path string) error {
+// untrustedRecordError is a record refused by the trust check, as opposed to
+// one that could not be read or does not parse.
+type untrustedRecordError struct{ err error }
+
+func (e *untrustedRecordError) Error() string { return e.err.Error() }
+func (e *untrustedRecordError) Unwrap() error { return e.err }
+
+// readTrustedLedger reads the record only if the trust check passes, through
+// the test seam when one is installed. The real check
+// (readTrustedRecordFile, per platform) checks and reads one descriptor.
+func (r *RebootManager) readTrustedLedger(path string) (DeferralLedger, error) {
+	var data []byte
 	if r.stateFileTrusted != nil {
-		return r.stateFileTrusted(path)
+		if err := r.stateFileTrusted(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return DeferralLedger{}, err
+			}
+			return DeferralLedger{}, &untrustedRecordError{err}
+		}
+		d, err := os.ReadFile(path)
+		if err != nil {
+			return DeferralLedger{}, err
+		}
+		data = d
+	} else {
+		d, err := readTrustedRecordFile(path)
+		if err != nil {
+			return DeferralLedger{}, err
+		}
+		data = d
 	}
-	return trustPendingRecordFile(path)
+	return parseDeferralLedger(data, path)
 }
 
 func readDeferralLedger(path string) (DeferralLedger, error) {
@@ -407,6 +433,10 @@ func readDeferralLedger(path string) (DeferralLedger, error) {
 	if err != nil {
 		return DeferralLedger{}, err
 	}
+	return parseDeferralLedger(data, path)
+}
+
+func parseDeferralLedger(data []byte, path string) (DeferralLedger, error) {
 	var ledger DeferralLedger
 	if err := json.Unmarshal(data, &ledger); err != nil {
 		return DeferralLedger{}, fmt.Errorf("%w: %s: %v", errLedgerCorrupt, path, err)

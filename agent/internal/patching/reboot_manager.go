@@ -215,7 +215,7 @@ type RebootManager struct {
 	deferralLedger func() string
 	// bootID identifies the running boot, for the pending-restart record
 	// (#12827). Nil: nothing is ever restored. stateFileTrusted replaces the
-	// record's file-trust check (nil = trustPendingRecordFile).
+	// record's file-trust check (nil = readTrustedRecordFile).
 	bootID           func() string
 	stateFileTrusted func(path string) error
 }
