@@ -177,6 +177,13 @@ describe('isPromptDecision', () => {
 describe('promptShowSchema invariants', () => {
   const base = () => showFixture('show.restart.json');
 
+  // #12828: the agent marks the one show its card limiter made list-only.
+  it('keeps rateLimited on a list_only show, and it stays optional', () => {
+    const show = { ...showFixture('show.notice.json'), presentation: 'list_only' as const, rateLimited: true };
+    expect(promptShowSchema.parse(show).rateLimited).toBe(true);
+    expect(showFixture('show.notice.json').rateLimited).toBeUndefined();
+  });
+
   it('refuses a decision with no safe action', () => {
     const show = base();
     show.actions = show.actions.map((a) => ({ ...a, role: 'proceed' as const }));

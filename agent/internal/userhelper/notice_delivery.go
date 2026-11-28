@@ -2,6 +2,8 @@ package userhelper
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -33,8 +35,15 @@ import (
 //
 // A notice drawn as a dialog, on any OS, lives at most
 // nativeNoticeDialogLifetime (or until its own deadline, if sooner), never
-// opens over a question that needs an answer and never stacks on another
-// notice (prompt_native.go draw). A notice's deadline is otherwise its list
+// stacks on another notice and does not open over a question that needs an
+// answer, except from its last useful minute (its deadline less that
+// lifetime): then it is drawn even over a question, and a later question
+// opens over it without taking it down (prompt_native.go draw,
+// noticeKeptUp). A notice the agent's card limiter made list-only
+// (prompt_show rateLimited) is one notification and never a dialog, unless it
+// is already in its last useful minute (deliverRateLimitedNotice). A held
+// notice that then waits for the screen tells the agent visible:false once
+// (reportNotVisible). A notice's deadline is otherwise its list
 // lifetime, made for Assist's list (24 h), and never a dialog's. Untagged
 // so every CI run checks it; the Windows file only makes the call.
 
@@ -141,7 +150,7 @@ func (r *nativePromptRenderer) noticeDeliveryNow() noticeDelivery {
 // returns true when it finished the notice (toasted, or the hold ended
 // because the agent withdrew it or its entry expired) and false when the
 // caller must draw the dialog.
-func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptShow, m nativePromptModel, lease func() ipc.PromptLease) bool {
+func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptShow, m nativePromptModel, act *nativeActive, lease func() ipc.PromptLease) bool {
 	repoll := r.noticeRepoll
 	if repoll <= 0 {
 		repoll = defaultNoticeRepoll
@@ -189,7 +198,7 @@ func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptSh
 		if !toldHeld {
 			toldHeld = true
 			log.Info("holding a notice while the user is presenting or full screen", "promptId", p.PromptID)
-			r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: false})
+			r.reportNotVisible(p, act)
 		}
 		if !r.now().Before(expires) {
 			log.Info("held notice expired before it could be shown; it stays in the agent's list", "promptId", p.PromptID)
@@ -250,16 +259,18 @@ func (r *nativePromptRenderer) screenBusyLocked(promptID string) bool {
 // awaitNoticeDialog claims the screen for a notice that must be a dialog,
 // waiting while another dialog is up: a notice that cannot be shown now is
 // deferred, never dropped (#12794 review). While it waits the agent is told
-// prompt_presented{visible:false} once, so it neither counts the notice as
+// prompt_presented{visible:false}, once per notice and not again if a hold
+// already said so (reportNotVisible), so it neither counts the notice as
 // seen nor falls back after its present budget; the legacy notice dialog
 // waited the same way. A notice with a deadline (the safe-mode reboot
 // warning: the reboot) does not wait past its last useful moment, the
 // deadline less the notice dialog's lifetime: it is drawn then even over
-// another dialog, because an unwarned reboot is worse than two windows. It
-// reports false when the agent closed or replaced the notice meanwhile.
+// another dialog, because an unwarned reboot is worse than two windows, and
+// from then on a later decision opens over it without taking it down
+// (noticeKeptUp). It reports false when the agent closed or replaced the notice meanwhile.
 func (r *nativePromptRenderer) awaitNoticeDialog(ctx context.Context, p ipc.PromptShow, act *nativeActive, lease func() ipc.PromptLease) bool {
 	mustShowBy, forces := noticeMustShowBy(p)
-	told := false
+	told := false // logged once; the agent is told once per notice (reportNotVisible)
 	for {
 		freed := r.freedSignal()
 		force := forces && !r.now().Before(mustShowBy)
@@ -276,12 +287,30 @@ func (r *nativePromptRenderer) awaitNoticeDialog(ctx context.Context, p ipc.Prom
 		if !told {
 			told = true
 			log.Info("notice waits: another dialog is on screen; it is drawn when that dialog ends", "promptId", p.PromptID)
-			r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: false})
+			r.reportNotVisible(p, act)
 		}
 		if !r.waitForScreen(ctx, freed, mustShowBy, forces) {
 			return false
 		}
 	}
+}
+
+// reportNotVisible tells the agent prompt_presented{visible:false} for a
+// notice that is not on screen yet, once per active notice (one nativeActive;
+// a redraw by an update starts a new one). A Windows notice
+// held while the person is full screen that then has to wait for another
+// dialog is one notice not yet visible, not two (#12812): the hold and the
+// wait each used to say so.
+func (r *nativePromptRenderer) reportNotVisible(p ipc.PromptShow, act *nativeActive) {
+	r.mu.Lock()
+	if act.toldNotVisible {
+		r.mu.Unlock()
+		return
+	}
+	act.toldNotVisible = true
+	lease := act.show.Lease // a replay may have moved it
+	r.mu.Unlock()
+	r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease, Visible: false})
 }
 
 // waitForScreen waits until a dialog leaves the screen (freed), the
@@ -324,20 +353,97 @@ func noticeMustShowBy(p ipc.PromptShow) (at time.Time, ok bool) {
 // re-plans the answered prompt with the new time and the native path redraws
 // nothing, so the new content is announced as the legacy lead rung was, as a
 // notification and never a dialog. A notice, a terminal outcome and a list
-// entry announce nothing.
-func (r *nativePromptRenderer) announceUpdate(p ipc.PromptShow) {
+// entry announce nothing. failed runs when an announcement was due but no
+// notification was shown (onUpdate then forgets it, so a repeat tries again).
+func (r *nativePromptRenderer) announceUpdate(p ipc.PromptShow, failed func()) {
 	if isNoticeShow(p) || p.Presentation == ipc.PromptPresentationListOnly || !ipc.IsPromptDecision(p.State, p.Presentation) {
 		return
 	}
 	m, err := buildNativePromptModel(p, r.now(), nil)
 	if err != nil {
 		log.Warn("updated prompt not announced", "promptId", p.PromptID, "error", err.Error())
+		failed()
 		return
 	}
 	req := ipc.NotifyRequest{Title: m.Title, Body: m.Body}
 	r.goAsync(func() {
 		if !r.toast(req) {
-			log.Info("updated prompt not announced: the notification was not shown", "promptId", p.PromptID)
+			log.Warn("updated prompt not announced: the notification was not shown; the next update with this text tries again", "promptId", p.PromptID)
+			failed()
 		}
+	})
+}
+
+// forgetTold undoes onUpdate's record of an announcement that was not shown,
+// unless a later announcement replaced it meanwhile. Takes mu.
+func (r *nativePromptRenderer) forgetTold(promptID, next, last string, hadLast bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.told[promptID] != next {
+		return
+	}
+	if hadLast {
+		r.told[promptID] = last
+	} else {
+		delete(r.told, promptID)
+	}
+}
+
+// announcementText is what an announcement of p says, before the renderer
+// fills its placeholders: the title and every part of the body. The deadline
+// is part of it, because {remaining} is counted from it. A rev bump alone (an
+// empty patch) or a repeat of the same refresh gives the same text.
+func announcementText(p ipc.PromptShow) string {
+	parts := []string{p.Copy.Title, p.Copy.Body, p.Copy.Consequence, p.Copy.StateDetail, p.Copy.OperatorNote,
+		strconv.FormatInt(p.Timing.DeadlineUnixMs, 10)}
+	if p.Timing.Expiry != nil {
+		parts = append(parts, p.Timing.Expiry.Text)
+	}
+	for _, f := range p.Facts {
+		parts = append(parts, f.Label, f.Value)
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// deliverRateLimitedNotice delivers a notice the agent's card limiter made
+// list-only (prompt_show rateLimited, #12828). A renderer with a list lists
+// it; this one has none, so list-only alone would show it nowhere, which is
+// worse than the prompt kinds off (each notice a notification). It is
+// delivered in this renderer's quietest form: one OS notification, never a
+// window, so a flood of notices never becomes a wall of dialogs. The
+// notification state decides only the visible flag: the agent is told
+// prompt_presented, visible only when the notification was shown and the
+// session accepts notifications now (Windows quiet hours, nobody present or
+// full screen silence it). A notification the OS refuses is not retried. A
+// notice inside its last useful minute never gets here (draw keeps its own
+// rules). The notice is remembered as ended, so a later update is recorded;
+// a repeat of the same or an older rev raises nothing.
+func (r *nativePromptRenderer) deliverRateLimitedNotice(p ipc.PromptShow) {
+	m, err := buildNativePromptModel(p, r.now(), nil)
+	if err != nil {
+		log.Warn("native renderer refused a rate-limited notice", "promptId", p.PromptID, "error", err.Error())
+		r.takeDown(p.PromptID)
+		r.renderFailed(p, "invalid_prompt")
+		return
+	}
+	r.takeDown(p.PromptID)
+	r.mu.Lock()
+	prev, known := r.ended[p.PromptID]
+	repeat := known && prev.Rev >= p.Rev
+	if !repeat {
+		r.rememberEndedLocked(p)
+	}
+	r.mu.Unlock()
+	if repeat {
+		return // delivered already: one notification per notice
+	}
+	req := ipc.NotifyRequest{Title: m.Title, Body: m.Body}
+	r.goAsync(func() {
+		seeable := r.noticeState == nil || r.noticeDeliveryNow() == noticeToast
+		shown := r.toast(req)
+		if !shown {
+			log.Warn("rate-limited notice: the notification was not shown; it stays in the agent's list only", "promptId", p.PromptID)
+		}
+		r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, Visible: shown && seeable})
 	})
 }

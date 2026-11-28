@@ -174,6 +174,13 @@ const promptShowObject = z.object({
   locale: localeSchema,
   direction: z.enum(PROMPT_DIRECTIONS),
   identityRef: promptIdentityRefSchema.optional(),
+  /**
+   * Set only on the one `prompt_show` the card limiter made `list_only` (a new
+   * card past the per-session limit; never a replay). A renderer with a
+   * notification list lists it; one without a list (the native user-helper)
+   * delivers it in its quietest form, an OS notification (#12828).
+   */
+  rateLimited: z.boolean().optional(),
 });
 
 /** `prompt_show` (agent → renderer): the full current state of one prompt. */
