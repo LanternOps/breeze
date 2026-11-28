@@ -902,7 +902,9 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 	if !notice {
 		// A question that needs an answer never opens over (or under) an
 		// informational dialog: the notice comes down. It stays in the
-		// agent's list, so nothing is reported for it.
+		// agent's list, so nothing is reported for it. A notice inside its
+		// last useful minute stays up (takeNoticeDialogsLocked); the
+		// question still opens now, as the newer window over it.
 		covered = r.takeNoticeDialogsLocked(p.PromptID)
 	}
 	r.mu.Unlock()
@@ -991,11 +993,18 @@ func isNoticeShow(p ipc.PromptShow) bool { return p.Kind == noticeKind }
 // takeNoticeDialogsLocked removes every notice dialog except promptID's from
 // the active set, remembering each as ended so a later update for it is
 // recorded rather than refused, and returns them for the caller to cancel
-// outside mu. Caller holds mu.
+// outside mu. A notice dialog inside its last useful minute (noticeKeptUp) is
+// left up. Caller holds mu.
 func (r *nativePromptRenderer) takeNoticeDialogsLocked(promptID string) []*nativeActive {
+	now := r.now()
 	var out []*nativeActive
 	for id, a := range r.active {
 		if id == promptID || !a.noticeDialog {
+			continue
+		}
+		if noticeKeptUp(a.show, now) {
+			log.Info("notice dialog kept up in its last minute; the question opens over it",
+				"promptId", id, "for", promptID)
 			continue
 		}
 		delete(r.active, id)
@@ -1003,6 +1012,18 @@ func (r *nativePromptRenderer) takeNoticeDialogsLocked(promptID string) []*nativ
 		out = append(out, a)
 	}
 	return out
+}
+
+// noticeKeptUp reports whether a notice dialog has reached its last useful
+// moment (noticeMustShowBy: its end less the notice dialog's lifetime), the
+// same moment from which a waiting notice is drawn even over another dialog.
+// From then on it stays up until it is answered or its deadline passes: taken
+// down now, a safe-mode reboot warning would be lost in its last minute
+// (#12812). A decision that arrives meanwhile is still drawn at once; it is
+// the newer window, so it opens over the notice and is never hidden behind it.
+func noticeKeptUp(p ipc.PromptShow, now time.Time) bool {
+	at, ok := noticeMustShowBy(p)
+	return ok && !now.Before(at)
 }
 
 // endWithoutDialog retires a notice that drew no dialog. It reports whether
