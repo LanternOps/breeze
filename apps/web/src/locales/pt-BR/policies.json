@@ -1836,7 +1836,6 @@
       "issueArgsUnsupportedForFileType": "Os argumentos de instalação silenciosa não são compatíveis com este tipo de instalador."
     },
     "builtinPackageDetail": {
-      "managedBuiltIn": "Integrado gerenciado",
       "website": "site",
       "checkingSetup": "Verificando a configuração…",
       "couldnTVerifySetupDeployWillConfirm": "Não foi possível verificar a configuração — a implantação confirmará no servidor.",
@@ -2466,27 +2465,21 @@
     },
     "builtinPackagesPanel": {
       "title": "Pacotes integrados",
-      "description": "Clientes de filtragem de DNS fixados e verificados pelo Breeze. Adicione um ao seu catálogo, defina a variável dele para cada organização e depois implante-o como qualquer outro pacote.",
-      "colPackage": "Pacote",
-      "colPlatform": "Plataforma",
-      "colPinnedVersion": "Versão fixada",
-      "colRequiredVariables": "Variáveis obrigatórias",
-      "colUninstallCommand": "Comando de desinstalação",
-      "colStatus": "Status",
+      "description": "Pacotes que o Breeze mantém para você. Adicione um ao seu catálogo ou conecte a integração dele e depois implante-o como qualquer outro pacote.",
       "addToCatalog": "Adicionar ao catálogo",
       "adding": "Adicionando…",
-      "inCatalog": "No catálogo",
       "archived": "Arquivado",
       "restoreToCatalog": "Restaurar",
       "addedToCatalog": "{{name}} adicionado ao catálogo",
       "couldNotAddToCatalog": "Não foi possível adicionar {{name}} ao catálogo",
       "couldNotLoadBuiltinPackages": "Não foi possível carregar os pacotes integrados",
-      "loadingBuiltinPackages": "Carregando pacotes integrados…",
       "setVariablesPerOrganization": "Defina por organização em Configurações → Variáveis",
       "copyUninstallCommand": "Copiar comando de desinstalação",
       "uninstallCommandCopied": "Comando de desinstalação copiado",
       "breezeDoesNotUninstall": "O Breeze não desinstala esses clientes. Execute o comando no dispositivo para remover um.",
-      "copyFailed": "Falha ao copiar. Selecione o comando e copie-o manualmente."
+      "copyFailed": "Falha ao copiar. Selecione o comando e copie-o manualmente.",
+      "addedWhenConnected": "Adicionado ao seu catálogo quando você conecta {{provider}}.",
+      "connectInIntegrations": "Conectar em Integrações"
     },
     "policyCoverage": {
       "appliesTo_one": "Aplica-se a {{count}} dispositivo",

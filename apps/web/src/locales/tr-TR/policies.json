@@ -1836,7 +1836,6 @@
       "issueArgsUnsupportedForFileType": "Sessiz yükleme argümanları bu yükleyici türü için desteklenmez."
     },
     "builtinPackageDetail": {
-      "managedBuiltIn": "Yönetilen yerleşik",
       "website": "web sitesi",
       "checkingSetup": "Kurulum kontrol ediliyor…",
       "couldnTVerifySetupDeployWillConfirm": "Kurulum doğrulanamadı — dağıtım sunucuda onaylanacak.",
@@ -2466,27 +2465,21 @@
     },
     "builtinPackagesPanel": {
       "title": "Dahili paketler",
-      "description": "Breeze tarafından sabitlenen ve doğrulanan DNS filtreleme istemcileri. Birini kataloğunuza ekleyin, her kuruluş için değişkenini ayarlayın, ardından diğer paketler gibi dağıtın.",
-      "colPackage": "Paket",
-      "colPlatform": "Platform",
-      "colPinnedVersion": "Sabitlenen sürüm",
-      "colRequiredVariables": "Gerekli değişkenler",
-      "colUninstallCommand": "Kaldırma komutu",
-      "colStatus": "Durum",
+      "description": "Breeze’in sizin için yönettiği paketler. Birini kataloğunuza ekleyin veya entegrasyonunu bağlayın, ardından diğer paketler gibi dağıtın.",
       "addToCatalog": "Kataloğa ekle",
       "adding": "Ekleniyor…",
-      "inCatalog": "Katalogda",
       "archived": "Arşivlendi",
       "restoreToCatalog": "Geri yükle",
       "addedToCatalog": "{{name}} kataloğa eklendi",
       "couldNotAddToCatalog": "{{name}} kataloğa eklenemedi",
       "couldNotLoadBuiltinPackages": "Dahili paketler yüklenemedi",
-      "loadingBuiltinPackages": "Dahili paketler yükleniyor…",
       "setVariablesPerOrganization": "Kuruluş başına Ayarlar → Değişkenler bölümünden ayarlanır",
       "copyUninstallCommand": "Kaldırma komutunu kopyala",
       "uninstallCommandCopied": "Kaldırma komutu kopyalandı",
       "breezeDoesNotUninstall": "Breeze bu istemcileri kaldırmaz. Birini kaldırmak için komutu cihazda çalıştırın.",
-      "copyFailed": "Kopyalama başarısız oldu. Komutu seçip elle kopyalayın."
+      "copyFailed": "Kopyalama başarısız oldu. Komutu seçip elle kopyalayın.",
+      "addedWhenConnected": "{{provider}} bağlandığında kataloğunuza eklenir.",
+      "connectInIntegrations": "Entegrasyonlar’da bağla"
     },
     "policyCoverage": {
       "appliesTo_one": "{{count}} cihaza uygulanır",

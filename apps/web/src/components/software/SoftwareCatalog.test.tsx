@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SoftwareCatalog from './SoftwareCatalog';
@@ -358,18 +358,21 @@ describe('SoftwareCatalog built-in packages', () => {
     showToast.mockReset();
   });
 
-  it('renders a branded "Built-in" chip and a Ready pill for a ready Huntress package', async () => {
+  it('renders the shared "Built-in" pill and a Ready pill for a ready Huntress package', async () => {
     routeBuiltin([BUILTIN_ITEM], HUNTRESS_READY);
 
     render(<SoftwareCatalog />);
 
-    expect(await screen.findByText(/^Built-in$/)).toBeInTheDocument();
+    const card = await screen.findByTestId('catalog-card-builtin-huntress');
+    // Same pill as a keyed built-in (Control D / NextDNS), not a provider-coloured one.
+    expect(within(card).getByTestId('builtin-pill')).toHaveTextContent(/^Built-in$/);
+    expect(within(card).getByTestId('builtin-icon')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/^Ready$/)).toBeInTheDocument());
     // The Huntress card no longer shows any installer-upload cue.
     expect(screen.queryByText(/Upload installer/i)).not.toBeInTheDocument();
   });
 
-  it('opens the readiness detail panel (Managed built-in) with no Delete control', async () => {
+  it('opens the readiness detail with one header (Built-in pill, name once) and no Delete control', async () => {
     routeBuiltin([BUILTIN_ITEM], HUNTRESS_READY);
 
     render(<SoftwareCatalog />);
@@ -377,7 +380,9 @@ describe('SoftwareCatalog built-in packages', () => {
 
     fireEvent.click(screen.getByText('Huntress EDR Agent'));
 
-    expect(await screen.findByText(/Managed built-in/i)).toBeInTheDocument();
+    expect(await screen.findByTestId('builtin-detail-pill')).toHaveTextContent(/^Built-in$/);
+    expect(screen.getAllByRole('heading', { name: 'Huntress EDR Agent' })).toHaveLength(1);
+    expect(screen.queryByText(/Managed built-in/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
   });
 
@@ -639,12 +644,24 @@ describe('SoftwareCatalog DNS built-ins (#6958)', () => {
     window.location.hash = '';
   });
 
-  it('partner scope: renders the Built-in packages panel above the grid', async () => {
+  it('partner scope: renders the Built-in packages panel below the package cards', async () => {
     ownerScope.isPartnerScope = true;
     routeKeyed([ITEM]);
     render(<SoftwareCatalog />);
-    expect(await screen.findByTestId('builtin-packages-panel')).toBeInTheDocument();
+    const panel = await screen.findByTestId('builtin-packages-panel');
     expect(fetchMock).toHaveBeenCalledWith('/software/builtin-packages');
+    // The partner's own packages come first; the built-ins on offer must not push them down.
+    const card = screen.getByTestId('catalog-card-cat-1');
+    expect(card.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('partner scope: an empty library still shows the panel, after the empty state', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([]);
+    render(<SoftwareCatalog />);
+    const panel = await screen.findByTestId('builtin-packages-panel');
+    const empty = screen.getByText(/No software packages yet/i);
+    expect(empty.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('org scope: no panel and no built-in packages fetch', async () => {
@@ -660,7 +677,8 @@ describe('SoftwareCatalog DNS built-ins (#6958)', () => {
     routeKeyed([KEYED_ITEM]);
     render(<SoftwareCatalog />);
     const card = await screen.findByTestId('catalog-card-cat-ctrld');
-    expect(card.textContent).toContain('Built-in');
+    expect(within(card).getByTestId('builtin-pill')).toHaveTextContent(/^Built-in$/);
+    expect(within(card).getByTestId('builtin-icon')).toBeInTheDocument();
     expect(card.querySelector('[data-testid="scope-badge"]')).toBeNull();
   });
 
@@ -672,6 +690,7 @@ describe('SoftwareCatalog DNS built-ins (#6958)', () => {
     const detail = await screen.findByTestId('builtin-catalog-detail');
     await waitFor(() => expect(detail.textContent).toContain('controld_provisioning_code'));
     expect(detail.textContent).toContain('C:\\ControlD\\ctrld.exe uninstall');
+    expect(screen.getByTestId('builtin-detail-pill')).toHaveTextContent(/^Built-in$/);
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
   });
 
@@ -692,11 +711,73 @@ describe('SoftwareCatalog DNS built-ins (#6958)', () => {
     expect(await screen.findByTestId('version-manager-probe')).toHaveAttribute('data-builtin-readonly', 'false');
   });
 
-  it('"In catalog" in the panel opens that card', async () => {
+  it('the keyed detail copies the uninstall command', async () => {
+    ownerScope.isPartnerScope = true;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('catalog-card-cat-ctrld'));
+    fireEvent.click(await screen.findByTestId('builtin-detail-copy-uninstall'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('C:\\ControlD\\ctrld.exe uninstall'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+
+  it('a failed copy of the uninstall command is reported, not swallowed', async () => {
+    ownerScope.isPartnerScope = true;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    });
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('catalog-card-cat-ctrld'));
+    fireEvent.click(await screen.findByTestId('builtin-detail-copy-uninstall'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+
+  it('the panel lists only built-ins that are not catalog cards yet: Huntress and SentinelOne to connect, not Control D', async () => {
     ownerScope.isPartnerScope = true;
     routeKeyed([KEYED_ITEM]);
     render(<SoftwareCatalog />);
-    fireEvent.click(await screen.findByTestId('builtin-package-in-catalog-controld_windows'));
-    expect(await screen.findByTestId('builtin-catalog-detail')).toBeInTheDocument();
+    expect(await screen.findByTestId('builtin-package-row-huntress')).toBeInTheDocument();
+    expect(screen.getByTestId('builtin-package-row-sentinelone')).toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-controld_windows')).not.toBeInTheDocument();
+  });
+
+  it('a truncated catalog page never offers "connect": the integration package may be on a page that was not loaded', async () => {
+    ownerScope.isPartnerScope = true;
+    fetchMock.mockImplementation((url: string) => {
+      // The list endpoint pages at 50; total > data means rows exist that this page does not show.
+      if (url === '/software/catalog')
+        return Promise.resolve(jsonResponse({ data: [KEYED_ITEM], pagination: { page: 1, limit: 50, total: 51 } }));
+      if (url === '/software/builtin-packages')
+        return Promise.resolve(jsonResponse({ data: [{ ...BUILTIN_ROWS[0], key: 'nextdns_windows', name: 'NextDNS CLI (Windows)', catalogId: null }] }));
+      return Promise.resolve(jsonResponse({ data: null }));
+    });
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-package-row-nextdns_windows')).toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-huntress')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-sentinelone')).not.toBeInTheDocument();
+  });
+
+  it('a complete catalog page (total equals the rows returned) does offer the missing integrations', async () => {
+    ownerScope.isPartnerScope = true;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/software/catalog')
+        return Promise.resolve(jsonResponse({ data: [KEYED_ITEM], pagination: { page: 1, limit: 50, total: 1 } }));
+      if (url === '/software/builtin-packages') return Promise.resolve(jsonResponse({ data: BUILTIN_ROWS }));
+      return Promise.resolve(jsonResponse({ data: null }));
+    });
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-package-row-huntress')).toBeInTheDocument();
+  });
+
+  it('the panel drops Huntress once its package is a catalog card', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM, BUILTIN_ITEM]);
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-package-row-sentinelone')).toBeInTheDocument();
+    expect(screen.queryByTestId('builtin-package-row-huntress')).not.toBeInTheDocument();
   });
 });
