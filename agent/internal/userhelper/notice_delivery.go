@@ -341,3 +341,44 @@ func (r *nativePromptRenderer) announceUpdate(p ipc.PromptShow) {
 		}
 	})
 }
+
+// deliverRateLimitedNotice delivers a notice the agent's card limiter made
+// list-only (prompt_show rateLimited, #12828). A renderer with a list lists
+// it; this one has none, so list-only alone would show it nowhere, which is
+// worse than the prompt kinds off (each notice a notification). It is
+// delivered in this renderer's quietest form: one OS notification, never a
+// window, whatever the notification state, so a flood of notices never
+// becomes a wall of dialogs. Windows keeps a notification it silences (quiet
+// hours, full screen) in the notification centre. The agent is told
+// prompt_presented, visible only when the notification could be seen now. A
+// notice inside its last useful minute never gets here (draw keeps its own
+// rules). The notice is remembered as ended, so a later update is recorded.
+func (r *nativePromptRenderer) deliverRateLimitedNotice(p ipc.PromptShow) {
+	m, err := buildNativePromptModel(p, r.now(), nil)
+	if err != nil {
+		log.Warn("native renderer refused a rate-limited notice", "promptId", p.PromptID, "error", err.Error())
+		r.takeDown(p.PromptID)
+		r.renderFailed(p, "invalid_prompt")
+		return
+	}
+	r.takeDown(p.PromptID)
+	r.mu.Lock()
+	prev, known := r.ended[p.PromptID]
+	repeat := known && prev.Rev >= p.Rev
+	if !repeat {
+		r.rememberEndedLocked(p)
+	}
+	r.mu.Unlock()
+	if repeat {
+		return // delivered already: one notification per notice
+	}
+	req := ipc.NotifyRequest{Title: m.Title, Body: m.Body}
+	r.goAsync(func() {
+		seeable := r.noticeState == nil || r.noticeDeliveryNow() == noticeToast
+		shown := r.toast(req)
+		if !shown {
+			log.Info("rate-limited notice: the notification was not shown", "promptId", p.PromptID)
+		}
+		r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, Visible: shown && seeable})
+	})
+}

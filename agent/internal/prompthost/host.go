@@ -487,6 +487,7 @@ func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *o
 		pl.graceUntil = time.Time{}
 		pl.presentBy = now.Add(presentWithin(rec))
 		rec.everPrompt = true
+		limited := false
 		if !pl.rateChecked {
 			pl.rateChecked = true
 			// The limiter limits notices. A prompt that needs the person's
@@ -496,9 +497,15 @@ func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *o
 			// decision would never be asked there (#12794).
 			if rec.show.Presentation == ipc.PromptPresentationCard && !rec.needsDecision() && !h.limiter.allow(pl.owner.Key(), now) {
 				pl.listOnly = true
+				limited = true
 			}
 		}
-		ob.send(pl.renderer, ipc.TypePromptShow, rec.show.Kind, rec.show.PromptID, pl, h.wireShow(rec, pl))
+		show := h.wireShow(rec, pl)
+		// Only this show says the limiter made it list-only; a replay or a
+		// move never does (it is not a new card). A renderer without a list
+		// delivers it in its quietest form rather than nowhere (#12828).
+		show.RateLimited = limited
+		ob.send(pl.renderer, ipc.TypePromptShow, rec.show.Kind, rec.show.PromptID, pl, show)
 	case PathLegacy:
 		pl.renderer = ""
 		if !pl.legacyDone {
@@ -550,6 +557,7 @@ func (h *Host) wireShow(rec *record, pl *placement) ipc.PromptShow {
 	s.Lease = pl.lease()
 	s.KindVersion = pl.version
 	s.Timing = rec.wireTiming()
+	s.RateLimited = false // only assign marks the one show the limiter made list-only
 	if pl.listOnly && s.Presentation != ipc.PromptPresentationIndicator {
 		s.Presentation = ipc.PromptPresentationListOnly
 		s.Focus = ipc.PromptFocusNoActivate

@@ -847,8 +847,20 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 		r.drawIndicator(p)
 		return
 	}
+	if p.Presentation == ipc.PromptPresentationListOnly && p.RateLimited && isNoticeShow(p) && !p.State.Terminal() {
+		if at, ok := noticeMustShowBy(p); ok && !r.now().Before(at) {
+			// Inside its last useful minute (a safe-mode reboot warning just
+			// before the reboot): the notice keeps its own delivery rules,
+			// dialog included where a notification would be silenced, so the
+			// limiter never costs the warning (#12828).
+			p.Presentation = ipc.PromptPresentationCard
+		} else {
+			r.deliverRateLimitedNotice(p)
+			return
+		}
+	}
 	if p.Presentation == ipc.PromptPresentationListOnly || p.State.Terminal() {
-		// A list entry (a reconnect replay, a rate-limited card) or a
+		// A list entry (a reconnect replay, an after-the-fact outcome) or a
 		// finished outcome: a native helper has no list, so nothing is
 		// drawn and nothing is re-toasted. It is remembered so a later
 		// update or a restored card at a newer rev is handled.

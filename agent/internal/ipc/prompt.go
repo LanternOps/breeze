@@ -233,6 +233,14 @@ type PromptShow struct {
 	Locale          string             `json:"locale"`
 	Direction       string             `json:"direction"`
 	IdentityRef     *PromptIdentityRef `json:"identityRef,omitempty"`
+	// RateLimited marks the one prompt_show the card limiter made list-only
+	// (#12828): a new card past the per-session limit, not a replay of a
+	// prompt already delivered. A renderer with a notification list lists it,
+	// as it lists any list_only show. A renderer without a list delivers it in
+	// its quietest form instead (the native user-helper: an OS notification,
+	// never a window), since list-only would show it nowhere. Absent on every
+	// other show, replays included. Additive: an older renderer ignores it.
+	RateLimited bool `json:"rateLimited,omitempty"`
 }
 
 // PromptUpdate (prompt_update): a non-nil field replaces the old one. Actions
