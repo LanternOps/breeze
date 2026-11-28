@@ -156,8 +156,9 @@ export default function EdrUnlinkedEndpoints({
                     <td className="py-3 pr-4 font-medium">{row.hostname ?? row.vendorEndpointId}</td>
                     <td className="py-3 pr-4 text-muted-foreground">{row.tenantName ?? "--"}</td>
                     <td className="py-3 pr-4 text-muted-foreground">{row.osName ?? "--"}</td>
-                    <td className="py-3 pr-4 text-muted-foreground">
-                      {row.lastSeenAt ? formatRelativeTime(row.lastSeenAt) : t("edrProviders.never")}
+                    <td data-testid={`edr-endpoint-last-seen-${row.id}`} className="py-3 pr-4 text-muted-foreground">
+                      {/* Null means the provider gave no usable time, not "never seen" (#12821). */}
+                      {row.lastSeenAt ? formatRelativeTime(row.lastSeenAt) : t("edrProviders.lastSeenUnknown")}
                     </td>
                     <td className="py-3 pr-4 text-muted-foreground">{t(/* i18n-dynamic */ `edrProviders.healthValue.${row.health}`)}</td>
                     {canManage && (

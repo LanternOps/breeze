@@ -4485,6 +4485,7 @@
       "agentVersion": "Ajan sürümü",
       "lastSeen": "Son görülme"
     },
+    "lastSeenUnknown": "Bilinmiyor",
     "health": {
       "healthy": "Sağlıklı",
       "degraded": "Düşük performanslı",

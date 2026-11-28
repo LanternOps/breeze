@@ -4485,6 +4485,7 @@
       "agentVersion": "Agent version",
       "lastSeen": "Last seen"
     },
+    "lastSeenUnknown": "Unknown",
     "health": {
       "healthy": "Healthy",
       "degraded": "Degraded",
