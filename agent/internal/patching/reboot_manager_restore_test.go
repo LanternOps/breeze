@@ -8,6 +8,7 @@ package patching
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,16 +26,53 @@ type restoreRig struct {
 	clock  *fakeClock
 	ledger string
 	boot   string
+	// agentID is the enrollment, version the binary the next manager() runs.
+	agentID string
+	version string
+	// starts is the agent start history (the audit log's agent_start
+	// entries), oldest first. history overrides StartsAfter when set.
+	starts  []agentStart
+	history func(token string) ([]string, bool, error)
 }
+
+type agentStart struct{ token, version string }
 
 func newRestoreRig(t *testing.T) *restoreRig {
 	t.Helper()
+	dir := t.TempDir()
+	trustDataDirForTest(t, dir)
 	return &restoreRig{
-		t:      t,
-		clock:  &fakeClock{t: time.Now().Truncate(time.Second)},
-		ledger: filepath.Join(t.TempDir(), deferralLedgerFile),
-		boot:   testBootID,
+		t:       t,
+		clock:   &fakeClock{t: time.Now().Truncate(time.Second)},
+		ledger:  filepath.Join(dir, deferralLedgerFile),
+		boot:    testBootID,
+		agentID: "agent-1",
+		version: "1.0.0",
 	}
+}
+
+// agentStarted records an agent start of version, as its agent_start audit
+// entry would, and returns its token.
+func (g *restoreRig) agentStarted(version string) string {
+	tok := fmt.Sprintf("start-%d", len(g.starts)+1)
+	g.starts = append(g.starts, agentStart{token: tok, version: version})
+	return tok
+}
+
+func (g *restoreRig) startsAfter(token string) ([]string, bool, error) {
+	if g.history != nil {
+		return g.history(token)
+	}
+	for i, s := range g.starts {
+		if s.token == token {
+			var vs []string
+			for _, later := range g.starts[i+1:] {
+				vs = append(vs, later.version)
+			}
+			return vs, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 type restoreProc struct {
@@ -53,6 +91,9 @@ func (g *restoreRig) manager() restoreProc {
 	rm.deferralLedger = func() string { return ledger }
 	boot := g.boot
 	rm.SetBootID(func() string { return boot })
+	agentID := g.agentID
+	rm.SetEnrollment(func() string { return agentID })
+	rm.SetAgentRun(AgentRun{Version: g.version, StartToken: g.agentStarted(g.version), StartsAfter: g.startsAfter})
 	var mu sync.Mutex
 	prompts := []string{}
 	// A prompt nobody answers, recorded so a test can tell a dialog from a
@@ -224,11 +265,11 @@ func TestRestoreAfterTheRestartTimePassedGivesAFreshWarningPeriod(t *testing.T) 
 		t.Fatal("an overdue restart was dropped instead of re-warned")
 	}
 	st := b.rm.State()
-	if want := g.clock.now().Add(restoredOverdueWarning); !st.ScheduledAt.Equal(want) {
-		t.Fatalf("overdue ScheduledAt = %v, want now+%v = %v", st.ScheduledAt, restoredOverdueWarning, want)
+	if want := g.clock.now().Add(minRestoreWarning); !st.ScheduledAt.Equal(want) {
+		t.Fatalf("overdue ScheduledAt = %v, want now+%v = %v", st.ScheduledAt, minRestoreWarning, want)
 	}
 	// Everything before the closing rung warns; nothing invokes the OS.
-	closing := restoredOverdueWarning - finalNoticeLead
+	closing := minRestoreWarning - finalNoticeLead
 	for _, o := range b.timers.offsets() {
 		if o > closing {
 			t.Fatalf("a timer is armed at +%v, after the closing rung at +%v", o, closing)
@@ -244,16 +285,17 @@ func TestRestoreAfterTheRestartTimePassedGivesAFreshWarningPeriod(t *testing.T) 
 		t.Fatal("an overdue restore did not warn at once")
 	}
 
-	// A second agent restart inside that period keeps the restored time; it
-	// does not push the restart out by another full period.
+	// A second agent restart inside that period is a restore like any other:
+	// again never less than the minimum left (the day-late cutoff, counted
+	// from the first due time, bounds how often that can happen).
 	g.clock.advance(5 * time.Minute)
 	stopAgent(b)
 	c := g.manager()
 	if !c.rm.RestorePendingReboot() {
 		t.Fatal("not restored the second time")
 	}
-	if got := c.rm.State().ScheduledAt; !got.Equal(st.ScheduledAt) {
-		t.Fatalf("second restore moved the restart to %v, want %v", got, st.ScheduledAt)
+	if got, want := c.rm.State().ScheduledAt, g.clock.now().Add(minRestoreWarning); !got.Equal(want) {
+		t.Fatalf("second restore moved the restart to %v, want now+%v = %v", got, minRestoreWarning, want)
 	}
 }
 
@@ -412,23 +454,30 @@ func TestRestoreDropsARestartTheCircuitBreakerBlocked(t *testing.T) {
 	}
 }
 
-func TestRestoreKeepsRestartNowsTime(t *testing.T) {
+// Restart now leaves a minute. An agent restart inside it gets the minimum
+// warning, like any restore, but never goes back to the hour-long schedule
+// the person chose to cut short.
+func TestRestoreAfterRestartNowLeavesTheMinimumNotTheOldSchedule(t *testing.T) {
 	g := newRestoreRig(t)
 	a := g.manager()
 	if err := a.rm.ScheduleWithOptions(time.Hour, g.clock.now().Add(2*time.Hour), "Patch", "patch_job", allowDeferral(3, 30)); err != nil {
 		t.Fatalf("ScheduleWithOptions: %v", err)
 	}
+	hourLong := a.rm.State().ScheduledAt
 	if err := a.rm.UserRestartNow(a.rm.currentCampaign(), "native"); err != nil {
 		t.Fatalf("UserRestartNow: %v", err)
 	}
-	want := a.rm.State().ScheduledAt
 	stopAgent(a)
 	b := g.manager()
 	if !b.rm.RestorePendingReboot() {
 		t.Fatal("not restored")
 	}
-	if got := b.rm.State().ScheduledAt; !got.Equal(want) {
-		t.Fatalf("Restart now time after restore = %v, want %v — it must not move back to the hour-long schedule", got, want)
+	got := b.rm.State().ScheduledAt
+	if want := g.clock.now().Add(minRestoreWarning); !got.Equal(want) {
+		t.Fatalf("Restart now time after restore = %v, want now+%v = %v", got, minRestoreWarning, want)
+	}
+	if !got.Before(hourLong) {
+		t.Fatalf("restore moved Restart now back to the hour-long schedule (%v)", hourLong)
 	}
 }
 

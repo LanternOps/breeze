@@ -231,3 +231,30 @@ func TestTheTrustedReadNeverFollowsALink(t *testing.T) {
 		t.Fatalf("the real record = %q, %v", data, err)
 	}
 }
+
+// The directory check claims nothing can be swapped in: a data directory
+// reached through a link is refused too (its target could be anywhere).
+func TestTheTrustedReadRefusesADirectoryReachedThroughALink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix links; on Windows the agent start replaces a linked data directory")
+	}
+	parent := t.TempDir()
+	realDir := filepath.Join(parent, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, deferralLedgerFile), []byte(`{"used":0}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(parent, "data")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readTrustedRecordFile(filepath.Join(linkDir, deferralLedgerFile))
+	if _, untrusted := errors.AsType[*untrustedRecordError](err); !untrusted {
+		t.Fatalf("readTrustedRecordFile through a linked directory = %v, want an untrusted-record refusal", err)
+	}
+	if data, err := readTrustedRecordFile(filepath.Join(realDir, deferralLedgerFile)); err != nil || string(data) != `{"used":0}` {
+		t.Fatalf("the record in the real directory = %q, %v", data, err)
+	}
+}

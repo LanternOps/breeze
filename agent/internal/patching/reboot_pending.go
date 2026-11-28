@@ -19,14 +19,22 @@
 // Invariants, each pinned in reboot_manager_restore_test.go:
 //   - A restored restart fires at the time the person was last told, never
 //     earlier, and its reminders keep their wall-clock times.
-//   - A restart whose time passed while the agent was down gets a fresh
-//     warning period (restoredOverdueWarning), never an immediate restart;
-//     one more than maxRestoreOverdue late is dropped.
+//   - Every restore leaves at least minRestoreWarning before the OS hand-off:
+//     a restart due sooner than that, or whose time passed while the agent
+//     was down, moves to now+minRestoreWarning (later than promised, never
+//     earlier); one more than maxRestoreOverdue late is dropped.
+//   - The first desktop session that connects after a restore is told about
+//     it once (AudienceConnected): the announcement at agent start reaches
+//     nobody until a helper is up.
 //   - Postponements already spent are neither given back nor counted twice.
 //   - A cancelled, completed, blocked or held restart is not resurrected: the
 //     record is cleared on every one of those paths, and it is tied to the
 //     boot it was written in, so a machine that restarted for any reason
 //     (including this restart) never restarts again because of it.
+//   - A record from another enrollment (a reinstall or re-enroll keeps the
+//     data folder), or one an agent of another version may have run over
+//     since it was written (a rollback: an older agent cancels without
+//     clearing it), is discarded.
 //   - A record that is corrupt, out of range, or from a boot that cannot be
 //     identified is discarded and logged, never acted on. One another account
 //     could have written (a link, loose permissions, a foreign owner or
@@ -37,6 +45,8 @@
 package patching
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,13 +60,19 @@ const (
 	// any other version is discarded rather than guessed at.
 	pendingRecordVersion = 1
 
-	// restoredOverdueWarning is the warning period a restart gets when its
-	// time passed while the agent was down. The person may have been told
-	// "restarting at 14:00" an hour ago and then heard nothing; restarting the
-	// moment the agent comes back would be a restart with no warning they
-	// could act on. Fifteen minutes is a lead warning, the 5-minute reminder
-	// and the closing minute.
-	restoredOverdueWarning = 15 * time.Minute
+	// minRestoreWarning is the least time a restored restart leaves before
+	// the machine goes down. One rule covers every restore: a restart due
+	// sooner than this, or whose time passed while the agent was down, moves
+	// to now+minRestoreWarning; one due later keeps its time. At agent start
+	// no desktop helper is connected yet, so the announcement made then
+	// reaches nobody on Windows and macOS, and a cancel queued while the
+	// agent was down arrives only with the first heartbeat; on macOS the OS
+	// restart cannot be called back once handed off. Fifteen minutes is the
+	// same period an overdue restart always got: a lead warning, the 5-minute
+	// reminder and the closing minute, with time for a helper to connect
+	// (AudienceConnected re-announces then) and a cancel to land. Firing later
+	// than the person was told is the safe direction.
+	minRestoreWarning = 15 * time.Minute
 
 	// maxRestoreOverdue is how late a restart may be and still be restored.
 	// Past it the agent was stopped deliberately for a long time (an
@@ -75,6 +91,16 @@ const (
 	maxRecordDeferralMinutes = 7 * 24 * 60
 	maxRecordText            = 4096
 )
+
+// enrollmentDigest is what the record stores of the agent id: enough to tell
+// one enrollment from another, without copying the id into another file.
+func enrollmentDigest(agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("breeze-pending-restart:" + agentID))
+	return hex.EncodeToString(sum[:16])
+}
 
 // PendingRebootRecord is the schedule part of the on-disk ledger: everything
 // needed to re-arm the restart a person was warned about. The deadline and the
@@ -105,6 +131,85 @@ type PendingRebootRecord struct {
 	// boot describes a restart that already happened, or one the machine's
 	// own restart made moot.
 	BootID string `json:"bootId"`
+
+	// Enrollment is a digest of the agent id the record was written under.
+	// A reinstall or re-enroll keeps the data folder but gets a new agent id,
+	// so the previous enrollment's restart is never restored.
+	Enrollment string `json:"enrollment"`
+	// WriterVersion and WriterStart identify the agent process that wrote the
+	// record: its version and its agent_start audit entry. A restore is
+	// refused if an agent of any other version started after that entry: an
+	// agent without this record (a rollback) cancels a restart without
+	// clearing it.
+	WriterVersion string `json:"writerVersion"`
+	WriterStart   string `json:"writerStart"`
+	// FirstDueAt is when the restart was due before any restore moved it to
+	// leave the minimum warning. The 24-hour cutoff counts from it, so agent
+	// restarts that keep moving the restart out cannot defer it for ever.
+	FirstDueAt time.Time `json:"firstDueAt"`
+}
+
+// AgentRun identifies the agent process for the pending-restart record.
+type AgentRun struct {
+	// Version is this binary's version.
+	Version string
+	// StartToken is this process's agent_start audit entry; empty when it
+	// could not be written, and then nothing this process writes is restored.
+	StartToken string
+	// StartsAfter lists the version of every agent start recorded after the
+	// start token names, in order (this process's own included). found is
+	// false when the token is not in the history.
+	StartsAfter func(token string) (versions []string, found bool, err error)
+}
+
+// SetEnrollment installs the source of this agent's id.
+func (r *RebootManager) SetEnrollment(agentID func() string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.enrollment = agentID
+}
+
+// SetAgentRun installs this process's identity and the agent start history.
+func (r *RebootManager) SetAgentRun(run AgentRun) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.agentRun = run
+}
+
+// AudienceConnected reports that a desktop session able to show a warning
+// connected. After a restore it announces the restart once more, to the
+// sessions now connected: the announcement made at agent start went out
+// before any helper was up. Only once per restore, and never once the OS
+// countdown is running (the closing rung already said so).
+func (r *RebootManager) AudienceConnected() {
+	r.mu.Lock()
+	campaign := r.reannounce
+	if campaign == 0 {
+		r.mu.Unlock()
+		return
+	}
+	r.reannounce = 0
+	left := r.state.ScheduledAt.Sub(r.nowFn())
+	if r.stopped || !r.state.RebootScheduled || r.campaign != campaign ||
+		r.osInvoked || r.osInvoking || r.osAborting || left <= finalNoticeLead {
+		r.mu.Unlock()
+		return
+	}
+	gen := r.generation
+	r.mu.Unlock()
+	// Warns without a dialog, like the announcement it repeats; the next
+	// reminder rung offers the choice.
+	r.emitNotification(gen, rebootRung{notification: restoredAnnouncement(left), quietLead: true})
+}
+
+// restoredAnnouncement is the lead notification of a plan with left to run.
+func restoredAnnouncement(left time.Duration) RebootNotification {
+	return RebootNotification{
+		Title:     "Restart Scheduled",
+		Body:      fmt.Sprintf("A system restart for updates is scheduled in %s. Please save your work.", humanizeRebootDelay(left)),
+		Urgency:   leadUrgency(left),
+		Countdown: left,
+	}
 }
 
 // SetBootID installs the boot identity source. Without one nothing is ever
@@ -114,6 +219,22 @@ func (r *RebootManager) SetBootID(f func() string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.bootID = f
+}
+
+// firstDueLocked is the time the current restart was first due: the anchor a
+// restore carried, or else the scheduled time. Callers hold r.mu.
+func (r *RebootManager) firstDueLocked() time.Time {
+	if !r.dueAnchor.IsZero() {
+		return r.dueAnchor
+	}
+	return r.state.ScheduledAt
+}
+
+func (r *RebootManager) currentAgentIDLocked() string {
+	if r.enrollment == nil {
+		return ""
+	}
+	return r.enrollment()
 }
 
 func (r *RebootManager) currentBootIDLocked() string {
@@ -162,13 +283,22 @@ func (r *RebootManager) persistPendingLocked() error {
 			PromptButton:    r.promptText.Button,
 			DeadlineAction:  string(r.deadlineAction),
 			BootID:          r.currentBootIDLocked(),
+			Enrollment:      enrollmentDigest(r.currentAgentIDLocked()),
+			WriterVersion:   r.agentRun.Version,
+			WriterStart:     r.agentRun.StartToken,
+			FirstDueAt:      r.firstDueLocked(),
 		},
 	}
+	// Written anyway (the count still matters), but say now that it cannot
+	// be restored, not at the next start when it is too late.
 	if !usableBootID(ledger.Pending.BootID) {
-		// Written anyway (the count still matters), but say now that it
-		// cannot be restored, not at the next start when it is too late.
 		log.Warn("no boot identity: this restart will not survive an agent restart",
 			"bootId", ledger.Pending.BootID, "campaign", r.campaign)
+	}
+	if ledger.Pending.Enrollment == "" || ledger.Pending.WriterVersion == "" || ledger.Pending.WriterStart == "" {
+		log.Warn("agent enrollment, version or start record unknown: this restart will not survive an agent restart",
+			"campaign", r.campaign, "hasEnrollment", ledger.Pending.Enrollment != "",
+			"version", ledger.Pending.WriterVersion, "hasStartRecord", ledger.Pending.WriterStart != "")
 	}
 	return writeOrRemoveLedger(path, ledger)
 }
@@ -307,14 +437,38 @@ func (r *RebootManager) RestorePendingReboot() bool {
 		r.dropPendingLocked("a restart from an earlier boot")
 		return false
 	}
+	// A reinstall or re-enroll keeps the data folder but not the agent id.
+	if current := enrollmentDigest(r.currentAgentIDLocked()); current == "" || rec.Enrollment != current {
+		return discard("pending restart record belongs to another enrollment of this agent, or the enrollment is unknown; not restoring it",
+			"enrollmentKnown", current != "")
+	}
+	// An agent of another version that started after the writer may not know
+	// this record: an older one cancels a restart without clearing it. Every
+	// agent version records its start, with its version, in the audit log, so
+	// this does not depend on the older agent's cooperation.
+	if foreign, err := r.otherAgentStartedSinceLocked(rec); err != nil || foreign != "" {
+		args := []any{"writerVersion", rec.WriterVersion, "currentVersion", r.agentRun.Version}
+		if err != nil {
+			return discard("cannot tell whether another agent ran since this restart was recorded; not restoring it",
+				append(args, "error", err.Error())...)
+		}
+		return discard("an agent of another version ran since this restart was recorded (it may have cancelled it); not restoring it",
+			append(args, "otherVersion", foreign)...)
+	}
 
+	// Compared as times: a Sub against a record decades back saturates.
+	// Counted from when it was first due, so restores that each moved it out
+	// by the minimum warning (an agent in a crash loop) cannot defer it for
+	// ever.
+	firstDue := rec.FirstDueAt
+	if rec.ScheduledAt.Before(now.Add(-maxRestoreOverdue)) || firstDue.Before(now.Add(-maxRestoreOverdue)) {
+		return discard("pending restart is more than a day overdue; not restoring it", "firstDueAt", firstDue)
+	}
 	delay := rec.ScheduledAt.Sub(now)
 	overdue := delay <= 0
-	if overdue {
-		if -delay > maxRestoreOverdue {
-			return discard("pending restart is more than a day overdue; not restoring it", "overdueBy", (-delay).String())
-		}
-		delay = restoredOverdueWarning
+	moved := delay < minRestoreWarning
+	if moved {
+		delay = minRestoreWarning
 	}
 	// The re-announcement warns without a dialog, as after a postponement
 	// (#4941): the person may have answered one moments before the agent
@@ -328,8 +482,13 @@ func (r *RebootManager) RestorePendingReboot() bool {
 	r.state.DeferralsUsed = ledger.Used
 	r.campaign = rec.Campaign
 	noteCampaignID(rec.Campaign)
-	// An overdue restore moved the time: record it, so another agent restart
-	// inside the warning period does not push the restart out again.
+	// Nobody may have seen the announcement just armed: repeat it to the
+	// first desktop session that connects.
+	r.reannounce = rec.Campaign
+	r.dueAnchor = firstDue
+	// Rewritten as this process's record: the moved time (what the console
+	// now shows), the first due time the day-late cutoff counts from, and this
+	// process as the writer the next restore checks the history against.
 	r.savePendingLocked("restoring a pending restart")
 
 	log.Info("restored a pending restart after an agent restart",
@@ -337,10 +496,40 @@ func (r *RebootManager) RestorePendingReboot() bool {
 		"scheduledAt", r.state.ScheduledAt,
 		"originalScheduledAt", rec.ScheduledAt,
 		"overdue", overdue,
+		"moved", moved,
 		"deadline", ledger.Deadline,
 		"deferralsUsed", ledger.Used,
 		"source", rec.Source)
 	return true
+}
+
+// otherAgentStartedSinceLocked returns the version of an agent that started
+// after the record's writer and is neither the writer's version nor this
+// one's ("" when none did). This process's own start is in the history with
+// the current version, and a same-version agent always clears the record on
+// a cancel. An error, or a writer the history does not contain, means it
+// cannot tell. Callers hold r.mu.
+func (r *RebootManager) otherAgentStartedSinceLocked(rec *PendingRebootRecord) (string, error) {
+	run := r.agentRun
+	if run.StartsAfter == nil || run.Version == "" {
+		return "", errors.New("no agent start history")
+	}
+	versions, found, err := run.StartsAfter(rec.WriterStart)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", errors.New("the agent start that wrote the record is not in the history")
+	}
+	for _, v := range versions {
+		if v != rec.WriterVersion && v != run.Version {
+			if v == "" {
+				return "(unknown)", nil
+			}
+			return v, nil
+		}
+	}
+	return "", nil
 }
 
 // restoreOptions validates the record against the ledger it sits in and
@@ -357,6 +546,23 @@ func (rec *PendingRebootRecord) restoreOptions(ledger DeferralLedger, now time.T
 	}
 	if rec.ScheduledAt.Sub(now) > maxRecordHorizon || ledger.Deadline.Sub(now) > maxRecordHorizon {
 		return RebootOptions{}, errors.New("scheduled time or deadline is implausibly far ahead")
+	}
+	// Compared as times, not durations: a Sub against a time centuries back
+	// saturates and would read as merely late.
+	if floor := now.Add(-maxRecordHorizon); rec.ScheduledAt.Before(floor) || ledger.Deadline.Before(floor) {
+		return RebootOptions{}, errors.New("scheduled time or deadline is implausibly far in the past")
+	}
+	// A campaign is the Unix-millisecond time it was scheduled. One past the
+	// horizon is not a schedule, and restoring it would let newCampaignID
+	// wrap to zero (no campaign).
+	if ceiling := now.Add(maxRecordHorizon).UnixMilli(); ceiling <= 0 || rec.Campaign > uint64(ceiling) {
+		return RebootOptions{}, errors.New("campaign is implausibly far ahead")
+	}
+	if rec.Enrollment == "" || rec.WriterVersion == "" || rec.WriterStart == "" {
+		return RebootOptions{}, errors.New("no enrollment, writer version or writer start")
+	}
+	if rec.FirstDueAt.IsZero() || rec.FirstDueAt.After(rec.ScheduledAt) {
+		return RebootOptions{}, errors.New("first due time missing or after the scheduled time")
 	}
 	if len(rec.Reason) > maxRecordText || len(rec.Source) > maxRecordText {
 		return RebootOptions{}, errors.New("reason or source too long")

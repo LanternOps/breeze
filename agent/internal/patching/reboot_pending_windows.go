@@ -15,6 +15,10 @@ import (
 // maxRecordBytes bounds the read: a real record is well under a kilobyte.
 const maxRecordBytes = 64 << 10
 
+// programDataDirTrusted is config.ProgramDataDirTrusted, a seam for tests: the
+// verification it reports runs only on the real ProgramData folders.
+var programDataDirTrusted = config.ProgramDataDirTrusted
+
 // readTrustedRecordFile reads a pending-restart record only from a data
 // directory whose protected ACL (SYSTEM and Administrators only) was verified
 // or repaired at this agent start (config.EnforceProgramDataTreePermissions).
@@ -24,7 +28,7 @@ const maxRecordBytes = 64 << 10
 // the path and on the open handle), so nothing can be swapped in between. A
 // refusal is an *untrustedRecordError.
 func readTrustedRecordFile(path string) ([]byte, error) {
-	if dir := filepath.Dir(path); !config.ProgramDataDirTrusted(dir) {
+	if dir := filepath.Dir(path); !programDataDirTrusted(dir) {
 		return nil, &untrustedRecordError{fmt.Errorf("data directory %s has not been verified as SYSTEM/Administrators-only", dir)}
 	}
 	linfo, err := os.Lstat(path)

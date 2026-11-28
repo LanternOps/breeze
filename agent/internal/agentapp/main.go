@@ -1038,8 +1038,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// value.
 	shipperServerURL.Bind(hb.ServerURL)
 
-	// Log agent start audit event (nil-safe: Log() is a no-op on nil receiver)
-	hb.AuditLog().Log(audit.EventAgentStart, "", map[string]any{
+	// Log agent start audit event (nil-safe: a no-op returning "" on a nil
+	// receiver). Every agent version writes this entry with its version; its
+	// hash is this process's start token for the pending-restart record.
+	startToken := hb.AuditLog().LogEntry(audit.EventAgentStart, "", map[string]any{
 		"version": version,
 		"agentId": cfg.AgentID,
 	})
@@ -1048,7 +1050,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// before the first heartbeat, so the console never sees it disappear
 	// (#12827). Never in a support session: it schedules no restarts.
 	if !cfg.SupportMode {
-		hb.RestorePendingReboot()
+		hb.RestorePendingReboot(startToken)
 	}
 
 	go hb.Start()

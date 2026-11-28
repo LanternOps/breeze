@@ -20,23 +20,40 @@ const maxRecordBytes = 64 << 10
 // account could have written, replaced or removed it. The agent runs as root
 // and writes the record 0600 inside its 0700 data dir.
 //
-// The file is opened once without following links, and every check runs on
-// that descriptor before it is read, so a link or a swapped file cannot slip
-// in between the check and the read. The directory must be owned by the
-// agent and writable by nobody else (neither group nor others): anyone who
-// could write it could swap or delete the record, which would let a local
-// user schedule, or cancel, a restart. A refusal is an *untrustedRecordError.
+// The directory and then the file are each opened once without following a
+// link (the file relative to the directory's descriptor), and every check
+// runs on those descriptors before the read, so neither a linked directory
+// nor a link or a swapped file can slip in between the check and the read.
+// The directory must be owned by the agent and writable by nobody else
+// (neither group nor others): anyone who could write it could swap or delete
+// the record, which would let a local user schedule, or cancel, a restart. A
+// refusal is an *untrustedRecordError.
 func readTrustedRecordFile(path string) ([]byte, error) {
 	dirPath := filepath.Dir(path)
-	dir, err := os.Stat(dirPath)
+	dirFd, err := unix.Open(dirPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, os.ErrNotExist
+		}
+		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+			return nil, &untrustedRecordError{fmt.Errorf("directory %s is a link or not a directory", dirPath)}
+		}
+		return nil, &os.PathError{Op: "open", Path: dirPath, Err: err}
+	}
+	dirFile := os.NewFile(uintptr(dirFd), dirPath)
+	defer func() { _ = dirFile.Close() }()
+	dir, err := dirFile.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !dir.IsDir() {
+		return nil, &untrustedRecordError{fmt.Errorf("directory %s is not a directory", dirPath)}
 	}
 	if err := ownedAndPrivate(dir); err != nil {
 		return nil, &untrustedRecordError{fmt.Errorf("directory %s: %w", dirPath, err)}
 	}
 
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	fd, err := unix.Openat(dirFd, filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) {
 			return nil, os.ErrNotExist

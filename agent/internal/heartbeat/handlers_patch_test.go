@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -20,13 +21,21 @@ func newTestHeartbeatWithRebootManager(t *testing.T) *Heartbeat {
 	return &Heartbeat{rebootMgr: mgr}
 }
 
-// tempRebootSeams keeps a test manager's files out of the agent data dir.
+// tempRebootSeams keeps a test manager's files out of the agent data dir and
+// the OS restart command out of reach: these managers run real timers, so a
+// test that stalled past a schedule's closing rung would otherwise restart
+// the machine running the tests. A call fails the test instead.
 func tempRebootSeams(t *testing.T) patching.RebootSeams {
 	t.Helper()
 	dir := t.TempDir()
 	return patching.RebootSeams{
 		HistoryPath: filepath.Join(dir, "reboot_history.json"),
 		LedgerPath:  filepath.Join(dir, "reboot_deferrals.json"),
+		ExecOSReboot: func(time.Duration) error {
+			t.Error("a test reached the OS restart command")
+			return errors.New("test: no OS restart")
+		},
+		AbortOSReboot: func() error { return nil },
 	}
 }
 

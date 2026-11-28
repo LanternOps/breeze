@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,19 +17,7 @@ import (
 // comes back as the same campaign, at the same time, with the budget the
 // person left it at.
 func TestRestartCardComesBackAfterAnAgentRestart(t *testing.T) {
-	dir := t.TempDir()
-	newMgr := func(timers *e2eTimers, osCalls *int) *patching.RebootManager {
-		return patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, patching.RebootSeams{
-			Now:              time.Now,
-			AfterFunc:        timers.afterFunc,
-			ExecOSReboot:     func(time.Duration) error { *osCalls++; return nil },
-			AbortOSReboot:    func() error { return nil },
-			HistoryPath:      filepath.Join(dir, "history.json"),
-			LedgerPath:       filepath.Join(dir, "ledger.json"),
-			BootID:           func() string { return "linux:same-boot" },
-			StateFileTrusted: func(string) error { return nil },
-		})
-	}
+	newMgr := restoreTestManagers(t)
 	enabled := []string{"notice.info", "restart.prompt", "restart.final"}
 
 	// First agent process: schedule, show the card, postpone on it.
@@ -110,29 +99,142 @@ func TestRestartCardComesBackAfterAnAgentRestart(t *testing.T) {
 func TestHeartbeatRestorePendingRebootFeedsTheNextHeartbeat(t *testing.T) {
 	seams := tempRebootSeams(t)
 	seams.BootID = func() string { return "linux:same-boot" }
-	// Real timers here: never let one reach the OS.
-	seams.ExecOSReboot = func(time.Duration) error { t.Error("OS restart invoked"); return nil }
-	seams.AbortOSReboot = func() error { return nil }
+	enrollment := func() string { return "agent-1" }
+	// The audit log's agent starts: the writer, then the restoring process,
+	// both 1.0.0.
+	starts := []string{"start-1", "start-2"}
+	startsAfter := func(tok string) ([]string, bool, error) {
+		for i, s := range starts {
+			if s == tok {
+				return []string{"1.0.0"}[:len(starts)-1-i], true, nil
+			}
+		}
+		return nil, false, nil
+	}
 	first := patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, seams)
+	first.SetEnrollment(enrollment)
+	first.SetAgentRun(patching.AgentRun{Version: "1.0.0", StartToken: "start-1", StartsAfter: startsAfter})
 	if err := first.Schedule(time.Hour, time.Now().Add(time.Hour), "Patch", "patch_job"); err != nil {
 		t.Fatal(err)
 	}
 	want := first.State().ScheduledAt
 	first.Stop()
 
-	h := &Heartbeat{rebootMgr: patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, seams)}
+	h := &Heartbeat{
+		rebootMgr:        patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, seams),
+		agentVersion:     "1.0.0",
+		agentStartsAfter: startsAfter,
+	}
+	h.rebootMgr.SetEnrollment(enrollment)
 	t.Cleanup(h.rebootMgr.Stop)
 	if h.rebootStatusForHeartbeat() != nil {
 		t.Fatal("setup: something scheduled before the restore")
 	}
-	if !h.RestorePendingReboot() {
+	if !h.RestorePendingReboot("start-2") {
 		t.Fatal("Heartbeat.RestorePendingReboot restored nothing")
 	}
 	report := h.rebootStatusForHeartbeat()
 	if report == nil || !report.ScheduledAt.Round(0).Equal(want.Round(0)) || report.Source != "patch_job" {
 		t.Fatalf("heartbeat rebootStatus after restore = %+v, want the restart at %v", report, want)
 	}
-	if (&Heartbeat{}).RestorePendingReboot() {
+	if (&Heartbeat{}).RestorePendingReboot("start-3") {
 		t.Fatal("a heartbeat with no reboot manager reported a restore")
+	}
+
+	// With the audit log disabled (no history) nothing is restored: it cannot
+	// tell whether an older agent ran since.
+	first.Stop()
+	h.rebootMgr.Stop()
+	noLog := &Heartbeat{rebootMgr: patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, seams), agentVersion: "1.0.0"}
+	noLog.rebootMgr.SetEnrollment(enrollment)
+	t.Cleanup(noLog.rebootMgr.Stop)
+	if noLog.RestorePendingReboot("") {
+		t.Fatal("restored with the audit log disabled")
+	}
+}
+
+// restoreTestManagers returns a constructor for successive agent processes on
+// one machine: same boot, same enrollment, same version, sharing a ledger and
+// an agent start history. Every OS restart is counted, never run.
+func restoreTestManagers(t *testing.T) func(timers *e2eTimers, osCalls *int) *patching.RebootManager {
+	t.Helper()
+	dir := t.TempDir()
+	var starts []string
+	startsAfter := func(tok string) ([]string, bool, error) {
+		for i, s := range starts {
+			if s == tok {
+				out := make([]string, 0, len(starts)-1-i)
+				for range starts[i+1:] {
+					out = append(out, "1.0.0")
+				}
+				return out, true, nil
+			}
+		}
+		return nil, false, nil
+	}
+	return func(timers *e2eTimers, osCalls *int) *patching.RebootManager {
+		m := patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, patching.RebootSeams{
+			Now:              time.Now,
+			AfterFunc:        timers.afterFunc,
+			ExecOSReboot:     func(time.Duration) error { *osCalls++; return nil },
+			AbortOSReboot:    func() error { return nil },
+			HistoryPath:      filepath.Join(dir, "history.json"),
+			LedgerPath:       filepath.Join(dir, "ledger.json"),
+			BootID:           func() string { return "linux:same-boot" },
+			StateFileTrusted: func(string) error { return nil },
+		})
+		starts = append(starts, fmt.Sprintf("start-%d", len(starts)+1))
+		m.SetEnrollment(func() string { return "agent-1" })
+		m.SetAgentRun(patching.AgentRun{Version: "1.0.0", StartToken: starts[len(starts)-1], StartsAfter: startsAfter})
+		return m
+	}
+}
+
+// At agent start no helper is connected, so the restored restart's
+// announcement draws no card. The first session that connects gets the card.
+func TestRestoredRestartCardIsShownWhenTheFirstSessionConnects(t *testing.T) {
+	newMgr := restoreTestManagers(t)
+	enabled := []string{"notice.info", "restart.prompt", "restart.final"}
+
+	t1, os1 := &e2eTimers{fns: map[time.Duration][]func(){}}, 0
+	m1 := newMgr(t1, &os1)
+	if err := m1.Schedule(time.Hour, time.Now().Add(time.Hour), "Patch", "patch_job"); err != nil {
+		t.Fatal(err)
+	}
+	m1.Stop()
+
+	f := newRCFixture(t, enabled...)
+	f.owners = nil // the agent just started: no helper yet
+	f.clock.mu.Lock()
+	f.clock.t = time.Now()
+	f.clock.mu.Unlock()
+	t2, os2 := &e2eTimers{fns: map[time.Duration][]func(){}}, 0
+	m2 := newMgr(t2, &os2)
+	f.card.mgr = m2
+	m2.SetRestartSurface(f.card)
+	t.Cleanup(m2.Stop)
+	if !m2.RestorePendingReboot() {
+		t.Fatal("not restored")
+	}
+	withDeadline(t, "restored lead rung", func() { t2.runAt(0) })
+	if shows := rcShows(f.dir.take(), "assist-a"); len(shows) != 0 {
+		t.Fatalf("a card was drawn with no session connected: %+v", shows)
+	}
+
+	f.owners = []prompthost.Owner{rcOwnerA} // the helper connects
+	withDeadline(t, "first session connects", m2.AudienceConnected)
+	shows := rcShows(f.dir.take(), "assist-a")
+	if len(shows) != 1 {
+		t.Fatalf("cards after the first session connected = %+v, want the restored restart's card", shows)
+	}
+	if want := m2.State().ScheduledAt.UnixMilli(); shows[0].Timing.DeadlineUnixMs != want {
+		t.Errorf("card time = %d, want %d", shows[0].Timing.DeadlineUnixMs, want)
+	}
+	withDeadline(t, "second session connects", m2.AudienceConnected)
+	if again := rcShows(f.dir.take(), "assist-a"); len(again) != 0 {
+		t.Fatalf("announced again to a later session: %+v", again)
+	}
+	if os1 != 0 || os2 != 0 {
+		t.Fatalf("OS invoked during the test: %d / %d", os1, os2)
 	}
 }

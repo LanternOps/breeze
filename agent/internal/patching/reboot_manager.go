@@ -218,6 +218,19 @@ type RebootManager struct {
 	// record's file-trust check (nil = readTrustedRecordFile).
 	bootID           func() string
 	stateFileTrusted func(path string) error
+	// enrollment returns this agent's id (#12827): a record written under
+	// another enrollment is never restored. Nil: nothing is restored.
+	enrollment func() string
+	// agentRun identifies this agent process and reads which agents started
+	// since a record's writer (#12827). Zero: nothing is restored.
+	agentRun AgentRun
+	// reannounce is the restored campaign still owed an announcement to the
+	// first session that connects (#12827); zero when none is owed.
+	reannounce uint64
+	// dueAnchor is the time a restored restart was first due, carried across
+	// restores that moved it (#12827); zero for a time an operator or the
+	// person set. The 24-hour cutoff counts from it.
+	dueAnchor time.Time
 }
 
 // NewRebootManager creates a new RebootManager with circuit breaker protection
@@ -376,6 +389,9 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 	r.cancelLocked()
 	r.osInvoked = false
 	gen := r.generation
+	// A new time from a schedule, a postponement or Restart now is a new
+	// promise; only a restore carries the old one (it sets this after).
+	r.dueAnchor = time.Time{}
 
 	plan := PlanReboot(delay)
 
