@@ -4,8 +4,8 @@
  * The provider answers with headers at once and then trickles the body, one
  * byte every 20 ms, so the 10 s inactivity timeout never fires. Without an
  * explicit deadline such a call ran until safeFetch's default body allowance
- * (60 s plus the transfer time, from the headers). The token, userinfo and
- * discovery calls now pass `deadlineMs: OIDC_FETCH_DEADLINE_MS`.
+ * (60 s plus the transfer time, from the headers). The token exchange, token
+ * refresh, userinfo and discovery calls now pass `deadlineMs: OIDC_FETCH_DEADLINE_MS`.
  *
  * The JWKS fetch is bounded by jose itself: it passes `AbortSignal.timeout(5000)`
  * to the injected fetch, which safeFetch honours for the whole call. That

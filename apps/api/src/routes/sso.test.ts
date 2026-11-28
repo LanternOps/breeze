@@ -1234,12 +1234,12 @@ describe('sso routes', () => {
       // Real discovery against an issuer that sends headers and then trickles
       // the body: it ends at 30 s, and the route refuses the write as for any
       // other failed discovery.
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       resolveTo('10.0.0.5');
       const peer = await slowPeer();
       try {
         const real = await vi.importActual<typeof import('../services/sso')>('../services/sso');
-        vi.mocked(discoverOIDCConfig).mockImplementation(() =>
+        vi.mocked(discoverOIDCConfig).mockImplementationOnce(() =>
           real.discoverOIDCConfig(`http://idp.internal.test:${peer.port}`, { allowPrivateNetwork: true }));
         const client = dialLocally();
         const { clockTo } = useFakeClock();
@@ -1271,6 +1271,7 @@ describe('sso routes', () => {
         __setLookupForTests(null);
         vi.mocked(http.request).mockRestore?.();
         vi.mocked(https.request).mockRestore?.();
+        warn.mockRestore();
         peer.close();
       }
     }, 30_000);
@@ -2854,8 +2855,10 @@ describe('sso routes', () => {
       };
       const FAILED_SIGN_IN = `/login?error=sso_error&message=${encodeURIComponent('request did not complete within 30000ms')}`;
 
+      let consoleError: ReturnType<typeof vi.spyOn> | undefined;
+
       beforeEach(() => {
-        vi.spyOn(console, 'error').mockImplementation(() => {});
+        consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
         resolveTo('10.0.0.5');
       });
 
@@ -2864,6 +2867,7 @@ describe('sso routes', () => {
         __setLookupForTests(null);
         vi.mocked(http.request).mockRestore?.();
         vi.mocked(https.request).mockRestore?.();
+        consoleError?.mockRestore();
         peer?.close();
         peer = undefined;
       });
@@ -2885,7 +2889,7 @@ describe('sso routes', () => {
         peer = await slowPeer();
         const port = peer.port;
         const real = await actualSso();
-        vi.mocked(exchangeCodeForTokens).mockImplementation((params) =>
+        vi.mocked(exchangeCodeForTokens).mockImplementationOnce((params) =>
           real.exchangeCodeForTokens({ ...params, config: atPeer(params.config, port) }));
         const client = dialLocally();
 
@@ -2902,7 +2906,7 @@ describe('sso routes', () => {
         peer = await slowPeer();
         const port = peer.port;
         const real = await actualSso();
-        vi.mocked(getUserInfo).mockImplementation((config, accessToken) =>
+        vi.mocked(getUserInfo).mockImplementationOnce((config, accessToken) =>
           real.getUserInfo(atPeer(config, port), accessToken));
         const client = dialLocally();
 
@@ -2919,7 +2923,7 @@ describe('sso routes', () => {
         peer = await slowPeer({ body: { sub: 'external-user-1', email: 'test@example.com', name: 'Test User' } });
         const port = peer.port;
         const real = await actualSso();
-        vi.mocked(getUserInfo).mockImplementation((config, accessToken) =>
+        vi.mocked(getUserInfo).mockImplementationOnce((config, accessToken) =>
           real.getUserInfo(atPeer(config, port), accessToken));
         dialLocally();
 

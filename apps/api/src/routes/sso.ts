@@ -312,8 +312,8 @@ const tokenExchangeSchema = z.object({
  * PATCH /providers/:id, POST /providers/:id/test) are registered in
  * SELF_MANAGED_DB_CONTEXT_ROUTES, so `authMiddleware` does NOT open the ambient
  * request transaction for them: `discoverOIDCConfig` → `safeFetch` is a call
- * of up to 30 s (OIDC_FETCH_DEADLINE_MS) to a TENANT-CONTROLLED issuer host, and holding a
- * pooled `breeze_app` connection idle-in-transaction across it is
+ * of up to 30 s (OIDC_FETCH_DEADLINE_MS) to a TENANT-CONTROLLED issuer host,
+ * and holding a pooled `breeze_app` connection idle-in-transaction across it is
  * tenant-triggerable pool starvation (#1105 class — 25 connections in prod, and
  * these routes have no rate limit). `safeFetch`'s `assertOutsideHeldDbContext`
  * tripwire exists precisely to catch this.
@@ -1883,8 +1883,9 @@ ssoRoutes.post(
   const { id: providerId } = c.req.valid('param');
 
   // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES
-  // (the discovery call below is tenant-controlled and 10s-bounded), so there is
-  // no ambient request transaction to read under.
+  // (the discovery call below is tenant-controlled and bounded at
+  // OIDC_FETCH_DEADLINE_MS = 30s), so there is no ambient request transaction
+  // to read under.
   const provider = await withAuthDbAccessContext(auth, async () => {
     const [row] = await db
       .select()
