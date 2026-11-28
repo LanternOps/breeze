@@ -23,7 +23,7 @@
  * records a floor: binaries registered from a local directory through the
  * per-deployment fallback were built from this source, so they carry its floor.
  */
-export const DECLARED_MACOS_FLOOR = '12.0';
+export const DECLARED_MACOS_FLOOR = '13.0';
 
 export const OS_BELOW_MINIMUM_REASON = 'os_below_minimum';
 export const OS_VERSION_UNKNOWN_REASON = 'os_version_unknown';
