@@ -347,10 +347,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // step-up grant (Redis GETDEL), as the reattach request does.
   { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/tpm-baseline\/mismatch\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
-  // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
+  // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_DEADLINE_MS = 30s
   // against a TENANT-CONTROLLED issuer host). Held inside the request
   // transaction, a tenant admin pointing `issuer` at a blackholed host pins a
-  // pooled connection idle-in-transaction for 10s per call, on unrate-limited
+  // pooled connection idle-in-transaction for up to 30s per call, on unrate-limited
   // routes, against a 25-connection prod pool — tenant-triggerable pool
   // starvation for every tenant (#1105 class). The handlers wrap each DB op in
   // its own short `withDbAccessContext(dbAccessContextFromAuth(auth), …)` block
