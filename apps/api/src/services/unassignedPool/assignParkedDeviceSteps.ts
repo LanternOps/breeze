@@ -9,7 +9,7 @@
  * The SQL itself is proved against real Postgres in
  * __tests__/integration/parkedAssignment.integration.test.ts.
  */
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { devices, organizations, refreshTokenFamilies, sites } from '../../db/schema';
 import type { DeviceOrgMoveTx } from '../deviceOrgMove/moveDeviceOrgInTransaction';
 
@@ -145,4 +145,20 @@ export async function lockLiveUserSession(
     && row!.userId === input.userId
     && row!.revokedAt === null
     && row!.absoluteExpiresAt.getTime() > Date.now();
+}
+
+/**
+ * #8318 spec §10.4 / §13 decision 9: ask for the device's real certificate.
+ * The one issued at pool enrollment is bounded to the parking window and was
+ * never renewed while parked; recording its serial as the one to replace
+ * makes the first full heartbeat in the customer org signal renewCert
+ * (routes/agents/heartbeatCredentialMaintenance.ts), and the renewal issues
+ * the target org's lifetime. Copied from the device's own serial column, so a
+ * device that never had a certificate (mTLS not configured) is left as it is.
+ */
+export async function requestCertificateRenewalAfterAssignment(tx: AssignTx, deviceId: string): Promise<void> {
+  await tx
+    .update(devices)
+    .set({ mtlsRenewalRequestedSerial: sql`${devices.mtlsCertSerialNumber}` })
+    .where(and(eq(devices.id, deviceId), isNotNull(devices.mtlsCertSerialNumber)));
 }

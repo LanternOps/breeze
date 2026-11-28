@@ -128,7 +128,7 @@ Paths are under `apps/api/src/` unless they start with `agent/` or `apps/web/`; 
 | F11 | Peripheral policy reconciliation skips a device whose stored digest is unchanged. The agent reports a digest only in a policy command's result, never its current state on heartbeat, so a new install behind an unchanged stored digest would never receive the policy (fail-open). | `services/peripheralPolicyState.ts:130-136,385`; `agent/internal/peripheral/types.go:86`; `jobs/peripheralJobs.ts:516` |
 | F12 | Parked devices are confined to an allow-list (heartbeat, commands, rotate-token, uninstall-intent), command claims are narrowed to `self_uninstall`, and enqueue is refused. A classification test reads the real route table. The parked heartbeat reads only `agentVersion`, `role` and `watchdogState`, so it records no capabilities. | `middleware/agentAuthParked.ts:33-68`; `services/drainClaimAllowlist.ts:17`; `middleware/agentAuth.ts:1086`; `routes/agents/parkedRouteClassification.test.ts:13-17`; `routes/agents/heartbeatParked.ts:12-16` |
 | F13 | Leaving the pool is one-way through `assignParkedDevice` (`via:'pool_assignment'`), with `possessionConfirmed`, step-up and full partner access. The move guard refuses moving any row **into** the pool. The ledger `device_pool_assignment_events` CHECKs `event_type IN ('enrolled','assigned','expired','purged')` plus a per-type shape CHECK, blocks UPDATE by trigger (DELETE stays granted for partner erasure) and refuses non-system reads and writes with a RESTRICTIVE policy. Every holding-area change takes a per-partner advisory lock first, then the device row, then the `partners` row. | `services/unassignedPool/assignParkedDevice.ts:5-19,292`; `migrations/2026-11-08-190100-unassigned-pool-org-guards.sql:81-112`; `migrations/2026-11-08-190200-device-pool-assignment-events.sql:36-50,77-91`; `migrations/2026-11-08-190300-device-pool-assignment-events-system-only.sql:39`; `services/unassignedPool/holdingAreaLock.ts:9-18` |
-| F14 | **Deploy keys do not exist yet.** There is no table, hash or mint route. What exists around them: snapshot columns on the ledger, the partner switch `partners.deploy_key_enrollment_enabled`, the platform env flag, the incident route `POST /pre-assignment/deploy-keys/:id/expire-devices`, and fixed limits (14 days, 50 uses, parked cap 50, `DEPLOY_KEY_RATE` 10/600 s per key and 25/600 s per partner). Pool enrollment is dark: `enrollment.ts` passes `{ preAssignment: false }`. | `services/unassignedPool/limits.ts:7-31`; `services/unassignedPool/enrollmentRateBuckets.ts:1-58`; `db/schema/orgs.ts:63`; `config/env.ts:172`; `routes/preAssignment.ts:357`; `routes/agents/enrollment.ts:1207` |
+| F14 | **Deploy keys did not exist yet** (wave D-1 added them, §10 "Decided in wave D-1"). There was no table, hash or mint route. What exists around them: snapshot columns on the ledger, the partner switch `partners.deploy_key_enrollment_enabled`, the platform env flag, the incident route `POST /pre-assignment/deploy-keys/:id/expire-devices`, and fixed limits (14 days, 50 uses, parked cap 50, `DEPLOY_KEY_RATE` 10/600 s per key and 25/600 s per partner). Pool enrollment is dark: `enrollment.ts` passes `{ preAssignment: false }`. | `services/unassignedPool/limits.ts:7-31`; `services/unassignedPool/enrollmentRateBuckets.ts:1-58`; `db/schema/orgs.ts:63`; `config/env.ts:172`; `routes/preAssignment.ts:357`; `routes/agents/enrollment.ts:1207` |
 | F15 | Org enrollment keys already allow a 365-day TTL (`MAX_TTL_MINUTES = 525_600`) and up to 100 000 uses (or unlimited, `maxUsage: null`); keys are stored peppered-hashed. | `routes/enrollmentKeys.ts:750,764-777`; `services/enrollmentKeySecurity.ts:51-56` |
 | F16 | The agent collects serial, manufacturer and model, but **no system UUID** on any OS; Linux `product_serial`/`sys_vendor` are not run through the placeholder cleaner. | `agent/internal/collectors/hardware.go:15-30,156-199`; `hardware_linux.go:35-41` |
 | F17 | `possible_replacement_of_device_id` is set only on the #2764 collision path (hostname + org + site) and cleared by the offline detector. The banner offers "View old device" and "Decommission old device"; no adopt or reattach. | `routes/agents/enrollment.ts:461-488,900`; `jobs/offlineDetector.ts:721-732`; `apps/web/src/components/devices/PossibleReplacementBanner.tsx:170-187` |
@@ -1119,8 +1119,9 @@ edge refuses agent traffic without one only after the WAF phase is enabled
 every agent route still needs a bearer token. It is a perimeter filter that keeps unauthenticated
 traffic from reaching the API.
 
-Where it is configured, every enroll issues one (`routes/agents/enrollment.ts:1066`), and a parked
-device can renew it (`/renew-cert` skips agent auth, `middleware/agentAuthParked.ts:20-27`). The
+Where it is configured, every enroll issues one (`issueMtlsCertForDevice` in
+`routes/agents/enrollment.ts`), and before wave D-1 a parked device could renew it (`/renew-cert`
+skips agent auth, `middleware/agentAuthParked.ts`). The
 image is effectively public, so the edge filter would be open to anyone holding the image.
 
 Proposed:
@@ -1163,6 +1164,69 @@ routes on certificates. §13 decision 9 confirmed the bounded certificate.
 
 Collision lookup stays scoped to the key's own org and site, so a pool enrollment can never see a
 customer row. Install: `breeze-agent enroll <deploy-key>` for images and scripts.
+
+### Decided in wave D-1
+
+Where §10 was open or the code differed, wave D-1 (the API) settled it as follows. The web, the
+key-management UI and the alerts of §10.5 are wave D-2.
+
+- **No enrollment secret for a deploy key** (decided by the user on 2026-11-25). The production
+  secret gate of org-key enrollment (a per-key secret or `AGENT_ENROLLMENT_SECRET`) does not apply.
+  The key is embedded in an image and treated as public (§10.5), so the global secret would ship
+  inside every image and stop protecting org keys, and a per-key secret would sit next to the key
+  and add nothing. The controls are the ones after parking: the allow-list, the caps, the rate
+  buckets and a human assignment.
+- **Key format.** `bdk_` followed by 64 hex characters (32 random bytes), stored as the peppered
+  hash of the whole string (as org keys, F15); the plaintext is returned once, by mint and rotate.
+  The prefix routes enrollment to the deploy-key branch before any org-key lookup, so the agent
+  command and body stay as they are (`enrollmentKey`).
+- **The table** `partner_deploy_keys` is partner-axis (shape 3) with the §10.1 columns
+  (`source_cidrs cidr[]`), CHECKs for the §10.2 ceilings (365 days, 1000 uses, 20 parked), and the
+  ledger's RLS pair: the permissive partner-axis policy plus a RESTRICTIVE system-only policy. RLS
+  cannot tell a full partner admin from a technician limited to selected orgs, so every read and
+  write runs in a system context scoped to the partner the route resolved. The ledger's
+  `deploy_key_id` keeps no FK: it is a snapshot.
+- **Routes** `GET|POST /pre-assignment/deploy-keys`, `POST .../:deployKeyId/rotate` and
+  `POST .../:deployKeyId/revoke`, with the gates of the other pre-assignment routes (full partner
+  admin, interactive MFA-assured session). Mint and rotate open a way to enroll and need step-up
+  (`deploy_key_mint` bound to `{ partnerId, imageLabel }`, `deploy_key_rotate` bound to
+  `{ partnerId, deployKeyId }`); revoke only closes one and needs none. "Active" for the two-keys
+  rule is `status = 'active' AND expires_at > now()`, image labels compare case-insensitively, and
+  the rule is checked under the holding-area lock. Rotate keeps the old key active (images in the
+  field still carry it) until it is revoked. Revoke marks the key, then runs the §10.3 expiry for
+  everything it parked; repeating it re-runs the expiry.
+- **Eligibility** is checked at mint, at rotate and on every enrollment. Mint and rotate do not
+  read the platform flag; enrollment does.
+- **Order of the enrollment branch** (`routes/agents/enrollmentDeployKey.ts`), which differs from
+  §10.6 in one place: the holding org is created by `getOrCreateUnassignedPoolOrg` in its own
+  context before the device transaction (it takes its own advisory lock), not inside it. The
+  order is: the per-IP limit, the key in a short system context, the source CIDRs, the rate
+  buckets outside any context, the switches and eligibility, the holding org, the tenant gate, then
+  one transaction: the holding-area lock (with the partner cap), the key row `FOR UPDATE` and its
+  state again, eligibility again, the per-key `max_parked` (live devices whose latest `enrolled`
+  row names the key), the device write, the use claim (which stamps `last_used_at` and
+  `last_used_ip`) and the `enrolled` row. Refusals do not say which switch or clause failed: the
+  agent gets `deploy_key_enrollment_unavailable` and the audit row has the detail.
+- **Scope of an enrollment.** The collision lookup is the holding org and site, without
+  decommissioned rows, so an expired parked device cannot come back through its old token. An
+  in-place re-enroll onto a parked row writes another `enrolled` row with the new key, so revoking
+  either key expires the device. Not run for a deploy key: Quick Support, the deployment-invite
+  match, the probation gate (eligibility already requires `trusted`), the licensed-device cap,
+  reinstall detection, warranty sync and the `device.enrolled` event, whose partner-wide
+  subscribers would see the parked device before assignment.
+- **Certificates** (§10.4, decision 9). A pool enrollment's certificate lives
+  `min(org policy, whole days left in the parked TTL)`, at least one day. All three renewal routes
+  refuse a holding-org device with `device_pending_assignment`, and the parked beat no longer
+  signals `renewCert`. Expiry (and so key revocation) moves the device's certificates to
+  `pending_revocation` and revokes them after commit; purge waits until they are revoked. Assignment
+  cannot hand certificate material to the agent, so it requests a renewal instead
+  (`devices.mtls_renewal_requested_serial`), which the next full beat signals. Where the edge WAF
+  requires mTLS, a parked device that reaches its expiry cannot reach the API to collect
+  `self_uninstall`, which follows from decision 9.
+- **The agent.** A real agent enrolled with a deploy key keeps a 60-second parked beat, survives
+  the refusals of the routes outside the allow-list and resumes without a restart when assigned.
+  Its parked mode (pausing the loops that cannot succeed and re-sending the refused startup
+  inventory on assignment) is wave D-1a, an agent change.
 
 ## 11. Waves (reordered per #8318)
 

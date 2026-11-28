@@ -11,9 +11,10 @@ import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
  * fails on any unclassified route).
  *
  * Why each entry exists:
- * - `heartbeat`: liveness, and the carrier of the rotation signals
- *   (renewCert / rotateToken / confirmTokenRotation). A parked device gets a
- *   minimal beat (routes/agents/heartbeatParked.ts), never the full one.
+ * - `heartbeat`: liveness, and the carrier of the token rotation signals
+ *   (rotateToken / confirmTokenRotation; never renewCert, see below). A parked
+ *   device gets a minimal beat (routes/agents/heartbeatParked.ts), never the
+ *   full one.
  * - `rotate-token`, `rotate-token/confirm`: token rotation (ruled in).
  * - `commands`, `commands/<commandId>/result`: poll and ack for lifecycle
  *   removal only — the claim allowlist on the agent context narrows both to
@@ -36,9 +37,11 @@ import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
  *
  * Certificate renewal (`/renew-cert*`, routes/agents/mtls.ts) authenticates
  * outside agentAuthMiddleware by design (AGENT_AUTH_SKIP_ID_SEGMENTS) and is
- * not on this list; it stays available to a parked device and issues nothing
- * but a certificate. The agent WebSocket and the Helper token authenticate
- * separately too, and refuse a parked device themselves.
+ * not on this list; its own bearer check refuses a parked device with the
+ * same body (#8318 spec §10.4: the certificate issued at pool enrollment
+ * lives no longer than the parking window and is never renewed there). The
+ * agent WebSocket and the Helper token authenticate separately too, and
+ * refuse a parked device themselves.
  *
  * Anchored absolutely (see ./agentCorePath.ts): extension and Workspace agent
  * routes run through the same middleware at other mounts and never match.

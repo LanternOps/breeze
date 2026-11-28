@@ -752,6 +752,21 @@ it('self-manages the three pre-assignment routes and nothing near them', () => {
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/move-org')).toBe(false);
 });
 
+// Deploy keys (#8318 wave D-1): mint/rotate open their own system contexts
+// (holding org, then one locked transaction); revoke runs the per-device expiry.
+it('self-manages the four deploy-key routes and nothing near them', () => {
+  const key = '11111111-1111-4111-8111-111111111111';
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/pre-assignment/deploy-keys')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/deploy-keys')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/pre-assignment/deploy-keys/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/pre-assignment/deploy-keys/${key}/rotate`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/pre-assignment/deploy-keys/${key}/revoke`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/pre-assignment/deploy-keys/${key}/expire-devices`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/pre-assignment/deploy-keys/${key}/rotate`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('DELETE', `/api/v1/pre-assignment/deploy-keys/${key}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/pre-assignment/deploy-keys/${key}/revoke/extra`)).toBe(false);
+});
+
 it('self-manages the per-rule convert-to-monitor POST (its converter opens its own serializable transaction) and no sibling route', () => {
   const rule = '11111111-1111-4111-8111-111111111111';
   expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}`)).toBe(true);

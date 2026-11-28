@@ -115,8 +115,8 @@ const EXPECTED: Record<string, Classification> = {
   // Identity issuance: enrollment runs on an enrollment key, before any
   // device exists.
   'POST /enroll': 'outside_agent_auth',
-  // Certificate rotation (ruled in for a parked device): own bearer auth in
-  // mtls.ts, issues nothing but a certificate.
+  // Certificate renewal: own bearer auth in mtls.ts, which refuses a parked
+  // device itself (403 device_pending_assignment, #8318 spec §10.4).
   'POST /renew-cert/challenge': 'outside_agent_auth',
   'POST /renew-cert': 'outside_agent_auth',
   'POST /renew-cert/confirm': 'outside_agent_auth',

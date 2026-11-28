@@ -17,7 +17,8 @@
  *      reattach directive with, #8318 §6.2), delivers a queued self_uninstall
  *      and nothing else, and records liveness;
  *   3. the command poll/ack pair is narrowed to self_uninstall;
- *   4. token rotation (mint + confirm) and certificate renewal still work;
+ *   4. token rotation (mint + confirm) still works, and certificate renewal
+ *      is refused (#8318 spec §10.4: the parked certificate is not renewed);
  *   5. the agent WebSocket upgrade and the Helper token are refused.
  *
  * Run (needs `pnpm test-stack up`):
@@ -63,7 +64,8 @@ function credentialColumns(suffix: string) {
       // No watchdog credential yet, which alone makes a rotation due.
       watchdogTokenHash: null,
       tokenIssuedAt: new Date(),
-      // Past two thirds of the certificate lifetime: renewal is due.
+      // Past two thirds of the certificate lifetime: renewal would be due,
+      // which the parked beat must still not signal (#8318 spec §10.4).
       mtlsCertIssuedAt: new Date(Date.now() - 80 * 3_600_000),
       mtlsCertExpiresAt: new Date(Date.now() + 10 * 3_600_000),
       status: 'online' as const,
@@ -248,10 +250,11 @@ describe('parked device — minimal heartbeat', () => {
     // this device is the source of no reattach intent.
     // #4618: parked beats explicitly clear containment without looking up episodes.
     // #8318 wave T2: plus the TPM attestation switch, and no other config key.
-    expect(Object.keys(body).sort()).toEqual(['commands', 'configUpdate', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
+    // #8318 spec §10.4: no renewCert, though renewal is due by the clock.
+    expect(Object.keys(body).sort()).toEqual(['commands', 'configUpdate', 'containment', 'manifestKeyDelegations', 'manifestTrustKeys', 'rotateToken']);
     expect(body.configUpdate).toEqual({ tpm_attestation_enabled: false });
     expect(body.containment).toEqual({ networkIsolation: null });
-    expect(body.renewCert).toBe(true);
+    expect(body.renewCert).toBeUndefined();
     expect(body.rotateToken).toBe(true);
     const delivered = body.commands as Array<{ id: string; type: string }>;
     expect(delivered.map((cmd) => cmd.id)).toEqual([uninstallId]);
@@ -344,12 +347,20 @@ describe('parked device — credential rotation', () => {
     expect(beat.status, await beat.clone().text()).toBe(200);
   });
 
-  it('reaches certificate renewal: the parked device passes renewal authentication and the tenant gate', async () => {
+  it('refuses certificate renewal for a parked device (#8318 spec §10.4); a regular device passes renewal authentication', async () => {
     const parked = await seedParkedAgent(pool.orgId, pool.siteId);
-    const res = await send(buildAgentApp(), 'POST', `${MOUNT}/renew-cert`, parked.agentToken);
+    const regular = await seedRegularAgent(regularOrgId, regularSiteId);
+    const app = buildAgentApp();
+    for (const path of ['renew-cert', 'renew-cert/challenge', 'renew-cert/confirm']) {
+      const body = path === 'renew-cert/confirm' ? { certificateId: randomUUID() } : undefined;
+      const res = await send(app, 'POST', `${MOUNT}/${path}`, parked.agentToken, body);
+      expect(res.status, `${path}: ${await res.clone().text()}`).toBe(403);
+      expect(await res.json()).toEqual({ error: 'device_pending_assignment' });
+    }
     // The test stack has no certificate provider configured, so the route stops
     // at its provider check — AFTER bearer authentication, device status and
-    // the tenant-status gate have all admitted the parked device.
+    // the tenant-status gate have all admitted the regular device.
+    const res = await send(app, 'POST', `${MOUNT}/renew-cert`, regular.agentToken);
     expect(res.status, await res.clone().text()).toBe(400);
     expect(await res.json()).toEqual({ error: 'mTLS not configured' });
   });

@@ -387,10 +387,14 @@ function buildApp(): Hono {
   return app;
 }
 
+// The bearer lookup joins the device's org (its type: a parked device in a
+// holding org is refused, #8318 spec §10.4).
 function mockDeviceLookup(row: Record<string, unknown> | null) {
+  const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(row ? [row] : []) });
   dbSelectMock.mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(row ? [row] : []) }),
+      leftJoin: vi.fn().mockReturnValue({ where }),
+      where,
     }),
   } as any);
 }
@@ -616,6 +620,56 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
       headers: { Authorization: 'Bearer brz_wrong' },
     });
     expect(resp.status).toBe(401);
+  });
+});
+
+describe('POST /renew-cert* — a parked device renews nothing (#8318 spec §10.4)', () => {
+  beforeEach(() => {
+    resetAllMocksForTest();
+  });
+
+  it.each([
+    ['/agents/renew-cert', undefined],
+    ['/agents/renew-cert/challenge', undefined],
+    ['/agents/renew-cert/confirm', { certificateId: NEW_CERT_ROW_ID }],
+  ] as const)('%s refuses a device in a holding org with 403 device_pending_assignment, before any limiter, lookup or issuance', async (path, body) => {
+    mockDeviceLookup(baseActiveDeviceRow({ organizationType: 'unassigned_pool' }));
+    const res = await buildApp().request(path, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'device_pending_assignment' });
+    // Only the bearer lookup ran: no org policy, certificate row or tenant read.
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+    expect(tenantActiveMock).not.toHaveBeenCalled();
+    expect(issueCertMock).not.toHaveBeenCalled();
+    expect(redisState.size).toBe(0); // no rate-limit window was touched
+  });
+
+  it('still renews a device in a customer org (the join reports its org type)', async () => {
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-1',
+      certificate: NEW_CERT_PEM,
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: 'sn-1',
+    });
+    mockDeviceLookup(baseActiveDeviceRow({ organizationType: 'customer' }));
+    mockOrgSettingsLookup();
+    mockActiveCertLookup(null);
+    mockTxActiveLookup(null);
+    mockTxInsertOk();
+    mockTxUpdateOk();
+    mockTxUpdateOk();
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    expect(issueCertMock).toHaveBeenCalled();
   });
 });
 

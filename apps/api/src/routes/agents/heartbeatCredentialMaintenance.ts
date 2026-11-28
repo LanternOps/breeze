@@ -14,6 +14,13 @@ export interface CredentialMaintenanceDevice {
   agentId: string;
   mtlsCertIssuedAt: Date | null;
   mtlsCertExpiresAt: Date | null;
+  /**
+   * The current certificate's serial and the serial the server asked to have
+   * replaced (#8318 spec §10.4, set by parked-device assignment). Optional:
+   * the parked beat never renews and does not read them.
+   */
+  mtlsCertSerialNumber?: string | null;
+  mtlsRenewalRequestedSerial?: string | null;
   agentTokenHash: string | null;
   pendingTokenHash: string | null;
   pendingTokenExpiresAt: Date | null;
@@ -35,6 +42,12 @@ export interface CredentialMaintenanceInput {
   pendingTokenPresented: boolean;
   /** Hash of the token the caller authenticated with (`agent.authTokenHash`). */
   presentedTokenHash: string | undefined;
+  /**
+   * False on the parked beat (#8318 spec §10.4, §13 decision 9): a parked
+   * device's certificate is bounded to its parking window and never renewed
+   * there (`/renew-cert` refuses it too). Token rotation is unaffected.
+   */
+  allowCertRenewal?: boolean;
 }
 
 export interface CredentialMaintenance {
@@ -55,13 +68,27 @@ export function shouldRenewCert(
   return now.getTime() >= renewalThreshold;
 }
 
+/**
+ * The server asked for this certificate to be replaced (#8318 spec §10.4:
+ * parked-device assignment, so the certificate bounded to the parking window
+ * gives way to one with the customer org's lifetime). Ends by itself once a
+ * renewal changes the current serial.
+ */
+export function isCertRenewalRequested(
+  device: Pick<CredentialMaintenanceDevice, 'mtlsCertSerialNumber' | 'mtlsRenewalRequestedSerial'>,
+): boolean {
+  return Boolean(device.mtlsRenewalRequestedSerial)
+    && device.mtlsRenewalRequestedSerial === device.mtlsCertSerialNumber;
+}
+
 export async function computeCredentialMaintenance(
   input: CredentialMaintenanceInput,
 ): Promise<CredentialMaintenance> {
   const { device, tenantDraining, authenticatedWithPreviousToken, pendingTokenPresented, presentedTokenHash } = input;
   const now = input.now ?? new Date();
 
-  const renewCert = shouldRenewCert(device, now);
+  const renewCert = input.allowCertRenewal !== false
+    && (shouldRenewCert(device, now) || isCertRenewalRequested(device));
 
   // Issue #2621 — a staged rotation is still outstanding. Don't ask for another
   // one (that would churn the staged set and re-open the divergence window);

@@ -3204,6 +3204,110 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
       },
     },
+    '/pre-assignment/deploy-keys': {
+      get: {
+        operationId: 'listDeployKeys',
+        tags: ['Devices'],
+        summary: 'List the partner\'s holding-area deploy keys',
+        description: 'Every deploy key of the partner, newest first, active and revoked, with its limits, use count, last use and optional source CIDRs. Never returns the key or its hash. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [{ name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' }],
+        responses: {
+          '200': { description: '{ deployKeys: [...] }' },
+          '403': { description: 'Gate refusal' },
+        },
+      },
+      post: {
+        operationId: 'mintDeployKey',
+        tags: ['Devices'],
+        summary: 'Mint a deploy key for an image',
+        description: 'Mints a `bdk_`-prefixed deploy key that parks enrolling devices in the partner\'s holding area. The plaintext key is returned once, in this response, and only its peppered hash is stored. The partner must be eligible (trust state `trusted` and the deploy-key enrollment switch on; where billing is configured, a payment method on file and no contradicting subscription status). At most two active, unexpired keys per image label (case-insensitive): a third is refused with 409 `ACTIVE_KEY_LIMIT_REACHED`. Lifetime at most 365 days, at most 1000 uses, at most 20 devices parked at once. Creates the holding org on first use. While two-factor authentication is enabled, needs a single-use step-up grant for operation `deploy_key_mint` bound to { partnerId, imageLabel }. Audited (no key material). Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [{ name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['name', 'imageLabel', 'expiresInDays', 'maxUsage', 'maxParked'],
+                properties: {
+                  name: { type: 'string', minLength: 1, maxLength: 255 },
+                  imageLabel: { type: 'string', minLength: 1, maxLength: 100, description: 'The image this key is baked into; trimmed' },
+                  expiresInDays: { type: 'integer', minimum: 1, maximum: 365 },
+                  maxUsage: { type: 'integer', minimum: 1, maximum: 1000 },
+                  maxParked: { type: 'integer', minimum: 1, maximum: 20 },
+                  sourceCidrs: { type: 'array', nullable: true, minItems: 1, maxItems: 20, items: { type: 'string' }, description: 'Optional IPv4/IPv6 addresses or CIDRs enrollment must come from; host bits are cleared' },
+                  stepUpGrant: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: '{ deployKey, key (plaintext, shown once), notice }' },
+          '400': { description: 'Invalid body' },
+          '403': { description: 'Gate refusal, or `STEP_UP_REQUIRED`' },
+          '404': { description: 'Partner not found' },
+          '409': { description: '`DEPLOY_KEY_NOT_ELIGIBLE` (with `reason`) or `ACTIVE_KEY_LIMIT_REACHED`' },
+        },
+      },
+    },
+    '/pre-assignment/deploy-keys/{deployKeyId}/rotate': {
+      post: {
+        operationId: 'rotateDeployKey',
+        tags: ['Devices'],
+        summary: 'Mint the rotation successor of a deploy key',
+        description: 'Mints a new key for the same image label, linked by `rotatedFromId`. The old key stays active until it is revoked, so images already in the field keep enrolling. Name, maxUsage, maxParked and sourceCidrs are inherited unless given (sourceCidrs: null clears the list); the lifetime is chosen again and starts now. Same eligibility and two-active-keys-per-image rule as mint; a revoked key cannot be rotated (409 `DEPLOY_KEY_REVOKED`). The plaintext key is returned once. While two-factor authentication is enabled, needs a single-use step-up grant for operation `deploy_key_rotate` bound to { partnerId, deployKeyId }. Audited (no key material). Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [
+          { name: 'deployKeyId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['expiresInDays'],
+                properties: {
+                  name: { type: 'string', minLength: 1, maxLength: 255 },
+                  expiresInDays: { type: 'integer', minimum: 1, maximum: 365 },
+                  maxUsage: { type: 'integer', minimum: 1, maximum: 1000 },
+                  maxParked: { type: 'integer', minimum: 1, maximum: 20 },
+                  sourceCidrs: { type: 'array', nullable: true, minItems: 1, maxItems: 20, items: { type: 'string' } },
+                  stepUpGrant: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: '{ deployKey, rotatedFrom, key (plaintext, shown once), notice }' },
+          '400': { description: 'Invalid body' },
+          '403': { description: 'Gate refusal, or `STEP_UP_REQUIRED`' },
+          '404': { description: 'Partner or deploy key not found' },
+          '409': { description: '`DEPLOY_KEY_NOT_ELIGIBLE`, `ACTIVE_KEY_LIMIT_REACHED` or `DEPLOY_KEY_REVOKED`' },
+        },
+      },
+    },
+    '/pre-assignment/deploy-keys/{deployKeyId}/revoke': {
+      post: {
+        operationId: 'revokeDeployKey',
+        tags: ['Devices'],
+        summary: 'Revoke a deploy key and expire everything it parked',
+        description: 'Marks the key revoked and, in the same request, expires every still-parked device it enrolled (cancelling any open reattach intent of those devices first). There is no option to skip the expiry. Revoking an already revoked key runs the expiry again (`alreadyRevoked: true`). No step-up: revoking only closes. Audited. Requires partner or system scope, devices:write + organizations:write, an interactive user session (API keys and MCP tokens are refused), an MFA-assured session, and full partner org access (a partner user with access to all organizations, or system scope). System scope must name the partner with ?partnerId=; a partner caller acts on its own partner only.',
+        parameters: [
+          { name: 'deployKeyId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'partnerId', in: 'query', required: false, schema: { type: 'string', format: 'uuid' }, description: 'Required for system scope' },
+        ],
+        responses: {
+          '200': { description: '{ deployKey, alreadyRevoked, expiry: { matched, expired, skipped, failed } }' },
+          '403': { description: 'Gate refusal' },
+          '404': { description: 'Deploy key not found' },
+        },
+      },
+    },
     '/pre-assignment/deploy-keys/{deployKeyId}/expire-devices': {
       post: {
         operationId: 'expireDevicesParkedByDeployKey',

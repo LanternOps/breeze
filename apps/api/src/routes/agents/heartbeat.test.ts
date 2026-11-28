@@ -9743,11 +9743,13 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     manifestKeyDelegations: [{ keyId: 'k-1' }],
   };
 
-  it('agent: still delivers certificate renewal and token rotation', async () => {
+  it('agent: still delivers token rotation, never certificate renewal (#8318 spec §10.4)', async () => {
+    // The fixture's certificate is past two thirds of its lifetime: the full
+    // beat would ask for renewal, the parked beat does not.
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST, ...PARKED_CONFIG });
+    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], rotateToken: true, ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9757,7 +9759,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST, ...PARKED_CONFIG });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], ...PARKED_TRUST, ...PARKED_CONFIG });
   });
 
   it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
@@ -9806,7 +9808,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST, ...PARKED_CONFIG });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], confirmTokenRotation: true, ...PARKED_TRUST, ...PARKED_CONFIG });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),

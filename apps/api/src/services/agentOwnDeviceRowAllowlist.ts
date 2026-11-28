@@ -60,6 +60,16 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
       'minted) when that matches 0 rows.',
   },
 
+  {
+    file: 'src/routes/agents/enrollmentDeployKey.ts',
+    marker: 'deploy-key-reenroll-matched-parked-row',
+    kind: 'agent_path_inline_predicate',
+    reason:
+      'Deploy-key re-enroll onto a parked row (#8318 wave D-1): the token matched the row without a lock; the ' +
+      'UPDATE runs under the holding-area lock and carries `agent_id = <the matched row\'s agent_id>`, the ' +
+      'holding org and not-decommissioned, and the handler refuses (no fresh row) when that matches 0 rows.',
+  },
+
   // ── Non-agent paths in files an agent entry point reaches ───────────────
   {
     file: 'src/services/quickSupportEnd.ts',

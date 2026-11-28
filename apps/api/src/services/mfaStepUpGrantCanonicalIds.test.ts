@@ -60,6 +60,15 @@ const FIXTURES = {
     [{ deviceId: up(LOWER.device), targetOrgId: up(LOWER.org), targetSiteId: up(LOWER.site) }],
   ],
   preAssignmentEnableResourceDigest: [{ partnerId: LOWER.partner }, { partnerId: up(LOWER.partner) }],
+  // #8318 wave D-1: the image label is free text, hashed as given.
+  deployKeyMintResourceDigest: [
+    { partnerId: LOWER.partner, imageLabel: 'Win11 Q4' },
+    { partnerId: up(LOWER.partner), imageLabel: 'Win11 Q4' },
+  ],
+  deployKeyRotateResourceDigest: [
+    { partnerId: LOWER.partner, deployKeyId: LOWER.device },
+    { partnerId: up(LOWER.partner), deployKeyId: up(LOWER.device) },
+  ],
   scriptLanePolicyResourceDigest: [
     { orgId: LOWER.org, unattendedEnabled: true },
     { orgId: up(LOWER.org), unattendedEnabled: true },

@@ -3466,7 +3466,18 @@ export async function getOrgMtlsSettings(orgId: string): Promise<{ certLifetimeD
  * Runs in the CALLER's DB context: enrollment's open system transaction, or
  * the admin's request context for provisioning and approve.
  */
-export async function issueMtlsCertForDevice(deviceId: string, orgId: string): Promise<{
+export async function issueMtlsCertForDevice(
+  deviceId: string,
+  orgId: string,
+  options: {
+    /**
+     * Bounds the org policy's lifetime (days in, days out). A pool enrollment
+     * passes `parkedCertificateLifetimeDays` (#8318 spec §10.4); every other
+     * caller issues the policy lifetime unchanged.
+     */
+    lifetimeDays?: (policyDays: number) => number;
+  } = {},
+): Promise<{
   certificate: string;
   privateKey: string;
   expiresAt: string;
@@ -3478,7 +3489,10 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
   let cert;
   try {
     const mtlsSettings = await getOrgMtlsSettings(orgId);
-    cert = await cfService.issueCertificate(mtlsSettings.certLifetimeDays);
+    const validityDays = options.lifetimeDays
+      ? options.lifetimeDays(mtlsSettings.certLifetimeDays)
+      : mtlsSettings.certLifetimeDays;
+    cert = await cfService.issueCertificate(validityDays);
   } catch (err) {
     // I9: issueCertificate throws a typed, body-free CloudflareMtlsError now;
     // log the bounded name rather than the whole error object.

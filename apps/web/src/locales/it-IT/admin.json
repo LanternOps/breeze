@@ -1138,6 +1138,7 @@
       "pam_rule": "Regola PAM",
       "pam_signer_group": "Gruppo firmatari PAM",
       "partner": "Partner",
+      "partner_deploy_key": "Chiave di distribuzione del partner",
       "partner_entitlement": "Diritto del partner",
       "partner_export": "Esportazione del partner",
       "partner_login_branding": "Branding di accesso del partner",

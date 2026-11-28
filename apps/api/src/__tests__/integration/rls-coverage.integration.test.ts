@@ -491,6 +491,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // scope on top of the partner-axis policy asserted here.
   // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
   ['device_pool_assignment_events', 'partner_id'],
+  // partner_deploy_keys (#8318 wave D-1, 2027-01-31-100000): holding-area
+  // deploy keys, managed by full partner admins only. Partner-axis (Shape 3),
+  // no org_id column, so no cascade / export / merge registration. Same
+  // RESTRICTIVE system-only policy as the ledger above on top of the
+  // partner-axis policy asserted here. GRANT includes DELETE for
+  // cascadeDeletePartner's dynamic partner_id sweep.
+  // Functional proof: partnerDeployKeysRls.integration.test.ts.
+  ['partner_deploy_keys', 'partner_id'],
   // #8318 wave 1b (reattach, spec §4.3/§4.4). Both partner-axis (Shape 3) with
   // no org_id column — source/target org ids are authorization snapshots, not
   // tenancy keys — so no cascade / export / merge registration; the intents'

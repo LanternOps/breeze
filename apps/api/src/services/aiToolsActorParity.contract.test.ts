@@ -286,6 +286,10 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   // RLS context with its accessible-org set (principals are not site-scoped).
   AlertActor: 'acknowledge provenance (user or service principal id); callers gate org/site access before the CAS write',
   DeviceCoverageActor: 'org axis only; its single route gates the site axis at the door and is partner/system scope',
+  // #8318 wave D-1. partner_deploy_keys is partner-axis with no site column;
+  // the routes require a full partner admin, and every read and write runs in a
+  // system context scoped to the partner the route resolved.
+  DeployKeyActor: 'partner deploy keys are partner-axis — no site_id on partner_deploy_keys',
 };
 
 describe('contract: the actor types with no site axis are a frozen, reasoned list', () => {

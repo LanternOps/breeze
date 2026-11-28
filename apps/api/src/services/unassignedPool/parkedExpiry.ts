@@ -14,6 +14,11 @@
  * the same hardened `purgeRemovedDevice` the Permanently Delete button uses,
  * and writes a `purged` ledger row.
  *
+ * Both revoke the device's mTLS certificate (#8318 spec §10.4, §13 decision
+ * 9): expiry demotes it in its transaction and revokes it after commit; purge
+ * waits until no certificate the provider may still honour is left, since the
+ * rows are deleted with the device (./parkedCertificates.ts).
+ *
  * Both take the per-partner holding-area lock FIRST, then the device row —
  * the same order as assignment — and re-check, under those locks, that the
  * device is still parked in this partner's holding org. A device assigned
@@ -35,6 +40,7 @@ import { evictAgentSockets } from '../agentCommandRelayEvict';
 import { isUnassignedPoolOrgType } from './orgType';
 import { lockPartnerHoldingArea } from './holdingAreaLock';
 import { lockDeviceForAssignment, type LockedParkedDevice } from './assignParkedDeviceSteps';
+import { demoteParkedDeviceCertificates, hasUnrevokedLiveCertificate } from './parkedCertificates';
 import { writeReattachAudit } from '../deviceReattach/audit';
 import { clearReattachSourceMarker } from '../deviceReattach/sourceMarker';
 import {
@@ -141,7 +147,14 @@ export async function expireParkedDevice(
   const { partnerId, deviceId } = input;
   type Locked =
     | { skip: ParkedExpirySkip }
-    | { device: LockedParkedDevice; ledgerEventId: string; uninstallQueued: boolean; cancelledIntents: CancelledReattachIntent[] };
+    | {
+        device: LockedParkedDevice;
+        ledgerEventId: string;
+        uninstallQueued: boolean;
+        cancelledIntents: CancelledReattachIntent[];
+        /** The device's own certificates, demoted here, revoked after commit. */
+        revokeCertificateIds: string[];
+      };
   const result = await inSystemTransaction(async (tx): Promise<Locked> => {
     await lockPartnerHoldingArea(tx, partnerId);
     const device = await lockDeviceForAssignment(tx, deviceId);
@@ -175,6 +188,10 @@ export async function expireParkedDevice(
     });
     const now = decommission.updated?.decommissionedAt ?? new Date();
 
+    // #8318 spec §10.4: the parked certificate dies with the parked device.
+    // A deploy-key incident (key revocation) reaches here too.
+    const revokeCertificateIds = await demoteParkedDeviceCertificates(tx, device.id, now);
+
     const [ledger] = await tx
       .insert(devicePoolAssignmentEvents)
       .values({
@@ -196,6 +213,7 @@ export async function expireParkedDevice(
       ledgerEventId: ledger.id,
       uninstallQueued: decommission.uninstallQueued,
       cancelledIntents,
+      revokeCertificateIds,
     };
   }).catch((err: unknown): Locked => {
     // Catch after the transaction rolls back, including any reattach cleanup.
@@ -233,6 +251,8 @@ export async function expireParkedDevice(
       report('reattach intent cancellation follow-up', device.id, err);
     }
   }
+  // Isolated per certificate; a failure is logged and the sweep retries it.
+  await revokeCertificatesAfterCommit(result.revokeCertificateIds);
   try {
     await createAuditLog({
       orgId: device.orgId,
@@ -275,6 +295,11 @@ export type ParkedPurgeSkip =
   | 'REFUSED'
   /** The source (or target) of an open reattach intent (#8318 §6.5). */
   | 'IN_REATTACH'
+  /**
+   * #8318 §10.4: a certificate of the device is not revoked yet (and not past
+   * its own expiry). Revocation was requested; a later run purges.
+   */
+  | 'CERTIFICATE_REVOCATION_PENDING'
   | 'isolation_unresolved';
 
 export type ParkedPurgeOutcome =
@@ -295,8 +320,9 @@ export async function purgeExpiredParkedDevice(input: {
   cutoff: Date;
 }): Promise<ParkedPurgeOutcome> {
   const { partnerId, deviceId } = input;
+  const revokeAfterCommit: string[] = [];
   try {
-    return await inSystemTransaction(async (tx): Promise<ParkedPurgeOutcome> => {
+    const outcome = await inSystemTransaction(async (tx): Promise<ParkedPurgeOutcome> => {
       await lockPartnerHoldingArea(tx, partnerId);
       const device = await lockDeviceForAssignment(tx, deviceId);
       if (!device || device.orgPartnerId !== partnerId) return { purged: false, deviceId, reason: 'NOT_FOUND' };
@@ -319,6 +345,16 @@ export async function purgeExpiredParkedDevice(input: {
         return { purged: false, deviceId, reason: 'IN_REATTACH' };
       }
 
+      // #8318 §10.4: the certificate rows go with the device, so a certificate
+      // the provider may still honour is revoked first. Normally expiry already
+      // did it; this catches a device removed some other way. The demotion
+      // commits with this skip; the revocation runs after commit.
+      const now = new Date();
+      revokeAfterCommit.push(...(await demoteParkedDeviceCertificates(tx, device.id, now)));
+      if (await hasUnrevokedLiveCertificate(tx, device.id, now)) {
+        return { purged: false, deviceId, reason: 'CERTIFICATE_REVOCATION_PENDING' };
+      }
+
       // No `force`: an unattended purge never orphans an unconfirmed agent (#11153).
       const purged = await purgeRemovedDevice(tx, device.id);
       await tx.insert(devicePoolAssignmentEvents).values({
@@ -338,6 +374,8 @@ export async function purgeExpiredParkedDevice(input: {
         uninstallState: purged.uninstallState,
       };
     });
+    if (revokeAfterCommit.length > 0) await revokeCertificatesAfterCommit(revokeAfterCommit);
+    return outcome;
   } catch (err) {
     // Caught outside the transaction, so the refusal still rolled it back.
     if (err instanceof NetworkIsolationUnresolvedError) {

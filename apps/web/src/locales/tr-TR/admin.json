@@ -1138,6 +1138,7 @@
       "pam_rule": "PAM kuralı",
       "pam_signer_group": "PAM imzalayan grubu",
       "partner": "İş ortağı",
+      "partner_deploy_key": "İş ortağı dağıtım anahtarı",
       "partner_entitlement": "İş ortağı hakkı",
       "partner_export": "İş ortağı dışa aktarımı",
       "partner_login_branding": "İş ortağı oturum açma markalaması",
