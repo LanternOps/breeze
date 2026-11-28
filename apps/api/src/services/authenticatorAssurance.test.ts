@@ -159,6 +159,23 @@ describe('assertApprovalAssurance (Phase 2: verify a presented proof, non-blocki
     expect(mockVerify).not.toHaveBeenCalled();
   });
 
+  it('an approve reads the policy BEFORE verifying a proof: a policy-read fault spends no challenge', async () => {
+    setupDbMocks({ id: 'dev-1', credentialId: 'cred-123', publicKey: 'pub', signCount: 2, transports: ['internal'] });
+    mockVerify.mockResolvedValue({ verified: true, newSignCount: 5 });
+    mockConsumeNonce.mockResolvedValue({ nonce: 'server-nonce-xyz', issuedAt: Date.now() });
+    mockLoadPolicy.mockRejectedValueOnce(new Error('pool exhausted')).mockRejectedValueOnce(new Error('pool exhausted'));
+
+    await expect(
+      assertApprovalAssurance({ approvalId: 'appr-1', userId: 'user-1', riskTier: 'high', proof: PROOF, decision: 'approved' }),
+    ).rejects.toThrow('pool exhausted');
+    await expect(
+      assertApprovalAssurance({ approvalId: 'appr-1', userId: 'user-1', riskTier: 'high', proof: mobileProof(), decision: 'approved' }),
+    ).rejects.toThrow('pool exhausted');
+
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockConsumeNonce).not.toHaveBeenCalled();
+  });
+
   it('valid proof → webauthn_platform / level 2, device id, signCount bumped', async () => {
     const capture = setupDbMocks({
       id: 'dev-1',

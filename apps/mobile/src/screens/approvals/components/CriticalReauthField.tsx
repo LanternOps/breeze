@@ -8,6 +8,11 @@ interface Props {
   onChangeMode: (mode: ReauthMode) => void;
   onChangeValue: (value: string) => void;
   editable: boolean;
+  /**
+   * The server asked this request for a second factor: only an authenticator
+   * code counts, so there is no password option.
+   */
+  codeOnly?: boolean;
 }
 
 /**
@@ -15,7 +20,7 @@ interface Props {
  * ApprovalScreen, which clears the value the moment Approve is pressed and
  * whenever focus moves to another request. The secret is never persisted.
  */
-export function CriticalReauthField({ mode, value, onChangeMode, onChangeValue, editable }: Props) {
+export function CriticalReauthField({ mode, value, onChangeMode, onChangeValue, editable, codeOnly = false }: Props) {
   const theme = useApprovalTheme('dark');
   const isCode = mode === 'totp';
   return (
@@ -31,8 +36,9 @@ export function CriticalReauthField({ mode, value, onChangeMode, onChangeValue, 
     >
       <Text style={[type.body, { color: theme.textHi }]}>Confirm it’s you</Text>
       <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
-        Critical requests need your account password (or the code from your authenticator app) as well as this
-        device. It is checked once and never stored.
+        {codeOnly
+          ? 'This request needs a second factor. Enter the code from your authenticator app. It is checked once and never stored.'
+          : 'Critical requests need your account password (or the code from your authenticator app) as well as this device. It is checked once and never stored.'}
       </Text>
       <TextInput
         // Remount on mode change so a typed password never carries into the
@@ -63,12 +69,13 @@ export function CriticalReauthField({ mode, value, onChangeMode, onChangeValue, 
           },
         ]}
       />
-      {isCode ? (
+      {isCode && !codeOnly ? (
         <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[2] }]}>
           Signed in with SSO? Use your authenticator app. A passkey alone can’t approve critical requests yet, so
           ask another approver if you have no authenticator app.
         </Text>
       ) : null}
+      {codeOnly ? null : (
       <Pressable
         onPress={() => {
           onChangeValue('');
@@ -84,6 +91,7 @@ export function CriticalReauthField({ mode, value, onChangeMode, onChangeValue, 
           {isCode ? 'Use my password instead' : 'Use an authenticator code instead'}
         </Text>
       </Pressable>
+      )}
     </View>
   );
 }

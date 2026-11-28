@@ -70,6 +70,15 @@ vi.mock('../permissions', () => ({
   canAccessOrg: vi.fn(() => false),
   canAccessSite: vi.fn(() => true),
 }));
+// The decider's permissions for a row org (resolved in the org's owning
+// partner in production) go through the mocked getUserPermissions above.
+vi.mock('./deciderPermissions', async () => {
+  const permissions = await import('../permissions');
+  return {
+    getDeciderPermissionsForOrg: vi.fn((userId: string, orgId: string) =>
+      permissions.getUserPermissions(userId, { orgId })),
+  };
+});
 vi.mock('../authenticatorAssurance', () => ({
   assertDecisionConsistent: vi.fn(() => undefined),
   resolveApprovalAssurance: vi.fn(() => ({ requiredLevel: 1, decidedAssuranceLevel: 1, decidedVia: 'session_tap', authenticatorDeviceId: null })),

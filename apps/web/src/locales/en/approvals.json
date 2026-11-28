@@ -83,6 +83,15 @@
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
     "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
+    "siteAccessDenied": "Your access does not include this request's site, so another approver needs to decide it.",
+    "selfApprovalForbidden": "You raised this request, so another approver needs to approve it.",
+    "mfaRequired": "Approving this request needs a second factor: a session signed in with multi-factor authentication, or a code from your authenticator app. Enter the code below and approve again, or sign out and sign in again with your second factor.",
+    "mfaNoAuthenticator": "Approving this request needs a session signed in with multi-factor authentication. Sign out and sign in again with your second factor, or set up an authenticator app in your profile and approve again with a code from it.",
+    "codeRejected": "That code was not accepted. Each code works once, so wait for the next code from your authenticator app and try again.",
+    "codeThrottled": "Too many codes were tried. Wait a few minutes and try again.",
+    "codeUnavailable": "Codes can't be checked right now. Try again in a moment.",
+    "codeNotPermitted": "Your organization doesn't allow authenticator codes for this. Sign out and sign in again with your second factor, then approve.",
+    "batchMfaRequired": "Approving these requests together needs a session signed in with multi-factor authentication. Approve each request on its own with a code from your authenticator app, or sign out and sign in again with your second factor.",
     "approverScopeRequired": "This approval affects every organization under the partner, so it needs a partner-level approver with access to all organizations.",
     "verificationFailed": "Verification was canceled or failed. Try again.",
     "alreadyDecided": "This request was already decided.",
@@ -93,6 +102,11 @@
     "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups.",
     "batchScopeNotPermitted": "Only a partner-level approver can decide requests from several organizations together. Decide each organization's requests separately.",
     "driftedFromBatch": "This request changed and must be decided on its own."
+  },
+  "mfaCode": {
+    "label": "Code from your authenticator app",
+    "hint": "Each code works once and is checked for this approval only.",
+    "spent": "The code you entered has been used. To approve again, enter the next code from your authenticator app."
   },
   "registerDevice": "Register device",
   "alwaysAllow": {

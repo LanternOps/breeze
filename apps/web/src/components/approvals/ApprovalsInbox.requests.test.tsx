@@ -17,7 +17,11 @@ const state = vi.hoisted(() => ({
   canReadAiAgents: true,
 }));
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: null }) => unknown) => select({ user: null }),
+}));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('@/hooks/useEventStream', () => ({

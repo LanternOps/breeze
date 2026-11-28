@@ -32,7 +32,7 @@ function isRefusedDecision(data: DecideResponse): boolean {
 export interface BatchRowResult {
   id: string;
   httpStatus: number;
-  body?: { error?: unknown } | null;
+  body?: { error?: unknown; code?: unknown } | null;
 }
 
 /**
@@ -48,7 +48,11 @@ export type IntentBatchOutcome =
   /** 403 `batch_scope_not_permitted`: a `cross_org` set from a session that
    *  is not a partner session. Nothing was decided; the cards are still
    *  decidable per organization. */
-  | { outcome: 'batch_scope_not_permitted' };
+  | { outcome: 'batch_scope_not_permitted' }
+  /** 403 `code: MFA_REQUIRED`: approving the set needs a session signed in
+   *  with multi-factor authentication. A batch takes no authenticator code;
+   *  each card can still be approved on its own with one. */
+  | { outcome: 'batch_mfa_required' };
 
 /**
  * Wraps any failure of the WebAuthn (Touch ID / Windows Hello) ceremony.
@@ -142,6 +146,76 @@ export function isSiteCeiling(err: unknown): boolean {
 }
 
 /**
+ * The decide route's 403 `{ error: 'MFA required', code: 'MFA_REQUIRED' }`: an
+ * approve of a high-or-above action from a session that never completed
+ * multi-factor authentication. Terminal for the session: only signing out and
+ * back in with the second factor clears it, so retrying can never succeed.
+ * Keyed on `code` (the `error` field is prose here), unlike the bare-token
+ * helpers above.
+ */
+export function isSessionMfaRequired(err: unknown): boolean {
+  if (!(err instanceof ActionError) || err.status !== 403) return false;
+  const body = err.body as { code?: unknown } | null | undefined;
+  return body?.code === 'MFA_REQUIRED' || err.code === 'MFA_REQUIRED';
+}
+
+/**
+ * Whether the server takes an authenticator-app code from this account, so an
+ * approve that needs a second factor can offer a code field. The server's
+ * answer is `totpEnrolled` from `GET /users/me`: an authenticator app held as
+ * the primary factor or as the backup beside a primary passkey. Before that
+ * answer arrives, a TOTP primary is usable and an SMS primary or an account
+ * with no MFA is not; anything else (a passkey primary, an enrolled account
+ * with no recorded primary) is `undefined` until the server says.
+ */
+export function authenticatorCodeUsable(
+  user: { mfaEnabled?: boolean; mfaMethod?: string | null; totpEnrolled?: boolean } | null | undefined,
+): boolean | undefined {
+  if (!user) return undefined;
+  if (typeof user.totpEnrolled === 'boolean') return user.totpEnrolled;
+  if (user.mfaEnabled === false || user.mfaMethod === 'sms') return false;
+  if (user.mfaMethod === 'totp') return true;
+  return undefined;
+}
+
+/** What a refused authenticator code sent with an approve means to the approver. */
+export type DecisionCodeErrorKind = 'codeRejected' | 'codeThrottled' | 'codeUnavailable' | 'codeNotPermitted';
+
+/**
+ * Maps the approve route's refusals of an authenticator code sent with the
+ * approve (routes/auth/helpers.ts `requireFreshMfaStepUp`), or null for any
+ * other failure. Keyed on the machine `code` each of those refusals carries,
+ * never on the status alone: the same approve can answer other 403/429/503s
+ * (a decide refusal, the global rate limit, a saturated pool) after the code
+ * was checked. Read only for an approve that carried a code:
+ *   - 401 `invalid_credentials`: the code is wrong or was already used (each
+ *     code is accepted once);
+ *   - 429 `mfa_check_throttled`: too many codes tried in a short time;
+ *   - 503 `mfa_check_unavailable`: codes cannot be checked right now;
+ *   - 403 `mfa_method_not_permitted`: the MFA policy does not permit codes.
+ */
+export function decisionCodeErrorKind(err: unknown): DecisionCodeErrorKind | null {
+  if (!(err instanceof ActionError)) return null;
+  const body = err.body as { code?: unknown } | null | undefined;
+  const code = body?.code ?? err.code;
+  if (err.status === 401 && code === 'invalid_credentials') return 'codeRejected';
+  if (err.status === 429 && code === 'mfa_check_throttled') return 'codeThrottled';
+  if (err.status === 503 && code === 'mfa_check_unavailable') return 'codeUnavailable';
+  if (err.status === 403 && code === 'mfa_method_not_permitted') return 'codeNotPermitted';
+  return null;
+}
+
+/** A PAM decide refusal: the decider's access does not include the request's site. */
+export function isSiteAccessDenied(err: unknown): boolean {
+  return err instanceof ActionError && err.status === 403 && errorToken(err) === 'site_access_denied';
+}
+
+/** A decide refusal: the approver raised the request and cannot approve it. */
+export function isSelfApprovalForbidden(err: unknown): boolean {
+  return err instanceof ActionError && err.status === 403 && errorToken(err) === 'self_approval_forbidden';
+}
+
+/**
  * A 403 answered when a partner-wide intent is decided by someone without full partner
  * access. Terminal like `site_ceiling`: only a partner-level approver can decide the card.
  */
@@ -157,6 +231,17 @@ export function decideErrorCopy(token: string): string | undefined {
   if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
   if (token === 'site_ceiling') return i18n.t('ai:aiApprovalDialog.siteCeiling');
   if (token === 'approver_scope_required') return i18n.t('ai:aiApprovalDialog.approverScopeRequired');
+  // runAction hands `friendly` the body `code` when present, so the MFA
+  // refusal (prose `error`, machine `code`) arrives as its code.
+  if (token === 'MFA_REQUIRED') return i18n.t('ai:aiApprovalDialog.mfaRequired');
+  // The approve carried an authenticator code and the server did not accept
+  // it (wrong, or already used: each code is accepted once).
+  if (token === 'invalid_credentials') return i18n.t('ai:aiApprovalDialog.codeRejected');
+  if (token === 'mfa_check_throttled') return i18n.t('approvals:errors.codeThrottled');
+  if (token === 'mfa_check_unavailable') return i18n.t('approvals:errors.codeUnavailable');
+  if (token === 'mfa_method_not_permitted') return i18n.t('approvals:errors.codeNotPermitted');
+  if (token === 'site_access_denied') return i18n.t('approvals:errors.siteAccessDenied');
+  if (token === 'self_approval_forbidden') return i18n.t('approvals:errors.selfApprovalForbidden');
   // W03 (#5612): the decide route's 422 refusals of a submitted
   // acknowledgedPatterns set — the server re-derives (submitted ∩
   // strict_hits) and refuses either when the viewer may not acknowledge at
@@ -226,6 +311,7 @@ export function batchDecideErrorCopy(token: string): string | undefined {
   if (token === 'batch_scope_not_permitted') {
     return i18n.t('approvals:errors.batchScopeNotPermitted');
   }
+  if (token === 'MFA_REQUIRED') return i18n.t('approvals:errors.batchMfaRequired');
   return decideErrorCopy(token);
 }
 
@@ -363,6 +449,18 @@ export async function decideIntentApproval(
      * toast are unaffected.
      */
     silentSuccess?: boolean;
+    /**
+     * A code from the approver's authenticator app, sent with an APPROVE only
+     * (never a deny). The server verifies it once and counts it as the
+     * decision's second factor. Never stored or logged here.
+     */
+    mfaCode?: string;
+    /** Called as the POST carrying `mfaCode` is sent. Not called when the
+     *  approve stops before any POST (a cancelled ceremony, no device). */
+    onCodeSent?: () => void;
+    /** The caller's own copy for a 403 MFA_REQUIRED, for a surface that
+     *  offers its own remedy (the approvals inbox's code field). */
+    mfaRequiredMessage?: string;
   },
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
@@ -373,11 +471,15 @@ export async function decideIntentApproval(
   // a proof anyway, and an unknown scope must fall back to the strict path.
   const freshFactor = opts?.freshFactor === true;
   const supervisedApprove = decision === 'approve' && approvalScope === 'supervised' && !freshFactor;
+  const mfaCode = decision === 'approve' ? opts?.mfaCode?.trim() || undefined : undefined;
+  // The server spends a code when it checks it, so an approve that carries
+  // one is sent exactly once: no optimistic attempt to retry, and no grant.
+  const optimisticApprove = supervisedApprove && !mfaCode;
   // #5601: ONLY a supervised approve may spend a live step-up grant — it rides
   // the optimistic attempt in place of the proofless body, which is what lets
   // an enforcing partner's floor be met without a second passkey scan. Read
   // ONCE here so the retry below can never pick up a second grant and loop.
-  const firstAttemptGrantId = supervisedApprove ? cachedStepUpGrantId() : undefined;
+  const firstAttemptGrantId = optimisticApprove ? cachedStepUpGrantId() : undefined;
 
   /** Runs the ceremony into `body.proof`. Returns a terminal outcome when the
    *  viewer has no approver device; throws CeremonyError on a real failure. */
@@ -398,6 +500,12 @@ export async function decideIntentApproval(
     // four_eyes / unknown scope: always a fresh ceremony, never a grant.
     const noDevice = await collectProof();
     if (noDevice) return noDevice;
+  } else if (supervisedApprove && mfaCode) {
+    // Supervised with a code: the one POST carries a proof when the viewer
+    // has an approver device (an enforcing policy needs one, and the code
+    // cannot be resent after a step-up refusal), and goes proofless otherwise.
+    // A 'needs_device' result here only means the POST goes without a proof.
+    await collectProof();
   } else if (firstAttemptGrantId) {
     // #5601: supervised with a live grant — present it instead of going
     // proofless, so an enforcing partner's floor is met without a scan.
@@ -413,8 +521,10 @@ export async function decideIntentApproval(
   // handed to runAction untouched (the token is read off a clone, so the body
   // is still unconsumed) — success toast, error toast and outcome mapping all
   // stay in exactly one place.
+  if (mfaCode) body.reauthMfaCode = mfaCode;
+
   let settledResponse: Response | undefined;
-  if (supervisedApprove) {
+  if (optimisticApprove) {
     let firstAttempt: Response;
     try {
       // runaction-exempt: the optimistic proofless attempt (#5600). runAction
@@ -476,14 +586,15 @@ export async function decideIntentApproval(
       // parents for an enclosing runAction call, so a hoisted thunk reads as an
       // unwrapped mutation even when passed straight in. `settledResponse` is
       // the optimistic attempt above, already made and still unread.
-      request: () =>
-        settledResponse
-          ? Promise.resolve(settledResponse)
-          : fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
-              method: 'POST',
-              body: JSON.stringify(body),
-              skipUnauthorizedRetry: true,
-            }),
+      request: () => {
+        if (settledResponse) return Promise.resolve(settledResponse);
+        if (mfaCode) opts?.onCodeSent?.();
+        return fetchWithAuth(`/mobile/approvals/${approvalRequestId}/${decision}`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+          skipUnauthorizedRetry: true,
+        });
+      },
       errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
       // NO onUnauthorized here, deliberately. `treatUnauthorizedAsError` makes
       // runAction skip its 401 branch entirely, so the callback would be dead
@@ -493,9 +604,11 @@ export async function decideIntentApproval(
       // because their fingerprint scan failed.
       treatUnauthorizedAsError: true,
       // A fresh-factor refusal is a retryable scan, not "register a device".
-      friendly: freshFactor
-        ? (token: string) => token === 'step_up_required' ? i18n.t('ai:aiApprovalDialog.freshFactorRequired') : decideErrorCopy(token)
-        : decideErrorCopy,
+      friendly: (token: string) => {
+        if (token === 'MFA_REQUIRED' && opts?.mfaRequiredMessage) return opts.mfaRequiredMessage;
+        if (freshFactor && token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.freshFactorRequired');
+        return decideErrorCopy(token);
+      },
       // No success toast for a refused approve: it is reported as an error
       // below, never as "approved".
       successMessage: (result) =>
@@ -637,6 +750,9 @@ export async function decideIntentApprovalBatch(
         if (err.token === 'batch_scope_not_permitted') {
           return { outcome: 'batch_scope_not_permitted' };
         }
+        // Refused before minting: the session has no second factor. No
+        // ceremony ran, so it is never reported as a failed verification.
+        if (err.status === 403 && err.code === 'MFA_REQUIRED') return { outcome: 'batch_mfa_required' };
       }
       throw new CeremonyError(err);
     }
@@ -703,6 +819,7 @@ export async function decideIntentApprovalBatch(
     if (isBatchScopeNotPermitted(err)) {
       return { outcome: 'batch_scope_not_permitted' };
     }
+    if (isSessionMfaRequired(err)) return { outcome: 'batch_mfa_required' };
     throw err;
   }
 }

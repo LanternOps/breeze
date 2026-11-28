@@ -89,7 +89,8 @@ function partnerAuth(user: Person, partnerId: string, orgId: string, partnerOrgA
 
 async function approve(approver: Person, orgId: string, partnerId: string, approvalRowId: string, scope: 'organization' | 'partner' = 'organization') {
   const token = await createAccessToken({
-    sub: approver.id, email: approver.email, roleId: approver.roleId, orgId: scope === 'organization' ? orgId : null, partnerId, scope, mfa: false, aep: 1, mep: 1, sid: randomUUID(),
+    // approving a high-risk intent needs the session MFA claim
+    sub: approver.id, email: approver.email, roleId: approver.roleId, orgId: scope === 'organization' ? orgId : null, partnerId, scope, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   });
   const app = new Hono();
   app.route('/approvals', approvalRoutes);

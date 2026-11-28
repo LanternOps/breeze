@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
+import { hasSatisfiedMfa, isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { approvalRequests } from '../../db/schema/approvals';
 import { actionIntents, type ActionIntent } from '../../db/schema/actionIntents';
 import { organizations } from '../../db/schema/orgs';
@@ -13,7 +13,12 @@ import {
   ReauthRequiredError,
   type AssuranceDecision,
 } from '../authenticatorAssurance';
-import { decideApprovalRequest, type DecideApprovalResult } from './decideApprovalRequest';
+import {
+  decideApprovalRequest,
+  requiresSessionMfaToApprove,
+  SESSION_MFA_REQUIRED_BODY,
+  type DecideApprovalResult,
+} from './decideApprovalRequest';
 import {
   APPROVAL_BATCH_MAX,
   approvalBatchGroupKey,
@@ -329,6 +334,19 @@ export async function loadHomogeneousBatch(
   return { ok: true, ids, rows, maxRiskTier };
 }
 
+/**
+ * Whether approving this loaded batch needs the session's MFA claim: any row
+ * the decide core would gate (`requiresSessionMfaToApprove`), or the coerced
+ * maximum tier (an unrecognised tier ranks as critical). Shared by the
+ * decide and the challenge route, so a refused batch never reaches a ceremony.
+ */
+export function batchRequiresSessionMfa(loaded: { rows: BatchRow[]; maxRiskTier: RiskTier }): boolean {
+  return (
+    requiresSessionMfaToApprove(loaded.maxRiskTier)
+    || loaded.rows.some((row) => requiresSessionMfaToApprove(row.approval.riskTier, row.intent))
+  );
+}
+
 export interface DecideApprovalBatchInput {
   approvalRequestIds: string[];
   decision: 'approved' | 'denied';
@@ -357,6 +375,14 @@ export async function decideApprovalBatch(
   );
   if (!loaded.ok) return loaded;
 
+  // Session MFA for a high-or-above approve, checked for the whole set BEFORE
+  // the ceremony so a refused batch never spends its single-use challenge.
+  // The decide core re-checks every row (`requiresSessionMfaToApprove`); this
+  // only moves the refusal ahead of the challenge. A deny is never gated.
+  if (input.decision === 'approved' && batchRequiresSessionMfa(loaded) && !hasSatisfiedMfa(auth)) {
+    return { ok: false, httpStatus: 403, body: { ...SESSION_MFA_REQUIRED_BODY } };
+  }
+
   // ONE ceremony for the whole set, at the HIGHEST risk tier present — a
   // single low-risk card can never dilute the floor the batch has to clear.
   //
@@ -372,6 +398,10 @@ export async function decideApprovalBatch(
       riskTier: loaded.maxRiskTier,
       proof: input.proof,
       partnerId: auth.partnerId ?? null,
+      // Every row's org: each owning partner's policy applies too (stricter
+      // wins). A same-org batch has one; a cross-org batch's are all owned by
+      // the session partner (checked in loadHomogeneousBatch).
+      rowOrgIds: loaded.rows.map((row) => row.intent.orgId),
       decision: input.decision,
     });
   } catch (err) {

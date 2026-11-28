@@ -1,16 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const getUserPermissions = vi.fn();
 const hasPermission = vi.fn();
 vi.mock('../permissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../permissions')>()),
-  getUserPermissions: (...a: unknown[]) => getUserPermissions(...a),
   hasPermission: (...a: unknown[]) => hasPermission(...a),
 }));
-vi.mock('../../db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../db')>()),
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+const getDeciderPermissionsForOrg = vi.fn();
+vi.mock('./deciderPermissions', () => ({
+  getDeciderPermissionsForOrg: (...a: unknown[]) => getDeciderPermissionsForOrg(...a),
 }));
 vi.mock('../../routes/auth/schemas', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../routes/auth/schemas')>()),
@@ -26,14 +23,14 @@ const auth = (mfa: boolean) => ({
 }) as never;
 const proposal = { strictHits: STRICT, orgId: '11111111-1111-4111-8111-111111111111' };
 
-beforeEach(() => { vi.clearAllMocks(); getUserPermissions.mockResolvedValue({}); hasPermission.mockReturnValue(true); });
+beforeEach(() => { vi.clearAllMocks(); getDeciderPermissionsForOrg.mockResolvedValue({}); hasPermission.mockReturnValue(true); });
 
 describe('resolveStrictAcknowledgement', () => {
   it('is a no-op pass when the proposal has no strict hits', async () => {
     expect(await resolveStrictAcknowledgement({ auth: auth(false), proposal: { ...proposal, strictHits: [] }, submitted: [] }))
       .toEqual({ ok: true, acknowledged: [] });
     expect(hasPermission).not.toHaveBeenCalled();
-    expect(getUserPermissions).not.toHaveBeenCalled();
+    expect(getDeciderPermissionsForOrg).not.toHaveBeenCalled();
   });
 
   it('refuses a decider without scripts:write', async () => {
@@ -43,7 +40,7 @@ describe('resolveStrictAcknowledgement', () => {
   });
 
   it('refuses a decider whose permissions cannot be resolved for the proposal org', async () => {
-    getUserPermissions.mockResolvedValue(null);
+    getDeciderPermissionsForOrg.mockResolvedValue(null);
     expect(await resolveStrictAcknowledgement({ auth: auth(true), proposal, submitted: STRICT }))
       .toEqual({ ok: false, error: 'strict_acknowledgement_not_permitted', requirement: 'scripts:write' });
   });
@@ -51,15 +48,24 @@ describe('resolveStrictAcknowledgement', () => {
   it('refuses a decider without a fresh MFA claim, before touching permissions', async () => {
     expect(await resolveStrictAcknowledgement({ auth: auth(false), proposal, submitted: STRICT }))
       .toEqual({ ok: false, error: 'strict_acknowledgement_not_permitted', requirement: 'mfa' });
-    expect(getUserPermissions).not.toHaveBeenCalled();
+    expect(getDeciderPermissionsForOrg).not.toHaveBeenCalled();
+  });
+
+  it('takes the second factor the decide core established for this decision', async () => {
+    expect(await resolveStrictAcknowledgement({
+      auth: auth(false), secondFactorSatisfied: true, proposal, submitted: STRICT,
+    })).toEqual({ ok: true, acknowledged: STRICT });
+    expect(await resolveStrictAcknowledgement({
+      auth: auth(true), secondFactorSatisfied: false, proposal, submitted: STRICT,
+    })).toEqual({ ok: false, error: 'strict_acknowledgement_not_permitted', requirement: 'mfa' });
   });
 
   it('resolves permissions for the PROPOSAL org, not the token org', async () => {
     await resolveStrictAcknowledgement({
       auth: { ...(auth(true) as object), orgId: 'other-org' } as never, proposal, submitted: STRICT,
     });
-    expect(getUserPermissions).toHaveBeenCalledWith(
-      '22222222-2222-4222-8222-222222222222', expect.objectContaining({ orgId: proposal.orgId }),
+    expect(getDeciderPermissionsForOrg).toHaveBeenCalledWith(
+      '22222222-2222-4222-8222-222222222222', proposal.orgId,
     );
   });
 

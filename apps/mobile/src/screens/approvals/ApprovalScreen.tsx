@@ -51,10 +51,15 @@ import { ToastOutlet, useToast } from '../../components/toast/ToastHost';
 import { CriticalReauthField } from './components/CriticalReauthField';
 import {
   buildReauthFactor,
+  needsReauthEntry,
+  offersCodeEntry,
   reauthErrorMessage,
   requiresCriticalReauth,
+  secondFactorErrorMessage,
+  secondFactorRefusalMessage,
   type ReauthMode,
 } from './criticalReauth';
+import { createCodeUsableReader } from '../../services/authenticatorCodeUsable';
 
 export function ApprovalScreen() {
   const insets = useSafeAreaInsets();
@@ -109,6 +114,14 @@ export function ApprovalScreen() {
   // whenever focus moves to another request, never persisted or logged.
   const [reauthMode, setReauthMode] = useState<ReauthMode>('password');
   const [reauthSecret, setReauthSecret] = useState('');
+  // The request the server answered with MFA_REQUIRED: its approve now takes
+  // an authenticator code, which stands in for the session's second factor.
+  const [secondFactorFor, setSecondFactorFor] = useState<string | null>(null);
+  // Whether the server takes an authenticator code from this account, read
+  // from the signed-in profile at the first second-factor refusal. Only a
+  // definite answer is kept; an unread profile is asked again next time.
+  const codeUsableReaderRef = useRef(createCodeUsableReader());
+  const authenticatorCodeUsable = () => codeUsableReaderRef.current();
   const focusedId = focused?.id ?? null;
   useEffect(() => {
     setReauthSecret('');
@@ -188,12 +201,15 @@ export function ApprovalScreen() {
     // #4052: a critical approve carries the re-auth typed for THIS request.
     // Taken into a local and cleared from state right away — one attempt per
     // entry, so a rejected password is retyped rather than silently resent.
-    const reauth = requiresCriticalReauth(target.riskTier)
-      ? buildReauthFactor(reauthMode, reauthSecret)
+    const codeRequested = secondFactorFor === target.id;
+    const wantsReauth = needsReauthEntry(target.riskTier, codeRequested);
+    const reauth = wantsReauth
+      ? buildReauthFactor(codeRequested ? 'totp' : reauthMode, reauthSecret)
       : undefined;
     setReauthSecret('');
-    if (requiresCriticalReauth(target.riskTier) && !reauth) {
-      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: reauthErrorMessage('REAUTH_REQUIRED')! });
+    if (wantsReauth && !reauth) {
+      const missing = codeRequested ? 'MFA_REQUIRED' : 'REAUTH_REQUIRED';
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: reauthErrorMessage(missing)! });
       return;
     }
     successWash.value = withSequence(
@@ -232,8 +248,21 @@ export function ApprovalScreen() {
         const outcome = approveOutcomeToast(decided, approvalSnap.actionLabel);
         showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: outcome.kind, text: outcome.text });
       })
-      .catch((err: Error) => {
-        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
+      .catch(async (err: Error) => {
+        if (err.message === 'MFA_REQUIRED' && !codeRequested) {
+          // Code entry only for an account the server takes a code from;
+          // otherwise say how to get a second factor.
+          const usable = await authenticatorCodeUsable();
+          if (offersCodeEntry(usable)) setSecondFactorFor(approvalSnap.id);
+          showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: secondFactorRefusalMessage(usable) });
+          return;
+        }
+        const secondFactor = codeRequested || err.message === 'MFA_REQUIRED';
+        showToast({
+          owner: APPROVAL_TOAST_OWNER,
+          kind: 'error',
+          text: messageForDecisionError(err.message, 'Approve', secondFactor),
+        });
       });
   }
 
@@ -267,10 +296,10 @@ export function ApprovalScreen() {
       });
   }
 
-  function messageForDecisionError(code: string, verb: 'Approve' | 'Deny'): string {
+  function messageForDecisionError(code: string, verb: 'Approve' | 'Deny', secondFactor = false): string {
     if (code === 'ALREADY_DECIDED') return 'Already decided elsewhere.';
     if (code === 'EXPIRED') return 'This request expired.';
-    const reauthMessage = reauthErrorMessage(code);
+    const reauthMessage = secondFactor ? secondFactorErrorMessage(code) : reauthErrorMessage(code);
     if (reauthMessage) return reauthMessage;
     return `${verb} failed. Try again.`;
   }
@@ -359,7 +388,9 @@ export function ApprovalScreen() {
   // other flow keeps the existing actionLabel + generic JSON details.
   const flowType = resolveApprovalFlowType(focused);
   const copy = getApprovalCopy(focused);
-  const needsReauth = requiresCriticalReauth(focused.riskTier);
+  const codeOnly = secondFactorFor === focused.id;
+  const needsReauth = needsReauthEntry(focused.riskTier, codeOnly);
+  const effectiveReauthMode: ReauthMode = codeOnly ? 'totp' : reauthMode;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
@@ -457,7 +488,8 @@ export function ApprovalScreen() {
           <RiskBand tier={focused.riskTier} summary={focused.riskSummary} />
           {needsReauth ? (
             <CriticalReauthField
-              mode={reauthMode}
+              mode={effectiveReauthMode}
+              codeOnly={codeOnly}
               value={reauthSecret}
               onChangeMode={setReauthMode}
               onChangeValue={setReauthSecret}
@@ -493,7 +525,7 @@ export function ApprovalScreen() {
             approveDisabled={
               (flowType === 'script_proposal' && proposalApproveBlocked !== null) ||
               (isOperatorPlanApproval(focused) && !isOperatorPlanReadable(focused.actionArguments)) ||
-              (needsReauth && !buildReauthFactor(reauthMode, reauthSecret))
+              (needsReauth && !buildReauthFactor(effectiveReauthMode, reauthSecret))
             }
           />
         </View>

@@ -20,7 +20,12 @@ import {
   isNotSoleApprover,
   isSiteCeiling,
   isApproverScopeRequired,
+  isSessionMfaRequired,
   isStepUpRequired,
+  decisionCodeErrorKind,
+  authenticatorCodeUsable,
+  isSelfApprovalForbidden,
+  isSiteAccessDenied,
   type BatchRowResult,
 } from '@/lib/intentApprovals';
 import { loginPathWithNext } from '@/lib/authScope';
@@ -29,11 +34,12 @@ import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
 import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchAndApplyPreferences, fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useAiAgentsPolicyDecideGate } from '../../stores/featuresStore';
 import ScriptProposalApprovalCard from '../ai/ScriptProposalApprovalCard';
 import RecentApprovals from './RecentApprovals';
 import { ApproverAssuranceNotice } from './ApproverAssuranceNotice';
+import { ApprovalMfaCodeField } from './ApprovalMfaCodeField';
 import { RegisterApproverDeviceLink } from './RegisterApproverDeviceLink';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -95,6 +101,21 @@ type DecisionErrorKind =
   | 'siteCeiling'
   // A partner-wide intent needs a partner-level approver. Terminal for this viewer too.
   | 'approverScopeRequired'
+  // The approve needs a second factor (403 MFA_REQUIRED). The card then takes
+  // a code from the approver's authenticator app for its next approve.
+  | 'mfaRequired'
+  // The approve needs a second factor, and this account has no authenticator
+  // app to take a code from.
+  | 'mfaNoAuthenticator'
+  // PAM decide refusals: the request's site is outside the decider's access,
+  // or the decider raised the request. Terminal for this viewer.
+  | 'siteAccessDenied'
+  | 'selfApprovalForbidden'
+  // Refusals of a code sent with an approve (see decisionCodeErrorKind).
+  | 'codeRejected'
+  | 'codeThrottled'
+  | 'codeUnavailable'
+  | 'codeNotPermitted'
   | 'verificationFailed'
   | 'alreadyDecided'
   | 'expired'
@@ -112,7 +133,10 @@ type GroupErrorKind =
   | 'batchNotHomogeneous'
   | 'batchTooLarge'
   /** A cross-org batch from a session that is not a partner session. */
-  | 'batchScopeNotPermitted';
+  | 'batchScopeNotPermitted'
+  /** Approving the set needs a second factor. A batch takes no code, so the
+   *  copy says to approve each card on its own. */
+  | 'batchMfaRequired';
 
 /**
  * P2-5 (#4192, Task 21) — "Approve and always allow". Eligibility for a
@@ -198,6 +222,17 @@ function alwaysAllowTargetFor(
  * Anything else becomes `null`, which the helper treats as the strict
  * (passkey) path.
  */
+function withId(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  return set.has(id) ? set : new Set([...set, id]);
+}
+
+function withoutId(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!set.has(id)) return set;
+  const next = new Set(set);
+  next.delete(id);
+  return next;
+}
+
 function knownApprovalScope(scope: unknown): AiApprovalScope | null {
   return scope === 'supervised' || scope === 'four_eyes' ? scope : null;
 }
@@ -218,6 +253,9 @@ function classifyDecideError(err: unknown): DecisionErrorKind | null {
   if (isNotSoleApprover(err)) return 'notSoleApprover';
   if (isSiteCeiling(err)) return 'siteCeiling';
   if (isApproverScopeRequired(err)) return 'approverScopeRequired';
+  if (isSiteAccessDenied(err)) return 'siteAccessDenied';
+  if (isSelfApprovalForbidden(err)) return 'selfApprovalForbidden';
+  if (isSessionMfaRequired(err)) return 'mfaRequired';
   if (err instanceof CeremonyError) return 'verificationFailed';
   if (err instanceof ActionError && err.status === 401) {
     const token = (err.body as { error?: unknown } | null | undefined)?.error;
@@ -240,6 +278,9 @@ function rowErrorKind(result: BatchRowResult): DecisionErrorKind {
   if (token === 'not_sole_approver') return 'notSoleApprover';
   if (token === 'site_ceiling') return 'siteCeiling';
   if (token === 'approver_scope_required') return 'approverScopeRequired';
+  if (token === 'site_access_denied') return 'siteAccessDenied';
+  if (token === 'self_approval_forbidden') return 'selfApprovalForbidden';
+  if (result.httpStatus === 403 && result.body?.code === 'MFA_REQUIRED') return 'mfaRequired';
   if (token === 'assertion_failed' || token === 'reauth_required') {
     return 'verificationFailed';
   }
@@ -323,6 +364,20 @@ export default function ApprovalsInbox() {
   // rows (e.g. an MCP-originated intent the requester cannot decide).
   const [intentStatus, setIntentStatus] = useState<IntentStatusView | null>(null);
   const { t } = useTranslation('approvals');
+  // A code field is offered only to an account the server takes an
+  // authenticator-app code from (`totpEnrolled`, from GET /users/me). Others,
+  // and an account not yet known, get copy that says how to get a second
+  // factor instead of a field whose every code would be refused.
+  const authUser = useAuthStore((state) => state.user);
+  const codeUsable = authenticatorCodeUsable(authUser);
+  const codeFieldOffered = codeUsable === true;
+  // A session stored before /users/me carried `totpEnrolled`: ask once.
+  const codeUsableAskedRef = useRef(false);
+  useEffect(() => {
+    if (codeUsable !== undefined || !authUser || codeUsableAskedRef.current) return;
+    codeUsableAskedRef.current = true;
+    void fetchAndApplyPreferences();
+  }, [codeUsable, authUser]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -351,6 +406,15 @@ export default function ApprovalsInbox() {
     () => new Set(),
   );
   const [groupErrors, setGroupErrors] = useState<Record<string, GroupErrorKind>>({});
+  // Cards whose approve the server refused for want of a second factor: their
+  // next approve carries a code from the approver's authenticator app.
+  const [codeEntryIds, setCodeEntryIds] = useState<ReadonlySet<string>>(() => new Set());
+  // The code typed on each such card, held in memory only until the approve it
+  // is sent with, and cleared as that approve starts.
+  const [codeValues, setCodeValues] = useState<Record<string, string>>({});
+  // Cards whose last approve spent a code the server accepted before refusing
+  // for another reason: the next approve needs the next code.
+  const [codeSpentIds, setCodeSpentIds] = useState<ReadonlySet<string>>(() => new Set());
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
   // W03 (#5612): which row's script-review disclosure is open, if any. The
@@ -733,6 +797,81 @@ export default function ApprovalsInbox() {
     setRowErrors((current) => ({ ...current, [id]: kind }));
   };
 
+  /** Takes the card's typed code for one approve and clears it. Undefined when
+   *  the card takes no code or none was typed. */
+  const takeCode = (id: string): string | undefined => {
+    if (!codeEntryIds.has(id)) return undefined;
+    const code = codeValues[id]?.trim() || undefined;
+    setCodeValues((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setCodeSpentIds((current) => withoutId(current, id));
+    return code;
+  };
+
+  /** Drops every code state of a decided card. */
+  const forgetCode = (id: string) => {
+    setCodeEntryIds((current) => withoutId(current, id));
+    setCodeSpentIds((current) => withoutId(current, id));
+    setCodeValues((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+
+  /** Puts back a code the approve never sent (it stopped before its POST). */
+  const restoreCode = (id: string, code: string) => {
+    setCodeValues((current) => (current[id] ? current : { ...current, [id]: code }));
+  };
+
+  /** After an approve that sent a code and did not decide the card: the
+   *  server may have spent the code, so the card asks for the next one. */
+  const markCodeSpent = (id: string) => setCodeSpentIds((current) => withId(current, id));
+
+  /** The copy for a second-factor refusal on this account. */
+  const mfaRequiredKind: DecisionErrorKind = codeFieldOffered ? 'mfaRequired' : 'mfaNoAuthenticator';
+
+  /**
+   * The inline error for a failed approve, or null for a session expiry.
+   * `codeSent`: the POST carried a code. A refusal of the code itself has its
+   * own copy; any other failure after it means the server may have spent the
+   * code. A second-factor refusal opens the card's code field.
+   */
+  const approveErrorKind = (id: string, err: unknown, codeSent: boolean): DecisionErrorKind | null => {
+    if (codeSent) {
+      const codeKind = decisionCodeErrorKind(err);
+      if (codeKind) return codeKind;
+      markCodeSpent(id);
+    }
+    const kind = classifyDecideError(err);
+    if (kind !== 'mfaRequired') return kind;
+    if (!codeFieldOffered) {
+      recheckCodeUsable(id);
+      return 'mfaNoAuthenticator';
+    }
+    setCodeEntryIds((current) => withId(current, id));
+    return kind;
+  };
+
+  /**
+   * After a second-factor refusal on an account not known to have an
+   * authenticator app, re-read the signed-in profile once: an app added since
+   * the session was stored, or a first read still in flight, then opens the
+   * card's code field.
+   */
+  const recheckCodeUsable = (id: string) => {
+    if (!authUser) return;
+    void fetchAndApplyPreferences().then(() => {
+      if (authenticatorCodeUsable(useAuthStore.getState().user) !== true) return;
+      setCodeEntryIds((current) => withId(current, id));
+      setRowErrors((current) => (current[id] === 'mfaNoAuthenticator' ? { ...current, [id]: 'mfaRequired' } : current));
+    });
+  };
+
   const setGroupError = (identity: string, kind: GroupErrorKind) => {
     setGroupErrors((current) => ({ ...current, [identity]: kind }));
   };
@@ -821,8 +960,17 @@ export default function ApprovalsInbox() {
       return;
     }
 
+    // A card that takes a code sends it with this approve only; a deny never
+    // carries one.
+    const mfaCode = decision === 'approve' ? takeCode(approval.id) : undefined;
+    if (decision === 'approve' && codeEntryIds.has(approval.id) && !mfaCode) {
+      setDecisionError(approval.id, 'mfaRequired');
+      return;
+    }
+
     setDecidingIds(new Set([approval.id]));
     clearRowErrors([approval.id]);
+    let codeSent = false;
 
     try {
       // Every approve passes the row's approvalScope: a SUPERVISED card is the
@@ -834,18 +982,22 @@ export default function ApprovalsInbox() {
       const outcome =
         decision === 'approve'
           // silentSuccess: the toast below is this path's one success message.
-          ? await decideIntentApproval(approval.id, 'approve', undefined, scope, { ...opts, silentSuccess: true })
+          ? await decideIntentApproval(approval.id, 'approve', undefined, scope, {
+              ...opts,
+              silentSuccess: true,
+              mfaRequiredMessage: t(/* i18n-dynamic */ `errors.${mfaRequiredKind}`),
+              ...(mfaCode ? { mfaCode, onCodeSent: () => { codeSent = true; } } : {}),
+            })
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
-      if (outcome === 'needs_device') {
-        setDecisionError(approval.id, 'noApproverDevice');
-        return;
-      }
-      if (outcome === 'not_sole_approver') {
-        setDecisionError(approval.id, 'notSoleApprover');
+      if (outcome === 'needs_device' || outcome === 'not_sole_approver') {
+        if (codeSent) markCodeSpent(approval.id);
+        else if (mfaCode) restoreCode(approval.id, mfaCode);
+        setDecisionError(approval.id, outcome === 'needs_device' ? 'noApproverDevice' : 'notSoleApprover');
         return;
       }
       setDenyingId(null);
       setReviewOpenId((cur) => (cur === approval.id ? null : cur));
+      forgetCode(approval.id);
       // Critique #7: the row otherwise just vanishes with no confirmation
       // that anything happened. Approve only — a denial's own form already
       // stays open through the click, and the row disappearing IS the
@@ -863,7 +1015,8 @@ export default function ApprovalsInbox() {
       }
       await loadApprovals({ silent: true, withCount: true });
     } catch (err) {
-      const kind = classifyDecideError(err);
+      if (mfaCode && !codeSent) restoreCode(approval.id, mfaCode);
+      const kind = decision === 'approve' ? approveErrorKind(approval.id, err, codeSent) : classifyDecideError(err);
       // Genuine session expiry — send the user to login the same way
       // loadApprovals does.
       if (kind === null) UNAUTHORIZED();
@@ -887,26 +1040,35 @@ export default function ApprovalsInbox() {
     const target = alwaysAllowTarget;
     if (!target || alwaysAllowBusy) return;
 
+    const mfaCode = takeCode(target.approval.id);
+    if (codeEntryIds.has(target.approval.id) && !mfaCode) {
+      setDecisionError(target.approval.id, 'mfaRequired');
+      setAlwaysAllowTarget(null);
+      return;
+    }
+
     setAlwaysAllowBusy(true);
     setDecidingIds(new Set([target.approval.id]));
     clearRowErrors([target.approval.id]);
+    let codeSent = false;
 
     try {
-      const outcome = await decideIntentApproval(
-        target.approval.id,
-        'approve',
-        undefined,
-        knownApprovalScope(target.approval.approvalScope),
-      );
-      if (outcome === 'needs_device') {
-        setDecisionError(target.approval.id, 'noApproverDevice');
-        return;
-      }
-      if (outcome === 'not_sole_approver') {
-        setDecisionError(target.approval.id, 'notSoleApprover');
+      const scope = knownApprovalScope(target.approval.approvalScope);
+      const outcome = mfaCode
+        ? await decideIntentApproval(target.approval.id, 'approve', undefined, scope, {
+            mfaCode,
+            onCodeSent: () => { codeSent = true; },
+            mfaRequiredMessage: t(/* i18n-dynamic */ `errors.${mfaRequiredKind}`),
+          })
+        : await decideIntentApproval(target.approval.id, 'approve', undefined, scope);
+      if (outcome === 'needs_device' || outcome === 'not_sole_approver') {
+        if (codeSent) markCodeSpent(target.approval.id);
+        else if (mfaCode) restoreCode(target.approval.id, mfaCode);
+        setDecisionError(target.approval.id, outcome === 'needs_device' ? 'noApproverDevice' : 'notSoleApprover');
         return;
       }
 
+      forgetCode(target.approval.id);
       await loadApprovals({ silent: true, withCount: true });
 
       // The approve was refused (already shown as an error) and the request
@@ -947,7 +1109,8 @@ export default function ApprovalsInbox() {
         // having succeeded — nothing further to surface here.
       }
     } catch (err) {
-      const kind = classifyDecideError(err);
+      if (mfaCode && !codeSent) restoreCode(target.approval.id, mfaCode);
+      const kind = approveErrorKind(target.approval.id, err, codeSent);
       if (kind === null) UNAUTHORIZED();
       else setDecisionError(target.approval.id, kind);
     } finally {
@@ -1067,6 +1230,10 @@ export default function ApprovalsInbox() {
         setGroupError(group.identity, 'batchScopeNotPermitted');
         return;
       }
+      if (outcome.outcome === 'batch_mfa_required') {
+        setGroupError(group.identity, 'batchMfaRequired');
+        return;
+      }
 
       const decided = new Set<string>();
       const failures: Record<string, DecisionErrorKind> = {};
@@ -1084,6 +1251,15 @@ export default function ApprovalsInbox() {
 
       setDenyingGroupIdentity(null);
       if (Object.keys(failures).length > 0) {
+        // A card the batch could not approve for want of a second factor can
+        // still be approved on its own with a code, when the account can
+        // have one.
+        const needCode = Object.keys(failures).filter((id) => failures[id] === 'mfaRequired');
+        if (codeFieldOffered) {
+          if (needCode.length > 0) setCodeEntryIds((current) => new Set([...current, ...needCode]));
+        } else {
+          for (const id of needCode) failures[id] = 'mfaNoAuthenticator';
+        }
         setRowErrors((current) => ({ ...current, ...failures }));
       }
       if (decided.size > 0) {
@@ -1141,8 +1317,11 @@ export default function ApprovalsInbox() {
     const actionsDisabled = busy || expired;
     // An operator_plan the card cannot render (malformed / zero effects) must
     // not be approvable: the approver would be signing what they cannot read.
+    // A card that takes a code waits for one before its approve can be sent.
+    const takesCode = codeEntryIds.has(approval.id);
     const approveDisabled =
       actionsDisabled ||
+      (takesCode && !codeValues[approval.id]?.trim()) ||
       (isOperatorPlanApproval(approval.actionToolName) && !isOperatorPlanReadable(approval.actionArguments));
     // W03 (#5612): only a run_script row fanned out from a proposal carries
     // this — every other tool keeps the plain risk-summary line.
@@ -1364,6 +1543,15 @@ export default function ApprovalsInbox() {
                   </>
                 )}
               </div>
+            )}
+            {takesCode && (
+              <ApprovalMfaCodeField
+                approvalId={approval.id}
+                value={codeValues[approval.id] ?? ''}
+                spent={codeSpentIds.has(approval.id)}
+                disabled={actionsDisabled}
+                onChange={(value) => setCodeValues((current) => ({ ...current, [approval.id]: value }))}
+              />
             )}
           </div>
 

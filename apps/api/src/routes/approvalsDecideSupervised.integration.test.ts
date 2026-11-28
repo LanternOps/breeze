@@ -86,12 +86,15 @@ function requesterAuth(
 }
 
 /** A real access token for the requester deciding their own supervised row,
- * minted the same way the atomicity suite's approverAccessToken is. */
+ * minted the same way the atomicity suite's approverAccessToken is. The
+ * session carries the MFA claim unless `mfa: false` is asked for: approving a
+ * high-risk intent needs a second factor. */
 async function requesterAccessToken(
   user: { id: string; email: string },
   orgId: string,
   partnerId: string,
   roleId: string,
+  opts: { mfa?: boolean } = {},
 ): Promise<string> {
   const payload: Omit<TokenPayload, 'type'> = {
     sub: user.id,
@@ -100,7 +103,7 @@ async function requesterAccessToken(
     orgId,
     partnerId,
     scope: 'organization',
-    mfa: false,
+    mfa: opts.mfa ?? true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),
@@ -186,12 +189,18 @@ async function decideViaRoute(
   s: Scenario,
   approvalRowId: string,
   action: 'approve' | 'deny' = 'approve',
+  opts: { mfa?: boolean } = {},
 ): Promise<Response> {
-  return postViaRoute(s, approvalRowId, action);
+  return postViaRoute(s, approvalRowId, action, opts);
 }
 
-async function postViaRoute(s: Scenario, approvalRowId: string, action: string): Promise<Response> {
-  const token = await requesterAccessToken(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
+async function postViaRoute(
+  s: Scenario,
+  approvalRowId: string,
+  action: string,
+  opts: { mfa?: boolean } = {},
+): Promise<Response> {
+  const token = await requesterAccessToken(s.requester, s.orgId, s.partnerId, s.requesterRoleId, opts);
   const app = new Hono();
   app.route('/approvals', approvalRoutes);
   return app.request(`/approvals/${approvalRowId}/${action}`, {
@@ -243,6 +252,36 @@ describe('supervised intent plain-decide branch (real Postgres, breeze_app)', ()
     });
   });
 
+  runDb('a session without the MFA claim cannot approve the high-risk supervised intent: 403 MFA_REQUIRED, nothing written', async () => {
+    const s = seeded!;
+    const { intentId, approvalRowId } = await seedSupervisedIntent(s);
+
+    const res = await decideViaRoute(s, approvalRowId, 'approve', { mfa: false });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+
+    await withSystemDbAccessContext(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      expect(intent?.status).toBe('pending_approval');
+      expect(intent?.releaseBy).toBeNull();
+
+      const outbox = await db
+        .select()
+        .from(intentOutbox)
+        .where(and(eq(intentOutbox.intentId, intentId), eq(intentOutbox.eventType, 'intent_approved')));
+      expect(outbox).toHaveLength(0);
+
+      const [row] = await db
+        .select({ status: approvalRequests.status })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalRowId));
+      expect(row?.status).toBe('pending');
+    });
+
+    // Denying needs no second factor.
+    expect((await decideViaRoute(s, approvalRowId, 'deny', { mfa: false })).status).toBe(200);
+  });
+
   runDb('revoked-permission path: requester loses devices:execute between create and decide — 403, nothing written', async () => {
     const s = seeded!;
     const { intentId, approvalRowId } = await seedSupervisedIntent(s);
@@ -251,6 +290,7 @@ describe('supervised intent plain-decide branch (real Postgres, breeze_app)', ()
 
     const res = await decideViaRoute(s, approvalRowId, 'approve');
     expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'forbidden' });
 
     await withSystemDbAccessContext(async () => {
       const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));

@@ -96,6 +96,22 @@ vi.mock('../services/authenticatorPolicy', () => ({
   isEnforcing: vi.fn(() => false),
 }));
 
+// The row-owner policy lookup is a real-Postgres read (covered by
+// approverAssuranceRowPartner.integration.test.ts and
+// approvalAssurancePolicy.test.ts). Here it keeps the session-only read this
+// suite was written against, through the mocked loadPartnerPolicy above; the
+// set helpers stay real, so a mocked `isEnforcing` still drives enforcement.
+vi.mock('../services/approvalAssurancePolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/approvalAssurancePolicy')>();
+  const policy = await import('../services/authenticatorPolicy');
+  return {
+    ...actual,
+    loadApprovalPolicySet: vi.fn(async (input: { sessionPartnerId: string | null }) => [
+      await policy.loadPartnerPolicy(input.sessionPartnerId ?? null),
+    ]),
+  };
+});
+
 vi.mock('../services/actionIntents/intentApprovers', () => ({
   resolveIntentApprovers: vi.fn(async () => ['00000000-0000-0000-0000-000000000001']),
   isAgentIntentDecideAuthorized: vi.fn(async () => true),
@@ -126,6 +142,15 @@ vi.mock('../services/permissions', () => ({
       ),
   ),
 }));
+// The decider's permissions for a row org (resolved in the org's owning
+// partner in production) go through the mocked getUserPermissions above.
+vi.mock('../services/approvals/deciderPermissions', async () => {
+  const permissions = await import('../services/permissions');
+  return {
+    getDeciderPermissionsForOrg: vi.fn((userId: string, orgId: string) =>
+      permissions.getUserPermissions(userId, { orgId })),
+  };
+});
 
 vi.mock('../db/schema/elevations', () => ({
   elevationRequests: {
@@ -274,6 +299,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  // Session MFA on a high-or-above approve: satisfied unless a test says otherwise.
+  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),

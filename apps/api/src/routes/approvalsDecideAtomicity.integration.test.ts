@@ -88,12 +88,15 @@ function requesterAuth(
 
 /** A real access token for an org-scoped approver, minted the same way
  * db-utils.setupTestEnvironment does (aep/mep = 1 matches the seeded row's
- * default epochs; sid must be non-empty for authMiddleware). */
+ * default epochs; sid must be non-empty for authMiddleware). The session
+ * carries the MFA claim unless `mfa: false` is asked for: approving a
+ * high-risk intent needs a second factor. */
 async function approverAccessToken(
   user: { id: string; email: string },
   orgId: string,
   partnerId: string,
   roleId: string,
+  opts: { mfa?: boolean } = {},
 ): Promise<string> {
   const payload: Omit<TokenPayload, 'type'> = {
     sub: user.id,
@@ -102,7 +105,7 @@ async function approverAccessToken(
     orgId,
     partnerId,
     scope: 'organization',
-    mfa: false,
+    mfa: opts.mfa ?? true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),
@@ -185,8 +188,12 @@ async function seedIntentWithTwoApprovers(s: Scenario): Promise<{ intentId: stri
   return { intentId: snapshot.id, approverARowId: row.id };
 }
 
-async function approveViaRoute(s: Scenario, approvalRowId: string): Promise<Response> {
-  const token = await approverAccessToken(s.orgApprover, s.orgId, s.partnerId, s.orgRoleId);
+async function approveViaRoute(
+  s: Scenario,
+  approvalRowId: string,
+  opts: { mfa?: boolean } = {},
+): Promise<Response> {
+  const token = await approverAccessToken(s.orgApprover, s.orgId, s.partnerId, s.orgRoleId, opts);
   const app = new Hono();
   app.route('/approvals', approvalRoutes);
   return app.request(`/approvals/${approvalRowId}/approve`, {
@@ -268,6 +275,47 @@ describe('decide-path intent fan-in atomicity (real Postgres, breeze_app)', () =
         .from(approvalRequests)
         .where(and(eq(approvalRequests.intentId, intentId), eq(approvalRequests.status, 'pending')));
       expect(pendingSiblings).toHaveLength(0); // partnerApprover's row expired in the same commit
+    });
+  });
+
+  runDb('a session without the MFA claim cannot approve the high-risk four-eyes intent: 403 MFA_REQUIRED, nothing written', async () => {
+    const s = seeded!;
+    const { intentId, approverARowId } = await seedIntentWithTwoApprovers(s);
+
+    const res = await approveViaRoute(s, approverARowId, { mfa: false });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+
+    await withSystemDbAccessContext(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      expect(intent?.status).toBe('pending_approval');
+
+      const outbox = await db
+        .select()
+        .from(intentOutbox)
+        .where(and(eq(intentOutbox.intentId, intentId), eq(intentOutbox.eventType, 'intent_approved')));
+      expect(outbox).toHaveLength(0);
+
+      const pending = await db
+        .select({ id: approvalRequests.id })
+        .from(approvalRequests)
+        .where(and(eq(approvalRequests.intentId, intentId), eq(approvalRequests.status, 'pending')));
+      expect(pending).toHaveLength(2); // neither the decider's row nor its sibling moved
+    });
+
+    // Denying needs no second factor.
+    const token = await approverAccessToken(s.orgApprover, s.orgId, s.partnerId, s.orgRoleId, { mfa: false });
+    const app = new Hono();
+    app.route('/approvals', approvalRoutes);
+    const deny = await app.request(`/approvals/${approverARowId}/deny`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(deny.status).toBe(200);
+    await withSystemDbAccessContext(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      expect(intent?.status).toBe('rejected');
     });
   });
 

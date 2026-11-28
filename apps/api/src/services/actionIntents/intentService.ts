@@ -2621,8 +2621,7 @@ export async function createActionIntent(
   // principal operation (manage_alerts:suppress and friends); requiring L3
   // re-auth on every one of them would defeat the point of a lightweight
   // supervised lane. Pinned by intentService.tier2Agent.test.ts.
-  const riskTier: 'medium' | 'high' | 'critical' =
-    guardrail.tier >= 4 ? 'critical' : guardrail.tier >= 3 ? 'high' : 'medium';
+  const riskTier: 'medium' | 'high' | 'critical' = riskTierLabel(guardrail.tier);
 
   const dbContext: DbAccessContext = {
     scope: 'organization',
@@ -3695,12 +3694,12 @@ export async function createActionIntent(
 // runDeferredHumanFanout — the human-fallback degrade path (wave 5 Part B, #3827)
 // ---------------------------------------------------------------------------
 
-/** Mirrors createActionIntent's own tier→riskTier mapping (line ~666 above) —
- *  kept as a private one-liner rather than a shared export because the two
- *  call sites take DIFFERENT inputs (a live `GuardrailCheck.tier` at creation
- *  vs. a persisted `action_intents.risk_tier` column here) and the shared
- *  formula is a single ternary, not enough surface to be worth a public seam. */
-function riskTierLabel(tier: number): 'medium' | 'high' | 'critical' {
+/** The intent tier → approval-row riskTier mapping, shared by
+ *  createActionIntent (a live `GuardrailCheck.tier`) and the snapshot below (a
+ *  persisted `action_intents.risk_tier`). Exported so the route-parity
+ *  contract (aiToolMfaGate.routeParity.contract.test.ts) pins the tier the
+ *  approve-side session-MFA gate actually sees, not a copy of the formula. */
+export function riskTierLabel(tier: number): 'medium' | 'high' | 'critical' {
   return tier >= 4 ? 'critical' : tier >= 3 ? 'high' : 'medium';
 }
 

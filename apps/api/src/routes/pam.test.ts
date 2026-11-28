@@ -1161,6 +1161,8 @@ describe('POST /pam/elevation-requests/:id/respond with assertion proof', () => 
         approvalId: REQ_ID,
         userId: USER_ID,
         proof: { ...proof, type: 'webauthn_platform' },
+        // the elevation's org: its owning partner's policy applies too
+        rowOrgIds: [ORG_ID],
       }),
     );
     expect(updateSetCalls[0]).toMatchObject({

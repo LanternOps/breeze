@@ -197,7 +197,8 @@ async function approverToken(f: Fixture): Promise<string> {
     orgId: f.orgId,
     partnerId: f.partnerId,
     scope: 'organization',
-    mfa: false,
+    // approving a high-risk intent needs the session MFA claim
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),

@@ -182,17 +182,27 @@ async function approveUnauthorizedCode(res: Response, sentReauth: boolean): Prom
  * 403s the approve route answers:
  *   - `{ error: 'step_up_required' }`: an enforcing partner policy wants a
  *     higher assurance than this approve reached.
- *   - `{ error, message }` from requireFreshMfaStepUp when the partner's MFA
- *     policy does not permit TOTP. It is the only 403 on this route that
- *     carries `message`; the decide-path 403s are bare snake_case tokens
- *     (services/approvals/decideApprovalRequest.ts), so this is told apart by
- *     shape, never by matching the human text.
+ *   - `{ error, message, code: 'mfa_method_not_permitted' }` from
+ *     requireFreshMfaStepUp when the partner's MFA policy does not permit
+ *     TOTP. Told apart by its code (or, from an older server, by `error` and
+ *     `message` being the same prose), never by matching the human text:
+ *     several decide-path 403s also carry a `message` beside their token.
+ *   - `{ error, code: 'MFA_REQUIRED' }`: approving this request needs a
+ *     second factor (the session's MFA sign-in, or an authenticator code sent
+ *     with this approve).
  * Anything else keeps the generic `Approve failed: 403`.
  */
 async function approveForbiddenCode(res: Response, reauth: ReauthFactor | undefined): Promise<string> {
-  const data = (await res.json().catch(() => null)) as { error?: unknown; message?: unknown } | null;
+  const data = (await res.json().catch(() => null)) as { error?: unknown; message?: unknown; code?: unknown } | null;
+  if (data?.code === 'MFA_REQUIRED') return 'MFA_REQUIRED';
   if (data?.error === 'step_up_required') return 'STEP_UP_REQUIRED';
-  if (reauth?.kind === 'totp' && typeof data?.message === 'string') return 'REAUTH_METHOD_NOT_PERMITTED';
+  // The code check's own refusal carries `code: 'mfa_method_not_permitted'`.
+  // A server that predates that code sends `error` and `message` as the same
+  // prose; decide refusals that carry a message pair it with a snake_case token.
+  const methodRefused =
+    data?.code === 'mfa_method_not_permitted'
+    || (data?.code === undefined && typeof data?.message === 'string' && data?.error === data?.message);
+  if (reauth?.kind === 'totp' && methodRefused) return 'REAUTH_METHOD_NOT_PERMITTED';
   return `Approve failed: ${res.status}`;
 }
 

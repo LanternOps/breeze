@@ -24,20 +24,45 @@ vi.mock('../routes/auth/schemas', async (importOriginal) => {
   return { ...actual, ENABLE_2FA: true };
 });
 
+// Every database access throws, except the reads an approve-side case serves
+// on purpose (the approval row and its intent, `approveReads`).
+const approveReads = vi.hoisted(() => ({ rows: null as unknown[][] | null }));
 vi.mock('../db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db')>();
   const reached = () => { throw new Error('reached the database'); };
+  const servedSelect = () => {
+    const rows = approveReads.rows?.shift();
+    if (!rows) reached();
+    return { from: () => ({ where: async () => rows }) };
+  };
   return {
     ...actual,
-    db: new Proxy({}, { get: () => reached }),
+    db: new Proxy({}, { get: (_target, prop) => (prop === 'select' && approveReads.rows ? servedSelect : reached) }),
     withDbAccessContext: reached,
-    withSystemDbAccessContext: reached,
+    withSystemDbAccessContext: (fn: () => unknown) => (approveReads.rows ? fn() : reached()),
   };
+});
+
+// An explicit "Not required" approval-security policy: never enforcing, so
+// the session-MFA rule is the only gate an L1 approve meets here.
+vi.mock('./authenticatorPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./authenticatorPolicy')>();
+  return {
+    ...actual,
+    loadPartnerPolicy: vi.fn(async () => ({ partnerId: 'p-1', requireEnrollment: false, enforceFrom: null, floorOverrides: {} })),
+  };
+});
+vi.mock('./actionIntents/metrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./actionIntents/metrics')>();
+  return { ...actual, recordActionIntentEvent: vi.fn() };
 });
 
 import { aiTools } from './aiToolNames';
 import './aiTools'; // populates the registry
-import { checkGuardrails } from './aiGuardrails';
+import { checkGuardrails, resolveApprovalScope } from './aiGuardrails';
+import { decideApprovalRequest } from './approvals/decideApprovalRequest';
+import { riskTierLabel } from './actionIntents/intentService';
+import { recordActionIntentEvent } from './actionIntents/metrics';
 import { isMfaGatedToolAction, MFA_GATED_TOOL_ACTIONS, MFA_REQUIRED_CODE, MFA_REQUIRED_TOOL_MESSAGE } from './aiToolMfaGate';
 
 type Row = {
@@ -83,13 +108,21 @@ const ROWS: Row[] = [
  * Tier 3 actions whose route twin requires MFA, deliberately NOT enrolled.
  *
  * One rule: an action that needs approval keeps relying on the approval gate.
- * In web chat both the chat route and the approve route require MFA; over MCP
- * the call is refused with MCP_APPROVAL_REQUIRED (or filed as an approval
- * intent). Enrolling a Tier 3 action would remove that MCP approval path and
- * drop a wholly gated tool from MCP's tools/list, which is a product change
- * left to the owner. Each row pins that the route still requires MFA, that the
- * action really is Tier 3, and that it is not enrolled, so changing the rule
- * has to change this table.
+ * The call files an action intent (web chat, whose message route requires
+ * MFA, or MCP, which carries no MFA claim at all), and the intent is decided
+ * in the Approvals area (`POST /approvals/:id/approve`, also mounted under
+ * `/mobile/approvals`, and the batch decide). The second-factor rule for an
+ * approve lives in the decide core rather than in route middleware: approving
+ * a high-or-above intent requires `hasSatisfiedMfa` or an authenticator code
+ * verified for that decision, under every approval-security policy
+ * (`requiresSessionMfaToApprove` in services/approvals/decideApprovalRequest.ts). The chat approve route
+ * (`routes/ai.ts`) also requires MFA, but it refuses intent-backed executions
+ * and sends them to the Approvals area, so it is not the gate for these rows.
+ * Enrolling a Tier 3 action would remove the MCP approval path and drop a
+ * wholly gated tool from MCP's tools/list, which is a product change left to
+ * the owner. Each row is pinned on both sides: the route still requires MFA,
+ * the action really is Tier 3 and not enrolled, and the approve path refuses
+ * a session without MFA under a non-enforcing ("Not required") policy.
  */
 const TIER3_APPROVAL_ONLY: Row[] = [
   { route: 'routes/backup/profiles.ts', method: 'patch', path: '/profiles/:id', tool: 'manage_backup_profiles', actions: ['update'] },
@@ -209,6 +242,64 @@ describe('AI tool actions mirroring a requireMfa() route are MFA-gated', () => {
     expect(middlewareChain(row.route, row.method, row.path)).toContain('requireMfa()');
     expect(checkGuardrails(tool, action === undefined ? {} : { action }).tier).toBe(3);
     expect(isMfaGatedToolAction(tool, action)).toBe(false);
+  });
+
+  const humanSession = (mfa: boolean) => ({
+    ...apiKeyAuth,
+    principal: { kind: 'user_session' },
+    scope: 'partner',
+    partnerId: 'p-1',
+    token: { sid: 'sid-1', mfa },
+  });
+  const APPROVER = apiKeyAuth.user.id;
+
+  /** Serve the approve path the approval row and intent a Tier 3 call files. */
+  function serveApprovalOf(tool: string, action: string | undefined) {
+    const args = action === undefined ? {} : { action };
+    // The tier → riskTier mapping fan-out writes onto the approval row.
+    const riskTier = riskTierLabel(checkGuardrails(tool, args).tier);
+    const approvalScope = resolveApprovalScope(tool, action, args);
+    approveReads.rows = [
+      [{
+        id: 'appr-1', userId: APPROVER, status: 'pending', expiresAt: new Date(Date.now() + 60_000),
+        intentId: 'intent-1', elevationRequestId: null, diagnosticAccessGrantId: null, executionId: null,
+        riskTier, actionToolName: tool, actionArguments: args, boundArgumentDigest: 'digest-1',
+      }],
+      [{
+        id: 'intent-1', orgId: apiKeyAuth.orgId, status: 'pending_approval', source: 'mcp',
+        actionName: tool, arguments: args, argumentDigest: 'digest-1', approvalScope,
+        requestedByUserId: approvalScope === 'supervised' ? APPROVER : 'someone-else',
+        requestingAgentRunId: null, requestingFlowRunId: null,
+      }],
+    ];
+  }
+
+  it.each(tier3Cases)('%s action=%s: the approve path refuses a session without MFA under a "Not required" policy', async (tool, action) => {
+    serveApprovalOf(tool, action);
+    try {
+      const res = await decideApprovalRequest({ auth: humanSession(false), id: 'appr-1', status: 'approved' });
+      expect(res).toEqual({ httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } });
+      expect(recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ errorCode: 'mfa_required' }) }),
+      );
+    } finally {
+      approveReads.rows = null;
+    }
+  });
+
+  it.each(tier3Cases)('%s action=%s: the approve path does not refuse a session with MFA for MFA', async (tool, action) => {
+    serveApprovalOf(tool, action);
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await decideApprovalRequest({ auth: humanSession(true), id: 'appr-1', status: 'approved' })).body;
+    } catch (err) {
+      // Past the MFA check the path goes on to its authority reads, which the
+      // stubbed database refuses.
+      expect(String(err)).toMatch(/reached the database/);
+    } finally {
+      approveReads.rows = null;
+    }
+    expect(body.code).not.toBe('MFA_REQUIRED');
   });
 
   it('every enrolled parity row is an auto-executing (Tier 1/2) action', () => {

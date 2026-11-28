@@ -20,7 +20,11 @@ const authenticatorMock = vi.hoisted(() => ({
 }));
 
 // registerOrgIdProvider: orgStore (read by the approver-device notice) registers itself on import.
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: null }) => unknown) => select({ user: null }),
+}));
 // Resolved relative to THIS file (components/approvals/), the same module
 // runAction.ts reaches via '../components/shared/Toast' — matches the
 // established pattern (AiAgentGraduationPanel.test.tsx) for intercepting
@@ -331,7 +335,7 @@ describe('ApprovalsInbox', () => {
         'four_eyes',
         // The inbox shows its own "Approved {action} for {org}" toast, so the
         // helper's generic one must be suppressed (#9658: two toasts per click).
-        { silentSuccess: true },
+        { silentSuccess: true, mfaRequiredMessage: expect.any(String) },
       ),
     );
   });
@@ -501,6 +505,29 @@ describe('ApprovalsInbox', () => {
     expect(error).not.toHaveTextContent(/could not be submitted/i);
     expect(error).not.toHaveTextContent('site_ceiling');
     expect(error).toHaveTextContent(/organization-wide/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  // A high-or-above approve from a session that never completed MFA is
+  // refused 403 MFA_REQUIRED. Only a fresh sign-in with the second factor
+  // clears it, so the generic "Try again" copy is actively wrong.
+  it('shows terminal sign-in-again copy for a 403 MFA_REQUIRED refusal', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('MFA required', 403, 'MFA_REQUIRED', {
+        error: 'MFA required',
+        code: 'MFA_REQUIRED',
+      }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).not.toHaveTextContent(/could not be submitted/i);
+    expect(error).not.toHaveTextContent(/try again/i);
+    expect(error).toHaveTextContent(/multi-factor authentication/i);
+    expect(error).toHaveTextContent(/sign in again/i);
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
@@ -935,6 +962,46 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
     expect(screen.getByTestId('approval-error-ap-b')).not.toHaveTextContent(
       /could not be submitted/i,
     );
+  });
+
+  it('gives a per-row 403 MFA_REQUIRED the sign-in-again copy, not the generic retry', async () => {
+    routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
+      status: 200,
+      payload: {
+        results: [
+          { id: 'ap-a', httpStatus: 200, body: {} },
+          {
+            id: 'ap-b',
+            httpStatus: 403,
+            body: { error: 'MFA required', code: 'MFA_REQUIRED' },
+          },
+        ],
+      },
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    const error = await screen.findByTestId('approval-error-ap-b');
+    expect(error).toHaveTextContent(/multi-factor authentication/i);
+    expect(error).not.toHaveTextContent(/could not be submitted/i);
+  });
+
+  it('shows the sign-in-again copy for a whole-batch 403 MFA_REQUIRED', async () => {
+    routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
+      status: 403,
+      payload: { error: 'MFA required', code: 'MFA_REQUIRED' },
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    const error = await screen.findByTestId(`approval-group-error-${GROUP_KEY}`);
+    expect(error).toHaveTextContent(/multi-factor authentication/i);
+    expect(error).not.toHaveTextContent(/could not be submitted/i);
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
   });
 
   it('gives a per-row 410 its own expiry copy rather than the generic retry', async () => {

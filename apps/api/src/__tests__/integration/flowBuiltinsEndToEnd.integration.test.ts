@@ -169,7 +169,8 @@ async function readSteps(runId: string) {
 async function approveViaRoute(f: Fixture, approvalId: string): Promise<Response> {
   const token = await createAccessToken({
     sub: f.admin.id, email: f.admin.email, roleId: f.roleId, orgId: f.orgId, partnerId: f.partnerId,
-    scope: 'organization', mfa: false, aep: 1, mep: 1, sid: randomUUID(),
+    // approving a high-risk intent needs the session MFA claim
+    scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   });
   const app = new Hono();
   app.route('/approvals', approvalRoutes);

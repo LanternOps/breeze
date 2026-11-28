@@ -1,7 +1,7 @@
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, isInteractiveUserSession } from '../../middleware/auth';
-import { canAccessOrg, getUserPermissions, hasPermission, userCanDecideApprovals, PERMISSIONS } from '../permissions';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { canAccessOrg, hasPermission, userCanDecideApprovals, PERMISSIONS } from '../permissions';
+import { getDeciderPermissionsForOrg } from '../approvals/deciderPermissions';
 import type { ScriptProposalDetailDto } from '@breeze/shared';
 import {
   loadProposalRow, loadLatestReview, loadProposalExecutions, loadProposalDevices, loadProposalRequesterUserId,
@@ -38,11 +38,8 @@ export async function loadScriptProposalDetail(
   const proposal = await loadProposalRow(proposalId);
   if (!proposal) return { ok: false, reason: 'not_found' };
 
-  const perms = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      getUserPermissions(auth.user.id, { partnerId: auth.partnerId ?? undefined, orgId: proposal.orgId }),
-    ),
-  );
+  // Resolved in the partner that owns the proposal's org, not the session's.
+  const perms = await getDeciderPermissionsForOrg(auth.user.id, proposal.orgId);
   const reachable = !!perms && canAccessOrg(perms, proposal.orgId);
   if (!reachable) return { ok: false, reason: 'forbidden' };
   const canDecide = userCanDecideApprovals(perms!);

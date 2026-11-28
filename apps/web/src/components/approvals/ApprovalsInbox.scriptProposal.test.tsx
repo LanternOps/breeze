@@ -7,7 +7,11 @@ const intentApprovalsMock = vi.hoisted(() => ({ decide: vi.fn() }));
 const useScriptProposal = vi.hoisted(() => vi.fn());
 
 // registerOrgIdProvider: orgStore (read by the approver-device notice) registers itself on import.
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: null }) => unknown) => select({ user: null }),
+}));
 vi.mock('@/hooks/useEventStream', () => ({
   useEventStream: () => ({ connected: true, subscribe: vi.fn(), unsubscribe: vi.fn() }),
 }));
@@ -131,7 +135,7 @@ describe('ApprovalsInbox + script proposals', () => {
         // The row's scope rides along so a supervised proposal is a plain
         // click (#5600), not a passkey ceremony.
         'supervised',
-        { acknowledgedPatterns: ['PowerShell HKLM write'], silentSuccess: true },
+        { acknowledgedPatterns: ['PowerShell HKLM write'], silentSuccess: true, mfaRequiredMessage: expect.any(String) },
       ),
     );
   });

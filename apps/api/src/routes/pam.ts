@@ -663,6 +663,8 @@ pamRoutes.post(
             riskTier: elevationRiskTierToName(row.riskTier),
             proof: body.proof,
             partnerId: auth.partnerId ?? null,
+            // The elevation's org: its owning partner's policy applies too.
+            rowOrgIds: [row.orgId],
             decision: body.decision === 'approve' ? 'approved' : 'denied',
             reauthVerified,
           });
