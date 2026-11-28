@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { EdrActionKey } from '@breeze/shared';
 import {
@@ -95,14 +96,53 @@ function memo<T>(ctx: EdrAdapterContext, key: string, load: () => Promise<T>): P
 
 type AccountTimeZone = { timeZone: string } | { timeZone: null; reason: string };
 
-/** Failures that say nothing about the timezone: the run fails and retries rather than storing a guess. */
-const TRANSIENT_CODES: ReadonlySet<string> = new Set(['rate_limited', 'upstream_error', 'malformed_response', 'outcome_unknown']);
+/**
+ * Account-read failures that will not go away on a retry: this key cannot read its account, so the
+ * zone is unavailable now. Every other failure (a generic `vendor_error` such as -32000, 5xx, a
+ * malformed or non-2xx reply, `not_found`) is treated as transient: the run fails and retries, so
+ * one hiccup never writes null over the times of every endpoint enriched in that run.
+ */
+const PERMANENT_ACCOUNT_READ_CODES: ReadonlySet<string> = new Set([
+  'api_not_enabled', 'licence', 'forbidden', 'method_not_found', 'invalid_params',
+]);
+
+/**
+ * Bound on the transient case. Before #12821 inventory made no account read, so a read that fails
+ * for good with a transient-looking code must not block inventory (and with it the isolation
+ * confirmation that reads inventory) indefinitely. Once the read for one key has failed for this
+ * long with no success in between, it is treated as unavailable (null times, logged reason
+ * `account_read_failing:<code>`) until a read succeeds again. Kept per process: a restart starts a
+ * new window, so the worst case is one window of failed runs per process start.
+ */
+const ACCOUNT_READ_FAILING_MS = 3 * 60 * 60_000;
+const MAX_TRACKED_FAILING_KEYS = 1_000;
+/** Key fingerprint -> when its account read started failing (ms). Only failing keys are held. */
+const accountReadFailingSince = new Map<string, number>();
+
+function accountKeyFingerprint(ctx: EdrAdapterContext): string {
+  return createHash('sha256').update(JSON.stringify([ctx.baseUrl ?? '', ctx.creds])).digest('hex');
+}
+
+/** How long the account read for this key has been failing, recording `now` as the start if it is new. */
+function accountReadFailingFor(key: string, now: number): number {
+  let since = accountReadFailingSince.get(key);
+  if (since === undefined) {
+    if (accountReadFailingSince.size >= MAX_TRACKED_FAILING_KEYS) {
+      const oldest = accountReadFailingSince.keys().next().value;
+      if (oldest !== undefined) accountReadFailingSince.delete(oldest);
+    }
+    since = now;
+    accountReadFailingSince.set(key, since);
+  }
+  return now - since;
+}
 
 /**
  * The API key owner's account timezone, read once per run. The Network and Quarantine APIs write
- * offset-less times in it (see time.ts). When it cannot be read (the key lacks the Accounts API, or
- * the profile has no usable zone) the answer is null and those times are stored as null, never read
- * as UTC; that is logged once per run, code only. A connection-level or transient failure throws.
+ * offset-less times in it (see time.ts). When it cannot be read (a permanent error above, or the
+ * profile has no usable zone) the answer is null and those times are stored as null, never read
+ * as UTC; that is logged once per run, code only. A connection-level failure throws; a transient
+ * one throws until it has lasted ACCOUNT_READ_FAILING_MS.
  *
  * Only personal API keys are supported today (basic auth). A service API key answers in UTC
  * (observed live 2026-11-27), and its getAccountDetails refuses a call with no accountId
@@ -115,13 +155,23 @@ function accountTimeZone(ctx: EdrAdapterContext): Promise<AccountTimeZone> {
       console.warn(`[edr:bitdefender] account timezone unavailable (${reason}); vendor times without an offset are stored as null`);
       return { timeZone: null, reason };
     };
+    const key = accountKeyFingerprint(ctx);
     let details: GzAccountDetails;
     try {
       details = await clientFor(ctx).getAccountDetails();
     } catch (e) {
-      if (!isReq(e) || e.reauth || e.scope === 'connection' || TRANSIENT_CODES.has(e.code)) throw e;
-      return unavailable(e.code);
+      if (!isReq(e) || e.reauth || e.scope === 'connection') throw e;
+      if (PERMANENT_ACCOUNT_READ_CODES.has(e.code)) {
+        accountReadFailingSince.delete(key);
+        return unavailable(e.code);
+      }
+      if (accountReadFailingFor(key, Date.now()) >= ACCOUNT_READ_FAILING_MS) {
+        return unavailable(`account_read_failing:${e.code}`);
+      }
+      console.warn(`[edr:bitdefender] account timezone read failed (${e.code}); the run fails and is retried`);
+      throw e;
     }
+    accountReadFailingSince.delete(key);
     const tz = details.profile?.timezone;
     if (typeof tz !== 'string' || tz.trim() === '') return unavailable('timezone_missing');
     if (!isKnownTimeZone(tz.trim())) return unavailable('timezone_invalid');
@@ -131,7 +181,10 @@ function accountTimeZone(ctx: EdrAdapterContext): Promise<AccountTimeZone> {
 
 /** The sync warning for detections whose times could not be stored. */
 function timesNotStoredWarning(stream: 'incidents' | 'quarantine', reason: string): string {
-  return `${stream}: times not stored (${reason === 'api_not_enabled' ? 'Accounts API not enabled on key' : 'account timezone unavailable'})`;
+  const why = reason === 'api_not_enabled'
+    ? 'Accounts API not enabled on key'
+    : reason.startsWith('account_read_failing:') ? 'account timezone read failing' : 'account timezone unavailable';
+  return `${stream}: times not stored (${why})`;
 }
 
 // ---- scan reference (#12822) --------------------------------------------------
