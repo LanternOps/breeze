@@ -1564,6 +1564,8 @@
     "os": "SO",
     "lastSeen": "Ultima attività",
     "lastSeenUnknown": "Sconosciuto",
+    "healthStale": "Non verificato di recente",
+    "stateAsOf": "rilevato: {{time}}",
     "health": "Stato di salute",
     "device": "Dispositivo",
     "selectDevice": "Seleziona dispositivo",

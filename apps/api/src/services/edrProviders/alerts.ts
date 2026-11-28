@@ -14,7 +14,11 @@
  * time (persist.ts), so a new connection's 30-day back-fill never reaches this
  * evaluator as unnotified. As a second guard, a never-notified row first seen
  * longer ago than the notify horizon (24 h) is stamped silently — the horizon
- * applies to FIRST publication only; an escalation always publishes.
+ * applies to FIRST publication only; an escalation always publishes. "First
+ * seen" is the vendor's detected time; a row without one counts as new only
+ * while the vendor calls it open or in progress, and one whose status is
+ * unknown is HELD, not consumed: it alerts once the vendor calls it active
+ * (see `decideDetection`, `isHeldAsUnknown`).
  * `notified_severity` is stamped only after the publish succeeded, row by row,
  * so a failed row retries on the next run and never blocks the others.
  *
@@ -22,7 +26,7 @@
  * detection alert resolves once its detection is closed, tombstoned or gone.
  */
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
-import type { EdrSeverity } from '@breeze/shared';
+import type { EdrDetectionStatus, EdrSeverity } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { alerts, devices, edrConnections, edrDetections, edrEndpoints, edrTenants } from '../../db/schema';
 import { createSourcedAlert, resolveAlert } from '../alertService';
@@ -30,6 +34,7 @@ import { EVENT_TYPES, publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 import { edrProviderLabel } from './providerKeys';
+import { isHeldAsUnknown, REPORTABLE_SEVERITIES } from './detectionHold';
 import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 
 /** `alerts.context->>'source'` for every alert this module writes. */
@@ -46,7 +51,7 @@ const RESOLUTION_NOTE = 'Condition cleared by EDR provider sync';
 const SEVERITY_RANK: Record<EdrSeverity, number> = {
   critical: 5, high: 4, medium: 3, low: 2, info: 1, unknown: 0,
 };
-const REPORTABLE: ReadonlySet<EdrSeverity> = new Set(['critical', 'high', 'medium']);
+const REPORTABLE = REPORTABLE_SEVERITIES;
 
 function logFailure(operation: string, error: unknown, extra: Record<string, unknown>): void {
   console.error(`[EdrProviderAlerts] ${operation} failed:`, error);
@@ -68,6 +73,8 @@ export interface DetectionCandidate {
   provider: string;
   severity: EdrSeverity;
   notifiedSeverity: EdrSeverity | null;
+  /** One of the candidate statuses: open, in_progress or unknown. */
+  status: EdrDetectionStatus;
   detectedAt: Date | null;
   createdAt: Date;
   /** Vendor text: alert rows only, never event payloads. */
@@ -76,18 +83,29 @@ export interface DetectionCandidate {
   deviceName: string | null;
 }
 
-export type DetectionDecision = 'detected' | 'escalated' | 'suppress' | 'silent';
+/**
+ * `suppress` / `silent` stamp the row at its severity (consumed); `hold` stamps it `'unknown'` if it
+ * was never stamped and otherwise writes nothing (not consumed, re-evaluated next run).
+ */
+export type DetectionDecision = 'detected' | 'escalated' | 'suppress' | 'silent' | 'hold';
 
 /** PURE: what to do with one unnotified (notified ≠ severity) live open row. */
 export function decideDetection(row: DetectionCandidate, now: Date, horizonMs: number): DetectionDecision {
   const current = SEVERITY_RANK[row.severity] ?? 0;
+  // Only rows without a vendor time can be held: a row with one decides exactly as before.
+  if (isHeldAsUnknown(row)) return 'hold';
   if (row.notifiedSeverity !== null) {
     const previous = SEVERITY_RANK[row.notifiedSeverity] ?? 0;
     return current > previous && REPORTABLE.has(row.severity) ? 'escalated' : 'silent';
   }
   if (!REPORTABLE.has(row.severity)) return 'silent';
-  const firstSeen = row.detectedAt ?? row.createdAt;
-  return firstSeen.getTime() < now.getTime() - horizonMs ? 'suppress' : 'detected';
+  const cutoff = now.getTime() - horizonMs;
+  if (row.detectedAt !== null) return row.detectedAt.getTime() < cutoff ? 'suppress' : 'detected';
+  // No vendor time (#12825), and (past `isHeldAsUnknown`) the vendor calls it open or in progress.
+  // When Breeze first stored the row says nothing about how old the detection is: a source first
+  // read on a later sync back-fills its lookback window, and only a tenant's first detection sync
+  // is stamped at persist. So it is new only if Breeze first saw it inside the horizon.
+  return row.createdAt.getTime() < cutoff ? 'suppress' : 'detected';
 }
 
 export interface EdrAlertDeps {
@@ -100,9 +118,10 @@ export interface EdrAlertDeps {
   /**
    * Compare-and-set stamp of many rows at the severity they were evaluated at:
    * a row whose severity moved since the load is left for the next run (so an
-   * escalation is never swallowed), and tombstones are never touched.
+   * escalation is never swallowed), and tombstones are never touched. The value
+   * written is `notifiedAs` when given (a held row: 'unknown'), else `severity`.
    */
-  stampMany(rows: Array<{ id: string; severity: EdrSeverity }>): Promise<number>;
+  stampMany(rows: Array<{ id: string; severity: EdrSeverity; notifiedAs?: EdrSeverity }>): Promise<number>;
   /** Resolve this connection's open detection alerts whose detection closed, was tombstoned or is gone. */
   resolveClosedDetectionAlerts(connectionId: string): Promise<number>;
 }
@@ -122,6 +141,7 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
         provider: edrDetections.provider,
         severity: edrDetections.severity,
         notifiedSeverity: edrDetections.notifiedSeverity,
+        status: edrDetections.status,
         detectedAt: edrDetections.detectedAt,
         createdAt: edrDetections.createdAt,
         title: edrDetections.title,
@@ -177,11 +197,14 @@ export const defaultEdrAlertDeps: EdrAlertDeps = {
 
   stampMany: (rows) => system(async () => {
     if (rows.length === 0) return 0;
-    const values = sql.join(rows.map((r) => sql`(${r.id}::uuid, ${r.severity}::varchar)`), sql`, `);
+    const values = sql.join(
+      rows.map((r) => sql`(${r.id}::uuid, ${r.severity}::varchar, ${r.notifiedAs ?? r.severity}::varchar)`),
+      sql`, `,
+    );
     const updated = await db.execute(sql`
       UPDATE edr_detections AS d
-      SET notified_severity = v.severity
-      FROM (VALUES ${values}) AS v(id, severity)
+      SET notified_severity = v.notified
+      FROM (VALUES ${values}) AS v(id, severity, notified)
       WHERE d.id = v.id AND d.severity = v.severity AND d.detached_at IS NULL
       RETURNING d.id
     `);
@@ -241,12 +264,17 @@ export async function evaluateEdrAlerts(
     return { published: 0, suppressed: 0 };
   }
 
-  const silent: Array<{ id: string; severity: EdrSeverity }> = [];
+  const silent: Array<{ id: string; severity: EdrSeverity; notifiedAs?: EdrSeverity }> = [];
   const suppressedIds: Array<{ id: string; severity: EdrSeverity }> = [];
   let published = 0;
 
   for (const row of candidates) {
     const decision = decideDetection(row, opts.now, horizon);
+    if (decision === 'hold') {
+      // Recorded once ('unknown' = nothing reportable published); an already-held row needs no write.
+      if (row.notifiedSeverity === null) silent.push({ id: row.id, severity: row.severity, notifiedAs: 'unknown' });
+      continue;
+    }
     if (decision === 'silent') { silent.push({ id: row.id, severity: row.severity }); continue; }
     if (decision === 'suppress') { suppressedIds.push({ id: row.id, severity: row.severity }); continue; }
     try {
@@ -280,9 +308,13 @@ export async function evaluateEdrAlerts(
           continue;
         }
       }
-      // 2. Event — ids, provider key and severities only.
+      // 2. Event — ids, provider key and severities only. A row whose only stamp is
+      // 'unknown' (held, or first seen below a reportable severity) has had nothing
+      // reportable published, so its first report is a detection: subscribers that
+      // listen for detections must not miss it as an escalation of something unseen.
+      const asEscalation = decision === 'escalated' && row.notifiedSeverity !== 'unknown';
       await deps.publish(
-        decision === 'escalated' ? EVENT_TYPES.EDR_DETECTION_ESCALATED : EVENT_TYPES.EDR_DETECTION_DETECTED,
+        asEscalation ? EVENT_TYPES.EDR_DETECTION_ESCALATED : EVENT_TYPES.EDR_DETECTION_DETECTED,
         row.orgId,
         {
           connectionId,
@@ -293,7 +325,7 @@ export async function evaluateEdrAlerts(
           deviceId: row.breezeDeviceId,
           provider: row.provider,
           severity: row.severity,
-          ...(decision === 'escalated' ? { previousSeverity: row.notifiedSeverity } : {}),
+          ...(asEscalation ? { previousSeverity: row.notifiedSeverity } : {}),
         },
       );
       // 3. Stamp only after the publish succeeded.

@@ -62,7 +62,7 @@ describe('GravityZoneClient transport', () => {
     const { impl, calls } = makeFetch([{ body: fx('quarantine-page.json') }]);
     const { client } = makeClient(impl);
     await client.getQuarantineBetween(new Date('2026-10-01T00:00:00Z'), new Date('2026-10-08T00:00:00Z'));
-    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.1/jsonrpc/quarantine/computers`);
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/quarantine/computers`);
     expect(calls[0]!.body.params.filters).toEqual({
       startDate: '2026-10-01T00:00:00.000Z', endDate: '2026-10-08T00:00:00.000Z',
     });

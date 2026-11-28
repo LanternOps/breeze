@@ -37,12 +37,28 @@ export const GZ_INCIDENT_STATUS: Readonly<Record<string, EdrDetectionStatus>> = 
   false_positive: 'false_positive',
 };
 
-/** Quarantine item `actionStatus`. [U] value set; unknown -> `unknown`. */
+/**
+ * Quarantine item `actionStatus` (computers service), an Integer per the vendor's
+ * getQuarantineItemsList reference: 0 None, 1 Pending remove, 2 Pending restore, 3 Remove failed,
+ * 4 Restore failed (16 and 17 are the Exchange service only). Live items carry the number
+ * (`actionStatus: 0`, 2026-11-27, #12825). Every documented code is a file still held in quarantine
+ * (a pending or failed remove or restore has not taken it out), so each is `mitigated`; the code is
+ * kept as `vendorStatus`. Keys are strings because the lookup is by `String(value)`, so `0` and `"0"`
+ * both match. Anything else is `unknown` (the adapter logs the code).
+ */
 export const GZ_QUARANTINE_STATUS: Readonly<Record<string, EdrDetectionStatus>> = {
-  quarantined: 'mitigated',
-  restored: 'dismissed',
-  removed: 'resolved',
+  '0': 'mitigated',
+  '1': 'mitigated',
+  '2': 'mitigated',
+  '3': 'mitigated',
+  '4': 'mitigated',
 };
+
+/** True when `actionStatus` is one of the documented codes above. */
+export function isDocumentedQuarantineStatus(value: unknown): boolean {
+  return (typeof value === 'number' || typeof value === 'string')
+    && Object.prototype.hasOwnProperty.call(GZ_QUARANTINE_STATUS, String(value));
+}
 
 /** [U] align with the console's own severity buckets during the sandbox gate. */
 export function bucketSeverityScore(score: unknown): EdrSeverity {
@@ -158,10 +174,9 @@ export function toIncidentDetection(item: GzIncident, vendorTenantId: string, zo
 /** `quarantinedOn` has no offset: read in `zone`; null when it is unavailable, undefined when not read (#12821). */
 export function toQuarantineDetection(item: GzQuarantineItem, vendorTenantId: string, zone: GzZone): VendorEdrDetection {
   const quarantinedOn = gzTime(item.quarantinedOn, zone);
-  const status = bucketStatus(
-    GZ_QUARANTINE_STATUS,
-    typeof item.actionStatus === 'string' ? item.actionStatus.toLowerCase() : item.actionStatus,
-  );
+  const status = isDocumentedQuarantineStatus(item.actionStatus)
+    ? bucketStatus(GZ_QUARANTINE_STATUS, item.actionStatus)
+    : 'unknown';
   return {
     vendorDetectionId: String(item.id),
     vendorKind: 'quarantine_item',

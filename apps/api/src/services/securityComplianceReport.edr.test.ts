@@ -104,7 +104,8 @@ describe('posture report: EDR coverage', () => {
   it('asks for EDR coverage of exactly the in-scope devices', async () => {
     queue();
     await run();
-    expect(edrMocks.loadEdrDeviceCoverage).toHaveBeenCalledWith(ORG, ['dev-1', 'dev-2']);
+    // #12825: with the report's as-of time, the reference point of the freshness bound.
+    expect(edrMocks.loadEdrDeviceCoverage).toHaveBeenCalledWith(ORG, ['dev-1', 'dev-2'], expect.any(Date));
   });
 
   it('a device with only EDR coverage is managed and not reported as unprotected', async () => {

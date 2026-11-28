@@ -48,6 +48,18 @@ describe('loadEdrDeviceCoverage', () => {
     expect(rendered.params).toEqual(expect.arrayContaining(['org-1', 'healthy', 'dev-1']));
   });
 
+  // #12825: a provider whose list does not refresh health / online keeps the last value it read;
+  // a healthy + online read older than the freshness bound is no evidence of protection now.
+  it('counts a detail-owned provider\'s endpoint only when its details were read within the freshness bound', async () => {
+    queue([]);
+    const asOf = new Date('2026-11-27T12:00:00.000Z');
+    await loadEdrDeviceCoverage('org-1', ['dev-1'], asOf);
+    const rendered = new PgDialect().sqlToQuery(whereCalls[0]![0] as never);
+    expect(rendered.sql).toMatch(/"edr_endpoints"\."online" = /i);
+    expect(rendered.sql).toMatch(/\("edr_endpoints"\."provider" not in \(\$\d+, \$\d+\) or "edr_endpoints"\."vendor_detail_synced_at" >= \$\d+::timestamptz\)/i);
+    expect(rendered.params).toEqual(expect.arrayContaining(['bitdefender', 'emsisoft', '2026-11-26T12:00:00.000Z']));
+  });
+
   it('labels the product generically, never by vendor', () => {
     expect(EDR_PRODUCT_LABEL).toBe('Managed endpoint protection');
   });

@@ -125,6 +125,7 @@ import { EdrProviderRequestError } from '../../services/edrProviders/types';
 import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
 import { applyDetectionStatusUpdates, loadOpenDetectionRefs, persistDetections, persistInventory } from '../../services/edrProviders/persist';
 import { evaluateEdrAlerts, evaluateEdrEndpointHealth } from '../../services/edrProviders/alerts';
@@ -478,6 +479,160 @@ describe('edr sync — real job functions against Postgres', () => {
     expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
   });
 
+  runDb('#12825: an endpoint not re-read in a run keeps its detail-owned fields (last seen, health, online, agent version)', async () => {
+    const fx = await seedJob();
+    const co = `co-many-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    // One more endpoint than a run enriches (DETAIL_ENRICH_PER_RUN = 50), so each run leaves one out.
+    const ids = Array.from({ length: 51 }, (_, i) => `ep-many-${String(i).padStart(2, '0')}-${sfx()}`);
+    gz.companies = [{ id: co, name: `Many ${sfx()}` }];
+    gz.inventory.set(co, ids.map((id, i) => gzEndpoint(id, co, `WS-M${i}`, `ws-m${i}.corp.example`)));
+    for (const id of ids) {
+      gz.endpointDetails.set(id, { state: 1, lastSeen: '2026-11-27T22:17:34', agent: { productVersion: '8.26.11.679' } });
+    }
+
+    const enrichedIn = async (run: () => Promise<unknown>) => {
+      gz.calls = [];
+      await run();
+      return gz.calls.filter((c) => c === 'getEndpointDetails').length;
+    };
+    // Run 1 enriches the first 50 new endpoints; run 2 the one left out plus the 49 stalest.
+    expect(await enrichedIn(() => syncEdrInventory(fx.connectionId))).toBe(50);
+    expect(await enrichedIn(() => syncEdrInventory(fx.connectionId))).toBe(50);
+
+    const rows = await endpointsOf(fx.connectionId);
+    expect(rows).toHaveLength(51);
+    // Every endpoint has been read once within ceil(51 / 50) = 2 runs, and none was cleared by the
+    // list upsert of a run that did not re-read it.
+    expect(rows.filter((r) => r.vendor_detail_synced_at === null)).toEqual([]);
+    for (const r of rows) {
+      expect({
+        id: r.vendor_endpoint_id,
+        lastSeen: r.last_seen_at === null ? null : new Date(r.last_seen_at as string).toISOString(),
+        health: r.health, online: r.online, agent: r.agent_version,
+      }).toEqual({ id: r.vendor_endpoint_id, lastSeen: '2026-11-27T22:17:34.000Z', health: 'healthy', online: true, agent: '8.26.11.679' });
+    }
+  });
+
+  runDb('#12825: a run whose account read fails transiently keeps the stored last seen ("unset" keeps the value, #12821)', async () => {
+    const fx = await seedJob();
+    const co = `co-keep-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    const vep = `ep-keep-${sfx()}`;
+    gz.companies = [{ id: co, name: `Keep ${sfx()}` }];
+    gz.inventory.set(co, [gzEndpoint(vep, co, 'WS-KEEP', 'ws-keep.corp.example')]);
+    gz.endpointDetails.set(vep, { state: 1, lastSeen: '2026-11-27T17:17:34', agent: { productVersion: '8.26.11.679' } });
+    gz.account = { profile: { timezone: 'America/New_York' } };
+    await syncEdrInventory(fx.connectionId);
+    const [stored] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(new Date(stored!.last_seen_at as string).toISOString()).toBe('2026-11-27T22:17:34.000Z');
+
+    gz.account = new EdrProviderRequestError('GravityZone accounts.getAccountDetails failed: Server error', {
+      code: 'vendor_error', reauth: false, scope: 'operation',
+    });
+    gz.endpointDetails.set(vep, { state: 1, lastSeen: '2026-11-27T18:00:00', agent: { productVersion: '8.26.11.679' } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      gz.calls = [];
+      await syncEdrInventory(fx.connectionId);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(gz.calls).toContain('getEndpointDetails');
+    const [after] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(after!.last_seen_at === null ? null : new Date(after!.last_seen_at as string).toISOString()).toBe('2026-11-27T22:17:34.000Z');
+    expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
+  });
+
+  runDb('#12825 data step: clears GravityZone last seen times stored before the UTC fix, once, and queues those endpoints first', async () => {
+    const FILE = '2027-02-01-100000-gravityzone-clear-pre-utc-last-seen.sql';
+    const fx = await seedJob();
+    const co = `co-clear-${sfx()}`;
+    const tenantId = await fx.addTenant(co, fx.orgA.id);
+    // 51 endpoints, one more than a run enriches. Before the fix only the batch read last held a
+    // time (each list upsert nulled the rest), so the misread rows are the most recently read ones.
+    const ids = Array.from({ length: 51 }, (_, i) => `ep-clear-${String(i).padStart(2, '0')}-${sfx()}`);
+    const misread = ids[50]!;
+    const unknownTime = ids[49]!;
+    for (const id of ids) await fx.addEndpoint(tenantId, fx.orgA.id, id, id);
+    const set = (id: string, lastSeen: string | null, synced: string | null) => admin().execute(sql`
+      UPDATE edr_endpoints SET last_seen_at = ${lastSeen}::timestamptz, vendor_detail_synced_at = ${synced}::timestamptz
+       WHERE connection_id = ${fx.connectionId}::uuid AND vendor_endpoint_id = ${id}
+    `);
+    for (const [i, id] of ids.entries()) {
+      await set(id, null, `2026-11-27T${10 + Math.floor(i / 10)}:0${i % 10}:00Z`);
+    }
+    // A New York key's 17:17:34 wall time read as UTC (5 h early), from the last run before the deploy.
+    await set(misread, '2026-11-27T17:17:34Z', '2026-11-27T20:00:00Z');
+    // A row with no stored time keeps its place in the rotation.
+    await set(unknownTime, null, '2026-11-27T19:00:00Z');
+    // Another provider's time is not touched.
+    const emsiConn = randomUUID();
+    await withSystemDbAccessContext(() => db.insert(edrConnections).values({
+      id: emsiConn, partnerId: fx.partner.id, provider: 'emsisoft', name: `Emsisoft ${sfx()}`,
+      credentialsEncrypted: 'enc:test', vendorRootId: 'root-emsi', vendorRootType: 'partner',
+    }));
+    const emsiTenant = await withSystemDbAccessContext(async () => (await db.insert(edrTenants).values({
+      connectionId: emsiConn, partnerId: fx.partner.id, vendorTenantId: randomUUID(), vendorTenantName: `WS ${sfx()}`,
+      vendorTenantType: 'workspace', orgId: fx.orgA.id, mappingSource: 'manual',
+    }).returning({ id: edrTenants.id }))[0]!.id);
+    await withSystemDbAccessContext(() => db.insert(edrEndpoints).values({
+      connectionId: emsiConn, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId: emsiTenant, provider: 'emsisoft',
+      vendorEndpointId: 'em-keep', hostname: 'pc-keep',
+      lastSeenAt: new Date('2026-11-27T17:17:34Z'), vendorDetailSyncedAt: new Date('2026-11-27T20:00:00Z'),
+    }));
+    const rowOf = async (connectionId: string, vendorEndpointId: string) => {
+      const [r] = await adminRows<Row>(sql`
+        SELECT last_seen_at, vendor_detail_synced_at FROM edr_endpoints
+         WHERE connection_id = ${connectionId}::uuid AND vendor_endpoint_id = ${vendorEndpointId}
+      `);
+      const iso = (v: unknown) => (v === null ? null : new Date(v as string).toISOString());
+      return { lastSeen: iso(r!.last_seen_at), synced: iso(r!.vendor_detail_synced_at) };
+    };
+
+    // First application, as autoMigrate runs it: the file's own ledger row is written after it.
+    const [ledger] = await adminRows<{ checksum: string; applied_at: string }>(sql`
+      SELECT checksum, applied_at::text AS applied_at FROM breeze_migrations WHERE filename = ${FILE}
+    `);
+    await admin().execute(sql`DELETE FROM breeze_migrations WHERE filename = ${FILE}`);
+    try {
+      await replayMigration(FILE);
+      expect(await rowOf(fx.connectionId, misread)).toEqual({ lastSeen: null, synced: null });
+      expect(await rowOf(fx.connectionId, unknownTime)).toEqual({ lastSeen: null, synced: '2026-11-27T19:00:00.000Z' });
+      expect(await rowOf(emsiConn, 'em-keep')).toEqual({ lastSeen: '2026-11-27T17:17:34.000Z', synced: '2026-11-27T20:00:00.000Z' });
+
+      // A replay once the ledger holds the file (a manual psql -f, an integration replay) changes nothing.
+      await admin().execute(sql`
+        INSERT INTO breeze_migrations (filename, checksum, applied_at)
+        VALUES (${FILE}, ${ledger?.checksum ?? 'test-ledger-row'}, COALESCE(${ledger?.applied_at ?? null}::timestamptz, now()))
+      `);
+      await set(ids[0]!, '2026-11-27T22:17:34Z', '2026-11-27T21:00:00Z');
+      await replayMigration(FILE);
+      expect(await rowOf(fx.connectionId, ids[0]!)).toEqual({ lastSeen: '2026-11-27T22:17:34.000Z', synced: '2026-11-27T21:00:00.000Z' });
+    } finally {
+      if (!ledger) await admin().execute(sql`DELETE FROM breeze_migrations WHERE filename = ${FILE}`);
+      else {
+        await admin().execute(sql`
+          INSERT INTO breeze_migrations (filename, checksum, applied_at)
+          VALUES (${FILE}, ${ledger.checksum}, ${ledger.applied_at}::timestamptz) ON CONFLICT DO NOTHING
+        `);
+      }
+    }
+    await set(ids[0]!, null, '2026-11-27T10:00:00Z');
+
+    // The next run reads the cleared endpoint first (NULLS FIRST) and stores its time in UTC.
+    gz.companies = [{ id: co, name: `Clear ${sfx()}` }];
+    gz.inventory.set(co, ids.map((id, i) => gzEndpoint(id, co, `WS-C${i}`, `ws-c${i}.corp.example`)));
+    for (const id of ids) gz.endpointDetails.set(id, { state: 1, lastSeen: '2026-11-27T17:17:34', agent: { productVersion: '8.26.11.679' } });
+    gz.account = { profile: { timezone: 'America/New_York' } };
+    await syncEdrInventory(fx.connectionId);
+    const after = await rowOf(fx.connectionId, misread);
+    expect(after.lastSeen).toBe('2026-11-27T22:17:34.000Z');
+    expect(after.synced).not.toBeNull();
+    // The 50-per-run cap still holds: the freshest of the others waits for the next run.
+    expect(await rowOf(fx.connectionId, unknownTime)).toEqual({ lastSeen: null, synced: '2026-11-27T19:00:00.000Z' });
+  });
+
   runDb('#12821: after a confirmed release, an account read failing transiently does not fail inventory: isolation_state goes not_isolated and isolate is offered', async () => {
     const fx = await seedJob();
     const co = `co-rel-${sfx()}`;
@@ -772,6 +927,48 @@ describe('edr sync — real job functions against Postgres', () => {
     const after = await openAlerts();
     expect(after).toHaveLength(1);
     expect(after[0]!.status).toBe('resolved');
+  });
+
+  // #12825: a detection with no vendor time and an unknown status is held, not consumed: it raises
+  // nothing while unknown, and alerts exactly once when the vendor later calls it open, however old.
+  // A row with a vendor time is decided by that time, as before.
+  runDb('Phase 4 #12825: a held no-time unknown detection alerts once when it turns open; a timed one is unchanged', async () => {
+    const fx = await seedJob();
+    const tenantId = await fx.addTenant(`co-hold-${sfx()}`, fx.orgA.id, { lastDetectionSyncAt: new Date() });
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3_600_000);
+    const [held, timed] = await withSystemDbAccessContext(() => db.insert(edrDetections).values([
+      {
+        connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, provider: 'bitdefender',
+        vendorDetectionId: `q-hold-${sfx()}`, vendorKind: 'quarantine_item', severity: 'high', status: 'unknown',
+        breezeDeviceId: fx.deviceA.id, title: 'Quarantined file', detectedAt: null, createdAt: tenDaysAgo,
+      },
+      {
+        connectionId: fx.connectionId, partnerId: fx.partner.id, orgId: fx.orgA.id, tenantId, provider: 'bitdefender',
+        vendorDetectionId: `inc-old-${sfx()}`, vendorKind: 'incident', severity: 'high', status: 'unknown',
+        breezeDeviceId: fx.deviceA.id, title: 'Old', detectedAt: tenDaysAgo, createdAt: tenDaysAgo,
+      },
+    ]).returning({ id: edrDetections.id }));
+    const notified = async (id: string) => (await adminRows<Row>(sql`
+      SELECT notified_severity FROM edr_detections WHERE id = ${id}::uuid`))[0]!.notified_severity;
+    const alertsFor = (id: string) => adminRows<Row>(sql`
+      SELECT id FROM alerts WHERE context->>'source' = 'edr_provider' AND context->>'detectionId' = ${id}`);
+
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 1 });
+    expect(await notified(held!.id)).toBe('unknown');
+    expect(await notified(timed!.id)).toBe('high');
+    expect(await alertsFor(held!.id)).toHaveLength(0);
+
+    // Still unknown: nothing.
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 0 });
+    expect(await notified(held!.id)).toBe('unknown');
+
+    await admin().execute(sql`UPDATE edr_detections SET status = 'open' WHERE id = ${held!.id}::uuid`);
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 1, suppressed: 0 });
+    expect(await notified(held!.id)).toBe('high');
+    expect(await alertsFor(held!.id)).toHaveLength(1);
+    expect(await evaluateEdrAlerts(fx.connectionId, { now: new Date() })).toEqual({ published: 0, suppressed: 0 });
+    expect(await alertsFor(held!.id)).toHaveLength(1);
+    expect(await alertsFor(timed!.id)).toHaveLength(0);
   });
 
   // #8166 review: endpoint-health alerts are bounded per run, raised once per

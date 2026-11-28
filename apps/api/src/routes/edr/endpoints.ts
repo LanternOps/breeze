@@ -10,6 +10,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pgErrorCode } from './access';
 import { describeEndpointActionsForRows } from '../../services/edrProviders/actionAvailability';
+import { isEdrEndpointStateFresh } from '../../services/edrProviders/endpointFreshness';
 
 export const edrEndpointRoutes = new Hono();
 
@@ -97,6 +98,8 @@ edrEndpointRoutes.get(
         online: edrEndpoints.online,
         isolationState: edrEndpoints.isolationState,
         lastSeenAt: edrEndpoints.lastSeenAt,
+        // #12825: when health / online / last seen were last read from the vendor's details call.
+        vendorDetailSyncedAt: edrEndpoints.vendorDetailSyncedAt,
         breezeDeviceId: edrEndpoints.breezeDeviceId,
         deviceMatchSource: edrEndpoints.deviceMatchSource,
       })
@@ -108,7 +111,17 @@ edrEndpointRoutes.get(
     // W03 (#8167): what the caller could do to each endpoint, with reasons. No vendor call.
     if (rows.length === 0) return c.json({ data: rows });
     const availability = await describeEndpointActionsForRows(auth, perms, rows);
-    return c.json({ data: rows.map((r) => ({ ...r, actions: availability.get(r.id) ?? [] })) });
+    // #12825: `stateStale` = health / online are a detail-owned provider's value read longer ago
+    // than EDR_DETAIL_FRESHNESS_MS (or never read). They are returned as stored; the client shows
+    // them as not verified, and coverage does not count them.
+    const now = new Date();
+    return c.json({
+      data: rows.map((r) => ({
+        ...r,
+        stateStale: !isEdrEndpointStateFresh(r, now),
+        actions: availability.get(r.id) ?? [],
+      })),
+    });
   },
 );
 

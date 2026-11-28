@@ -4486,6 +4486,8 @@
       "lastSeen": "Last seen"
     },
     "lastSeenUnknown": "Unknown",
+    "healthStale": "Not recently verified",
+    "stateAsOf": "as of {{time}}",
     "health": {
       "healthy": "Healthy",
       "degraded": "Degraded",

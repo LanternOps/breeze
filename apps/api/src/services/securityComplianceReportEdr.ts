@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { edrEndpoints } from '../db/schema';
+import { edrEndpointStateFreshSql } from './edrProviders/endpointFreshness';
 
 /**
  * EDR provider framework (#8164) as posture-report evidence.
@@ -17,6 +18,11 @@ export const EDR_PRODUCT_LABEL = 'Managed endpoint protection';
  * EDR connector reports as HEALTHY and ONLINE. Unhealthy / degraded / unknown endpoints do
  * not count as protection, mirroring how only an active product is evidence.
  *
+ * #12825: for a provider whose list does not refresh health / online, the stored value is as of
+ * its last details read, and counts only when that read is within EDR_DETAIL_FRESHNESS_MS of
+ * `asOf` (endpointFreshness.ts). An older one is not evidence: the device is judged on its other
+ * evidence, as for an offline endpoint. Other providers are unchanged.
+ *
  * Reads the org-axis `edr_endpoints` only; the partner-axis connection tables
  * are invisible to an org-scoped context and are not consulted. Endpoints with
  * no linked Breeze device (`breeze_device_id` NULL) have no device to attribute
@@ -25,6 +31,7 @@ export const EDR_PRODUCT_LABEL = 'Managed endpoint protection';
 export async function loadEdrDeviceCoverage(
   orgId: string,
   deviceIds: string[],
+  asOf: Date = new Date(),
 ): Promise<Set<string>> {
   if (deviceIds.length === 0) return new Set();
 
@@ -37,6 +44,7 @@ export async function loadEdrDeviceCoverage(
       // Same rule as the portal (services/portal/edrVisibility.ts): an
       // offline endpoint's protection state is unknown, so it is no evidence.
       eq(edrEndpoints.online, true),
+      edrEndpointStateFreshSql(edrEndpoints.provider, edrEndpoints.vendorDetailSyncedAt, asOf),
       inArray(edrEndpoints.breezeDeviceId, deviceIds),
     ));
 

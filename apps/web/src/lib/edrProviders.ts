@@ -152,6 +152,14 @@ export interface EdrEndpoint {
   online: boolean | null;
   isolationState: EdrIsolationState;
   lastSeenAt: string | null;
+  /** #12825: when health / online / last seen were last read from the vendor's details; absent on older APIs. */
+  vendorDetailSyncedAt?: string | null;
+  /**
+   * #12825: health / online are a value read longer ago than the server's freshness bound (or never
+   * read) for a provider whose list does not refresh them. Show them as not verified, never as
+   * healthy. Absent on older APIs (treated as current).
+   */
+  stateStale?: boolean;
   breezeDeviceId: string | null;
   deviceMatchSource: string | null;
   /** W03: per-action availability for the caller; absent on older APIs. */

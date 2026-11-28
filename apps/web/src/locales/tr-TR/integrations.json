@@ -1564,6 +1564,8 @@
     "os": "İşletim sistemi",
     "lastSeen": "Son görülme",
     "lastSeenUnknown": "Bilinmiyor",
+    "healthStale": "Yakın zamanda doğrulanmadı",
+    "stateAsOf": "okunma: {{time}}",
     "health": "Sağlık",
     "device": "Cihaz",
     "selectDevice": "Cihaz seçin",

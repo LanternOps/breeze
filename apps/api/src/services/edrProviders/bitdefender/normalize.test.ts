@@ -80,17 +80,39 @@ describe('toIncidentDetection', () => {
 
 describe('toQuarantineDetection', () => {
   const [q, odd] = fx('quarantine-page.json').items;
-  it('quarantined -> mitigated, medium, file path + sha in details', () => {
+  it('item 0 (status 0, None) -> mitigated, medium, file path + sha in details', () => {
     expect(toQuarantineDetection(q, T, 'UTC')).toMatchObject({
       vendorDetectionId: '6c0000000000000000000001', vendorKind: 'quarantine_item', status: 'mitigated', severity: 'medium',
       threatName: 'Eicar-Test-File', filePath: '/tmp/eicar.com', vendorEndpointId: '6a0000000000000000000a02',
       details: { canBeRestored: true, canBeRemoved: true },
     });
   });
-  it('unknown action status -> unknown; restored/removed buckets', () => {
-    expect(toQuarantineDetection(odd, T, 'UTC').status).toBe('unknown');
-    expect(toQuarantineDetection({ ...q, actionStatus: 'Restored' }, T, 'UTC').status).toBe('dismissed');
-    expect(toQuarantineDetection({ ...q, actionStatus: 'removed' }, T, 'UTC').status).toBe('resolved');
+  it('an undocumented action status -> unknown', () => {
+    expect(toQuarantineDetection(odd, T, 'UTC')).toMatchObject({ status: 'unknown', vendorStatus: '99' });
+  });
+
+  // #12825: getQuarantineItemsList documents actionStatus as an Integer: 0 None, 1 Pending remove,
+  // 2 Pending restore, 3 Remove failed, 4 Restore failed (16/17 are the Exchange service only).
+  // Live items carry the number (`actionStatus: 0`). Every documented code describes a file that is
+  // still in quarantine (a pending or failed remove/restore has not taken it out), so all map to
+  // mitigated; the vendor code is kept as vendorStatus.
+  it('live shape: a numeric actionStatus 0 is mitigated, not unknown', () => {
+    const [live] = fx('live-quarantine-service-key.json').items;
+    expect(live.actionStatus).toBe(0);
+    expect(toQuarantineDetection(live, T, 'UTC')).toMatchObject({ status: 'mitigated', vendorStatus: '0' });
+  });
+
+  it('every documented code maps to mitigated, as a number or as its string', () => {
+    for (const code of [0, 1, 2, 3, 4]) {
+      expect(toQuarantineDetection({ ...q, actionStatus: code }, T, 'UTC').status, String(code)).toBe('mitigated');
+      expect(toQuarantineDetection({ ...q, actionStatus: String(code) }, T, 'UTC').status, `'${code}'`).toBe('mitigated');
+    }
+  });
+
+  it('codes outside the documented computers set, and the old guessed strings, are unknown', () => {
+    for (const code of [5, 16, 17, -1, 1.5, 'quarantined', 'restored', 'removed', '', null, undefined]) {
+      expect(toQuarantineDetection({ ...q, actionStatus: code as never }, T, 'UTC').status, String(code)).toBe('unknown');
+    }
   });
 });
 

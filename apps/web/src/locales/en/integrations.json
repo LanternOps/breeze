@@ -1543,6 +1543,8 @@
     "os": "OS",
     "lastSeen": "Last seen",
     "lastSeenUnknown": "Unknown",
+    "healthStale": "Not recently verified",
+    "stateAsOf": "as of {{time}}",
     "health": "Health",
     "device": "Device",
     "selectDevice": "Select device",

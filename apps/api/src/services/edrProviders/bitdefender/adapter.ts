@@ -25,13 +25,15 @@ import {
   GravityZoneClient,
   GZ_HOST_ALLOWLIST,
   GZ_INSTALLER_HOST_ALLOWLIST,
+  GZ_QUARANTINE_API_VERSION,
   gzScanTaskName,
   type GzAccountDetails,
   type GzIncident,
   type GzQuarantineItem,
 } from './client';
 import {
-  toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint, ZONE_NOT_READ, type GzZone,
+  isDocumentedQuarantineStatus, toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint, ZONE_NOT_READ,
+  type GzZone,
 } from './normalize';
 import { verifyGravityZoneWebhook } from './push';
 import { isKnownTimeZone, lacksOffset } from './time';
@@ -52,6 +54,33 @@ function clientFor(ctx: EdrAdapterContext): GravityZoneClient {
 const isReq = (e: unknown): e is EdrProviderRequestError => e instanceof EdrProviderRequestError;
 const isDegradation = (e: unknown): e is EdrProviderRequestError =>
   isReq(e) && (e.code === 'api_not_enabled' || e.code === 'licence');
+
+/**
+ * The quarantine source this key cannot use: the API is not enabled, not licensed, or the vendor
+ * does not serve the method (-32601, seen live on quarantine v1.1, #12825). Quarantine is skipped
+ * for the run with a sync warning and its cursor is not advanced; incidents and the run still
+ * succeed. Incidents, the main detection source, degrade only on `isDegradation`: a -32601 there
+ * means Breeze cannot read detections at all, so that sync fails loudly.
+ */
+const isQuarantineDegradation = (e: unknown): e is EdrProviderRequestError =>
+  isDegradation(e) || (isReq(e) && e.code === 'method_not_found');
+
+function sourceDegradedWarning(stream: 'incidents' | 'quarantine', e: EdrProviderRequestError): string {
+  if (e.code === 'method_not_found') return `${stream}: method not served by the vendor`;
+  return e.code === 'licence' ? `${stream}: licence not available` : `${stream}: API not enabled on key`;
+}
+
+/**
+ * Logs an unserved quarantine method once per memoized fetch (the rejection is shared by every
+ * tenant of the run), code only, then rethrows. Without the API itself switched off, this is a
+ * Breeze/vendor version mismatch.
+ */
+function logQuarantineMethodNotFound(e: unknown): never {
+  if (isReq(e) && e.code === 'method_not_found') {
+    console.warn(`[edr:bitdefender] quarantine: vendor method not found (${e.code}); source skipped this run`);
+  }
+  throw e;
+}
 
 /** The `capabilities_snapshot` entry for `testConnection`'s capability note (`note:` prefix added by capabilitySnapshot). */
 const INCIDENTS_API_OFF_NOTE = 'note:incidents: API not enabled on key';
@@ -303,6 +332,11 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       packages: { perMinute: 10 },
     },
     defaultIntervals: { detectionsMinutes: 10, inventoryMinutes: 60 },
+    // Only getManagedEndpointDetails knows these; the inventory list carries placeholders (null,
+    // or health 'unknown'/'degraded'). Each run re-reads at most DETAIL_ENRICH_PER_RUN endpoints
+    // per company, stalest first, so without this every other endpoint was cleared by the list
+    // upsert (#12825). A first insert still takes the list values.
+    detailOwnedFields: ['lastSeenAt', 'online', 'health', 'agentVersion'],
     maxActionTargets: 1000,
     firstSyncLookbackDays: 30,
     tenantFetchConcurrency: 2,
@@ -345,7 +379,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
           ['incidents', () => client.call('incidents', '1.2', 'getIncidentsList', {
             page: 1, perPage: 10, filters: { changeStartDate: day.toISOString(), changeEndDate: new Date().toISOString() },
           }, { operationClass: 'incidents' })],
-          ['quarantine', () => client.call('quarantine/computers', '1.1', 'getQuarantineItemsList', {
+          ['quarantine', () => client.call('quarantine/computers', GZ_QUARANTINE_API_VERSION, 'getQuarantineItemsList', {
             page: 1, perPage: 1, filters: { startDate: day.toISOString(), endDate: new Date().toISOString() },
           })],
           ['accounts', () => client.getAccountDetails()],
@@ -357,6 +391,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
             if (!isReq(e) || e.reauth) throw e;
             if (e.code === 'api_not_enabled') notes.push(`${name}: API not enabled on key`);
             else if (e.code === 'licence') notes.push(`${name}: licence not available`);
+            else if (e.code === 'method_not_found') notes.push(`${name}: method not served by the vendor`);
             // Other probe failures are not connection failures.
           }
         }
@@ -632,22 +667,32 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
       next.incidentsChangedAfter = toIso;
     } catch (e) {
+      // Not method_not_found: incidents are the main detection source (see isQuarantineDegradation).
       if (!isDegradation(e)) throw e;
-      warnings.push(e.code === 'licence' ? 'incidents: licence not available' : 'incidents: API not enabled on key');
+      warnings.push(sourceDegradedWarning('incidents', e));
     }
 
     const qFrom = windowFrom(cursor.quarantineAfter, now, caps.firstSyncLookbackDays);
     try {
       const all = await memo<GzQuarantineItem[]>(
-        ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, () => client.getQuarantineBetween(qFrom, to),
+        ctx, `gz:quarantine:${qFrom.toISOString()}:${toIso}`, async () => {
+          const fetched = await client.getQuarantineBetween(qFrom, to).catch(logQuarantineMethodNotFound);
+          // Once per memoized fetch (not per tenant). Codes only, never item content (#12825).
+          const odd = fetched.filter((q) => !isDocumentedQuarantineStatus(q.actionStatus));
+          if (odd.length > 0) {
+            const codes = [...new Set(odd.map((q) => String(JSON.stringify(q.actionStatus ?? null)).slice(0, 20)))].slice(0, 10);
+            console.warn(`[edr:bitdefender] ${odd.length} quarantine item(s) with an undocumented actionStatus stored as unknown (codes: ${codes.join(', ')})`);
+          }
+          return fetched;
+        },
       );
       for (const q of all) {
         if (q.companyId === tenant.vendorTenantId) quarantine.push(q);
       }
       next.quarantineAfter = toIso;
     } catch (e) {
-      if (!isDegradation(e)) throw e;
-      warnings.push(e.code === 'licence' ? 'quarantine: licence not available' : 'quarantine: API not enabled on key');
+      if (!isQuarantineDegradation(e)) throw e;
+      warnings.push(sourceDegradedWarning('quarantine', e));
     }
 
     // Incident times carry an explicit offset (live 2026-11-27); quarantine dates do not and are in

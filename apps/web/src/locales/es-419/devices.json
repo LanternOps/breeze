@@ -4486,6 +4486,8 @@
       "lastSeen": "Última vez visto"
     },
     "lastSeenUnknown": "Desconocido",
+    "healthStale": "No verificado recientemente",
+    "stateAsOf": "lectura: {{time}}",
     "health": {
       "healthy": "Saludable",
       "degraded": "Degradado",

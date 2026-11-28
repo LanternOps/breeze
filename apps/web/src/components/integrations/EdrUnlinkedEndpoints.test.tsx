@@ -50,6 +50,22 @@ describe("EdrUnlinkedEndpoints", () => {
     expect(cell).not.toHaveTextContent("Never");
   });
 
+  // #12825: past the freshness bound, health is shown as not verified, never as healthy.
+  it("#12825: health past the freshness bound shows as not verified, with the relative time it was read", async () => {
+    const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    route([
+      { ...endpoint, id: "ep-stale", stateStale: true, vendorDetailSyncedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
+      { ...endpoint, id: "ep-fresh", stateStale: false, vendorDetailSyncedAt: hourAgo },
+    ]);
+    render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
+    const stale = await screen.findByTestId("edr-endpoint-health-ep-stale");
+    expect(stale).toHaveTextContent("Not recently verified");
+    expect(stale).not.toHaveTextContent("Healthy");
+    expect(screen.getByTestId("edr-endpoint-state-as-of-ep-stale")).toHaveTextContent(/^as of 3 days ago$/);
+    expect(screen.getByTestId("edr-endpoint-health-ep-fresh")).toHaveTextContent(/^Healthy/);
+    expect(screen.getByTestId("edr-endpoint-state-as-of-ep-fresh")).toHaveTextContent(/^as of 1 hour ago$/);
+  });
+
   it("switches to the ambiguous filter", async () => {
     render(<EdrUnlinkedEndpoints connectionId="conn-1" canManage />);
     await screen.findByTestId("edr-endpoint-row-ep-1");

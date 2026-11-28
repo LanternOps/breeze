@@ -96,7 +96,7 @@ vi.mock('../../db/schema', () => {
     edrEndpoints: t('edr_endpoints', [
       'id', 'orgId', 'connectionId', 'tenantId', 'provider', 'vendorEndpointId', 'hostname', 'fqdn',
       'osPlatform', 'osName', 'agentVersion', 'health', 'online', 'isolationState', 'lastSeenAt',
-      'breezeDeviceId', 'deviceMatchSource', 'updatedAt',
+      'breezeDeviceId', 'deviceMatchSource', 'updatedAt', 'vendorDetailSyncedAt',
     ]),
     edrDetections: t('edr_detections', ['id', 'endpointId', 'detachedAt', 'status', 'breezeDeviceId', 'updatedAt']),
   };
@@ -186,6 +186,27 @@ describe('EDR endpoint routes', () => {
       ]);
       // The caller's identity and site permissions are what availability is computed for.
       expect(describeRows).toHaveBeenCalledWith(expect.objectContaining({ scope: 'partner' }), { allowedSiteIds: [SITE_OK] }, dbState.rows);
+    });
+
+    // #12825: health / online of a provider whose list does not refresh them are only as current
+    // as the last details read; the row says when that was and whether it is past the bound.
+    it('#12825: each row carries vendorDetailSyncedAt and stateStale (past the freshness bound, or never read)', async () => {
+      const HOUR = 3_600_000;
+      const recent = new Date(Date.now() - HOUR);
+      const old = new Date(Date.now() - 25 * HOUR);
+      dbState.rows = [
+        { id: 'fresh', provider: 'bitdefender', health: 'healthy', online: true, vendorDetailSyncedAt: recent },
+        { id: 'old', provider: 'bitdefender', health: 'healthy', online: true, vendorDetailSyncedAt: old },
+        { id: 'never', provider: 'emsisoft', health: 'unknown', online: null, vendorDetailSyncedAt: null },
+        { id: 'list-owned', provider: 'list_owned_provider', health: 'healthy', online: true, vendorDetailSyncedAt: null },
+      ];
+      const body = await (await app.request('/edr/endpoints')).json();
+      expect(body.data.map((r: Record<string, unknown>) => [r.id, r.vendorDetailSyncedAt, r.stateStale, r.health])).toEqual([
+        ['fresh', recent.toISOString(), false, 'healthy'],
+        ['old', old.toISOString(), true, 'healthy'],
+        ['never', null, true, 'unknown'],
+        ['list-owned', null, false, 'healthy'],
+      ]);
     });
 
     it('W03: no rows → no availability lookup', async () => {

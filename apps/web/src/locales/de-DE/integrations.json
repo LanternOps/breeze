@@ -1564,6 +1564,8 @@
     "os": "Betriebssystem",
     "lastSeen": "Zuletzt gesehen",
     "lastSeenUnknown": "Unbekannt",
+    "healthStale": "Nicht kürzlich überprüft",
+    "stateAsOf": "Stand: {{time}}",
     "health": "Zustand",
     "device": "Gerät",
     "selectDevice": "Gerät auswählen",

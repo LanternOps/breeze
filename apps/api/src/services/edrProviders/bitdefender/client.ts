@@ -15,6 +15,11 @@ export const GZ_INVENTORY_PAGE_SIZE = 1000;
 /** `getIncidentsList` accepts perPage 10..10000 (live probe 2026-10-08). */
 export const GZ_INCIDENTS_PAGE_SIZE = 1000;
 export const GZ_QUARANTINE_PAGE_SIZE = 100;
+/**
+ * The Quarantine API is documented and served at v1.0 only: v1.1 answers -32601 "Method not found"
+ * even for a key with the Quarantine API (live 2026-11-27, #12825).
+ */
+export const GZ_QUARANTINE_API_VERSION = '1.0';
 
 const MAX_ATTEMPTS = 3;
 const BACKOFF_BASE_MS = 500;
@@ -642,7 +647,7 @@ export class GravityZoneClient {
     const out: GzQuarantineItem[] = [];
     for (let page = 1; page <= GZ_MAX_PAGES; page++) {
       const r = await this.call<{ pagesCount?: number; hasMoreRecords?: boolean; items?: GzQuarantineItem[] }>(
-        'quarantine/computers', '1.1', 'getQuarantineItemsList',
+        'quarantine/computers', GZ_QUARANTINE_API_VERSION, 'getQuarantineItemsList',
         {
           page,
           perPage: GZ_QUARANTINE_PAGE_SIZE,

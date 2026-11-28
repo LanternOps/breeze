@@ -113,6 +113,12 @@ describe('push (W03 PR-B)', () => {
 });
 
 describe('bitdefender adapter metadata', () => {
+  it('#12825: online, health, last seen and agent version are detail-owned (the list carries placeholders for them)', () => {
+    // Without this the inventory list upsert overwrites them with null / 'unknown' on every endpoint
+    // the run does not re-read, and the coverage freshness rule (endpointFreshness.ts) stops applying.
+    expect(adapter.capabilities.detailOwnedFields).toEqual(['lastSeenAt', 'online', 'health', 'agentVersion']);
+  });
+
   it('pins budgets and capabilities', () => {
     expect(adapter.capabilities.operationBudgets?.incidents).toEqual({ perMinute: 2 });
     expect(adapter.capabilities.detectionStatusModel).toBe('delta_with_updates');
@@ -170,6 +176,32 @@ describe('testConnection', () => {
     expect(r).toMatchObject({ ok: true, rootType: 'company' });
     expect((r as any).capabilityNotes).toEqual(['incidents: API not enabled on key', 'quarantine: API not enabled on key']);
     expect(count('incidents.getIncidentsList')).toBe(1);
+  });
+
+  it('#12825: the quarantine probe calls v1.0; a method the vendor does not serve is noted, not a failure', async () => {
+    const { ctx } = makeCtx({
+      'general.getApiKeyDetails': { status: 403, body: fx('error-api-not-enabled-quarantine-403.json') },
+      'companies.getCompanyDetails': ok('company-details-customer.json'),
+      'incidents.getIncidentsList': ok('incidents-page.json'),
+      'quarantine/computers.getQuarantineItemsList': ok('live-error-method-not-found-32601.json'),
+    });
+    const r = await adapter.testConnection(ctx);
+    expect(r).toMatchObject({ ok: true, rootType: 'company' });
+    expect((r as any).capabilityNotes).toEqual(['quarantine: method not served by the vendor']);
+    const urls = (ctx.fetch as unknown as { mock: { calls: Array<[string]> } }).mock.calls.map((c) => c[0]);
+    expect(urls.filter((u) => u.includes('/quarantine/'))).toEqual([`${ctx.baseUrl}/v1.0/jsonrpc/quarantine/computers`]);
+  });
+
+  it('#12825: an incidents method the vendor does not serve is noted the same way', async () => {
+    const { ctx } = makeCtx({
+      'general.getApiKeyDetails': { status: 403, body: fx('error-api-not-enabled-quarantine-403.json') },
+      'companies.getCompanyDetails': ok('company-details-customer.json'),
+      'incidents.getIncidentsList': ok('live-error-method-not-found-32601.json'),
+      'quarantine/computers.getQuarantineItemsList': ok('quarantine-page.json'),
+    });
+    const r = await adapter.testConnection(ctx);
+    expect(r).toMatchObject({ ok: true, rootType: 'company' });
+    expect((r as any).capabilityNotes).toEqual(['incidents: method not served by the vendor']);
   });
 });
 
@@ -395,6 +427,60 @@ describe('listDetections', () => {
     expect(page.warnings).toEqual(['quarantine: API not enabled on key']);
     expect(page.detections.some((d) => d.vendorKind === 'incident')).toBe(true);
     expect(JSON.parse(page.cursor!)).toEqual({ v: 1, incidentsChangedAfter: NOW.toISOString() });
+  });
+
+  describe('a method the vendor does not serve (-32601, #12825)', () => {
+    const notFound = (): Reply => ok('live-error-method-not-found-32601.json');
+
+    it('quarantine: a degradation of that source, not a failed sync; incidents still delivered, quarantine cursor not advanced', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const old = '2026-10-08T10:00:00.000Z';
+      const { ctx } = makeCtx({ ...routes(), 'quarantine/computers.getQuarantineItemsList': notFound() });
+      const page = await adapter.listDetections(ctx, tenant(C1), JSON.stringify({ v: 1, quarantineAfter: old }), NOW);
+      expect(page.detections.map((d) => d.vendorKind)).toEqual(['incident', 'incident']);
+      expect(page.warnings).toEqual(['quarantine: method not served by the vendor']);
+      expect(JSON.parse(page.cursor!)).toEqual({ v: 1, incidentsChangedAfter: NOW.toISOString(), quarantineAfter: old });
+      // Logged, code only.
+      expect(warn.mock.calls.map((c) => c.join(' '))).toContain('[edr:bitdefender] quarantine: vendor method not found (method_not_found); source skipped this run');
+      warn.mockRestore();
+    });
+
+    it('logged once per run, not once per company: the memoized fetch is shared by every tenant', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { ctx } = makeCtx({ ...routes(), 'quarantine/computers.getQuarantineItemsList': notFound() });
+      for (const t of [C1, C2, C1]) {
+        const page = await adapter.listDetections(ctx, tenant(t), null, NOW);
+        expect(page.warnings).toEqual(['quarantine: method not served by the vendor']);
+      }
+      expect(warn.mock.calls.filter((c) => c.join(' ').includes('vendor method not found'))).toHaveLength(1);
+      warn.mockRestore();
+    });
+
+    it('incidents: NOT a degradation. The main detection source failing is a failed sync, loudly, as before', async () => {
+      // -32601 was observed only on the quarantine call. On incidents it would mean Breeze cannot
+      // read detections at all, so the run fails and nothing (cursor, quarantine page) is persisted.
+      const { ctx } = makeCtx({ ...routes(), 'incidents.getIncidentsList': notFound() });
+      await expect(adapter.listDetections(ctx, tenant(C1), null, NOW)).rejects.toMatchObject({ code: 'method_not_found' });
+    });
+
+    it('the quarantine list is called at v1.0, the version the vendor serves (v1.1 answers -32601 live)', async () => {
+      const { ctx } = makeCtx(routes());
+      await adapter.listDetections(ctx, tenant(C1), null, NOW);
+      const urls = (ctx.fetch as unknown as { mock: { calls: Array<[string]> } }).mock.calls.map((c) => c[0]);
+      expect(urls.filter((u) => u.includes('/quarantine/'))).toEqual([`${ctx.baseUrl}/v1.0/jsonrpc/quarantine/computers`]);
+    });
+  });
+
+  it('#12825: an undocumented quarantine actionStatus is stored as unknown and its code logged once per fetch (no item content)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ctx } = makeCtx(routes());
+    const a = await adapter.listDetections(ctx, tenant(C1), null, NOW);
+    const b = await adapter.listDetections(ctx, tenant(C2), null, NOW);
+    expect(a.detections.find((d) => d.vendorKind === 'quarantine_item')).toMatchObject({ status: 'mitigated', vendorStatus: '0' });
+    expect(b.detections.find((d) => d.vendorKind === 'quarantine_item')).toMatchObject({ status: 'unknown', vendorStatus: '99' });
+    const logged = warn.mock.calls.map((c) => c.join(' ')).filter((m) => m.includes('actionStatus'));
+    expect(logged).toEqual(['[edr:bitdefender] 1 quarantine item(s) with an undocumented actionStatus stored as unknown (codes: 99)']);
+    warn.mockRestore();
   });
 
   it('unknown incident status / severityScore -> unknown bucket, never throws', async () => {
