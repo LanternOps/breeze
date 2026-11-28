@@ -8,6 +8,7 @@ import { EXPORT_DATASETS } from './aiToolsExportDatasetNames';
  * from the AI model.
  */
 
+import { CAPTURE_PPROF_PROFILES } from './commandTypes';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { partnerSettingsInheritanceInputSchema } from './aiToolSchemasPartnerSettingsInheritance';
@@ -2098,7 +2099,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   capture_agent_pprof: z.object({
     deviceId: uuid,
-    profile: z.enum(['heap', 'goroutine', 'all']).optional(),
+    profile: z.enum(CAPTURE_PPROF_PROFILES).optional(),
   }),
 
   // Event log tools

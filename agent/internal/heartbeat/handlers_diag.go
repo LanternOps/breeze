@@ -1,7 +1,7 @@
 package heartbeat
 
-// On-demand runtime diagnostics (#2389). capture_pprof captures heap and/or
-// goroutine profiles in-process and returns them base64-encoded in the command
+// On-demand runtime diagnostics (#2389). capture_pprof captures heap, goroutine,
+// goroutineleak and/or CPU profiles in-process and returns them base64-encoded in the command
 // result. There is deliberately NO pprof HTTP listener: the agent is a root
 // daemon and must expose nothing reachable off-box, so the signed/queued
 // command path is the only trigger.
@@ -9,7 +9,9 @@ package heartbeat
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"runtime/pprof"
 	"sync/atomic"
@@ -18,28 +20,33 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
-// maxProfileBytes caps a single captured profile's raw size. Heap and
-// goroutine profiles are sampled/compact — typically well under 1 MB even for
-// large processes — and the server-side command result caps stdout at 5 MB,
-// so 1 MiB raw per profile (~1.37 MiB base64) keeps the combined result
-// comfortably inside that. Var (not const) so tests can exercise the cap
-// without allocating a gigantic heap.
+// maxProfileBytes caps a single captured profile's raw size. Profiles are
+// sampled/compact — typically well under 1 MB even for large processes. The
+// worst case is "all": three 1 MiB profiles are ~4.19 MB base64, inside the
+// wire.CommandResultBudget for stdout (TestHandleCapturePprofAllFitsResultBudget
+// guards it). Var (not const) so tests can exercise the cap without allocating
+// a gigantic heap.
 var maxProfileBytes = 1 << 20
 
 // capturePprofMinIntervalNs rate-limits captures. capture_pprof is a
 // server-queued command (up to 10 concurrent, 100 queued) and every heap/all
 // capture forces a stop-the-world runtime.GC(), so without a floor a burst of
 // queued captures degenerates into back-to-back GC pauses (#2422). Same
-// pattern as the heartbeat watchdog dump throttle (#2392). Atomic so tests
-// can shrink it.
+// pattern as the heartbeat watchdog dump throttle (#2392). The interval runs
+// from when the last capture finished. Atomic so tests can shrink it.
 var capturePprofMinIntervalNs atomic.Int64
 
 // capturePprofLastNs is the unix-nano timestamp of the last admitted capture
-// (0 = never).
+// (0 = never), or math.MaxInt64 while one is running.
 var capturePprofLastNs atomic.Int64
+
+// capturePprofCPUDurationNs is how long a cpu capture samples. Atomic so
+// tests can shrink it.
+var capturePprofCPUDurationNs atomic.Int64
 
 func init() {
 	capturePprofMinIntervalNs.Store(int64(30 * time.Second))
+	capturePprofCPUDurationNs.Store(int64(30 * time.Second))
 }
 
 // capturePprofMinInterval returns the current minimum interval between
@@ -93,18 +100,22 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		profile = s
 	}
 
-	var wantHeap, wantGoroutine bool
+	var wantHeap, wantGoroutine, wantLeak, wantCPU bool
 	switch profile {
-	case "all":
-		wantHeap, wantGoroutine = true, true
+	case "all": // cpu is excluded: it blocks for the sampling window
+		wantHeap, wantGoroutine, wantLeak = true, true, true
 	case "heap":
 		wantHeap = true
 	case "goroutine":
 		wantGoroutine = true
+	case "goroutineleak":
+		wantLeak = true
+	case "cpu":
+		wantCPU = true
 	default:
 		return tools.CommandResult{
 			Status: "failed",
-			Error:  fmt.Sprintf("invalid profile %q: must be heap, goroutine, or all", profile),
+			Error:  fmt.Sprintf("invalid profile %q: must be heap, goroutine, goroutineleak, cpu, or all", profile),
 		}
 	}
 
@@ -115,10 +126,15 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.CommandResult{
 			Status: "failed",
 			Error: fmt.Sprintf(
-				"capture_pprof rate-limited: at most one capture per %s (heap captures force a stop-the-world GC); retry later",
+				"capture_pprof rate-limited: at most one capture per %s (heap and goroutineleak captures force a stop-the-world GC); retry later",
 				interval),
 		}
 	}
+	// Hold the slot while the capture runs, then restart the interval when it
+	// finishes, so a request cannot slip in while a cpu capture is still
+	// stopping and fail with "CPU profile already running".
+	capturePprofLastNs.Store(math.MaxInt64)
+	defer func() { capturePprofLastNs.Store(time.Now().UnixNano()) }()
 
 	result := map[string]any{
 		"capturedAt": now.UTC().Format(time.RFC3339),
@@ -153,6 +169,26 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		result["goroutineProfileBytes"] = size
 	}
 
+	if wantLeak {
+		// The leak detector runs a GC cycle to find unreachable blocked
+		// goroutines.
+		b64, size, err := capturePprofProfile("goroutineleak")
+		if err != nil {
+			return tools.CommandResult{Status: "failed", Error: err.Error()}
+		}
+		result["goroutineleakProfileBase64"] = b64
+		result["goroutineleakProfileBytes"] = size
+	}
+
+	if wantCPU {
+		b64, size, err := captureCPUProfile(time.Duration(capturePprofCPUDurationNs.Load()), h.stopChan)
+		if err != nil {
+			return tools.CommandResult{Status: "failed", Error: err.Error()}
+		}
+		result["cpuProfileBase64"] = b64
+		result["cpuProfileBytes"] = size
+	}
+
 	return tools.NewSuccessResult(result, 0)
 }
 
@@ -170,6 +206,28 @@ func capturePprofProfile(name string) (string, int, error) {
 	}
 	if buf.Len() > maxProfileBytes {
 		return "", 0, fmt.Errorf("%s profile is %d bytes, exceeds the %d byte result cap", name, buf.Len(), maxProfileBytes)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), buf.Len(), nil
+}
+
+// captureCPUProfile samples CPU for d and returns the profile base64-encoded
+// with its raw size. Only one CPU profile can run per process, so a second
+// concurrent start fails. Closing stop (agent shutdown) ends the capture
+// early with an error. Never forces a GC.
+func captureCPUProfile(d time.Duration, stop <-chan struct{}) (string, int, error) {
+	var buf bytes.Buffer
+	if err := pprof.StartCPUProfile(&buf); err != nil {
+		return "", 0, fmt.Errorf("CPU profile already running: %w", err)
+	}
+	select {
+	case <-time.After(d):
+	case <-stop:
+		pprof.StopCPUProfile()
+		return "", 0, errors.New("cpu profile capture was cancelled by agent shutdown")
+	}
+	pprof.StopCPUProfile()
+	if buf.Len() > maxProfileBytes {
+		return "", 0, fmt.Errorf("cpu profile is %d bytes, exceeds the %d byte result cap", buf.Len(), maxProfileBytes)
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), buf.Len(), nil
 }

@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock dependencies before imports
 vi.mock('../db', () => ({
+  hasDbAccessContext: vi.fn(() => true),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -492,11 +493,11 @@ describe('aiToolsAgentLogs', () => {
     it('should reject an unknown profile without dispatching a command', async () => {
       const tool = tools.get('capture_agent_pprof')!;
       const result = await tool.handler(
-        { deviceId: 'dev-1', profile: 'cpu' },
+        { deviceId: 'dev-1', profile: 'bogus' },
         makeAuth('org-1'),
       );
       const parsed = JSON.parse(result);
-      expect(parsed.error).toContain('Invalid profile "cpu"');
+      expect(parsed.error).toContain('Invalid profile "bogus"');
       expect(aiExecuteCommand).not.toHaveBeenCalled();
     });
 
@@ -529,6 +530,67 @@ describe('aiToolsAgentLogs', () => {
         heap: { sizeBytes: 2048 },
         goroutine: { sizeBytes: 512 },
       });
+    });
+
+    it('should dispatch profile cpu with a 60s timeout', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ cpuProfileBytes: 10 }),
+        commandId: 'cmd-pprof-cpu',
+      } as any);
+      const tool = tools.get('capture_agent_pprof')!;
+      await tool.handler({ deviceId: 'dev-1', profile: 'cpu' }, makeAuth('org-1'));
+      expect(aiExecuteCommand).toHaveBeenCalledWith(
+        expect.anything(),
+        'capture_agent_pprof',
+        'dev-1',
+        'capture_pprof',
+        { profile: 'cpu' },
+        { userId: 'user-1', timeoutMs: 60000 },
+      );
+    });
+
+    it('should keep a 30s timeout for all', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: capturedStdout,
+        commandId: 'cmd-pprof-all',
+      } as any);
+      const tool = tools.get('capture_agent_pprof')!;
+      await tool.handler({ deviceId: 'dev-1', profile: 'all' }, makeAuth('org-1'));
+      expect(aiExecuteCommand).toHaveBeenCalledWith(
+        expect.anything(),
+        'capture_agent_pprof',
+        'dev-1',
+        'capture_pprof',
+        { profile: 'all' },
+        { userId: 'user-1', timeoutMs: 30000 },
+      );
+    });
+
+    it('should report cpu and goroutineleak profile sizes', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({ cpuProfileBytes: 10, goroutineleakProfileBytes: 20 }),
+        commandId: 'cmd-pprof-new',
+      } as any);
+      const tool = tools.get('capture_agent_pprof')!;
+      const parsed = JSON.parse(await tool.handler({ deviceId: 'dev-1', profile: 'cpu' }, makeAuth('org-1')));
+      expect(parsed.profiles).toEqual({ cpu: { sizeBytes: 10 }, goroutineleak: { sizeBytes: 20 } });
+    });
+
+    it('should pass through an old agent rejecting cpu', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(aiExecuteCommand).mockResolvedValue({
+        status: 'failed',
+        error: 'invalid profile "cpu": must be heap, goroutine, or all',
+      } as any);
+      const tool = tools.get('capture_agent_pprof')!;
+      const parsed = JSON.parse(await tool.handler({ deviceId: 'dev-1', profile: 'cpu' }, makeAuth('org-1')));
+      expect(parsed.error).toContain('invalid profile');
     });
 
     it('should pass an explicit profile through to the agent command', async () => {
