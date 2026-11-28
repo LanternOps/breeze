@@ -52,7 +52,7 @@ export interface EdrCapabilities {
    * Opt-in. Columns only the per-endpoint detail call knows: on conflict the list
    * upsert keeps the stored value instead of overwriting it with the list's
    * placeholder. A first insert still takes the list values. Default [] = every
-   * column overwrites (GravityZone).
+   * column overwrites.
    */
   detailOwnedFields?: readonly EdrDetailOwnedField[];
   /** Opt-in. Vendor calls per tenant/connection, fed to `planCadence`; default `DEFAULT_ESTIMATED_CALLS`. */

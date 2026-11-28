@@ -478,6 +478,71 @@ describe('edr sync — real job functions against Postgres', () => {
     expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
   });
 
+  runDb('#12825: an endpoint not re-read in a run keeps its detail-owned fields (last seen, health, online, agent version)', async () => {
+    const fx = await seedJob();
+    const co = `co-many-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    // One more endpoint than a run enriches (DETAIL_ENRICH_PER_RUN = 50), so each run leaves one out.
+    const ids = Array.from({ length: 51 }, (_, i) => `ep-many-${String(i).padStart(2, '0')}-${sfx()}`);
+    gz.companies = [{ id: co, name: `Many ${sfx()}` }];
+    gz.inventory.set(co, ids.map((id, i) => gzEndpoint(id, co, `WS-M${i}`, `ws-m${i}.corp.example`)));
+    for (const id of ids) {
+      gz.endpointDetails.set(id, { state: 1, lastSeen: '2026-11-27T22:17:34', agent: { productVersion: '8.26.11.679' } });
+    }
+
+    const enrichedIn = async (run: () => Promise<unknown>) => {
+      gz.calls = [];
+      await run();
+      return gz.calls.filter((c) => c === 'getEndpointDetails').length;
+    };
+    // Run 1 enriches the first 50 new endpoints; run 2 the one left out plus the 49 stalest.
+    expect(await enrichedIn(() => syncEdrInventory(fx.connectionId))).toBe(50);
+    expect(await enrichedIn(() => syncEdrInventory(fx.connectionId))).toBe(50);
+
+    const rows = await endpointsOf(fx.connectionId);
+    expect(rows).toHaveLength(51);
+    // Every endpoint has been read once within ceil(51 / 50) = 2 runs, and none was cleared by the
+    // list upsert of a run that did not re-read it.
+    expect(rows.filter((r) => r.vendor_detail_synced_at === null)).toEqual([]);
+    for (const r of rows) {
+      expect({
+        id: r.vendor_endpoint_id,
+        lastSeen: r.last_seen_at === null ? null : new Date(r.last_seen_at as string).toISOString(),
+        health: r.health, online: r.online, agent: r.agent_version,
+      }).toEqual({ id: r.vendor_endpoint_id, lastSeen: '2026-11-27T22:17:34.000Z', health: 'healthy', online: true, agent: '8.26.11.679' });
+    }
+  });
+
+  runDb('#12825: a run whose account read fails transiently keeps the stored last seen ("unset" keeps the value, #12821)', async () => {
+    const fx = await seedJob();
+    const co = `co-keep-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    const vep = `ep-keep-${sfx()}`;
+    gz.companies = [{ id: co, name: `Keep ${sfx()}` }];
+    gz.inventory.set(co, [gzEndpoint(vep, co, 'WS-KEEP', 'ws-keep.corp.example')]);
+    gz.endpointDetails.set(vep, { state: 1, lastSeen: '2026-11-27T17:17:34', agent: { productVersion: '8.26.11.679' } });
+    gz.account = { profile: { timezone: 'America/New_York' } };
+    await syncEdrInventory(fx.connectionId);
+    const [stored] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(new Date(stored!.last_seen_at as string).toISOString()).toBe('2026-11-27T22:17:34.000Z');
+
+    gz.account = new EdrProviderRequestError('GravityZone accounts.getAccountDetails failed: Server error', {
+      code: 'vendor_error', reauth: false, scope: 'operation',
+    });
+    gz.endpointDetails.set(vep, { state: 1, lastSeen: '2026-11-27T18:00:00', agent: { productVersion: '8.26.11.679' } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      gz.calls = [];
+      await syncEdrInventory(fx.connectionId);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(gz.calls).toContain('getEndpointDetails');
+    const [after] = (await endpointsOf(fx.connectionId)).filter((r) => r.vendor_endpoint_id === vep);
+    expect(after!.last_seen_at === null ? null : new Date(after!.last_seen_at as string).toISOString()).toBe('2026-11-27T22:17:34.000Z');
+    expect(await tenantRow(fx.connectionId, co)).toMatchObject({ last_inventory_sync_status: 'success' });
+  });
+
   runDb('#12821: after a confirmed release, an account read failing transiently does not fail inventory: isolation_state goes not_isolated and isolate is offered', async () => {
     const fx = await seedJob();
     const co = `co-rel-${sfx()}`;

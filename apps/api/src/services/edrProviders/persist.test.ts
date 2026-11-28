@@ -262,7 +262,7 @@ describe('persistInventory: detail-owned fields (A2)', () => {
     expect(row).toMatchObject({ osName: 'Windows 11', online: true, fqdn: 'ws-01.corp' });
   });
 
-  it('no detailOwnedFields -> every column overwrites as before (GravityZone regression guard)', async () => {
+  it('no detailOwnedFields -> every column overwrites as before', async () => {
     const ops = await run([], []);
     const keys = Object.keys(ops.find((o) => o.kind === 'insert')!.conflict!.set!);
     expect(keys).toEqual(expect.arrayContaining([

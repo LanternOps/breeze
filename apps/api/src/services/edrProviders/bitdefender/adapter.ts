@@ -323,6 +323,11 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       packages: { perMinute: 10 },
     },
     defaultIntervals: { detectionsMinutes: 10, inventoryMinutes: 60 },
+    // Only getManagedEndpointDetails knows these; the inventory list carries placeholders (null,
+    // or health 'unknown'/'degraded'). Each run re-reads at most DETAIL_ENRICH_PER_RUN endpoints
+    // per company, stalest first, so without this every other endpoint was cleared by the list
+    // upsert (#12825). A first insert still takes the list values.
+    detailOwnedFields: ['lastSeenAt', 'online', 'health', 'agentVersion'],
     maxActionTargets: 1000,
     firstSyncLookbackDays: 30,
     tenantFetchConcurrency: 2,
