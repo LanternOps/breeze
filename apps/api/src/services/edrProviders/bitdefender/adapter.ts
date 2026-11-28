@@ -25,6 +25,7 @@ import {
   GravityZoneClient,
   GZ_HOST_ALLOWLIST,
   GZ_INSTALLER_HOST_ALLOWLIST,
+  GZ_QUARANTINE_API_VERSION,
   gzScanTaskName,
   type GzAccountDetails,
   type GzIncident,
@@ -52,6 +53,24 @@ function clientFor(ctx: EdrAdapterContext): GravityZoneClient {
 const isReq = (e: unknown): e is EdrProviderRequestError => e instanceof EdrProviderRequestError;
 const isDegradation = (e: unknown): e is EdrProviderRequestError =>
   isReq(e) && (e.code === 'api_not_enabled' || e.code === 'licence');
+
+/**
+ * An optional detection source (incidents, quarantine) this key cannot use: the API is not enabled,
+ * not licensed, or the vendor does not serve the method (-32601, e.g. a method version it dropped,
+ * #12825). That source is skipped for the run with a sync warning and its cursor is not advanced;
+ * the other source and the run still succeed.
+ */
+const isSourceDegradation = (e: unknown): e is EdrProviderRequestError =>
+  isDegradation(e) || (isReq(e) && e.code === 'method_not_found');
+
+function sourceDegradedWarning(stream: 'incidents' | 'quarantine', e: EdrProviderRequestError): string {
+  if (e.code === 'method_not_found') {
+    // Code only. Without the API itself switched off, this is a Breeze/vendor version mismatch.
+    console.warn(`[edr:bitdefender] ${stream}: vendor method not found (${e.code}); source skipped this run`);
+    return `${stream}: method not served by the vendor`;
+  }
+  return e.code === 'licence' ? `${stream}: licence not available` : `${stream}: API not enabled on key`;
+}
 
 /** The `capabilities_snapshot` entry for `testConnection`'s capability note (`note:` prefix added by capabilitySnapshot). */
 const INCIDENTS_API_OFF_NOTE = 'note:incidents: API not enabled on key';
@@ -345,7 +364,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
           ['incidents', () => client.call('incidents', '1.2', 'getIncidentsList', {
             page: 1, perPage: 10, filters: { changeStartDate: day.toISOString(), changeEndDate: new Date().toISOString() },
           }, { operationClass: 'incidents' })],
-          ['quarantine', () => client.call('quarantine/computers', '1.1', 'getQuarantineItemsList', {
+          ['quarantine', () => client.call('quarantine/computers', GZ_QUARANTINE_API_VERSION, 'getQuarantineItemsList', {
             page: 1, perPage: 1, filters: { startDate: day.toISOString(), endDate: new Date().toISOString() },
           })],
           ['accounts', () => client.getAccountDetails()],
@@ -357,6 +376,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
             if (!isReq(e) || e.reauth) throw e;
             if (e.code === 'api_not_enabled') notes.push(`${name}: API not enabled on key`);
             else if (e.code === 'licence') notes.push(`${name}: licence not available`);
+            else if (e.code === 'method_not_found') notes.push(`${name}: method not served by the vendor`);
             // Other probe failures are not connection failures.
           }
         }
@@ -632,8 +652,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
       next.incidentsChangedAfter = toIso;
     } catch (e) {
-      if (!isDegradation(e)) throw e;
-      warnings.push(e.code === 'licence' ? 'incidents: licence not available' : 'incidents: API not enabled on key');
+      if (!isSourceDegradation(e)) throw e;
+      warnings.push(sourceDegradedWarning('incidents', e));
     }
 
     const qFrom = windowFrom(cursor.quarantineAfter, now, caps.firstSyncLookbackDays);
@@ -646,8 +666,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
       next.quarantineAfter = toIso;
     } catch (e) {
-      if (!isDegradation(e)) throw e;
-      warnings.push(e.code === 'licence' ? 'quarantine: licence not available' : 'quarantine: API not enabled on key');
+      if (!isSourceDegradation(e)) throw e;
+      warnings.push(sourceDegradedWarning('quarantine', e));
     }
 
     // Incident times carry an explicit offset (live 2026-11-27); quarantine dates do not and are in
