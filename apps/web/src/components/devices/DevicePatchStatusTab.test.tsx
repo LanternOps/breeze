@@ -689,6 +689,54 @@ describe('DevicePatchStatusTab', () => {
     expect(screen.queryByText(noteText)).toBeNull();
   });
 
+  // #12835: a failed SYSTEM machine-scope winget pass used to render as
+  // "No pending third-party updates." plus the per-user note naming the wrong
+  // cause (no interactive session). The failure reason must replace both.
+  it('shows the third-party scan failure instead of the empty state and the per-user note', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({
+      data: {
+        compliancePercent: 100,
+        lastPatchScanUserScopeScanned: false,
+        lastPatchScanUserScopeSkipReason: 'machine-scope pass failed; user-context pass not attempted',
+        lastPatchScanThirdPartyFailure: 'winget exited 0xC0000135 (DLL not found; the Visual C++ runtime is missing)',
+        pending: [],
+        installed: []
+      }
+    }));
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+    await screen.findByText('Pending Windows Updates');
+
+    const notice = screen.getByTestId('device-patch-third-party-scan-failed');
+    expect(notice.textContent).toBe(
+      'Third-party scan failed: winget exited 0xC0000135 (DLL not found; the Visual C++ runtime is missing)'
+    );
+    expect(screen.queryByText('No pending third-party updates.')).toBeNull();
+    expect(screen.queryByText(/Per-user apps were not scanned/i)).toBeNull();
+  });
+
+  it('keeps previously reported third-party rows visible under the scan failure warning', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({
+      data: {
+        compliancePercent: 50,
+        lastPatchScanThirdPartyFailure: 'winget exited 0xC0000135 (DLL not found; the Visual C++ runtime is missing)',
+        pending: [
+          { id: 'tp-1', title: 'Mozilla Firefox', source: 'third_party', category: 'application', status: 'pending' }
+        ],
+        installed: []
+      }
+    }));
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+    await screen.findByText('Mozilla Firefox');
+    expect(screen.getByTestId('device-patch-third-party-scan-failed').textContent).toContain('Third-party scan failed:');
+  });
+
+  it('renders no scan failure warning when the field is absent', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { compliancePercent: 100, pending: [], installed: [] } }));
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+    await screen.findByText('No pending third-party updates.');
+    expect(screen.queryByTestId('device-patch-third-party-scan-failed')).toBeNull();
+  });
+
   it('surfaces unapproved patch count when install returns 409', async () => {
     const patchData = {
       data: {

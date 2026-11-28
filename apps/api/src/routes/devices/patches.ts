@@ -99,6 +99,9 @@ function awaitingRestart(
   return { installedAt: attempt.at.toISOString() };
 }
 
+/** Backstop cap on the agent-reported third-party scan failure reason (#12835). */
+const MAX_THIRD_PARTY_SCAN_FAILURE_LENGTH = 200;
+
 function safeParsePatchResult(result: unknown): unknown {
   if (!result || typeof result !== 'object') return result;
   const raw = result as Record<string, unknown>;
@@ -410,6 +413,7 @@ patchesRoutes.get(
     // "tried and could not", which is what the UI notes.
     let lastPatchScanUserScopeScanned: boolean | null = null;
     let lastPatchScanUserScopeSkipReason: string | null = null;
+    let lastPatchScanThirdPartyFailure: string | null = null;
     const lastPatchScanResult = asRecord(safeParsePatchResult(lastPatchScan?.result));
     if (lastPatchScanResult) {
       const scanPayload = asRecord(lastPatchScanResult.stdout) ?? lastPatchScanResult;
@@ -418,6 +422,13 @@ patchesRoutes.get(
       }
       if (typeof scanPayload.userScopeSkipReason === 'string') {
         lastPatchScanUserScopeSkipReason = scanPayload.userScopeSkipReason;
+      }
+      // #12835 — the SYSTEM machine-scope winget pass failed, so the third-party
+      // list is "not looked at", not "clean". The agent sends a short sanitized
+      // reason on completed and failed scans alike; capped here as a backstop.
+      if (typeof scanPayload.thirdPartyScanFailure === 'string') {
+        const reason = scanPayload.thirdPartyScanFailure.trim().slice(0, MAX_THIRD_PARTY_SCAN_FAILURE_LENGTH);
+        if (reason) lastPatchScanThirdPartyFailure = reason;
       }
     }
     const patchIds = [...new Set(devicePatchList.map((patch) => patch.patchId))];
@@ -578,6 +589,7 @@ patchesRoutes.get(
         lastPatchScanStatus: lastPatchScan?.status ?? null,
         lastPatchScanUserScopeScanned,
         lastPatchScanUserScopeSkipReason,
+        lastPatchScanThirdPartyFailure,
         approvalEvaluation,
         pending,
         missing,

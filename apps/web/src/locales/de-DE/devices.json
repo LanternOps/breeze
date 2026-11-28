@@ -2176,6 +2176,7 @@
     "perUserBadge": "Pro Benutzer",
     "perUserBadgeTitle": "Im Profil des angemeldeten Benutzers installiert; kann derzeit nicht aus dem Systemkontext gepatcht werden",
     "perUserNotScanned": "Benutzerbezogene Apps wurden nicht gescannt (keine interaktive Benutzersitzung) – benutzerbezogene Updates fehlen möglicherweise.",
+    "thirdPartyScanFailed": "Drittanbieter-Scan fehlgeschlagen: {{reason}}",
     "rebootRequired": "Neustart erforderlich",
     "table": {
       "approval": "Zustimmung",

@@ -15,6 +15,12 @@
 // Pitfall: assigning cmd.SysProcAttr after Command replaces the placement.
 // Call Prepare again after any such assignment (the contract test checks it).
 //
+// Prepare also gives App Installer's winget.exe, run by its full WindowsApps
+// path, the VC++ framework on its child PATH (wingetenv, #12835). Being here is
+// what keeps a new winget call site from skipping it. That fix lives in
+// cmd.Env, so assigning cmd.Env wholesale after Command drops it: append to
+// cmd.Env, or call Prepare again afterwards.
+//
 // Placement is decided when the command is built, not when it starts. A
 // command built before placement is enabled and started after it runs where
 // the agent was when it was built: in the unit cgroup if built before the
@@ -25,6 +31,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+
+	"github.com/breeze-rmm/agent/internal/wingetenv"
 )
 
 // Command is exec.Command with the child placed in the children cgroup.
@@ -39,10 +47,12 @@ func CommandContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
 }
 
 // Prepare places cmd's child in the children cgroup, keeping every other
-// SysProcAttr field. It is idempotent and returns cmd.
+// SysProcAttr field, and applies the winget child-environment fix (a no-op for
+// every other command). It is idempotent and returns cmd.
 func Prepare(cmd *exec.Cmd) *exec.Cmd {
 	if cmd != nil {
 		prepare(cmd)
+		wingetenv.Apply(cmd)
 	}
 	return cmd
 }
