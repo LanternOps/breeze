@@ -515,6 +515,21 @@ describe('PATCH /contacts/:contactId', () => {
     expect(auditSpy).not.toHaveBeenCalled();
   });
 
+  it('maps a legacy-write refusal from the responsibility service to 400 with its own message and code', async () => {
+    const { ResponsibilityValidationError } = await vi.importActual<typeof import('../services/contacts/responsibilities')>(
+      '../services/contacts/responsibilities',
+    );
+    const message = 'This contact has scoped responsibilities that its roles cannot represent. Use the contact responsibilities API.';
+    const code = 'legacy-write-cannot-represent-scoped-responsibilities';
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
+    crudMocks.updateContact.mockRejectedValue(new ResponsibilityValidationError(message, code));
+
+    const res = await makeApp().request(`/contacts/${CONTACT}`, json({ roles: ['admin'] }, 'PATCH'));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: message, code });
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
   it('400s an empty patch', async () => {
     crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     const res = await makeApp().request(`/contacts/${CONTACT}`, json({}, 'PATCH'));

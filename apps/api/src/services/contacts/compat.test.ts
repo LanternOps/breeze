@@ -5,8 +5,11 @@ vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
   syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
+  removeContactResponsibility: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
+
+beforeEach(() => vi.clearAllMocks());
 
 import {
   readContactBlob,
@@ -18,6 +21,7 @@ import {
   type ContactExecutor,
 } from './compat';
 import { contacts } from '../../db/schema/contacts';
+import { contactRoles } from '../../db/schema/contactRoles';
 import { organizations } from '../../db/schema/orgs';
 
 const dialect = new PgDialect();
@@ -162,7 +166,9 @@ describe('the billing path targets the billing-role contact, never the primary',
 
     const order = f.contactSelects()[0]!.orderBy!.map((o) => compile(o));
     expect(order).toHaveLength(5);
-    expect(order[0]!.sql).toBe('"contacts"."is_primary" desc');
+    // Only an ORGANIZATION-level primary outranks: a site-pinned contact may hold
+    // billing @ Organization, and being a Site's primary must not win the slot.
+    expect(order[0]!.sql).toBe('("contacts"."is_primary" AND "contacts"."site_id" IS NULL) desc');
     // The incumbent BY IDENTITY: editing the current recipient's own email must
     // not hand the role to someone else, so an email match alone cannot be it.
     expect(order[1]!.sql).toContain('"contacts"."id"::text = (SELECT "organizations"."billing_contact" ->> $');
@@ -212,18 +218,19 @@ describe('the billing path targets the billing-role contact, never the primary',
     expect(f.contactInserts()[0]!.values).toMatchObject({ roles: ['billing'], isPrimary: true });
   });
 
-  it('a null email unassigns the billing role and changes nothing else — never a DELETE', async () => {
+  it('a null email unassigns exactly billing @ Organization through the responsibility service — never a DELETE of the contact', async () => {
     const f = makeExec([LOCK, [BILL_ROW], []]);
     await mergeBillingContact(f.exec, ORG, { email: null, name: null });
 
     expect(f.deletes()).toHaveLength(0);
-    expect(f.contactUpdates()).toHaveLength(1);
-    const write = f.contactUpdates()[0]!;
-    // Only the role array (and updated_at) — name/email/phone are left intact.
-    expect(Object.keys(write.values!).sort()).toEqual(['roles', 'updatedAt']);
-    expect(compile(write.values!.roles).sql).toBe('array_remove("contacts"."roles", $1)');
-    expect(compile(write.values!.roles).params).toEqual(['billing']);
-    expect(compile(write.where).params).toEqual([BILL, ORG]);
+    // Phase 3: no array_remove on contacts.roles and no whole-set legacy sync;
+    // the one canonical assignment is removed and roles[] re-projected there.
+    expect(f.contactUpdates()).toHaveLength(0);
+    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
+    expect(responsibilityMocks.removeContactResponsibility).toHaveBeenCalledTimes(1);
+    expect(responsibilityMocks.removeContactResponsibility).toHaveBeenCalledWith(f.exec, {
+      contactId: BILL, orgId: ORG, role: 'billing', scope: { type: 'organization' },
+    });
     // Nobody holds the role any more: no recipient, and no fallback to a primary.
     expect(f.blobWrites()).toEqual([null]);
   });
@@ -231,6 +238,7 @@ describe('the billing path targets the billing-role contact, never the primary',
   it('a null email with no billing contact writes no contact at all', async () => {
     const f = makeExec([LOCK, [], []]);
     await mergeBillingContact(f.exec, ORG, { email: null });
+    expect(responsibilityMocks.removeContactResponsibility).not.toHaveBeenCalled();
     expect(f.contactUpdates()).toHaveLength(0);
     expect(f.contactInserts()).toHaveLength(0);
     expect(f.deletes()).toHaveLength(0);
@@ -265,7 +273,11 @@ describe('syncBillingContactRow (org create / PATCH whole-blob replace)', () => 
     const f = makeExec([[BILL_ROW], []]);
     const projected = await syncBillingContactRow(f.exec, ORG, null);
     expect(f.deletes()).toHaveLength(0);
-    expect(Object.keys(f.contactUpdates()[0]!.values!).sort()).toEqual(['roles', 'updatedAt']);
+    expect(f.contactUpdates()).toHaveLength(0);
+    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
+    expect(responsibilityMocks.removeContactResponsibility).toHaveBeenCalledWith(f.exec, {
+      contactId: BILL, orgId: ORG, role: 'billing', scope: { type: 'organization' },
+    });
     expect(projected).toBeNull();
   });
 
@@ -326,5 +338,51 @@ describe('site contacts', () => {
     const f = makeExec([[{ id: DANA, name: 'Front desk', email: null, phone: null, mobile: null }]]);
     await syncSiteContactRow(f.exec, ORG, SITE, null);
     expect(f.deletes()).toHaveLength(1);
+    // Not a billing holder: no projection write.
+    expect(f.blobWrites()).toHaveLength(0);
+  });
+
+  it('re-projects billing_contact after deleting a site contact that held billing @ Organization', async () => {
+    const f = makeExec([
+      [{ id: DANA, name: 'Front desk', email: null, phone: null, mobile: null }],
+      LOCK,
+      [{ id: 'role-1' }],
+      [],
+    ]);
+    await syncSiteContactRow(f.exec, ORG, SITE, null);
+    expect(f.log.map((s) => [s.verb, s.table])).toEqual([
+      ['select', contacts],
+      ['select', organizations],
+      ['select', contactRoles],
+      ['delete', contacts],
+      ['select', contacts],
+      ['update', organizations],
+    ]);
+    expect(f.log[1]!.lockMode).toBe('no key update');
+    expect(f.blobWrites()).toEqual([null]);
+  });
+
+  it('re-projects billing_contact after updating a site contact that holds billing @ Organization', async () => {
+    const f = makeExec([
+      [{ id: DANA, name: 'Front desk', email: 'old@acme.com', phone: null, mobile: null }],
+      LOCK,
+      [{ id: 'role-1' }],
+      [{ id: DANA, name: 'Front desk', email: 'new@acme.com', phone: null }],
+    ]);
+    await syncSiteContactRow(f.exec, ORG, SITE, { email: 'new@acme.com' });
+    const writes = f.log.filter((s) => s.verb === 'update').map((s) => s.table);
+    expect(writes).toEqual([contacts, organizations]);
+    expect(f.blobWrites()).toEqual([{ contactId: DANA, name: 'Front desk', email: 'new@acme.com', phone: null }]);
+  });
+
+  it('leaves billing_contact alone when the updated site contact does not hold billing', async () => {
+    const f = makeExec([
+      [{ id: DANA, name: 'Front desk', email: 'old@acme.com', phone: null, mobile: null }],
+      LOCK,
+      [],
+    ]);
+    await syncSiteContactRow(f.exec, ORG, SITE, { email: 'new@acme.com' });
+    expect(f.contactUpdates()).toHaveLength(1);
+    expect(f.blobWrites()).toHaveLength(0);
   });
 });
